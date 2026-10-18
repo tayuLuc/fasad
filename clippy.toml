@@ -1,0 +1,5 @@
+# Пороги перенесены из tayuLuc/copyosity src-tauri/clippy.toml (промер 18.10).
+cognitive-complexity-threshold = 25
+too-many-arguments-threshold = 8
+type-complexity-threshold = 300
+avoid-breaking-exported-api = true
