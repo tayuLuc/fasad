@@ -214,7 +214,10 @@ fasad/
 Конфликт, который уже известен: готовые обёртки `gline-rs` (1.1.0) и `gliclass-rs`
 (1.0.0) зажаты на `ort 2.0.0-rc.9` + `tokenizers ^0.21`, а GLiNER 2.5 требует
 кастомного декода границ → **пишем свой пре/postprocess поверх `ort` напрямую**,
-gline-rs только как референс алгоритма `[decided]`
+gline-rs только как референс алгоритма `[decided]`. Пины обёрток подтверждены
+первичкой 18.10 (`docs/dep-verify-repos.md` §2): `ort "=2.0.0-rc.9"`,
+`tokenizers "0.21.0"` — конфликт с rc.14 реален; внешней ONNX-data поддержки в
+обёртках нет, external-data решает наш декодер.
 
 ### 7.1 Промер первички 18.10.2026 (crates.io) → `docs/dep-verify-crates.md`
 
@@ -241,7 +244,7 @@ gline-rs только как референс алгоритма `[decided]`
 | Метод | Совместимость | Назначение |
 |---|---|---|
 | POST `/v1/chat/completions` | OpenAI (+Anthropic-совм. `/v1/messages`) | прозрачный прокси: маска → upstream → SSE deanonymize |
-| POST `/v1/analyze` | Presidio Analyzer / Lakera | спаны+offsets+векторы классов+вердикты, текст не меняет |
+| POST `/v1/analyze` | Presidio Analyzer (репо `data-privacy-stack/presidio`, MIT — переехал из microsoft) | спаны+offsets+векторы классов+вердикты, текст не меняет |
 | POST `/v1/anonymize` / `/v1/deanonymize` | Presidio Anonymizer | двухшаговый, stateless `vault_token` |
 | DELETE `/v1/sessions/{id}`, PUT `/v1/schema` | REST | сброс сессии / горячая смена схемы категорий |
 | GET `/ui` | — | зашитая песочница (подсветка α=confidence) |
