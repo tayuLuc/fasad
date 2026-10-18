@@ -35,7 +35,7 @@
 1. Шаги сборки — строго по §10 SPEC, один шаг = один PR, зелёный CI обеих ОС.
 2. Шаг 2 (model-fetch spike) — до написания рантайма: скачать модели по
    `docs/quant-policy.md`, пересчитать sha256, прогнать parity-гейт (fp32 vs квант,
-   golden-50), померить RSS и латентность, записать в `docs/model-audit.md` +
+   golden-набор), померить RSS и латентность, записать в `docs/model-audit.md` +
    `models/manifest.md` (URL+revision+sha256, веса в git не тащим).
 3. Кросс-платформенность проверять CI-матрицей (ubuntu-22.04/24.04 + windows-2022),
    не локально.
