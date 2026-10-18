@@ -1,0 +1,1 @@
+См. .github/workflows/README-known-red.md — профиль красноты lint-actions: что унаследовано от bootstrap, что уже снято ПР #7, остаток = issue #8 (artipacked/excessive-permissions). Обновлять при каждом PR, трогающем workflow.
