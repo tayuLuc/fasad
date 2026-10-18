@@ -165,6 +165,34 @@ MASK/KEEP, обратимо подменяет секретные спаны, п
 5. Найдены живыми, в спеке отсутствуют: `fastino/GLiNER2.5-Decide-1B` (4.76 ГБ — мимо
    бюджета) и `fastino/GLiNER2-Guardrails-PII-Multi` (1.23 ГБ) — лист ожидания model-audit.
 
+### 5.6 HF-обзор моделей (промер 18.10, агент) → `docs/hf-model-survey.md`
+
+1. **Каскад 1 обретает RU-двойник**: `redmadrobot-rnd/rubert-base-pii-ner`
+   (ruBERT-base, 21 тип / 43 BIO, адресная иерархия + RU-документы PASSPORT/INN/SNILS/
+   OMS/CREDIT_CARD/DRIVER_LICENSE/MILITARY_ID/BIRTH_CERTIFICATE, apache-2.0) плюс
+   **официальный ONNX без external-data** `lockR/rubert-base-pii-ner-onnx`
+   (fp16 355 МБ / fp32 711 МБ, opset 17, динамические оси) — единственный промеренный
+   экспорт, который ORT-CPU ест нативно и который влезает в бюджет по арифметике.
+   Роль: слой 1b под RU-ядро; слабые места: фиксированная онтология (zero-shot нет),
+   DATE отсутствует, окно 512 → sliding window (авторы: stride 128), IP_ADDRESS F1 36;
+   метрики self-report на их бенче 2 841 предл. (span-F1 83.6) — не наши.
+2. **SOTA-пункт транскрипта OpenMed/privacy-filter-multilingual-v2 — отказ**:
+   RU в языках нет (frontmatter+теги), 2.80 ГБ, external-data-ловушка.
+3. `vladlinv/ru-pii-ner-gliner2.5` — RU-финетюн нашей же базы (размер байт-в-байт):
+   recall 0.82 против инварианта «FN фатален», онтология грубая, валидация синтетическая,
+   ONNX нет → кандидат в изучение, не замена.
+4. Zero-shot по бюджету: `onnx-community/gliner_multi-v2.1` int8 349 МБ единым
+   графом; RU не подтверждён, v2.1 не 2.5 → тест-кандидат parity-гейта.
+5. **Правило приёмки ONNX (4 подтверждения ловушки)**: фильтровать `siblings` по
+   суффиксу `_data`, HEAD-промер content-length на `/resolve/`. Вопрос §5.4 п.2 закрыт:
+   `onnx-community/GLiNER2.5-Decide-ONNX` = 286 КБ + external 1.744 ГБ; CPU-путь
+   арбитра — q4f16 523 МБ.
+6. `redmadrobot-rnd/pii_train` (17k) + `pii_benchmark` (2.8k, непересекающийся) —
+   открытый RU-корпус: дописка в golden-набор (N≥150); их F1 как свой не цитировать.
+7. Методика: **HF search не ищет по кириллице** (200 OK, 0 хитов); рабочий путь —
+   `?pipeline_tag=token-classification&language=ru`; реестры `?author=` без sort
+   усечены (gliner-pii-large выпал из top-100) — точечный GET обязателен.
+
 ### 5.5 Верификация GitHub-объектов (промер 18.10.2026) → `docs/dep-verify-repos.md`
 
 1. Presidio — **MIT, не AGPL** (красный флаг снят), но репо переехал:
