@@ -1,0 +1,3 @@
+[build]
+# RUSTFLAGS из CI override-ятся per-target (см. §9 release profile); дефолт — v2
+# baseline: офисные машины 2019+; v3 только в release-сборках matrix.
