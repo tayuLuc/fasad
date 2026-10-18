@@ -1,0 +1,35 @@
+{
+  "_meta": {
+    "target": "POST https://api.neuraldeep.ru/v1/pii/anonymize (Bearer sk-...), batch texts[]",
+    "note": "ВСЕ данные вымышлены; контрольные суммы сгенерированы locally 18.10.2026. Ожидаемые дискриминаторы: neuraldeep-probes.md §4.",
+    "record": "на каждый текст: наличие тега, type, атрибуты, action, mapping"
+  },
+  "expect": {
+    "P1": "OGRNIP mod13 valid",
+    "P2": "OGRNIP mod13-valid/mod11-invalid",
+    "P3": "MIR BIN 229 luhn-valid",
+    "P4": "MIR BIN 2200 control",
+    "P5": "RU-IBAN 33 mod97 valid",
+    "P6": "FIO oblique case no patronymic",
+    "P7": "OOO without quotes (no-ORG probe)",
+    "P8": "farolding descriptive clause",
+    "P9": "JWT (TOKEN probe)",
+    "P10": "PEM+DSN secrets (TOKEN probe)",
+    "P11": "public figure FP boundary",
+    "P12": "INN-lookalike FP"
+  },
+  "texts": [
+    "ИП Громов А. В., ОГРНИП 313132804400022, ИНН 7701216277",
+    "ОГРНИП 314220119000137, 15 цифр",
+    "Оплата картой 2292 1234 5678 9018, держатель Громов А.В.",
+    "Карта 2200 1234 5678 9019",
+    "IBAN RU2604452522540817817810538091234, банк БИК 044525225",
+    "Отчёт перед Еленой Ким из Казани, копию ждите у Дмитра Соловьёва",
+    "Поставка от ООО Ромашка Холдинг на склад во Всеволожске",
+    "Крупнейший российский ритейлер с жёлто-чёрным логотипом просит обезличить переписку с его директором по логистике",
+    "токен доступа: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+    "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\nconn: postgres://appuser:s3cr3tPass@db01.internal:5432/appdb",
+    "Линус Торвальдс в 1991 написал первый Linux; дата 1991-08-25",
+    "Счёт 30501810600002, номер смены 112233445"
+  ]
+}
