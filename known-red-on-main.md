@@ -10,11 +10,12 @@
 | `ci.yml` `actions/checkout@v4` (unpinned) | есть | есть | bootstrap |
 | `ci.yml` `dtolnay/rust-toolchain@stable` | есть | есть | bootstrap |
 | `ci.yml` `Swatinem/rust-cache@v2` | есть | есть | bootstrap |
-| `ci.yml` `taiki-e/install-action` ×2 (`just`, `cargo-deny`) | — | внёс диф PR → **запинены SHA в этом PR** | диф PR |
+| `ci.yml` `taiki-e/install-action` ×2 (`just`, `cargo-deny`) | — | внёс диф PR → **запинены SHA, снято** (промер: 15→13 error) | диф PR |
 | `lint.yml` ×3 `unpinned-uses` + `artipacked` + `excessive-permissions` | есть | есть | bootstrap |
 
-Итог: диф PR #2 добавил ровно 2 unpinned-находки и чинит их в себе (пины
-`taiki-e/install-action@8cca0918… # v2`); остальная краснота — 6+ находок
+Итог: диф PR #2 добавил ровно 2 unpinned-находки и убрал их пином
+`taiki-e/install-action@8cca0918… # v2` — промер head-run 39166168880: zizmor 15→13,
+двух новых строк в отчёте нет; матрица ci на том же head зелёная (39166168873). остальная краснота — 6+ находок
 bootstrap-файлов — не его ответственность и не его заслуга.
 
 ## Что остаётся отдельному PR
