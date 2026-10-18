@@ -1,3 +1,2 @@
-[build]
-# RUSTFLAGS из CI override-ятся per-target (см. §9 release profile); дефолт — v2
-# baseline: офисные машины 2019+; v3 только в release-сборках matrix.
+# rustflags пока НЕ задаём: релизный v3 — per-target в release-workflow (SPEC §9), baseline-флаг вернётся отдельным решением.
+# (История: bootstrap-коммит d9a3d9c объявлял [build]-секцию, которой нет — мёртвый файл, снят замечанием ревью PR#2.)
