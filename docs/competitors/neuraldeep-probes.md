@@ -116,7 +116,7 @@
 Корпус в формате, готовом к curl (один батч `texts[]`, порядок ответа = порядку
 запроса, стр. 718): [`neuraldeep-probe-corpus.json`](neuraldeep-probe-corpus.json).
 
-## 5. Их 25 типов (стр. 709,verbatim) против нашей схемы
+## 5. Их 25 типов (стр. 709, verbatim) против нашей схемы
 
 `PERSON`, `LOCATION`, `EMAIL_ADDRESS`, `PHONE_NUMBER`, `URL`, `IP_ADDRESS`,
 `IP_PORT`, `DATE_TIME`, `PASSPORT`, `CREDIT_CARD`, `CVC`, `DRIVER_LICENSE`, `INN`,
