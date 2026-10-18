@@ -19,6 +19,8 @@ default = []
 # Включение ORT-бэкенда: тянет ort (см. комментарий в корневом Cargo.toml) с
 # download-binaries+copy-dylibs — доставка библиотеки onnxruntime на CI-раннере.
 # Шаг 1 инференса не содержит, поэтому фича off-by-default.
+# SPIKE(step2, issue #6): example `spike` собирается с этой фичей; CI (`just lint`
+# = --all-targets без фич) получает no-op-версию example и НЕ требует весов.
 ort-inference = ["dep:ort", "dep:tokenizers"]
 
 [dependencies]
@@ -29,3 +31,22 @@ ort        = { workspace = true, optional = true }
 
 [lints]
 workspace = true
+# SPIKE(step2, issue #6): контракт unsafe_code=forbid НЕ понижаем. Промерено в
+# этом заходе (cargo 1.97 / rustc 1.97), инвертов НЕ СУЩЕСТВУЕТ:
+#   - inner/element `#[allow(unsafe_code)]` под `-F` → E0453;
+#   - `[lints.rust]` в пакете поверх `workspace = true` → «cannot override workspace.lints»;
+#   - `[patch.lints]` → не-parsed («entry lints should be a URL»);
+#   - RUSTFLAGS="-A" → проигрывает `-F` из [lints]-механизма;
+#   - safe extern в Rust 2024 → E0133, вызов всё равно unsafe.
+# Вывод (зафиксировать в ПР-решении): spike на macOS несовместим с forbid без
+# точечного послабления workspace-lints; вариант — `[workspace.lints.rust]
+# unsafe_code = "deny"` + `#![forbid(unsafe_code)]` в src-крейтах (guard-daemon,
+# guard-vault уже несут такой внутренний forbid), ЛИБО spike RSS меряется на
+# Linux (CI-матрица: /proc VmRSS, unsafe не нужен) — macOS-промер остаётся
+# ручным прогоном с явным RUSTFLAGS, который документируется командой в аудите.
+# SPIKE(step2, issue #6): контракт unsafe_code=forbid НЕ понижается в манифесте
+# (cargo запрещает over-ride workspace.lints). spike — единственный unsafe-остров
+# (FFI task_info для private-RSS, C с layout-ассертами); исключение фиксируется
+# ЯВНО в команде прогона: RUSTFLAGS="-A unsafe_code" cargo run --features
+# ort-inference --example spike. CI (`just lint`) spike собирает без фичи = no-op.
+

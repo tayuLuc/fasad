@@ -13,6 +13,10 @@ coverage/
 # models: only manifest in git, no weights (внешние веса/данные — наружу; манифест models/manifest.md в гите)
 models/*
 !models/manifest.md
+!models/manifest.tsv
+!models/.gitattributes
+!models/README.md
+!models/manifest.md
 **/model.onnx_data*
 # local transcript export
 transcript.md
