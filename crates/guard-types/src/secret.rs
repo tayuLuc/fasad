@@ -110,8 +110,6 @@ impl Serialize for SecretString {
     }
 }
 
-// Контракт `ZeroizeOnDrop` держит derive `#[zeroize(drop)]` выше; отдельный trait
-// тут был бы дублем (проверяется тестом `debug_and_display_never_leak_the_value`).
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // в тестах паника = красный CI, это канал ответа
 mod tests {
