@@ -142,6 +142,28 @@ MASK/KEEP, обратимо подменяет секретные спаны, п
 5. Найдены живыми, в спеке отсутствуют: `fastino/GLiNER2.5-Decide-1B` (4.76 ГБ — мимо
    бюджета) и `fastino/GLiNER2-Guardrails-PII-Multi` (1.23 ГБ) — лист ожидания model-audit.
 
+### 5.5 Верификация GitHub-объектов (промер 18.10.2026) → `docs/dep-verify-repos.md`
+
+1. Presidio — **MIT, не AGPL** (красный флаг снят), но репо переехал:
+   `microsoft/presidio` → **`data-privacy-stack/presidio`** (push 18.10.2026, живой);
+   SPEC-ссылку в §8 править на новый org.
+2. `fastino-ai/GLiNER2` — живой репо (★2383, push 09.10.2026, Apache-2.0); README
+   подтверждает ВСЕ имена моделей §1/§2 → §11 п.1 закрыт окончательно.
+3. `noseyparker` — **архив** (02.2026): как референс архитектуры годится, как живой
+   источник правил — нет (§1 каскад 0).
+4. `llama-cpp-2` → `utilityai/llama-cpp-rs` (жив, 0.1.160, 15.10.2026) — SPEC §1 верен;
+   `rust-dd/llama-cpp-2` — фантом; одноимённый крейт `llama-cpp-rs` — мёртвый mdrokz-форк,
+   не путать.
+5. CI-экшены: `checkout` v4 устарел (latest v7.0.1), `action-gh-release` v2 устарел
+   (v3.0.3), `rust-toolchain` — конвенция @master, `rust-cache` v2 актуален, но
+   node24 → свежих раннеров требует. §9 пины обновить.
+6. gline-rs/gliclass-rs: пины ort `=rc.9` + tokenizers `0.21` ПОДТВЕРЖДЕНЫ (конфликт
+   §7 реален); внешней ONNX-data поддержки нет — external-data решает наш декодер.
+7. §8 расхождение: Presidio deanonymize требует ключ от клиента — с нашим
+   stateless vault_token совместимо по форме, не по механизму.
+8. ONNX у DanKau-«пользователя» на GitHub 404 — это HF-имя, не github (проверено);
+   HF-сторона остаётся по §5.4 (соседний промер).
+
 ## 6. Структура workspace
 
 ```
@@ -244,7 +266,9 @@ stream_rewriter с нарезкой SSE по 1–2 байта).
 middleware должен переживать панику отдельного запроса), `strip="symbols"`,
 `RUSTFLAGS="-C target-cpu=x86-64-v3"`. Артефакт: tar.gz/zip = бинарь +
 `libonnxruntime.so`/`onnxruntime.dll` рядом (ort `copy-dylibs`) + `schema.default.json`
-+ SHA256SUMS → `softprops/action-gh-release@v2`.
++ SHA256SUMS → `softprops/action-gh-release` (SPEC-пин v2 устарел: latest v3.0.3, промер 18.10 — пинить по dep-verify-repos).
+   Прочие CI-пины: `actions/checkout` latest v7 (SPEC v4 устарел), `rust-cache` v2.9.2
+   (node24 → нужны свежие раннеры), `rust-toolchain` — @master (мажорных тегов нет).
 
 ## 10. Порядок сборки для агента (атомарные шаги, по одному PR)
 
