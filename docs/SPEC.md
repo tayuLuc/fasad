@@ -207,7 +207,12 @@ MASK/KEEP, обратимо подменяет секретные спаны, п
    не путать.
 5. CI-экшены: `checkout` v4 устарел (latest v7.0.1), `action-gh-release` v2 устарел
    (v3.0.3), `rust-toolchain` — конвенция @master, `rust-cache` v2 актуален, но
-   node24 → свежих раннеров требует. §9 пины обновить.
+   node24 → свежих раннеров требует. **Решение 18.10 (bootstrap main): checkout v4
+   сознательно** (free-runner совместимость; v7 на windows-2022 не обкатан);
+   action-gh-release v3 — вместе с первым релизным workflow (шаг 9). Линтерский слой
+   портирован из tayuLuc/copyosity: lint.yml = MegaLinter (actionlint+zizmor+yamllint+
+   shellcheck), clippy.toml (cognitive 25, too-many-args 8 — ужесточено с их 11),
+   just-контракт fix/lint/check; реестр заимствований §16.
 6. gline-rs/gliclass-rs: пины ort `=rc.9` + tokenizers `0.21` ПОДТВЕРЖДЕНЫ (конфликт
    §7 реален); внешней ONNX-data поддержки нет — external-data решает наш декодер.
 7. §8 расхождение: Presidio deanonymize требует ключ от клиента — с нашим
