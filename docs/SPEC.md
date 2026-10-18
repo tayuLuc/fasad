@@ -446,3 +446,26 @@ cleardoc.ru, aisearch.ru/obezlichivanie. Правило: **любой конку
    окно GLiNER против 448 для 512-модели со stride 128, overlap-слияние то же).
 5. Корпус `redmadrobot-rnd/pii_benchmark` (2841 предл., открыт) — кандидат №1 в
    дописку golden-набора (N≥150); его F1 — self-report, в наш отчёт не переносится.
+
+## 16. Заимствования из copyosity (промер карточки 10.10.2026, форк tayuLuc)
+
+Носитель: `context/wiki/catalogs/repos/media-speech/vakovalskii/copyosity.md`.
+1. **Clipboard-санитайзер (их сценарий 2)**: глобальный хоткей push-to-talk-паттерном
+   (Pressed/Released), перехват буфера, очистка, `arboard`-возврат с 3 ретраями и
+   паузой 100 мс; адресная вставка `CGEventPostToPid` по PID, запомненному ДО показа
+   оверлея (иначе accessory-приложение перехватывает вставку).
+2. **Non-activating NSPanel-оверлей** — паттерн всплывающего UI поверх чужих окон на
+   macOS без угона фокуса.
+3. **OpenAI-хаб-роутинг** их `transcription.rs`: единый конфиг хаб-URL + Bearer +
+   фолбэк на self-hosted URL + отдельная эргономика 429 — переиспользуем в прокси §8.
+4. **Формат каталога модели**: `model.safetensors` + `tokenizer.json` + `config.json`
+   (замер vladlinv) — читается Rust-крейтом без PyTorch. Уточнение оператора 18.10:
+   **сейчас берём только готовые ONNX/GGUF**, генерация квантов и свои экспорты —
+   позже; §5.7 п.3 (spike на gliner2.5-экспорт) понижён до «готовые варианты».
+5. **CI-only сборка + аннотированный тег как единица поставки** (наша же линия в
+   copyosity-форке): релизы fasad собирает GitHub Actions, локалок — нет.
+6. **Их дефекты как наши гейты**: README про notarization не подтвердился артефактом
+   (1.0.3 без тикета) → наш релизный гейт показывает факт (`spctl`/staple verify в CI,
+   а не прозу в README); канал self-update врал MIME → latest.json вfasad отдаёт
+   строго JSON, контент-тайп-тест в CI; MIT в package.json без файла LICENSE → LICENSE
+   в корне с первого коммита, cargo-deny следит.
