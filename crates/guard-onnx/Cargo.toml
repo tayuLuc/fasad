@@ -1,0 +1,31 @@
+[package]
+name         = "guard-onnx"
+description  = "Каскады 1–2: чанкер, GLiNER-экстрактор, Decide-арбитр, слияние спанов"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+# `ort-inference` выключена по умолчанию: ort тянет ort-sys c download-binaries
+# + copy-dylibs (дефолт фич орта) — несколько сотен МБ онлайновой загрузки
+# библиотеки onnxruntime на каждом чистом билде, а кода инференса на шаге 1 нет.
+# Включается шагом 4 (SPEC §10 п.4) и прогоном step-2 spike по docs/quant-policy.md.
+# В workspace-зависимостях ort пиннуется с явными default-features=false: фичи
+# download-binaries/copy-dylibs объявлены здесь только чтобы контракт §7 был
+# буквальным; при default-off фичи они в граф не попадают.
+[features]
+default = []
+# Включение ORT-бэкенда: тянет ort (см. комментарий в корневом Cargo.toml) с
+# download-binaries+copy-dylibs — доставка библиотеки onnxruntime на CI-раннере.
+# Шаг 1 инференса не содержит, поэтому фича off-by-default.
+ort-inference = ["dep:ort", "dep:tokenizers"]
+
+[dependencies]
+guard-types = { path = "../guard-types" }
+ndarray     = { workspace = true }
+tokenizers = { workspace = true, optional = true }
+ort        = { workspace = true, optional = true }
+
+[lints]
+workspace = true
