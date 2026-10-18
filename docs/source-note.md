@@ -16,7 +16,7 @@
      вся линейка 1.x yanked, стабильной 2.0.0 нет → проект на rc-треке.
   4. Внутреннее противоречие транскрипта: §1 «GGUF для GLiNER не ложатся, нужен ONNX»,
      §2 «JevK5-2B-GGUF в llama.cpp как арбитр» → разрешено решением не брать JevK5.
-  5. Имена моделей `fastino/gliner2.5-multi-v1`, `fastino/gliner2-privacy-filter-PII-multi`
-     без HF-URL; `GLiNER2.5-Decide` подтверждена нашей карточкой дозора (♥357, dl 53 625,
-     промер 17.10) → в вики: `llm/jev-mode-decoding`. HF-верификация имён — в работе
-     (`docs/dep-verify-models.md`).
+  5. ~~Имена моделей fastino под вопросом~~ — **ЗАКРЫТО 18.10** (промер HF API,
+     `docs/dep-verify-models.md`): все id реальные, apache-2.0. Новый дефект вместо
+    old-риска: **ONNX-экспортов у вендора нет** — только safetensors; путь — экспорт
+     самим или сторонний ONNX-репо (§5.4 SPEC).
