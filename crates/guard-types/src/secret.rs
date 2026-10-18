@@ -26,6 +26,14 @@ pub struct SecretString(SecretInner);
 #[zeroize(drop)]
 struct SecretInner(String);
 
+// Маркерный трейт `ZeroizeOnDrop` derive `#[zeroize(drop)]` НЕ выставляет — он
+// генерирует только `Drop` (первичка zeroize-1.9.1/src/lib.rs:252: пустой маркер).
+// Без явных impl'ов тип не проходит generic-границы вроде `T: ZeroizeOnDrop` у
+// vault-коллекций. Derive оставляем: он и есть стирающее поведение, маркер лишь
+// объявляет контракт компилятору.
+impl zeroize::ZeroizeOnDrop for SecretInner {}
+impl zeroize::ZeroizeOnDrop for SecretString {}
+
 impl SecretString {
     /// Оборачивает оригинал. Содержимое забирается во владение — ссылок на
     /// исходный буфер не остаётся, но вызывающий обязан не держать его копии.
@@ -37,7 +45,6 @@ impl SecretString {
     /// Пустое значение (для дефолтов/раздела таблиц).
     #[must_use]
     pub const fn empty() -> Self {
-        // String::new не const-compatible в derive-обёртке, поэтому через Default.
         Self(SecretInner(String::new()))
     }
 
@@ -144,6 +151,18 @@ mod tests {
         secret.zeroize_early();
         assert!(secret.is_empty());
         assert_eq!(secret.expose_to_validator(), "");
+    }
+
+    #[test]
+    fn type_carries_zeroize_on_drop_marker() {
+        use zeroize::ZeroizeOnDrop;
+        // Гейт AGENTS «все буферы с оригиналами ПДн: ZeroizeOnDrop»: generic-код
+        // (vault-коллекции) компилируется только с маркером на типе. Снятие
+        // `impl ZeroizeOnDrop` выше = E0277 здесь, не молеленый зелёный.
+        fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<SecretString>();
+        assert_zeroize_on_drop::<Vec<SecretString>>();
+        assert_zeroize_on_drop::<Option<SecretString>>();
     }
 
     #[test]
