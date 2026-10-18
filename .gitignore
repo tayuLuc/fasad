@@ -7,3 +7,10 @@ dist/
 *.log
 coverage/
 .cache/
+# Rust / cargo
+target/
+Cargo.lock
+# models: only manifest in git, no weights
+models/
+# local transcript export
+transcript.md
