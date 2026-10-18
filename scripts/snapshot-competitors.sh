@@ -24,4 +24,4 @@ for u in "${SOURCES[@]}"; do
     echo "FAIL $u (пропуск, не снапшотим смерть)"
   fi
 done
-ls -la "$DIR" | tail -8
+find "$DIR" -maxdepth 1 -type f -newer "$DIR" -print 2>/dev/null | tail -8 || true
