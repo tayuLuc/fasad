@@ -1,9 +1,13 @@
 # known-red: lint-actions (MegaLinter/zizmor) красится с bootstrap main
 
 Замерено 18.10 на PR #2 (step1-impl) и на main-push 39160680009 (bootstrap,
-коммит 705a66e): `Lint (Actions YAML + shell)` падает на zizmor 1.25.0 —
-15 error (PR-ран) / тот же профиль на main (6+ промптированных `unpinned-uses`
-на `.github/workflows/ci.yml` + `lint.yml`, `artipacked`, `excessive-permissions`).
+коммит 705a66e): `Lint (Actions YAML + shell)` падает на zizmor 1.25.0 +
+shellcheck (SC2012 в `scripts/snapshot-competitors.sh`, тоже red на main).
+Профиль main: 13 zizmor-error; профиль PR: те же 13 + 2 новых `unpinned-uses`
+(`ci.yml:27` install-action@just, `ci.yml:29` install-action@cargo-deny — два
+шага, добавленных именно этим PR по заданию «CI зовёт just»). Класс ошибки и
+файл те же, что на main: red наследуется профилем bootstrap-файлов, не фактом
+прикосновения PR к workflow.
 
 ## Почему это не блок мержа шага 1
 
