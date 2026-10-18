@@ -23,3 +23,7 @@ docs/competitors/snapshots/
 # дубликат-страховка: онто-бинарь из build-кэша никогда в гит
 libonnxruntime*
 onnxruntime.dll
+
+# review/probe artifacts (never commit)
+.review/
+rust_out
