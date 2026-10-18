@@ -21,6 +21,12 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used
-      - run: cargo test --workspace
+      # Единый контракт локально и в CI: just-цели из justfile; cargo-deny —
+      # гейт advisories/bans/licenses (SPEC §9).
+      - name: Install just
+        uses: taiki-e/install-action@just
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+      - run: just lint
+      - run: just test
+      - run: just deny
