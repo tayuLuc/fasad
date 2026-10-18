@@ -14,10 +14,10 @@
 Детекторы/ONNX/vault/роуты — шаги 3–8; метрик recall нет, golden-набор не собран
 (§5 п.7, §11 п.7). CI-бейдж не вешаем до первого зелёна на main.
 
-> `lint-actions` (MegaLinter/zizmor) красится на `unpinned-uses` в workflow-файлах
-> — **известно с main** (bootstrap-`ci.yml`/`lint.yml` того же профиля,
-> `known-red-on-main.md` в репо): чинится отдельным PR вместе с пинингом actions
-> на SHA, матрица `ci` (fmt/clippy/test/deny, обе ОС) зелёная.
+> `lint-actions` (MegaLinter/zizmor) красится на `unpinned-uses` в bootstrap-файлах
+> (то же на main до PR) и на shellcheck SC2012 в `scripts/`; два unpinned-шага,
+> добавленных шагом 1, запинены SHA в `ci.yml`. Разбор ответственности и очередь
+> починки — `known-red-on-main.md`; матрица `ci` (fmt/clippy/test/deny, обе ОС) зелёная.
 
 ## Setup
 

@@ -23,10 +23,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Единый контракт локально и в CI: just-цели из justfile; cargo-deny —
       # гейт advisories/bans/licenses (SPEC §9).
+      # Пинованы SHA тега v2 (2.87.29, 2026-10-16) — zizmor unpinned-uses, внесённый
+      # этим дифом, чинится здесь (review B4). bootstrap-пины (checkout/toolchain/
+      # rust-cache/megalinter) — отдельный PR, см. known-red-on-main.md.
       - name: Install just
-        uses: taiki-e/install-action@just
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: just
       - name: Install cargo-deny
-        uses: taiki-e/install-action@cargo-deny
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: cargo-deny
       - run: just lint
       - run: just test
       - run: just deny

@@ -1,31 +1,29 @@
-# known-red: lint-actions (MegaLinter/zizmor) красится с bootstrap main
+# known-red: lint-actions (MegaLinter/zizmor) — унаследованное и внесённое
 
-Замерено 18.10 на PR #2 (step1-impl) и на main-push 39160680009 (bootstrap,
-коммит 705a66e): `Lint (Actions YAML + shell)` падает на zizmor 1.25.0 +
-shellcheck (SC2012 в `scripts/snapshot-competitors.sh`, тоже red на main).
-Профиль main: 13 zizmor-error; профиль PR: те же 13 + 2 новых `unpinned-uses`
-(`ci.yml:27` install-action@just, `ci.yml:29` install-action@cargo-deny — два
-шага, добавленных именно этим PR по заданию «CI зовёт just»). Класс ошибки и
-файл те же, что на main: red наследуется профилем bootstrap-файлов, не фактом
-прикосновения PR к workflow.
+Замерено 18.10 на PR #2 (step1-impl) и на main-push 39160680009 (bootstrap):
+`Lint (Actions YAML + shell)` падает на zizmor 1.25.0 + shellcheck (SC2012 в
+`scripts/snapshot-competitors.sh`, красится и на main). Разделение ответственности
+по первичному промеру (логи прогонов + таблица ревью PR #2 гейт 8):
 
-## Почему это не блок мержа шага 1
+| находка | на main | на head PR | кто внёс |
+|---|---|---|---|
+| `ci.yml` `actions/checkout@v4` (unpinned) | есть | есть | bootstrap |
+| `ci.yml` `dtolnay/rust-toolchain@stable` | есть | есть | bootstrap |
+| `ci.yml` `Swatinem/rust-cache@v2` | есть | есть | bootstrap |
+| `ci.yml` `taiki-e/install-action` ×2 (`just`, `cargo-deny`) | — | внёс диф PR → **запинены SHA в этом PR** | диф PR |
+| `lint.yml` ×3 `unpinned-uses` + `artipacked` + `excessive-permissions` | есть | есть | bootstrap |
 
-1. Матрица `ci` (fmt/clippy/test/deny на ubuntu-24.04/windows-2022) на step1-impl
-   **зелёная**: run 39161454349 (3 м 40 с), jobs windows+ubuntu — success.
-2. На bootstrap-main lint-actions падал до этого PR (run 39160680009 completed
-   failure, 2026-10-18T19:51Z): краснота не внесена диффом PR, унаследована от
-   workflow-файлов main.
-3. Родительский рулинг: файлы bootstrap (lint.yml, ci.yml-пины) чинятся
-   отдельным PR пинингом actions на SHA (unpinned-uses) + explicit permissions +
-   persist-credentials (artipacked) — шаг 9 release.yml всё равно перепишет пины
-   (`dep-verify-repos` §5: gh-release v3, rust-cache 2.9.2).
+Итог: диф PR #2 добавил ровно 2 unpinned-находки и чинит их в себе (пины
+`taiki-e/install-action@8cca0918… # v2`); остальная краснота — 6+ находок
+bootstrap-файлов — не его ответственность и не его заслуга.
 
-## Что чинить отдельным PR
+## Что остаётся отдельному PR
 
-- `actions/checkout@v4`, `dtolnay/rust-toolchain@stable`, `Swatinem/rust-cache@v2`,
-  `taiki-e/install-action@just|cargo-deny`, `oxsecurity/megalinter@v9` → пин на
-  tag+SHA (`@v4 # abc1234` или полный SHA), согласно §5.5 п.5 (checkout v4 —
-  сознательный выбор, вопрос только SHA-якоря, не версии).
-- `permissions:` на job-уровне уже есть в lint.yml; ci.yml job build-test без
-  explicit permissions → добавить `permissions: contents: read`.
+- Пининг bootstrap-действий: `actions/checkout@v4`, `dtolnay/rust-toolchain@stable`,
+  `Swatinem/rust-cache@v2`, `oxsecurity/megalinter@v9` → `@vN # <sha>` (§5.5 п.5:
+  checkout v4 — сознательный выбор версии, вопрос только SHA-якоря; gh-release v3
+  и rust-cache 2.9.2 придут шагом 9).
+- `permissions: contents: read` на job `build-test` в `ci.yml` (excessive-permissions).
+- `artipacked`: `persist-credentials: false` на checkout в ci.yml.
+- shellcheck SC2012 в `scripts/snapshot-competitors.sh:27` (ls → find или
+  allow-info в конфиге MegaLinter).
