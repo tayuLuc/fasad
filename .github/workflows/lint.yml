@@ -36,7 +36,6 @@ jobs:
           VALIDATE_ALL_CODEBASE: "true"
           APPLY_FIXES: "none"
           ENABLE_LINTERS: ACTION_ACTIONLINT,ACTION_ZIZMOR,YAML_YAMLLINT,BASH_SHELLCHECK
-          ACTION_ZIZMOR_UNSECURED_ENV_VARIABLES: GITHUB_TOKEN
       - name: Upload reports
         if: success() || failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
