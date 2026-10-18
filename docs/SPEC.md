@@ -353,3 +353,18 @@ middleware должен переживать панику отдельного �
 - `llm/decode-speed-5090` — bandwidth-логика prefill vs decode (та же, что у KV-кэша)
 - `process-rules-knowledge-wiki` — верификация, prior art, fidelity
 - `process-rules-research-transport` — транспорт проб
+
+## 13. Конкурентная сверка (живые промеры)
+
+- `docs/competitors/neuraldeep.md` — PII-Guard на neuraldeep.ru (промер API-поверхности
+  18.10): 25 типов (~20 RU), гибрид правила+ruBERT, XML-токены, mapping клиенту,
+  OpenAI-прокси-режим на тумблере; НЕТ: block/audit-политик, analyze-without-mutation,
+  offsets/confidence, порогов, офлайна; платят и за пустой результат; «дежурный видит
+  последние ~1000 запросов» — их приватность дырявей нашего тезиса.
+  Взято в план: 422-контракт на неизвестный тип, batch `texts[]` с порядком,
+  ответ `action: NONE` как сигнал пропуска deanonymize.
+- `docs/competitors/inconify.md` — некролог: DNS мёртв, Wayback пуст; класс «тонкая
+  обёртка Presidio» подтверждён косвенно.
+- Итог перекрытия: по осям «оффлайн / контекстный арбитр / измеримый recall» мы
+  сильнее by design; по осям «instant-on / батч-пропускная / RU-типы из коробки»
+  они в проде, мы — в спеке.
