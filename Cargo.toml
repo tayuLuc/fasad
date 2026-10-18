@@ -62,10 +62,23 @@ lz4_flex          = { version = "0.14.0", default-features = false, features = [
 # ort по default тянет download-binaries + copy-dylibs → ~несколько сотен МБ
 # онлайновой загрузки онто-библиотеки. На шаге 1 кода инференса нет, поэтому
 # feature выключена по умолчанию: `cargo check` обеих ОС остаётся дешёвым.
+# Промер `cargo tree --all-features -i native-tls|openssl-sys` пустой: скачивание
+# в ort идёт через ureq на rustls (фича `tls-rustls` = ort-sys/tls-rustls +
+# ureq/rustls), нативного TLS в графе нет.
 # Включение: ort = { workspace = true } + --features ort-inference.
-ort         = { version = "2.0.0-rc.14", default-features = false, features = ["std", "ndarray", "half", "download-binaries", "copy-dylibs"] }
+# default-features=false требует ЯВНОГО TLS-флага: build-скрипт ort-sys
+# (`download/mod.rs`) compile_error'ит без tls-*, а download-binaries включён
+# (PR #2 review B1). Берём `tls-rustls` — консистентно с reqwest-on-rustls (§1
+# п.6, bans native-tls в deny.toml), а не дефолтный `tls-native`.
+# `half`/`api-31` из rc.14-дефолта перечислены явно: контракт §7.1 п.2
+# («дельта rc.13→rc.14 = api-31») должен читаться из пина, а не из дефолтов.
+ort         = { version = "2.0.0-rc.14", default-features = false, features = ["std", "ndarray", "half", "download-binaries", "copy-dylibs", "tls-rustls", "api-31"] }
 ndarray     = { version = "0.17.2" }
-tokenizers = { version = "0.23.2", default-features = false }
+# tokenizers: default-features=false, но REGEX-фича обязательна — build-time
+# compile_error! без onig/fancy-regex (tokenizers-0.23.2/src/utils/mod.rs:15,
+# review B2). `onig` (vendored Oniguruma, C) — выбор по дефолту самого крейта;
+# AGENTS п.6 («никакого Python») не нарушает.
+tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
 
 # --- HTTP-слой демона ---
 tokio      = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
