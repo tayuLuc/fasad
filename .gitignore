@@ -8,12 +8,18 @@ dist/
 coverage/
 .cache/
 # Rust / cargo
-target/
-Cargo.lock
-# models: only manifest in git, no weights
-models/
+/target/
+**/target/
+# models: only manifest in git, no weights (внешние веса/данные — наружу; манифест models/manifest.md в гите)
+models/*
+!models/manifest.md
+**/model.onnx_data*
 # local transcript export
 transcript.md
 paste.md
 docs/competitors/snapshots/
 docs/competitors/snapshots/
+
+# дубликат-страховка: онто-бинарь из build-кэша никогда в гит
+libonnxruntime*
+onnxruntime.dll

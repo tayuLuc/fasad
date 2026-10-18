@@ -1,0 +1,105 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/guard-types",
+    "crates/guard-detectors",
+    "crates/guard-onnx",
+    "crates/guard-vault",
+    "crates/guard-daemon",
+]
+# Корень-виртуал: бинарь один (guard-daemon), поэтому default-members = весь workspace.
+default-members = [
+    "crates/guard-types",
+    "crates/guard-detectors",
+    "crates/guard-onnx",
+    "crates/guard-vault",
+    "crates/guard-daemon",
+]
+
+# Линты всего workspace: `-D clippy::unwrap_used` из CI (§9 / AGENTS п.4) держим и
+# здесь, чтобы нарушение ловилось локальной сборкой, а не только красным CI.
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_code  = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used       = "deny"
+expect_used       = "warn"
+panic_in_result_fn = "warn"
+pedantic          = { level = "warn", priority = -1 }
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2024"
+rust-version = "1.85"
+license      = "Apache-2.0"
+repository   = "https://github.com/tayuLuc/fasad"
+authors      = ["fasad contributors"]
+
+# Пины взяты из docs/dep-verify-crates.md (промер crates.io 18.10.2026), НЕ из таблицы
+# SPEC §7 — §7 остаётся снапшотом транскрипта. Версии перепроверены по API в этом же
+# заходе (см. PR step1).
+[workspace.dependencies]
+# --- онтология типов / сериализация ---
+serde       = { version = "1.0.228", features = ["derive"] }
+serde_json  = { version = "1.0.154" }
+thiserror   = { version = "2.0.17" }
+zeroize     = { version = "1.9.1", features = ["derive"] }
+
+# --- каскад 0: детерминированный ---
+aho-corasick = { version = "1.1.5", default-features = false, features = ["std", "perf-literal"] }
+regex        = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode-perl"] }
+
+# --- память секретов ---
+region = { version = "4.0.1" }
+
+# --- vault ---
+moka              = { version = "0.12.16", default-features = false, features = ["future", "sync", "atomic64", "quanta"] }
+chacha20poly1305  = { version = "0.11.0", features = ["zeroize", "getrandom", "rand_core"] }
+lz4_flex          = { version = "0.14.0", default-features = false, features = ["std", "checked-decode"] }
+
+# --- инференс (только через feature `ort-inference` в guard-onnx, см. ниже) ---
+# ort по default тянет download-binaries + copy-dylibs → ~несколько сотен МБ
+# онлайновой загрузки онто-библиотеки. На шаге 1 кода инференса нет, поэтому
+# feature выключена по умолчанию: `cargo check` обеих ОС остаётся дешёвым.
+# Промер `cargo tree --all-features -i native-tls|openssl-sys` пустой: скачивание
+# в ort идёт через ureq на rustls (фича `tls-rustls` = ort-sys/tls-rustls +
+# ureq/rustls), нативного TLS в графе нет.
+# Включение: ort = { workspace = true } + --features ort-inference.
+# default-features=false требует ЯВНОГО TLS-флага: build-скрипт ort-sys
+# (`download/mod.rs`) compile_error'ит без tls-*, а download-binaries включён
+# (PR #2 review B1). Берём `tls-rustls` — консистентно с reqwest-on-rustls (§1
+# п.6, bans native-tls в deny.toml), а не дефолтный `tls-native`.
+# `half`/`api-31` из rc.14-дефолта перечислены явно: контракт §7.1 п.2
+# («дельта rc.13→rc.14 = api-31») должен читаться из пина, а не из дефолтов.
+ort         = { version = "2.0.0-rc.14", default-features = false, features = ["std", "ndarray", "half", "download-binaries", "copy-dylibs", "tls-rustls", "api-31"] }
+ndarray     = { version = "0.17.2" }
+# tokenizers: default-features=false, но REGEX-фича обязательна — build-time
+# compile_error! без onig/fancy-regex (tokenizers-0.23.2/src/utils/mod.rs:15,
+# review B2). `onig` (vendored Oniguruma, C) — выбор по дефолту самого крейта;
+# AGENTS п.6 («никакого Python») не нарушает.
+tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
+
+# --- HTTP-слой демона ---
+tokio      = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+axum       = { version = "0.8.9", features = ["json", "http1", "http2"] }
+tower-http = { version = "0.7.1", features = ["cors", "trace", "timeout", "limit", "catch-panic"] }
+reqwest    = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "stream", "json"] }
+rust-embed = { version = "8.13.0", features = ["compression"] }
+
+# --- НЕ В SHAPE 1: морфология (шаг 5 SPEC §10) ---
+# petrovich = { version = "0.2.0" }   # dead-2020: крейт не обновлялся с 2020-04-06
+                                      # (dep-verify-crates §«petrovich и rsmorphy»), MSRV/licence
+                                      # — отдельная задача; в workspace-депы не внесён намеренно.
+# rsmorphy  = { version = "0.4.0" }   # dead-2018: кандидат замены/форка, туда же.
+
+# --- dev (на шаге 1 ни один крейт их не потребляет; внесены в пин-лист, чтобы
+# шаг 3 (property-тесты OffsetMap) брал версию из dep-verify, а не наугад) ---
+# proptest = { version = "1.12.0" }
+# ctor     = { version = "1.0.13" }
+
+[profile.release]
+lto           = "fat"
+codegen-units = 1
+panic         = "unwind"   # НЕ abort: middleware должен переживать панику отдельного запроса (SPEC §9)
+strip         = "symbols"

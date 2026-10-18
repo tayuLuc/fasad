@@ -1,0 +1,32 @@
+[package]
+name         = "guard-daemon"
+description  = "Стендэлон-демон: axum-роуты, rust-embed UI, fail-closed middleware"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[[bin]]
+name = "fasad"
+path = "src/main.rs"
+
+[dependencies]
+guard-types     = { path = "../guard-types" }
+guard-detectors = { path = "../guard-detectors" }
+guard-onnx      = { path = "../guard-onnx" }
+guard-vault     = { path = "../guard-vault" }
+tokio      = { workspace = true }
+axum       = { workspace = true }
+tower-http = { workspace = true }
+reqwest    = { workspace = true }
+rust-embed = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# ServiceExt::oneshot для тестов роутера без поднятия сокета.
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true

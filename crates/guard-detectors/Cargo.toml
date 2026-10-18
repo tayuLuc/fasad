@@ -1,0 +1,16 @@
+[package]
+name         = "guard-detectors"
+description  = "Каскад 0: нормализатор + OffsetMap, чексуммы РФ/ЕС, секрет-сканер, автомат Ахо–Корасика"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+guard-types  = { path = "../guard-types" }
+aho-corasick = { workspace = true }
+regex        = { workspace = true }
+
+[lints]
+workspace = true

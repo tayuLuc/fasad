@@ -1,0 +1,77 @@
+# cargo-deny — гейт дерева зависимостей (SPEC §9: advisories/bans/licenses).
+# Запуск: `just deny` или `cargo deny check`.
+
+[advisories]
+# Advisory-ignored пуст сознательно: дыра в депо краснит CI, а не заминается
+# whitelist'ом; правка списка — только с заметкой в PR.
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+version = 2
+yanked = "deny"
+# petrovich/rsmorphy мёртвы (dep-verify-crates) — придут шагом 5; предупреждай,
+# не блокируй: блокировка включится вместе с их внесением в Cargo.toml.
+unmaintained = "workspace"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+# Запрещены явно (SPEC §9): reqwest идёт на rustls, никакого OpenSSL-linked пути.
+deny = [
+    { crate = "openssl" },
+    { crate = "openssl-sys" },
+    { crate = "native-tls" },
+]
+# Path-депы монорепо (guard-* между собой): crates.io не принимает publish без
+# версии, а wildcard-гейт написан на внешние API. Каждый внутренний путь пинится
+# workspace-версией — гейт на внешние крейты остаётся полным.
+# Path-депы монорепо пропускаются списком потребителей (cargo-deny skip привязан
+# к крейту-источнику wildcard'а, не к целевому); сам целевой пин = workspace version.
+[[bans.skip]]
+crate = "guard-daemon"
+reason = "внутренние path-депы демона: guard-{types,detectors,onnx,vault}, пин workspace-версией"
+
+[[bans.skip]]
+crate = "guard-detectors"
+reason = "path-деп guard-types, пин workspace-версией"
+
+[[bans.skip]]
+crate = "guard-onnx"
+reason = "path-деп guard-types, пин workspace-версией"
+
+[[bans.skip]]
+crate = "guard-vault"
+reason = "path-деп guard-types, пин workspace-версией"
+
+# Дубли, которые мы не контролируем на шаге 1.
+[[bans.skip]]
+crate = "tower-http@0.6.11"
+reason = "транзитив reqwest 0.13.5 при нашем пине 0.7.1 (breaky-бамп 18.10)"
+
+[[bans.skip]]
+crate = "hashbrown"
+reason = "разные версии у tokio/moka/rustls-графов — транзитивный выбор не наш"
+
+[[bans.skip]]
+crate = "syn"
+reason = "1.x и 2.x живут в proc-macro-графе — транзитивный выбор не наш"
+
+[licenses]
+version = 2
+# copyleft-ключ удалён в cargo-deny 0.19 (EmbarkStudios/cargo-deny#611); роль
+# гейта несёт allow-list: всё вне него красное.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Zlib",
+    # CDLA-Permissive-2.0 — веб-корневые сертификаты rustls-цепочки
+    # (webpki-root-certs): permissive-дата-лицензия, не copyleft.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
