@@ -268,12 +268,13 @@ fn run_spike(
 
 /// Контракт-проба 4b-0 (issue #23): НЕ качество инференса — контракт Decide-графа
 /// до декодера 4b-2. Промерено живьём 19.10 (/tmp/probe4b0.out, dylib 1.31):
-/// входы графа = input_ids/attention_mask/marker_positions INT64 (b,L)/(b,M),
-/// выход = logits f32 (b,M) — гипотеза «[input_ids, input_mask]» ОПРОВЕРГНА
-/// реальным графом (issue #23 комментарий). Прогон с нулевым marker_positions
-/// НЕ роняет GatherElements: §5.3-падение step-2 требовало НЕПУСТЫХ маркеров
+/// входы графа = `input_ids`/`attention_mask`/`marker_positions` INT64
+/// (batch,L)/(batch,M),
+/// выход = `logits` f32 (batch,M) — гипотеза двухвходовости ОПРОВЕРГНА
+/// реальным графом (issue #23 комментарий). Прогон с нулевым `marker_positions`
+/// НЕ роняет `GatherElements`: §5.3-падение step-2 требовало НЕПУСТЫХ маркеров
 /// без семантики — контракт дефекта воспроизводится только с живыми парами
-/// (4b-2). load_ms/ΔRSS сняты для audit (q4f16 + external data 523 МБ).
+/// (4b-2). `load_ms`/`delta_rss` сняты для audit (q4f16 + `external_data` 523 МБ).
 #[cfg(feature = "ort-inference")]
 fn arbiter_probe(
     cache: &std::path::Path,
