@@ -5,11 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+# F2 known-red (issue #8): workflow-level none — каждый job поднимает ровно то,
+# что ему нужно (build-test ничего не пишет в API, checkout без токена ниже).
+permissions: {}
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build-test:
+    # known-red F2: excessive-permissions — job-level явный минимум (read без
+    # токена см. persist-credentials: false).
+    permissions: {}
     strategy:
       fail-fast: false
       matrix:
@@ -17,10 +24,13 @@ jobs:
     runs-on: '${{ matrix.os }}'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # known-red F1 (artipacked): токен в .git/config не нужен — job не пушит.
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (composite, без токена)
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.8.7 (F3 known-red: annotated-tag-object форма → plain commit)
       # Единый контракт локально и в CI: just-цели из justfile; cargo-deny —
       # гейт advisories/bans/licenses (SPEC §9).
       # Пинованы SHA тега v2 (2.87.29, 2026-10-16) — zizmor unpinned-uses, внесённый
