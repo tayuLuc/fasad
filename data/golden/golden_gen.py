@@ -20,7 +20,9 @@ golden-gen v1 — генератор золотого набора data/golden/g
 Каноническая копия промпта генератора в Rust-эквивалент — отдельная задача
 (SPEC §10 шаг 3); до неё сверка по sha256 jsonl, зафиксированному в README.md.
 """
-import sys, json, re
+import json
+import re
+import sys
 from collections import Counter
 
 # ================================================================ категории (SPEC §14 ядро)
@@ -70,11 +72,11 @@ def _dg(s):
     return [int(c) for c in s]
 
 def inn10(p9):
-    return p9 + str(sum(d * w for d, w in zip(_dg(p9), W10)) % 11 % 10)
+    return p9 + str(sum(d * w for d, w in zip(_dg(p9), W10, strict=True)) % 11 % 10)
 
 def inn12(p10):
-    c11 = sum(d * w for d, w in zip(_dg(p10), A12)) % 11 % 10
-    c12 = sum(d * w for d, w in zip(_dg(p10 + str(c11)), B12)) % 11 % 10
+    c11 = sum(d * w for d, w in zip(_dg(p10), A12, strict=True)) % 11 % 10
+    c12 = sum(d * w for d, w in zip(_dg(p10 + str(c11)), B12, strict=True)) % 11 % 10
     return p10 + str(c11) + str(c12)
 
 def snils(p9):
@@ -152,8 +154,9 @@ def selftest():
     for v in ["DE89370400440532013001", "RU0304452522540817810538091310418",
               "GB82WEST12345698765433", "NL91ABNA0517164300", "BE62510007547060"]:
         assert mod97(v) != 1, v
-    # структурная инвариантность генераторов против themselves недопустима —
-    # поэтому selftest сверяет формулы ТОЛЬКО с табличными векторами первички.
+    # запрещено вычислять ожидаемое той же функцией, что проверяется (AGENTS
+    # §Дисциплина фактов п.3) — selftest сверяет формулы ТОЛЬКО с табличными
+    # векторами первички.
 
 # ================================================================ пулы синтетики
 LAST_M = ["Соколов", "Мельников", "Ершов", "Кузнецов", "Остапенко", "Громов", "Звягинцев",
@@ -255,7 +258,7 @@ def make_ogrnip(f):
 def make_card(f):
     kind = f.pick(["mir", "mir", "mir", "mir", "visa", "mc", "amex"])
     if kind == "amex":
-        p = "37" + f.pick(["48", "14", "82"]) + f.digits(11)   # 13 цифр + cd = 15
+        p = "37" + f.pick(["48", "14", "82"]) + f.digits(11)   # 15 цифр + cd = 16; реальный Amex 15 всего — дефект длины, backlog v1.1 (README «Отклонения» п.7)
     elif kind == "visa":
         p = f.pick(["4279", "4575", "4916"]) + f.digits(11)    # 15 + cd = 16
     elif kind == "mc":
@@ -341,7 +344,7 @@ def make_passport(f):
 
 def dirty_digits(f, s):
     # «грязь» = только замена существующих разделителей (пробел/дефис) на другой
-    # видили newline: цифры не вставляются и не удаляются, сегментная структура
+    # вид, включая newline: цифры не вставляются и не удаляются, сегментная структура
     # сохраняется — иначе value_source не восстановим нормализатором каскада-0.
     sep = f.pick([" ", "-", "\u2009", "\n"])
     return re.sub(r"[ \-\u2009]", lambda m: sep if f.chance(2, 3) else m.group(0), s)
@@ -636,11 +639,14 @@ def main():
         prev = -1
         for s in sorted(r["spans"], key=lambda x: x["start_byte"]):
             if not (0 <= s["start_byte"] < s["end_byte"] <= len(b)):
-                sys.stderr.write("FAIL bounds id=%s\n" % str(r["id"])); sys.exit(1)
+                sys.stderr.write("FAIL bounds id=%s\n" % str(r["id"]))
+                sys.exit(1)
             if not b[s["start_byte"]:s["end_byte"]].decode('utf-8', 'strict'):
-                sys.stderr.write("FAIL utf8 id=%s\n" % str(r["id"])); sys.exit(1)
+                sys.stderr.write("FAIL utf8 id=%s\n" % str(r["id"]))
+                sys.exit(1)
             if s["start_byte"] <= prev:
-                sys.stderr.write("FAIL overlap id=%s\n" % str(r["id"])); sys.exit(1)
+                sys.stderr.write("FAIL overlap id=%s\n" % str(r["id"]))
+                sys.exit(1)
             prev = s["end_byte"]
 
     for i, r in enumerate(rows, 1):

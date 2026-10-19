@@ -50,3 +50,28 @@ jobs:
       - run: cargo clippy -p guard-onnx --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
       - run: just test
       - run: just deny
+
+  python-golden:
+    # Python-тулинг (gutter, рулинг 19.10: AGENTS п.6): uv-locked линт +
+    # побайтовая воспроизводимость golden-датасета на ОБЕИХ ОС (поймает и
+    # CRLF-порчу чек-аута — .gitattributes data/golden/** -text, и дрейф
+    # генератора от правок/зависимостей — вывод заморожен B2-константой).
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: '${{ matrix.os }}'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: uv
+      # --locked: краснит расхождение uv.lock с pyproject.toml (дрейф пинов).
+      # Интерпретатор берётся из .python-version (3.15) — uv сам ставит
+      # managed-сборку, setup-python не нужен.
+      - run: just python-lint
+      - run: just golden-verify
