@@ -4,7 +4,7 @@
 //! маркеров `[L]` по схемам, layout-констрэкт входа. Единственный источник
 //! истины по формату: карточка HF `onnx-community/GLiNER2.5-Decide-ONNX`
 //! @18271032 §Graph + `conversion/export_onnx.py` (`torch.gather` по
-//! позициям `[L]`) + `conversion/verify_parity.py` L34–37 (флэт всех `[L]`,
+//! позициям `[L]`) + `conversion/verify_parity.py` L34–37 HF-репо `onnx-community/GLiNER2.5-Decide-ONNX@18271032` (в `fastino-ai/GLiNER2` — 404) — флэт всех `[L]`,
 //! `[P]` дропается) + `fastino-ai/GLiNER2` `gliner2/processor.py`
 //! (`_transform_schema`). spike `--arb` (4b-2a) ходит через этот модуль —
 //! двойной правды нет (consumer-first рефактор в этом же PR).
