@@ -257,10 +257,114 @@ fn run_spike(
     if argv.iter().any(|a| a == "--arb") {
         measure_arbiter(cache, &env, threads)?;
     }
+    if argv.iter().any(|a| a == "--arb-probe") {
+        arbiter_probe(cache, &env, threads)?;
+    }
     if argv.iter().any(|a| a == "--lockr") {
         measure_lockr(cache, &env, threads)?;
     }
     Ok(())
+}
+
+/// Контракт-проба 4b-0 (issue #23): НЕ качество инференса — контракт Decide-графа
+/// до декодера 4b-2. Промерено живьём 19.10 (/tmp/probe4b0.out, dylib 1.31):
+/// входы графа = input_ids/attention_mask/marker_positions INT64 (b,L)/(b,M),
+/// выход = logits f32 (b,M) — гипотеза «[input_ids, input_mask]» ОПРОВЕРГНА
+/// реальным графом (issue #23 комментарий). Прогон с нулевым marker_positions
+/// НЕ роняет GatherElements: §5.3-падение step-2 требовало НЕПУСТЫХ маркеров
+/// без семантики — контракт дефекта воспроизводится только с живыми парами
+/// (4b-2). load_ms/ΔRSS сняты для audit (q4f16 + external data 523 МБ).
+#[cfg(feature = "ort-inference")]
+fn arbiter_probe(
+    cache: &std::path::Path,
+    env: &ort::environment::Environment,
+    threads: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use ort::value::Tensor;
+
+    let path = cache
+        .join("onnx-community/GLiNER2.5-Decide-ONNX")
+        .join("onnx/model_q4f16.onnx");
+    let tok_path = cache
+        .join("onnx-community/GLiNER2.5-Decide-ONNX")
+        .join("tokenizer.json");
+    require_weight(&path)?;
+    require_weight(&tok_path)?;
+
+    // (1) Токенизатор Decide: Unigram + added_tokens (промер tokenizer.json:
+    // [PAD]0 [CLS]1 [SEP]2 [UNK]3 [MASK]128000 [SEP_STRUCT] [SEP_TEXT] [P] [C]
+    // [E] [R] [L] [EXAMPLE] [OUTPUT] [DESCRIPTION]). SPAN-разметку строит
+    // pre-tokenizer-конфиг — декодер обязан читать его, не угадывать.
+    let tok = tokenizers::Tokenizer::from_file(&tok_path)
+        .map_err(|e| format!("токенизатор Decide ({}): {e}", tok_path.display()))?;
+    let vocab = tok.get_vocab(true);
+    let mut n_added = 0usize;
+    for marker in [
+        "[CLS]",
+        "[SEP]",
+        "[UNK]",
+        "[MASK]",
+        "[SEP_STRUCT]",
+        "[SEP_TEXT]",
+        "[P]",
+        "[C]",
+        "[E]",
+        "[R]",
+        "[L]",
+        "[EXAMPLE]",
+        "[OUTPUT]",
+        "[DESCRIPTION]",
+    ] {
+        let have = vocab.contains_key(marker);
+        n_added += usize::from(have);
+        println!("PROBE|vocab_marker|{marker}|{have}");
+    }
+
+    // (2) IO-контракт: open_session = external data + Disable-оптимизации
+    // (контракт audit §5.1); load-метрики для бюджета q4f16.
+    let base = rss("before_load_probe");
+    let t = Instant::now();
+    let mut session = open_session(env, &path, threads)?;
+    println!("METRIC|load_ms_probe|{:.1}", ms(t));
+    println!(
+        "METRIC|delta_load_mib_probe|{:.1}",
+        rss("after_load_probe") - base
+    );
+    print_io(&session, "probe");
+
+    // (3) Живая токенизация RU-фразы, входы по фактическим именам; маркерная
+    // ветка при нулевых парах не исполняется (см. док) — ок/ошибка ORT.
+    let enc = tok
+        .encode("Мой ИНН 7743013533, СНИЛС 112-233-445 95.", true)
+        .map_err(|e| format!("encode: {e}"))?;
+    let ids: Vec<i64> = enc.get_ids().iter().map(|&u| i64::from(u)).collect();
+    let l = ids.len();
+    println!("PROBE|tokens|{l}|added_in_vocab|{n_added}");
+    let mask: Vec<i64> = vec![1i64; l];
+    let mut inputs: Vec<(String, ort::value::DynTensor)> = Vec::new();
+    for inp in session.inputs() {
+        let name = inp.name().to_string();
+        let v = match name.as_str() {
+            "input_ids" => Tensor::from_array(([1usize, l], ids.clone().into_boxed_slice()))?,
+            "marker_positions" => {
+                Tensor::from_array(([1usize, 2], vec![0i64, 0].into_boxed_slice()))?
+            }
+            _ => Tensor::from_array(([1usize, l], mask.clone().into_boxed_slice()))?,
+        };
+        inputs.push((name, v.upcast()));
+    }
+    match session.run(inputs) {
+        Ok(outputs) => {
+            println!("PROBE|run|ok|outputs={}", outputs.values().count());
+            Ok(())
+        }
+        Err(e) => {
+            let es = e.to_string().replace('\n', " ");
+            let gather_oor = es.contains("Out of range value in index tensor");
+            println!("PROBE|run|ort_error|gather_oor={gather_oor}|{es}");
+            Err(format!("probe-прогон: {es}").into())
+        }
+    }
 }
 
 /// Каркас промера: load → RSS-дельта → прогоны → p50.
