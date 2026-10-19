@@ -8,6 +8,31 @@
 //! C не видит.
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=ORT_PREFER_DYNAMIC_LINK");
+    println!("cargo:rerun-if-env-changed=ORT_LIB_PATH");
+    // Релизный путь ORT — официальный dylib (issue #11). ort-sys rc.14 сам
+    // читает ORT_PREFER_DYNAMIC_LINK / ORT_LIB_PATH (build/vars.rs), но rpath
+    // в бинарь не прописывает — локатор ищет по DYLD_LIBRARY_PATH/LD_LIBRARY_PATH
+    // (`/opt/homebrew/.../registry/.../ort-sys-2.0.0-rc.14/build/dynamic_link.rs`
+    // : строка rpath отсутствует в src grep'ом), чего для релизного демона мало.
+    // Прописываем rpath здесь. Unix-линкер: `-Wl,-rpath,<dir>`; MSVC-линкер
+    // (-C linker=lld-link) понимает `/LIBPATH:<dir>` для поиска .lib, но RUNPATH
+    // в PE не кладёт: Windows-доставка = copy-dylibs (ort `copy-dylibs` фича,
+    // promer: build/dynamic_link.rs Windows-ветка копирует onnxruntime.dll в
+    // target-каталог) + WindowsLoader-поиск рядом с exe.
+    if std::env::var("ORT_PREFER_DYNAMIC_LINK").is_ok() {
+        if let Ok(dir) =
+            std::env::var("ORT_LIB_PATH").or_else(|_| std::env::var("ORT_LIB_LOCATION"))
+        {
+            let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+            // unix (macOS/linux): -Wl,-rpath; windows: RUNPATH в PE нет,
+            // поиск .lib через /LIBPATH делает ort-sys по ORT_LIB_PATH, а
+            // onnxruntime.dll в каталог бинаря кладёт фича `copy-dylibs`.
+            if matches!(os.as_str(), "macos" | "linux") {
+                println!("cargo:rustc-link-arg-examples=-Wl,-rpath,{dir}");
+            }
+        }
+    }
     let target = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let out_dir = std::env::var("OUT_DIR")
         .map_err(|e| format!("OUT_DIR: {e}"))

@@ -27,3 +27,18 @@ test:
 # Аудит дерева зависимостей (bans/advisories/licenses) — deny.toml.
 deny:
     cargo deny check
+
+# Релизный путь ORT (issue #11): официальный dylib вместо статики pyke.
+# Каталог lib: MAC — onnxruntime-osx-arm64-1.31.0/lib release-архива
+# (docs/model-audit.md §8), Linux — onnxruntime-linux-x64-1.31.0/lib.
+# ORT_DIR переопределяется окружением.
+
+ort-dylib *ARGS:
+    # Собирает/гоняет с динамическим ORT: rpath прописывает build.rs (guard-onnx),
+    # окружение — два обязательных env. Пример: just ort-dylib -- --arb --lockr
+    ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib}" {{ARGS}}
+
+# Полный spike-прогон релиза на dylib (issue #11 гейт): сборка release + --arb --lockr.
+spike-dylib:
+    ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib}" cargo build --release --features ort-inference --example spike
+    ORT_PREFER_DYNAMIC_LINK=1 target/release/examples/spike --arb --lockr
