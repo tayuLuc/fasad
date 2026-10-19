@@ -32,7 +32,7 @@ fn golden_path() -> PathBuf {
 // в `data/golden/README.md` (расхождения нет — сверено в этом же заходе).
 // Правка датасета без пересчёта хэша ломает этот тест, а не проходит незамеченной
 // (обещание README «гейт привязан к SHA-256» из B2 становится машиной, не словами).
-const GOLDEN_V1_SHA256: &str = "3c431174b115b7aecc69b96e86bcfc5873fe45eb6b30ab93c5fc30db730d83ee";
+const GOLDEN_V1_SHA256: &str = "546d8c3593d4e7df6b9fb51912d8a18440192293168940b60ff0ed99b7d187ae";
 
 /// B2: пересчитать SHA-256 файла и сверить с зашитой константой.
 ///
@@ -79,7 +79,9 @@ const RECALL_CATEGORIES: [&str; 11] = [
 
 /// B1: количество recall-строк (split=recall и ≥1 спан recall-класса) ≥ 150.
 ///
-/// **Порог не покрыт текущим датасетом — промер 146 < 150** (README: «200 = 146
+/// v1.1 (issue #14): порог 150 ПОКРЫТ (4 явных валидных эталона первички,
+/// g0201–g0204, source ); ignore снят, гейт активен.
+/// Исторический промер v1.0: 146 < 150 (README: «200 = 146
 /// recall + 54 negative»). Это и есть дыра, которую B1 делает видимой: гейт по
 /// числу строк файла (200) был зелёным при 136 recall. Разрыв закрывается
 /// допиской датасета golden-v1.1 (≥4 recall-строки, атом «oracle-эталоны»
@@ -90,7 +92,6 @@ const RECALL_CATEGORIES: [&str; 11] = [
 /// фильтр `recall_class_row` меняется на `r.split == "recall"
 /// || !r.spans.is_empty()` и `#[ignore]` снимается без дописки датасета.
 #[test]
-#[ignore = "B1: планка recall≥150 не покрыта датасетом v1.0 (промер 146) — дописать ≥4 recall-строки в golden-v1.1 (issue #14, атом oracle-эталонов); гейт включится снятием ignore после пересчёта sha256"]
 fn b1_recall_row_count_gate() {
     let rows = parse_golden();
     let recall_rows = rows.iter().filter(|r| recall_class_row(r)).count();
@@ -109,12 +110,12 @@ const B1_RECALL_FLOOR: usize = 150;
 /// [`b1_recall_row_count_gate`] после дописки v1.1 поднимет планку до 150).
 #[test]
 fn b1_recall_rows_not_below_measured_floor() {
-    const MEASURED_FLOOR: usize = 146;
+    const MEASURED_FLOOR: usize = 150; // golden-v1.1: промер B1-гейта
     let rows = parse_golden();
     let recall_rows = rows.iter().filter(|r| recall_class_row(r)).count();
     assert!(
         recall_rows >= MEASURED_FLOOR,
-        "B1: recall-строк {recall_rows} (< промеренного пола {MEASURED_FLOOR}); планка контракта {B1_RECALL_FLOOR} — см. #[ignore] b1_recall_row_count_gate"
+        "B1: recall-строк {recall_rows} (< промеренного пола {MEASURED_FLOOR}); планка контракта {B1_RECALL_FLOOR}"
     );
     println!(
         "B1: recall-строк = {recall_rows} (пол промера {MEASURED_FLOOR}, контракт {B1_RECALL_FLOOR})"
@@ -546,10 +547,11 @@ const SPAN_CATEGORIES: [&str; 13] = [
     "bik",
     "bank_account",
 ];
-const MATCH_SOURCES: [&str; 6] = [
+const MATCH_SOURCES: [&str; 7] = [
     "synthetic-checksum",
     "registry-example",
     "primary-invalid-vector",
+    "primary-valid-vector", // golden-v1.1 (B1): валидные эталоны первички
     "doc-valid-vector",
     "foreign-bait",
     "synthetic-no-pii",
