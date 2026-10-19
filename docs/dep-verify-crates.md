@@ -198,8 +198,8 @@ API под задачу restore есть: `lastname/firstname/middlename(Gender,
 и потерять регрессионный гейт корпусов (3 золотых tsv = 275 031 строка, из них харнессом
 проверяется 225 060; все tsv каталога = 322 080 — промеры ревьюера 20.10; цифра 275 148 из
 первички зонда не воспроизвелась ни одной командой — отброшена). Гейт при ветке (а) живёт НЕ
-в cargo graph (tests/ git-dep не резолвятся) — запускать шагу 5 клон-прогон `cargo test -p
-petrovich-core --test golden_declension` на пи пине; место интеграции (CI-джоба vs release-гейт)
+в cargo graph (tests/ git-dep не входят в граф сборки) — запускать шагу 5 клон-прогон `cargo test -p
+petrovich-core --test golden_declension` на пине; место интеграции (CI-джоба vs release-гейт)
 — open point шага 5. Условие мержа: `THIRD-PARTY-NOTICES.md`
 MIT © 2013–2014 Kozloff & Ustalov (файла LICENSE нет ни в форке, ни в оригинале, ни в .crate —
 текст из апстрим petrovich/petrovich-ruby, MIT-LICENSE).
@@ -216,7 +216,7 @@ Latrasis 40, rodem 11, broadwaylamb 5, road21 коммит 1 — дерево п
 sha2 0.11.0 промерялись как кандидат для AAD-связывания (домен-разделение ключей) на случай, если
 шаг 5 выберет envelope с контекстом — тогда это amendment к SPEC §3, а не тихая замена. chacha20poly1305 0.11.0 и zeroize 1.9.1 — существующие пины верны; лицензия
 Apache-2.0 OR MIT у всех, MSRV 1.85 = пин; RUSTSEC-записи по стеку есть, вне наших диапазонов
-(aes-gcm RUSTSEC-2023-0096 fixed 0.10.3<; sha2 RUSTSEC-2021-0100 fixed 0.9.8<) — «advisories ok»
+(aes-gcm RUSTSEC-2023-0096 patched ≥0.10.3; sha2 RUSTSEC-2021-0100 patched ≥0.9.8) — «advisories ok»
 честно; roundtrip-прогон release на 1.85 чистый
 (AES-256-GCM AAD PT38→CT54; XChaCha20 PT27→CT43; HKDF-SHA256→OKM32; ZeroizeOnDrop derive
 работает ТОЛЬКО с `features=["derive"]` — без него `cannot find derive macro`).
