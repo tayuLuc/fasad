@@ -469,7 +469,7 @@ pub fn join_segments(segments: &[&str]) -> String {
 /// Смысл аргумента решает, что попадает во флэт: арбитра зовёт
 /// [`decide::groups`] с маркерной парой `[L],[L]`, поэтому группа = позиции
 /// `[L]` меток, `[P]` в неё не входит, и флэт = ровно контракт
-/// `conversion/verify_parity.py` L34–37 («флэт всех `[L]`, `[P]` дропается») —
+/// HF-репо `onnx-community/GLiNER2.5-Decide-ONNX@18271032`, `conversion/verify_parity.py` L34–37 («флэт всех `[L]`, `[P]` дропается»; в `fastino-ai/GLiNER2` файла нет — 404) —
 /// тот же список, что подаёт spike `--arb` (4b-2a: `pairs=6` при трёх схемах
 /// по две метки). Если группы построены с парой `[P],[L]` (первый элемент =
 /// `[P]`, как в тесте `decide.rs`), дроп делает [`drop_first`] — ответственность
@@ -532,7 +532,12 @@ pub fn schema_plan(
         questions: schema.iter().map(|(q, _)| (*q).to_string()).collect(),
         labels: schema
             .iter()
-            .map(|(_, ls)| (*ls.first().unwrap_or(&"")).to_string())
+            // schema_block отвергает пустые метки ⇒ `.first()` здесь всегда
+            // `Some` (мертвяк `unwrap_or` убран по нити N2 ревью #34).
+            .map(|(_, ls)| match ls.first() {
+                Some(l) => (*l).to_string(),
+                None => String::new(),
+            })
             .collect(),
     };
     plan.check_markers()?;

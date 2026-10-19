@@ -14,7 +14,11 @@
 //! download-binaries (статика pyke 1.23) и `copy-dylibs` выкладывает шейды
 //! `target/release/examples/libonnxruntime*.dylib` (1.23), которые затирают
 //! dylib 1.31 рядом с бинарём (промер ревью #32: краш кадром в 0x0; лечится
-//! `rm target/release/examples/libonnxruntime*.dylib` или rebuild с env).
+//! rebuild с env). Порядок: `rm -f target/release/examples/libonnxruntime*.dylib`
+//! — ДО сборки (у ревьюера #34 был ложный 139: rm ПОСЛЕ rebuild с env снёс
+//! симлинки 1.31, которые copy-dylibs положил — орт без libonnxruntime рядом
+//! падает в 0x0 до первой печати; промер контроля: без rm тот же билд даёт
+//! чистый exit 1).
 //! CI НЕ требует весов и НЕ требует орта: без фичи `ort-inference` example —
 //! no-op; тест-прокси сборки помечен `#[ignore]` (`cargo test` его считает,
 //! не запускает). Прогон — только рукаместо (наша машина, macOS/Linux).
@@ -700,9 +704,11 @@ fn arb_live_layout(
     // сессии, а не разницу двух констрэктов. Родительский референс-литерал
     // 4b-2a (`( [P] q ( [L] person [L] no ) … ) )`) свёрнут в `( … ) )` на
     // схему; контракт ТЗ 4b-2c — сбалансированная `( [P] q ( [L] a [L] b ) )`,
-    // различие = парные скобки, НЕ маркерные `[L]`-позиции (промер 4b-2c:
-    // L=[13,15,30,32,47,49] в обеих формах → `marker_positions` идентичны),
-    // softmax-группы идентичны.
+    // различие = парные скобки, НЕ маркерные `[L]`-позиции (промер 4b-2c +
+    // ревью #34 N1: L=[13,15,31,33,49,51] в обеих формах — идентичны, НО
+    // длина входа РАЗНАЯ: 1236 (баланс) vs 1237 (у литерала 4b-2a лишняя `)`
+    // приклеивается WordPiece'ом к `no`) → `marker_positions` идентичны,
+    // softmax-группы идентичны, L — нет.
     let owned = arb_mod_schema();
     let schema = guard_onnx::arbitrate::DecideArbiter::schema_block(&owned)
         .map_err(|e| format!("schema_block: {e}"))?;
