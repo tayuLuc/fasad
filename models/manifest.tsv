@@ -1,0 +1,30 @@
+# models/manifest.tsv — машиночитаемая часть манифеста (SPEC §10 шаг 2, issue #6).
+# Человекочитаемая таблица с вердиктами — models/manifest.md; источник истины для
+# scripts/fetch-models.sh — этот файл (закон source-capture: указатели, не blob).
+#
+# Формат: табуляция, 8 полей, строки `#` и пустые пропускаются.
+#   role  repo  revision  file  sha256  size_bytes  source  notes
+#
+# Поле `revision` / размер:
+#   - HF `size` в tree-API для LFS-файлов равен null (промер 19.10) — поле `size`
+#     в этом файле всегда промеренное (HEAD content-length или x-linked-size),
+#     скрипт сверяет его со скачанным байт-в-байт (несовпадение = fail-closed);
+#     промеренный размер записывается в строку при первом подтверждении sha256.
+#   - `@auto` — revision разрешается скриптом через GET /api/models/<repo> (поле sha)
+#     ДО resolve (детерминизм: скачиваем всегда по явному SHA, а не по ветке).
+# Поле `sha256`:
+#   - 64 hex — подтверждённый чексумма, файл сверяется строго (несовпадение = fail-closed);
+#   - `TBD` — первого подтверждения нет: скрипт качает, считает sha256 сам и
+#     переписывает строку в этом файле (rename-replace, поля revision/size тоже).
+#   Пустое или TBD в revision → то же автозаполнение.
+# `source`: hf | local (local — вес уже в кеше, не скачивать).
+#
+# Имена файлов с внешними весами (…onnx_data) обязательны парами: ort-граф без
+# ._data = ошибка загрузки, а не «успешное скачивание».
+
+extractor1b	lockR/rubert-base-pii-ner-onnx	ea7610b22808c509c0c8b7c7b0f6639c19684d08	model.optimized.fp16.onnx	039aba6be0c64f50f37c64ddc6c6d4e2fd91cbdcf5c9291056ec6bc96c70a501	355541615	hf	RU-экстрактор fp16, единый граф без external data; имя НЕ model_fp16.onnx (промер tree API 19.10)
+arbiter	onnx-community/GLiNER2.5-Decide-ONNX	18271032588167fe9a3fbb8c5a4900b1231f8119	onnx/model_q4f16.onnx	93f3e0d4ed8bbd4858840f8a2e66028a70e86a482e1ff9822d2ac726381684f6	341889	hf	арбитр gray-zone q4f16; граф 341889 B, внешние веса — следующей строкой
+arbiter-weights	onnx-community/GLiNER2.5-Decide-ONNX	18271032588167fe9a3fbb8c5a4900b1231f8119	onnx/model_q4f16.onnx_data	df2b05dc97ff875e0d2b51ec21de0049b7b3e7feddaa5224d318dc79e66210e8	523127808	hf	EXTERNAL DATA 523 127 808 B (промер tree API; 1.744 ГБ = model.onnx_data fp32, не q4f16)
+tok-extractor1b	lockR/rubert-base-pii-ner-onnx	ea7610b22808c509c0c8b7c7b0f6639c19684d08	tokenizer.json	f61eee9d0dc18f14c195321a37eadf9e5aeb3a323bc278dec689adeb89dec1b9	3714701	hf	rubert-base WordPiece: spike-токенизация + шаг 4 рантайм
+tok-arbiter	onnx-community/GLiNER2.5-Decide-ONNX	18271032588167fe9a3fbb8c5a4900b1231f8119	tokenizer.json	3ad87d9ffe669147063e70850927dd2da90249e2acc5c8527f1eb65df467bcc8	8333952	hf	Spiber mGQA-deberta: entity-препроцесс арбитра
+# подтверждено: 2026-10-19 00:46 UTC — sha256 пересчитаны shasum -a 256 по кэшу ~/.cache/fasad-models (промеры: исполнитель + родитель + ревьюер #9 = 3 независимых)

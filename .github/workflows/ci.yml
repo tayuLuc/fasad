@@ -35,5 +35,8 @@ jobs:
         with:
           tool: cargo-deny
       - run: just lint
+      # Spike с фичей орта линтится здесь же (review #9 B5): без этого шага
+      # example-код с фичей живёт вне CI-гейта.
+      - run: cargo clippy -p guard-onnx --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
       - run: just test
       - run: just deny
