@@ -163,6 +163,38 @@ Addendum 20.10 (4b-2a, issue #23, живой прогон `spike --arb` с жи�
    содержит (§Graph). В vocab живого `tokenizer.json` все 10 структурных
    маркеров на манифестных id (`MARKER|vocab|*|true`).
 
+### 5.6 Аддендум 20.10 вечер (4b-2d, issue #20): «position-limit 512» — ОПРОВЕРГНУТ первичкой
+
+Ревью #34 / родительский аудит спросили: живой `--arb` прогоняет L=1236 > 512 — как
+это уживается с гардом «окно + overhead ≤ 512»? Ответ по ONNX-первичке, а не по
+карточке `[claim]`:
+
+1. **Decide = DeBERTa relative-position bias, НЕ абсолютные position-эмбеддинги.**
+   Промер `model_q4f16.onnx` (341 889 B, заголовок `pytorch 2.14.0`): инициализатора
+   вида `embeddings.position_*` / `wpe` в графе НЕТ (`tr`-скан по имени — пусто).
+   Есть `encoder.encoder.rel_embeddings.weight` с dims `[1024, 512]` (распаковано из
+   `TensorProto.dims`; external-data `length` = 1 048 576 B int8 = ровно 1024×512).
+   1024 = `relative_attention_num_buckets`, 512 = `relative_attention_max_distance`
+   (SD3M-клэмп относительных смещений). Числа — первичка графа, не `[claim]`.
+2. **Следовательно 512 — НЕ cap последовательности.** L=1236 валиден: дальние
+   пары токенов просто попадают в крайний бакет смещения, корректность не ломается.
+   Прежняя формулировка (коммит 9d1e19f 4b-2c: «позиционные эмбеддинги валидны до
+   512, поэтому чанковка обязана») — ЭПИСТЕМИЧЕСКАЯ ОШИБКА, снята; константа
+   переименована `DECIDE_POSITION_LIMIT → DECIDE_REL_MAX_DISTANCE` (arbitrate.rs,
+   decide.rs) с доком «практический потолок O(L²)/RSS, не требование корректности».
+3. **Настоящая причина чанковки** = латентность (attention O(L²): prefill L=1236
+   p50 ~7 s, §5 п.5) и RSS, а не overflow. Чанк-окно держим ≤ 384 (SPEC §2), с
+   overhead схемы 56 токенов (промер `encode(schema_block,trio) = 56`; +1 на
+   Metaspace-склейку `[SEP_TEXT]`+`.`) ⇒ пик входа ≈ 384+57 = 441, ниже rel-bucket
+   512 — безопасно по обеим интерпретациям, но НЕ потому что «иначе сломается».
+4. **Overhead промер (первичка 4b-2d, живой tokenizer.json rev 18271032):**
+   `OVERHEAD|block_alone_tokens=56`, `OVERHEAD|block_plus_one_char=57` (state_extra=1).
+5. **RSS-пик двух моделей: ПИК НЕ МЕРЯЛСЯ этим аддендумом.** Числа §5 п.5
+   (`rss_after_runs_arbiter` 1314.3, lockR after_runs 1462.4) — RSS ПОСЛЕ прогонов
+   каждой модели по отдельности, не пик одного процесса с обеими. Сумма-оценка
+   ~1.4–1.5 GiB < 1.8 GiB, но вёрдикт по ПИКУ снимается отдельным `--arb-budget`
+   vm-footprint-сэмплингом (задача 4b-2d, в работе — не считать закрытым).
+
 ## 6. CI-контракт
 
 CI spike НЕ гоняет (фича `ort-inference` default-off, example no-op,

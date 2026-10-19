@@ -13,7 +13,10 @@
 //! который с этого шага собирается через [`DecideArbiter::schema_block`].
 //!
 //! Чанкование НЕ здесь: весь текст идёт одним прогоном (как spike `--arb`),
-//! разбивка по окну — отдельный фоллов.
+//! разбивка по окну — отдельный фоллов (4b-2d: см. [`DecideArbiter::arbitrate_chunked`]
+//! — она нужна ради латентности O(L²) и RSS, НЕ ради «position-overflow»:
+//! промер графа 4b-2d показал DeBERTa *relative* bias, а не абсолютные
+//! position-эмбеддинги с cap 512 — вход L=1236 валиден, см. audit §5.6).
 //!
 //! Fail-Closed (AGENTS §Инварианты): расхождение живого vocab с
 //! [`crate::decide::SPECIALS`], пустая схема и маркерный индекс вне
@@ -41,6 +44,26 @@ const SEP_TEXT: usize = 1;
 const L: usize = 6;
 /// Id неизвестного токена vocab Decide (промер `tokenizer.json` рев. 18271032).
 const UNK_ID: u32 = 3;
+
+/// Rel-pos-бакет Decide (`encoder.encoder.rel_embeddings.weight`, dims
+/// `[1024, 512]`: 1024 = `relative_attention_num_buckets`, 512 =
+/// `relative_attention_max_distance`; промер ONNX-первички 4b-2d, audit §5.6 —
+/// заголовок `pytorch 2.14.0`, `position`-эмбеддингов в графе НЕТ). КЛЭМПЕР
+/// относительных смещений, НЕ cap последовательности: вход L > 512 (живой
+/// `--arb` = 1236) прогоняется и точен. Чанковка 4b-2d держит окно ≤
+/// [`DECIDE_REL_MAX_DISTANCE`] как практичный потолок O(L²)/RSS, а НЕ как
+/// требование корректности. Реализация — зеркало в `decide` (тест без фичи).
+pub const DECIDE_REL_MAX_DISTANCE: u32 = 512;
+
+/// Токенов в блоке схем (3 вопроса × 2 метки: person/tin/card) — промер 4b-2d
+/// живым `tokenizer.json` Decide (rev 18271032): `encode(schema_block, false)`
+/// = ровно 56 id без состояния (+1 на Metaspace-склейку `[SEP_TEXT]`+`.`;
+/// промер block + ` a` = 57). Fixed overhead чанковки. Реализация в `decide`.
+pub const SCHEMA_OVERHEAD_TOKENS: u32 = 56;
+
+/// Максимум токенов куска состояния при [`SCHEMA_OVERHEAD_TOKENS`] и
+/// [`DECIDE_REL_MAX_DISTANCE`]: `512 − 56 = 456` (практичный потолок, см. док).
+pub const MAX_STATE_TOKENS: u32 = DECIDE_REL_MAX_DISTANCE - SCHEMA_OVERHEAD_TOKENS;
 
 /// Ошибка арбитра — все ветки fail-closed (ни одна не «пропустить наружу»).
 #[derive(Debug)]
