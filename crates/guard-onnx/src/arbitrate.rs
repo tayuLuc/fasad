@@ -44,6 +44,8 @@ const SEP_STRUCT: usize = 0;
 const SEP_TEXT: usize = 1;
 /// Индекс `[L]` в таблице [`SPECIALS`] (маркер метки = позиция `marker_positions`).
 const L: usize = 6;
+/// Индекс `[P]` в таблице [`SPECIALS`] (маркер схемы; `sanitize_state`).
+const P_IDX: usize = 2;
 /// Id неизвестного токена vocab Decide (промер `tokenizer.json` рев. 18271032).
 const UNK_ID: u32 = 3;
 
@@ -349,6 +351,48 @@ impl DecideArbiter {
     ) -> Result<SchemaPlan, ArbError> {
         let block = Self::schema_block(schema)?;
         self.plan_of_block(&block, text, schema)
+    }
+
+    /// Клининг состояния перед токенизацией (4b-3B, контракт «данные вне
+    /// доверия»): литералы спец-токенов (`[SEP_STRUCT]`, `[SEP_TEXT]`, `[P]`,
+    /// `[L]`) **заменяются пробелом** — не вырезаются: байт-диапазоны
+    /// состояния сохраняются (длина та же), спец-токен из чужих данных НЕ
+    /// эмулируется. Фантомные группы (`schema_plan`: «групп ≠ схем») на этом
+    /// закрываются, `check_splice` не краснеет (пробел — не слово). Переводы
+    /// строк → пробел (WordPiece режет и так; live-чек ищет слова).
+    #[must_use]
+    pub fn sanitize_state(state: &str) -> String {
+        let mut out = state.replace('\n', " ");
+        for sp in [
+            SPECIALS[SEP_STRUCT].0,
+            SPECIALS[SEP_TEXT].0,
+            SPECIALS[P_IDX].0,
+            SPECIALS[L].0,
+        ] {
+            out = out.replace(sp, " ");
+        }
+        out
+    }
+
+    /// Клининг хвоста конкатенации: сегменты [0..n−1] (блок схем — доверенный)
+    /// не трогаем; состояние = всё после последнего вхождения terminator-а
+    /// ` [SEP_TEXT] ` — вырезаем литералы спец-токенов из него (4b-3B).
+    /// Клининг хвоста конкатенации (зеркало парити-скрипта): блок схем до
+    /// terminator-а ` [SEP_TEXT] ` доверенный, не трогаем; состояние — после.
+    /// Вызывается НА ГРАНИЦЕ ДАННЫХ (даемон шаг 5+, парити `run_decide`), НЕ
+    /// внутри `plan_of_block`: `check_splice` сверяет слова с оригиналом.
+    #[must_use]
+    pub fn clean_state(whole: &str) -> String {
+        let term = format!(" {} ", SPECIALS[SEP_TEXT].0);
+        match whole.rfind(term.as_str()) {
+            Some(i) => {
+                let (head, tail) = whole.split_at(i + term.len());
+                format!("{}{}", head, Self::sanitize_state(tail))
+            }
+            // без terminator'а блок схем был битый — prompts вернул ошибку выше;
+            // сюда не доходим, но fail-safe: чистим всю строку.
+            None => Self::sanitize_state(whole),
+        }
     }
 
     /// Общий приватный core (4b-2d): готовый блок схем + кусок состояния → план

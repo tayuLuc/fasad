@@ -195,6 +195,16 @@ pub fn id_of<S: std::hash::BuildHasher>(
 ///
 /// Пустые группы не выдаются (ленивое выполнение `GatherElements` не роняет
 /// сессию на пустых маркерах — промер 4b-0, audit §5 п.3).
+///
+/// 4b-3B (промер parity-full, OOB-экспозиция ревью): группа закрывается
+/// `[SEP_*]`-границей ТОЛЬКО когда накопитель непустой; одинокий `[L]` в
+/// мусорном состоянии (данные вне доверия: тексты содержат литералы
+/// спец-токенов) СКЛЕИВАЕТСЯ со следующей живой группой — sizes=[3]≠[2],
+/// layout-гейт краснеет СИГНАЛОМ, а не тихим сдвигом маркеров (обратное =
+/// ORT `GatherElements: Out of range value in index tensor`, промер 4b-3B).
+/// Клининг на границе данных — [`DecideArbiter::sanitize_state`] /
+/// `clean_state`; в `plan_of_block` не вживляется: `check_splice` сверяет
+/// слова оригинала.
 #[must_use]
 pub fn groups(ids: &[u32], marker_ids: [u32; 2]) -> Vec<(usize, Vec<usize>)> {
     let mut out: Vec<(usize, Vec<usize>)> = Vec::new();
@@ -203,6 +213,13 @@ pub fn groups(ids: &[u32], marker_ids: [u32; 2]) -> Vec<(usize, Vec<usize>)> {
         if id == marker_ids[0] || id == marker_ids[1] {
             cur.push(pos);
         } else if (id == SEP_STRUCT_ID || id == SEP_TEXT_ID) && !cur.is_empty() {
+            // 4b-3B: пустая граница НЕ сбрасывает накопитель — одинокий [L] из
+            // мусорного состояния остаётся в `cur` и склеится со следующей
+            // живой группой: sizes=[3] ≠ [2], layout-гейт краснеет (см. тест
+            // `groups_stray_l_fuses_with_next_group`; обратное — OOB-краш ORT,
+            // промер 4b-3B: `GatherElements op: Out of range value in index
+            // tensor` при sizes-несоответствии). Клининг на границе данных —
+            // обязанность вызывающего ([`DecideArbiter::sanitize_state`]).
             let first = cur[0];
             out.push((first, std::mem::take(&mut cur)));
         }
@@ -218,6 +235,24 @@ pub fn groups(ids: &[u32], marker_ids: [u32; 2]) -> Vec<(usize, Vec<usize>)> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::err_expect)] // тест: паника = канал ответа
 mod tests {
     use super::*;
+
+    #[test]
+    fn groups_ignore_stray_markers_in_state() {
+        // 4b-3B OOB-страж: [SEP_*] НЕ сбрасывает пустой накопитель — одинокий
+        // [L] ДО любой границы остаётся в `cur` и склеивается со следующей
+        // группой (sizes=[3] ≠ [2] = красный layout-гейт, НЕ тихий сдвиг с
+        // OOB-крашем ORT):
+        let ids = vec![128_007u32, 128_002, 128_007, 128_007];
+        let g = groups(&ids, [128_007, 128_007]);
+        assert_eq!(g.len(), 1, "фантом [0] слипся с живой группой [2,3]");
+        assert_eq!(g[0].1, vec![0, 2, 3], "sizes=3 — вызывающий обязан покраснеть");
+        // живая группа без фантома (клининг на границе данных): [L][L] после
+        // terminator-а — отдельная группа из 2, sizes корректны.
+        let ids2 = vec![128_007u32, 128_007, 128_002, 128_007, 128_007];
+        let g2 = groups(&ids2, [128_007, 128_007]);
+        assert_eq!(g2.len(), 2, "граница ЗАКРЫВАЕТ непустую группу");
+        assert_eq!(g2[1].1, vec![3, 4]);
+    }
 
     #[test]
     fn specials_match_measured_manifest() {

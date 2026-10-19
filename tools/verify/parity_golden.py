@@ -298,12 +298,46 @@ def schema_block_text(schema) -> str:
     return "".join(out)
 
 
+# ── зеркало arbitrate.rs::DecideArbiter::sanitize_state / clean_state ────────
+# (4b-3B: литералы спец-токенов в данных вне доверия вырезаются из состояния,
+# переводы строк → пробел; блок схем до terminator'а не трогаем).
+SP_LITERALS = ("[SEP_STRUCT]", "[SEP_TEXT]", "[P]", "[L]")
+
+
+def sanitize_state(state: str) -> str:
+    # зеркало Rust 4b-3B: литералы спец-токенов -> ПРОБЕЛ (не вырез): байтовый
+    # диапазон состояния сохраняется, спец-токен из чужих данных не эмулируется.
+    out = state.replace("\n", " ")
+    for sp in SP_LITERALS:
+        out = out.replace(sp, " ")
+    return out
+
+
+def clean_state(whole: str) -> str:
+    term = " [SEP_TEXT] "  # terminator с пробелами = schema_block_text (Rust-зеркало)
+    i = whole.rfind(term)
+    if i < 0:
+        return sanitize_state(whole)
+    k = i + len(term)
+    return whole[:k] + sanitize_state(whole[k:])
+
+
 def decide_groups(ids: list[int]) -> list[list[int]]:
+    """Зеркало decide::groups с МАРКЕРНОЙ ПАРОЙ [L],[L] (тот же вызов, что
+    `DecideArbiter::prompts`: `decide::groups(&ids, [self.ids[L], self.ids[L]]`)
+    — группа = подряд идущие [L] до границы [SEP_STRUCT]/[SEP_TEXT]; [P] не
+    маркер live-пути, дропать нечего; контракт маркеров verify_parity.py
+    L34–37 = флэт всех [L]. Фантомные группы из мусорных литералов режет
+    clean_state/sanitize_state (данные вне доверия, 4b-3B)."""
     out, cur = [], []
     for pos, x in enumerate(ids):
         if x == L_ID:
             cur.append(pos)
         elif x in (SEP_STRUCT_ID, SEP_TEXT_ID) and cur:
+            # 4b-3B OOB-страж (зеркало decide::groups): граница закрывает
+            # НЕПУСТУЮ группу; пустой накопитель НЕ сбрасывается — фантомный
+            # [L] из мусора склеится со следующей живой группой, sizes-гейт
+            # ниже краснеет СИГНАЛОМ, а не тихим OOB-крашем ORT.
             out.append(cur)
             cur = []
     if cur:
@@ -324,22 +358,20 @@ def run_decide(rows, threads: int, peak: Peak):
                                    providers=["CPUExecutionProvider"])
         peak.sample()
         for r in rows:  # батч=1: контракт маркеров (1,M), spike-путь
-            text = r["text"]
-            # КЛИНИНГ состояния = контракт арбитра (crates/guard-onnx
-            # arbitrate.rs:278–279: «спец-токены НЕ ВХОДЯТ в состояние»;
-            # live-check check_splice требует сохранения каждого слова).
-            # Мусор из JSONL (``, `«`, `—`, переводы строк) порождает
-            # ФАНТОМНЫЕ [SEP_STRUCT]/[P]/[L] в состоянии — группы сливаются,
-            # layout FAIL. Клининг: перевод строк в пробел; литералы
-            # спец-токенов вырезаются; на байт-границах не рвём (срез по
-            # символам).
-            text = text.replace("\n", " ")
-            for sp in ("[SEP_STRUCT]", "[SEP_TEXT]", "[P]", "[L]"):
-                text = text.replace(sp, "")
-            ids = tok.encode(block + " " + text, add_special_tokens=False).ids
+            # Клининг = зеркало Rust-пути арбитра (clean_state/sanitize_state
+            # выше = arbitrate.rs 4b-3B): литералы спец-токенов в состоянии —
+            # данные вне доверия (layout FAIL на g0177 до клининга — сырьё).
+            ids = tok.encode(clean_state(block + " " + r["text"]),
+                             add_special_tokens=False).ids
+            # groups = зеркало decide::groups([L],[L]) (маркерная пара live-
+            # пути арбитра — [P]-пару spike 4b-2a не гонял; группы из [L],
+            # дропать нечего); контракт verify_parity.py L34–37.
             groups = decide_groups(ids)
             if len(groups) != len(SCHEMA):
                 sys.exit(f"FAIL layout g{r['id']}: групп {len(groups)} ≠ {len(SCHEMA)}")
+            sizes = [len(g) for g in groups]
+            if sizes != [2] * len(SCHEMA):
+                sys.exit(f"FAIL sizes g{r['id']}: {sizes[:3]}…")
             markers = [p for g in groups for p in g]
             lg = sess.run(["logits"],
                           {"input_ids": np.array([ids], np.int64),
