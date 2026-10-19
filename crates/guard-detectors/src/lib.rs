@@ -6,15 +6,9 @@
 //! Порядок модулей важен: нормализатор считает [`OffsetMap`], все последующие
 //! детекторы отдают спаны уже в координатах исходного текста.
 
-/// Карта «offset нормализованного текста → offset исходного».
-///
-/// TODO(шаг 3): нормализация (NFKC-подобная, склейка разорванных номерков) с
-/// property-тестами на рваной кириллице (SPEC §9: «property-тесты `OffsetMap`»).
-pub mod normalize {
-    /// Заглушка типа: шаг 3 заменит содержательной реализацией.
-    #[derive(Debug, Default, Clone, Copy)]
-    pub struct OffsetMap;
-}
+/// Карта «offset нормализованного текста → offset исходного» + нормализатор
+/// каскада 0 (SPEC §6, §10 п.3; реализация и property-тесты — `normalize.rs`).
+pub mod normalize;
 
 /// Чексуммы документов РФ и ЕС (SPEC §2 Каскад 0; формулы и эталонные векторы —
 /// `docs/dep-verify-algorithms.md`, перенос таблиц без пересчёта ожидаемого
@@ -61,7 +55,9 @@ mod tests {
     #[test]
     fn skeleton_types_are_constructible() {
         // Гарантиша каркаса: крейт компилируется и типы живые.
-        let _ = super::normalize::OffsetMap;
+        // `OffsetMap` проверяется конструктором `default()` — тип из файла
+        // `normalize.rs` (шаг 3a), заглушка-единица шага 1 удалена.
+        let _ = <super::normalize::OffsetMap as Default>::default();
         let _ = super::secrets::Placeholder;
         let _ = super::dictionary::Placeholder;
     }
