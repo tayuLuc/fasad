@@ -16,18 +16,21 @@ pub mod normalize {
     pub struct OffsetMap;
 }
 
-/// Чексуммы документов РФ и ЕС.
+/// Чексуммы документов РФ и ЕС (SPEC §2 Каскад 0; формулы и эталонные векторы —
+/// `docs/dep-verify-algorithms.md`, перенос таблиц без пересчёта ожидаемого
+/// проверяемой функцией — AGENTS §Дисциплина фактов п.3).
 ///
-/// TODO(шаг 3): переносить эталонные векторы таблицами из
-/// `docs/dep-verify-algorithms.md`; запрещено вычислять ожидаемое той же
-/// функцией, что проверяется (AGENTS §Дисциплина фактов п.3).
-/// Закрытые формулы: ИНН mod11, СНИЛС mod101, ОГРНИП mod13, LUHN по 7812-1:2017,
-/// БИК без чексуммы, RU IBAN mod97. Хвосты: формула ОГРН, таблица 579-П (§11 п.6).
-pub mod checksums {
-    /// Заглушка модуля.
-    #[derive(Debug, Default, Clone, Copy)]
-    pub struct Placeholder;
-}
+/// Реализовано: ИНН-10/12 (§1–2), СНИЛС mod101 (§3), ОГРН-13/ОГРНИП-15 (§4),
+/// Луна 7812-1:2017 + BIN «Мир» (§5), IBAN mod97 с RU (§6), формат БИК и счёта
+/// (§7). Хвосты (первичка не закрыта): номер акта ОГРН (`egrul-refseq`
+/// недоступен), таблица 579-П — TODO в `checksums::tests` под `#[ignore]`.
+// `must_use_candidate` (pedantic): публичные валидаторы модуля — предикаты
+// `Option<bool>`; вызывающий слой каскада-0 обязан их проверять, сигнатура уже
+// не даёт «случайно проигнорировать», а `-D warnings` в CI (just lint) делает
+// каждый `#[must_use]`-атрибут шумом без выигрыша. Остальные allow — по месту
+// в `checksums.rs`.
+#[allow(clippy::must_use_candidate)]
+pub mod checksums;
 
 /// Сканер секретов: префикс-фильтр → regex в окне → энтропия.
 ///
@@ -59,7 +62,6 @@ mod tests {
     fn skeleton_types_are_constructible() {
         // Гарантиша каркаса: крейт компилируется и типы живые.
         let _ = super::normalize::OffsetMap;
-        let _ = super::checksums::Placeholder;
         let _ = super::secrets::Placeholder;
         let _ = super::dictionary::Placeholder;
     }
