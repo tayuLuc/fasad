@@ -1184,7 +1184,13 @@ mod tests {
             "дыра 8..14 не склеивается"
         );
         assert_eq!(merge_arb_hits(&m), m, "идемпотентность");
-        assert!(merge_arb_hits(&[]).is_empty());
+        // Сообщение ОБЯЗАТЕЛЬНО: без него clippy 1.99 (CI) красит
+        // assert_is_empty под -D warnings (ревью #43, локальный 1.97 не ловит —
+        // ловушка версии #25).
+        assert!(
+            merge_arb_hits(&[]).is_empty(),
+            "пустой ввод → пустое слияние"
+        );
     }
 
     #[test]
