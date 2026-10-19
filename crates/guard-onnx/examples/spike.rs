@@ -8,6 +8,13 @@
 //! ```text
 //! cargo run --release --features ort-inference --example spike -- --arb --lockr
 //! ```
+//! Контракт dylib (нить N6, ревью #32): build И run — ОДНИМИ env
+//! (`ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=…`, цель `just spike-dylib`).
+//! Plain-запуск бинаря после build БЕЗ env = SIGSEGV: ort-sys идёт путём
+//! download-binaries (статика pyke 1.23) и `copy-dylibs` выкладывает шейды
+//! `target/release/examples/libonnxruntime*.dylib` (1.23), которые затирают
+//! dylib 1.31 рядом с бинарём (промер ревью #32: краш кадром в 0x0; лечится
+//! `rm target/release/examples/libonnxruntime*.dylib` или rebuild с env).
 //! CI НЕ требует весов и НЕ требует орта: без фичи `ort-inference` example —
 //! no-op; тест-прокси сборки помечен `#[ignore]` (`cargo test` его считает,
 //! не запускает). Прогон — только рукаместо (наша машина, macOS/Linux).
@@ -243,28 +250,61 @@ fn spike_texts() -> [&'static str; 3] {
 /// рев. `18271032`, манифест `models/manifest.md`; карточка @18271032 §Graph).
 #[cfg(feature = "ort-inference")]
 mod decide_marker {
-    /// Все 10 структурных спец-токенов Decide: имя, id, «маркер ли это» — маркер
-    /// = то, на что указывает `marker_positions` (первичка: `config.json`
-    /// глоссарий «index of each `[L]` token» + `marker (batch, labels)`,
-    /// референс `fastino-ai/GLiNER2` `gliner2/classification/scoring.py`
-    /// `_label_names`: label = токен СРАЗУ ПОСЛЕ `[L]`). Позиции пар — это эти
-    /// **лейбл-токены**, не сами `[L]`: один `GatherElements` на маркер в
-    /// `export_onnx.py`, лейбл-эмбеддинг и есть «маркер» у классификатора.
-    pub const SPECIALS: [(&str, u32, bool); 10] = [
-        ("[SEP_STRUCT]", 128_001, false),
-        ("[SEP_TEXT]", 128_002, false),
-        ("[P]", 128_003, false),
-        ("[C]", 128_004, true),
-        ("[E]", 128_005, true),
-        ("[R]", 128_006, true),
-        ("[L]", 128_007, false),
-        ("[EXAMPLE]", 128_008, true),
-        ("[OUTPUT]", 128_009, true),
-        ("[DESCRIPTION]", 128_010, true),
+    /// Структурные спец-токены Decide-разметки: имя + id (промерены из
+    /// `tokenizer.json` рев. `18271032`, манифест `models/manifest.md`).
+    /// Маркер `marker_positions` — индекс токена `[L]` (первичка: `config.json`
+    /// глоссарий «index of each `[L]` token» + карточка @18271032 §Graph;
+    /// референс `fastino-ai/GLiNER2` `gliner2/classification/scoring.py` греет
+    /// эмбеддинг СРАЗУ ПОСЛЕ `[L]` — для Decide-графа, собирающего hidden на
+    /// `[L]`-позициях, не конфликтует; промер 4b-2a + ревью #32 N1).
+    pub const SPECIALS: [(&str, u32); 10] = [
+        ("[SEP_STRUCT]", 128_001),
+        ("[SEP_TEXT]", 128_002),
+        ("[P]", 128_003),
+        ("[C]", 128_004),
+        ("[E]", 128_005),
+        ("[R]", 128_006),
+        ("[L]", 128_007),
+        ("[EXAMPLE]", 128_008),
+        ("[OUTPUT]", 128_009),
+        ("[DESCRIPTION]", 128_010),
     ];
+    // Нить N3 (ревью #32): `groups()` режет группы по именованным константам
+    // из той же таблицы, без магических литералов.
+    pub const SEP_STRUCT_ID: u32 = special_id("[SEP_STRUCT]");
+    pub const SEP_TEXT_ID: u32 = special_id("[SEP_TEXT]");
+
+    const fn special_id(name: &str) -> u32 {
+        let mut i = 0;
+        let mut found = 0u32;
+        while i < SPECIALS.len() {
+            if bytes_eq(SPECIALS[i].0.as_bytes(), name.as_bytes()) {
+                found = SPECIALS[i].1;
+            }
+            i += 1;
+        }
+        // 0 в vocab Decide — [PAD]; имя заведомо из таблицы (вызовы констант
+        // выше), хвост детерминированно недостижим. Panic с форматной строкой
+        // в const-fn запрещён (E0015, промер гейта 20.10).
+        found
+    }
+
+    const fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
+        if a.len() != b.len() {
+            return false;
+        }
+        let mut i = 0;
+        while i < a.len() {
+            if a[i] != b[i] {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
 
     pub fn id_of(vocab: &std::collections::HashMap<String, u32>, name: &str) -> Option<u32> {
-        let manifest = SPECIALS.iter().find(|(n, _, _)| *n == name)?.1;
+        let manifest = SPECIALS.iter().find(|(n, _)| *n == name)?.1;
         let live = vocab.get(name).copied()?;
         if manifest == live { Some(live) } else { None }
     }
@@ -273,8 +313,8 @@ mod decide_marker {
     /// токенизации Decide-layout'а.
     ///
     /// Возвращает ГРУППИРОВАННЫЕ позиции маркеров (offset группы → позиции
-    /// `[L]`-маркеров внутри неё), группы режутся по `[SEP_STRUCT]` (`128_001`) /
-    /// `[SEP_TEXT]` (`128_002`) — границам схем и схемы↔текст из
+    /// `[L]`-маркеров внутри неё), группы режутся по `SEP_STRUCT_ID` /
+    /// `SEP_TEXT_ID` (константы из `SPECIALS`) — границам схем и схемы↔текст из
     /// `_transform_schema`/`_format_input_with_mapping` (первичка референса
     /// `fastino-ai/GLiNER2@main`: `processor.py::cls_marker_indices` =
     /// позиции routing-маркеров на схему, `classification/scoring.py` =
@@ -295,7 +335,7 @@ mod decide_marker {
         for (pos, &id) in ids.iter().enumerate() {
             if id == marker_ids[0] || id == marker_ids[1] {
                 cur.push(pos);
-            } else if (id == 128_001 || id == 128_002) && !cur.is_empty() {
+            } else if (id == SEP_STRUCT_ID || id == SEP_TEXT_ID) && !cur.is_empty() {
                 let first = cur[0];
                 out.push((first, std::mem::take(&mut cur)));
             }
@@ -386,8 +426,8 @@ fn check_splice(
         let w = wtoks[widx];
         let mid = decide_marker::SPECIALS
             .iter()
-            .find(|(n, _, _)| *n == w)
-            .map(|(_, id, _)| *id);
+            .find(|(n, _)| *n == w)
+            .map(|(_, id)| *id);
         if let Some(mid) = mid {
             if !ids[pos_scan..].contains(&mid) {
                 return Err(format!(
@@ -421,7 +461,7 @@ fn check_splice(
     }
     Ok(ids
         .iter()
-        .filter(|&&id| decide_marker::SPECIALS.iter().any(|(_, mid, _)| id == *mid))
+        .filter(|&&id| decide_marker::SPECIALS.iter().any(|(_, mid)| id == *mid))
         .count())
 }
 
@@ -707,8 +747,12 @@ fn measure_lockr(
 /// вопросов+меток (модель обучена на английском, карточка §Limits) поверх
 /// RU-state из `spike_texts()`. `decide_marker::groups(ids, [L],[L])` даёт по
 /// группе на классификационную схему; `first=(первый [L] группы)` — именно
-/// индекс `[L]`, контракт `marker_positions` (карточка @18271032). Возвращает
-/// id-последовательность, группы и id [L]/[P].
+/// индекс `[L]`, контракт `marker_positions` (карточка @18271032). Нить N1
+/// (ревью #32): маркер = позиция `[L]`; референс-классификатор `GLiNER2` греет
+/// эмбеддинг ПОСЛЕ `[L]` (`scoring.py` `embs[1:]`) — не конфликтует: Decide-граф
+/// собирает hidden на `[L]`-позициях (первички: карточка §Graph,
+/// `conversion/export_onnx.py`, `conversion/verify_parity.py` L34-37).
+/// Возвращает id-последовательность и группы.
 /// Живой констрэкт: id-последовательность + сгруппированные маркерные позиции.
 #[cfg(feature = "ort-inference")]
 type ArbLayout = (Vec<u32>, Vec<(usize, Vec<usize>)>);
@@ -747,7 +791,6 @@ fn arb_live_layout(
         ids_u32.iter().filter(|&&id| id == p_id).count(),
         ids_u32.len()
     );
-    let _ = (l_id, p_id);
     Ok((ids_u32, groups))
 }
 
@@ -808,7 +851,7 @@ fn measure_arbiter(
     // NB: `get_vocab(true)` ниже намеренно включает added tokens — id маркеров
     // сверяются с манифестом по реальному vocab.
     let vocab = tok.get_vocab(true);
-    for (name, _, _) in decide_marker::SPECIALS {
+    for (name, _) in decide_marker::SPECIALS {
         let ok = decide_marker::id_of(&vocab, name).is_some();
         println!("MARKER|vocab|{name}|{ok}");
         if !ok {
@@ -834,9 +877,9 @@ fn measure_arbiter(
     // (2) ФАЗА A — воспроизведение §5.3 (контракт-провал фиксируется, не обходится).
     arb_trap(&mut session, &ids, &mask, l)?;
 
-    // (3) ФАЗА B — живые маркеры: marker_positions = позиции первого [L] каждой
-    //     пары (контракт графа = «index of every [L] token», (1,M) INT64),
-    //     M живое. Прогон обязан дать exit 0.
+    // (3) ФАЗА B — живые маркеры: marker_positions = ВСЕ позиции [L] (констрэкт
+    //     даёт по одному [L] на метку; контракт графа = «index of every [L]
+    //     token», (1,M) INT64), M живое. Прогон обязан дать exit 0.
     let live: Vec<i64> = groups
         .iter()
         .flat_map(|(_, ps)| ps.iter().copied())
@@ -856,7 +899,7 @@ fn measure_arbiter(
     }
     println!("MARKER|arb|run=ok|markers={m}");
     // (4) Выход: форма (1,M) = по логиту на маркер + softmax по меткам каждой
-    //     пары — первый шаг содержательной сверки контракта logits↔маркеры.
+    //     группы — первый шаг содержательной сверки контракта logits↔маркеры.
     if let Ok(outputs) = session.run(inputs.clone()) {
         if let Some((_, v)) = outputs.iter().next() {
             if let Ok((shape, data)) = v.try_extract_tensor::<f32>() {
