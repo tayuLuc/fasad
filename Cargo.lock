@@ -715,6 +715,7 @@ dependencies = [
  "guard-types",
  "regex",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

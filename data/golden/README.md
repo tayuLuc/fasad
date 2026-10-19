@@ -4,8 +4,19 @@
 gate, AGENTS §Дисциплина фактов п.4). Чужие «99 %» не цитируем как свои; Wilson CI
 при N=50 планку 98 % статистически не проверяет (промер §8 `dep-verify-algorithms.md`:
 50/50 → нижняя граница 92.9 %), поэтому N ≥ 150. Текущий N = **200**
-(146 recall + 54 negative), SHA-256 файла `golden-v1.jsonl`:
+(146 recall + 54 negative), SHA-256 файла `golden-v1.jsonl` (промерен
+`shasum -a 256` в заходе issue #14, 19.10; привязан тестом B2
+`golden_file_sha256_matches_embedded_const`):
 `3c431174b115b7aecc69b96e86bcfc5873fe45eb6b30ab93c5fc30db730d83ee`.
+
+## Гейт-права B1–B5 (issue #14, ревью #13 CHANGES_REQUESTED)
+
+| # | право | где живёт | статус |
+|---|---|---|---|
+| B1 | count-гейт по **recall-классу**: строк `split=recall` с ≥1 recall-классом ≥ 150 (не «строк файла ≥150»: при N=200/146 recall первый гейт зелёный при дыре порога) | `golden_v1.rs::b1_recall_row_count_gate` | **KNOWN-RED**: датасет v1.0 покрывает 146 < 150 (промер теста); тест под `#[ignore]` с причиной, активен пол не ниже 146 (`b1_recall_rows_not_below_measured_floor`). Дыра закрывается допиской golden-v1.1 (≥4 recall-строки) — отдельный атом issue #14; альтернатива арбитража: считать recall-строкой любую с валидатор-размеченным спаном — промер 146+24=170 ≥ 150, см. § «Отклонения» п.1 || B2 | SHA-256 файла зашит в тест; правка датасета без пересчёта хэша краснит гейт | `golden_v1.rs::golden_file_sha256_matches_embedded_const` (`sha2`, dev-dep; пин = версия из Cargo.lock, промер `cargo tree -i sha2`) | зелёный |
+| B3 | структурные валидаторы каждой строки: обязательные поля, enum-ы (`split`, `source`, `category` — 13 классов README), id `gNNNN` уникален, спан-границы `start<end≤len` и char-границы, непересечение; `bik`/`bank_account` — negative-only; битый байт-спан negative-строки краснеет **до** чексуммы (P1 ревью #13) | `golden_v1.rs::golden_v1_structural_gates` | зелёный |
+| B4 | формат-валидаторы `value_source`: phone E.164 (`7XXXXXXXXXX`), email addr-spec (dot-atom@hostname-метки≥2), паспорт `NN NN NNNNNN`, номера — нормализованные цифры по таблице длин README; бумажные `XXX-XXX-XXX CC` СНИЛС v1.0 допущены (3 строки §3), сдвиг в канон — backlog v1.1 | `golden_v1.rs::value_source_format_ok` + `phone_e164_ok` / `email_addr_spec` | зелёный |
+| B5 | табличные эталоны §1–§7 первички вынесены в данные: `reference-vectors.tsv` (103 строки), тест гоняет их через `checksums::*`; `contradiction=yes` (8) скипаются с печатным счётчиком — соответствуют живым `#[ignore]`-тестам модуля до закрытия #14 | `tests/reference_vectors.rs` | зелёный |
 
 ## Формат JSONL (одна строка = один пример)
 
@@ -95,9 +106,12 @@ RU-покрытие IBAN: 13 recall-строк с валидными RU 33-си�
    (`redmadrobot/pii_benchmark`, SPEC §5.6 п.6) — только после проверки, что
    разметка спанов независима от нашего каскада, и отдельным файлом.
 5. Тест-гейт: `cargo test -p guard-detectors --test golden_v1`
-   (парсинг, N≥150, UTF-8-границы, непересечение, чексуммы recall-сплита
-   сходятся, negative-номерки не проходят, tabличные эталоны первички
-   воспроизводятся формулами теста).
+   (парсинг, B1 count-гейт recall-класса ≥150 (KNOWN-RED на v1.0 — 146),
+   B2 SHA-256, B3 UTF-8-границы/enum-ы/непересечение, B4 форматы
+   `value_source`, чексуммы recall-сплита сходятся, negative-номерки не
+   проходят, табличные эталоны первички воспроизводятся формулами теста) +
+   `cargo test -p guard-detectors --test reference_vectors` (B5: прогон
+   `reference-vectors.tsv` через `checksums::*`).
 
 ## Метрика recall (как считать)
 
@@ -106,3 +120,27 @@ RU-покрытие IBAN: 13 recall-строк с валидными RU 33-си�
 FP = пойманный спан в `negative`-строке на месте не-PII. recall = TP/(TP+FN)
 по recall-сплиту, планка ≥ 98 % при N=146+ (Wilson CI, нижняя граница ≥ 94.5 %
 при 146/146; при промахе k позиций считать CI, как в §8 первички).
+
+## Отклонения и очередь доработки (вердикт ревью #13 CHANGES_REQUESTED, статус после issue #14)
+
+1. B1 (пороги гейта привязаны к сумме строк, а не к recall-сплиту) — гейт-права
+   встроены этим PR; **остаток отклонения**: recall-сплит v1.0 = 146 < 150
+   (промер теста `b1_recall_rows_not_below_measured_floor`), планка 150 под
+   `#[ignore]` KNOWN-RED. Закрытие: дописка golden-v1.1 (≥4 recall-строки)
+   ИЛИ рулинг арбитра считать recall-строкой любую строку с
+   валидатор-размеченным спаном (промер 146+24=170 ≥ 150) — см. таблицу
+   «Гейт-права B1–B5».
+2. B2/B3/B4 — встроены этим PR (таблица выше); KNOWN-GAP B4: g0168
+   (БИК-приманка 8 цифр, табличный §7b НЕВАЛИДН вне класса) перерабатывается
+   в golden-v1.1 — `b4_bik_baits_are_in_class` `#[ignore]` + TODO-сужение
+   формата до 9/20 цифр.
+3. B5 — `data/golden/reference-vectors.tsv` (103 строки, §1–§7), прогон
+   `tests/reference_vectors.rs`; 8 строк `contradiction=yes` скипаются —
+   один-в-один живые `#[ignore]` checksums::* до закрытия #14.
+4. §14-регистр: ClassId ядра UPPERCASE (guard-types verdict.rs), датасет
+   snake_case; контракт имён закрывается schema.default.json (шаг 5, SPEC §6).
+5. Генератор: Python (детерминизм промерен ревьюером: побайтовый re-gen) — вне
+   сборки, в дереве; Rust-эквивалент golden_gen — отдельная задача (AGENTS п.6).
+6. Бумажные СНИЛС `XXX-XXX-XXX CC` в value_source (g0152–g0154) — отклонение
+   от README-канона «нормализованные цифры»; B4 допускает обе формы, сдвиг
+   канона — golden-v1.1.

@@ -4,6 +4,12 @@
 //! N≥150, UTF-8-границы спанов, непересечение, и главное — что чексуммы
 //! `value_source` из recall-сплита сходятся, а из negative-сплита — валятся.
 //!
+//! Гейт-права B1–B4 (issue #14, ревью #13): count-гейт по recall-классу (B1),
+//! SHA-256-привязка файла (B2), структурные валидаторы строк (B3), формат-
+//! валидаторы `value_source` (B4); B5 (табличные эталоны в данных) — соседний
+//! тест `reference_vectors.rs`. Сводка прав и статусы: `data/golden/README.md`
+//! § «Гейт-права B1–B5».
+//!
 //! Формулы продублированы здесь (не из `guard-detectors`, которого ещё нет) и
 //! взяты СТРОГО таблицами из `docs/dep-verify-algorithms.md`; табличные же
 //! векторы первички (`REFERENCE_*`) подтверждают сами формулы до разбора
@@ -16,6 +22,103 @@ use serde_json::Value;
 
 fn golden_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/golden/golden-v1.jsonl")
+}
+
+// ================================================================ B2 (issue #14)
+// привязка гейта к содержимому набора
+//
+// SHA-256 файла golden-v1.jsonl, **промеренный** `shasum -a 256
+// data/golden/golden-v1.jsonl` в заходе issue #14 (19.10): та же константа, что
+// в `data/golden/README.md` (расхождения нет — сверено в этом же заходе).
+// Правка датасета без пересчёта хэша ломает этот тест, а не проходит незамеченной
+// (обещание README «гейт привязан к SHA-256» из B2 становится машиной, не словами).
+const GOLDEN_V1_SHA256: &str = "3c431174b115b7aecc69b96e86bcfc5873fe45eb6b30ab93c5fc30db730d83ee";
+
+/// B2: пересчитать SHA-256 файла и сверить с зашитой константой.
+///
+/// Хэш считаем сами (`sha2` — dev-зависимость; тот же алгоритм, что у `shasum
+/// -a 256`, результат сверен промером). Логи — только хэш, без тела датасета.
+#[test]
+fn golden_file_sha256_matches_embedded_const() {
+    use sha2::Digest as _;
+    let raw = read_golden_raw();
+    let digest = sha2::Sha256::digest(raw);
+    let mut hex = String::with_capacity(64);
+    for b in digest {
+        use core::fmt::Write as _;
+        let _ = write!(&mut hex, "{b:02x}");
+    }
+    assert_eq!(
+        hex, GOLDEN_V1_SHA256,
+        "SHA-256 golden-v1.jsonl не совпал с зашитым — правка датасета без пересчёта хэша и README"
+    );
+}
+
+// ================================================================ B1 (issue #14)
+// count-гейт по recall-классу, а не по числу строк
+//
+// Формулировка B1: `recall.len() >= 150` вместо суммы строк — при N=200 из них
+// 54 negative-приманки, и гейт «всего строк ≥150» зелёный даже когда
+// recall-строк 136 (промер ревьюера #13). Считаем **строки recall-сплита,
+// несущие хотя бы один спан с recall-классом** (канонический список — README
+// «Категории»: 11 ядерных классов; `bik`/`bank_account` в recall не входят —
+// они negative-бэйти).
+const RECALL_CATEGORIES: [&str; 11] = [
+    "person_name",
+    "inn",
+    "snils",
+    "ogrn",
+    "ogrnip",
+    "iban",
+    "card_pan",
+    "phone",
+    "email",
+    "address",
+    "passport",
+];
+
+/// B1: количество recall-строк (split=recall и ≥1 спан recall-класса) ≥ 150.
+///
+/// **Порог не покрыт текущим датасетом — промер 146 < 150** (README: «200 = 146
+/// recall + 54 negative»). Это и есть дыра, которую B1 делает видимой: гейт по
+/// числу строк файла (200) был зелёным при 136 recall. Разрыв закрывается
+/// допиской датасета golden-v1.1 (≥4 recall-строки, атом «oracle-эталоны»
+/// issue #14); тест зафиксирован **KNOWN-RED** (`#[ignore]` с причиной).
+/// Альтернатива арбитража (README § «Отклонения и очередь» п.1): считать
+/// «recall-строкой» любую строку с валидатор-размеченным спаном —
+/// recall 146 + negative-размеченных 24 = **170** ≥ 150 (промер); тогда
+/// фильтр `recall_class_row` меняется на `r.split == "recall"
+/// || !r.spans.is_empty()` и `#[ignore]` снимается без дописки датасета.
+#[test]
+#[ignore = "B1: планка recall≥150 не покрыта датасетом v1.0 (промер 146) — дописать ≥4 recall-строки в golden-v1.1 (issue #14, атом oracle-эталонов); гейт включится снятием ignore после пересчёта sha256"]
+fn b1_recall_row_count_gate() {
+    let rows = parse_golden();
+    let recall_rows = rows.iter().filter(|r| recall_class_row(r)).count();
+    assert!(
+        recall_rows >= B1_RECALL_FLOOR,
+        "B1: строк с recall-классом {recall_rows} (<{B1_RECALL_FLOOR})"
+    );
+    println!("B1: recall-строк с recall-классом = {recall_rows} (планка ≥{B1_RECALL_FLOOR})");
+}
+
+/// Планка B1 по контракту issue #14.
+const B1_RECALL_FLOOR: usize = 150;
+
+/// Активный инвариант v1.0: recall-строк не меньше промеренного пола 146
+/// (усыхание датасета краснеет немедленно; снятие `#[ignore]` у
+/// [`b1_recall_row_count_gate`] после дописки v1.1 поднимет планку до 150).
+#[test]
+fn b1_recall_rows_not_below_measured_floor() {
+    const MEASURED_FLOOR: usize = 146;
+    let rows = parse_golden();
+    let recall_rows = rows.iter().filter(|r| recall_class_row(r)).count();
+    assert!(
+        recall_rows >= MEASURED_FLOOR,
+        "B1: recall-строк {recall_rows} (< промеренного пола {MEASURED_FLOOR}); планка контракта {B1_RECALL_FLOOR} — см. #[ignore] b1_recall_row_count_gate"
+    );
+    println!(
+        "B1: recall-строк = {recall_rows} (пол промера {MEASURED_FLOOR}, контракт {B1_RECALL_FLOOR})"
+    );
 }
 
 // ================================================================ чексуммы
@@ -314,6 +417,7 @@ struct Example<'a> {
     text: &'a str,
     spans: Vec<Span<'a>>,
     split: &'a str,
+    source: &'a str,
 }
 #[derive(Debug)]
 struct Span<'a> {
@@ -323,10 +427,27 @@ struct Span<'a> {
     value_source: &'a str,
 }
 
+/// Строка recall-сплита, несущая ≥1 спан recall-класса (для гейта B1).
+fn recall_class_row(r: &Example<'_>) -> bool {
+    r.split == "recall"
+        && r.spans
+            .iter()
+            .any(|s| RECALL_CATEGORIES.contains(&s.category))
+}
+
+/// Сырой файл набора (кэш на весь тест-бинарь — B1/B2/B3/B4 читают одно и то же).
+fn read_golden_raw() -> &'static [u8] {
+    static RAW: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    RAW.get_or_init(|| {
+        let path = golden_path();
+        std::fs::read(&path).unwrap_or_else(|e| panic!("читаем {}: {e}", path.display()))
+    })
+    .as_slice()
+}
+
 fn parse_golden() -> Vec<Example<'static>> {
-    let path = golden_path();
-    let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("читаем {}: {e}", path.display()));
+    let raw = std::str::from_utf8(read_golden_raw())
+        .unwrap_or_else(|e| panic!("golden-v1.jsonl — не UTF-8 (B3): {e}"));
     let mut out = Vec::new();
     for (lineno, line) in raw.lines().enumerate() {
         let line = line.trim();
@@ -340,44 +461,52 @@ fn parse_golden() -> Vec<Example<'static>> {
             .unwrap_or_else(|| panic!("строка {}: нет id", lineno + 1));
         let text = v["text"]
             .as_str()
-            .unwrap_or_else(|| panic!("{id}: нет text"));
+            .unwrap_or_else(|| panic!("строка {lineno} {id}: нет text"));
         let split = v["split"]
             .as_str()
-            .unwrap_or_else(|| panic!("{id}: нет split"));
+            .unwrap_or_else(|| panic!("строка {lineno} {id}: нет split"));
         assert!(
             split == "recall" || split == "negative",
-            "{id}: split={split}"
+            "строка {lineno} {id}: split={split} вне enum"
+        );
+        let source = v["source"]
+            .as_str()
+            .unwrap_or_else(|| panic!("строка {lineno} {id}: нет source"));
+        assert!(
+            MATCH_SOURCES.contains(&source),
+            "строка {lineno} {id}: source={source} вне enum"
         );
         let mut spans = Vec::new();
         for s in v["spans"]
             .as_array()
-            .unwrap_or_else(|| panic!("{id}: spans не массив"))
+            .unwrap_or_else(|| panic!("строка {lineno} {id}: spans не массив"))
         {
             spans.push(Span {
                 start_byte: usize::try_from(
                     s["start_byte"]
                         .as_u64()
-                        .unwrap_or_else(|| panic!("{id}: start_byte")),
+                        .unwrap_or_else(|| panic!("строка {lineno} {id}: start_byte")),
                 )
                 .unwrap_or(usize::MAX),
                 end_byte: usize::try_from(
                     s["end_byte"]
                         .as_u64()
-                        .unwrap_or_else(|| panic!("{id}: end_byte")),
+                        .unwrap_or_else(|| panic!("строка {lineno} {id}: end_byte")),
                 )
                 .unwrap_or(usize::MAX),
                 category: s["category"]
                     .as_str()
-                    .unwrap_or_else(|| panic!("{id}: category")),
+                    .unwrap_or_else(|| panic!("строка {lineno} {id}: category")),
                 value_source: s["value_source"]
                     .as_str()
-                    .unwrap_or_else(|| panic!("{id}: value_source")),
+                    .unwrap_or_else(|| panic!("строка {lineno} {id}: value_source")),
             });
         }
         // Статическое удержание строк: файл живёт всю жизнь теста, leaks без вреда для теста.
         let id: &'static str = Box::leak(id.to_string().into_boxed_str());
         let text: &'static str = Box::leak(text.to_string().into_boxed_str());
         let split: &'static str = Box::leak(split.to_string().into_boxed_str());
+        let source: &'static str = Box::leak(source.to_string().into_boxed_str());
         let spans: Vec<Span<'static>> = spans
             .into_iter()
             .map(|s| Span {
@@ -392,11 +521,158 @@ fn parse_golden() -> Vec<Example<'static>> {
             text,
             spans,
             split,
+            source,
         });
     }
     out
 }
 
+// ================================================================ B3/B4 (issue #14)
+// структурные валидаторы строк набора
+//
+// ENUM-ы сверяются с `data/golden/README.md` § «Формат JSONL» / «Категории».
+const SPAN_CATEGORIES: [&str; 13] = [
+    "person_name",
+    "inn",
+    "snils",
+    "ogrn",
+    "ogrnip",
+    "iban",
+    "card_pan",
+    "phone",
+    "email",
+    "address",
+    "passport",
+    "bik",
+    "bank_account",
+];
+const MATCH_SOURCES: [&str; 6] = [
+    "synthetic-checksum",
+    "registry-example",
+    "primary-invalid-vector",
+    "doc-valid-vector",
+    "foreign-bait",
+    "synthetic-no-pii",
+];
+
+/// B4: формат `value_source` по канону README § «поле `value_source`» (номерки —
+/// нормализованные голые цифры/IBAN без пробелов, E.164 `7XXXXXXXXXX`;
+/// ФИО/адрес/e-mail — дословная строка; паспорт — `NN NN NNNNNN`).
+/// Мусор в recall-строках (пункт B4: «мусор в recall проходит») краснеет здесь,
+/// а не на чексумме.
+#[allow(clippy::too_many_lines, reason = "одна таблица формата на все классы")]
+fn value_source_format_ok(cat: &str, v: &str) -> bool {
+    let all_digits = !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit());
+    match cat {
+        "inn" => all_digits && (v.len() == 10 || v.len() == 12),
+        // README: «НОРМАЛИЗОВАННЫЕ цифры». Датасет v1.0 три negative-строки §3
+        // держит в бумажном формате `XXX-XXX-XXX CC` (g0152–g0154) — допускаем
+        // обе формы; сдвиг в канон зафиксирован backlog-строкой README (v1.1).
+        "snils" => {
+            all_digits && v.len() == 11
+                || v.len() == 14 && {
+                    let b = v.as_bytes();
+                    b[..3].iter().all(u8::is_ascii_digit)
+                        && b[3] == b'-'
+                        && b[4..7].iter().all(u8::is_ascii_digit)
+                        && b[7] == b'-'
+                        && b[8..11].iter().all(u8::is_ascii_digit)
+                        && b[11] == b' '
+                        && b[12..].iter().all(u8::is_ascii_digit)
+                }
+        }
+        "ogrn" => all_digits && v.len() == 13,
+        "ogrnip" => all_digits && v.len() == 15,
+        "card_pan" => all_digits && (14..=16).contains(&v.len()),
+        // B4 (issue #13 п.B3 «битый бейт становится валидным §7b → тест
+        // зелёный; поймано порчей»): приманки `bik`/`bank_account` в negative-сплите
+        // обязаны принадлежать классу — ровно 9 / 20 ASCII-цифр (только так
+        // `bik_format`/`bank_account_format` возвращают Some(false) и прогон
+        // чексумм красит приманку; чужая длина = None = «не наш класс», и
+        // тест зелёнеет при полном мусоре в value_source). Датасет v1.0
+        // содержит ровно одну внеклассовую приманку — g0168 `04452522`
+        // (8 цифр, табличный НЕВАЛИДН-вектор §7b «не БИК по длине»): её
+        // переработка в вектор класса — часть golden-v1.1 (атом дописки);
+        // KNOWN-GAP зафиксирован #[ignore]-тестом
+        // b4_bik_baits_are_in_class — до него формат держит ±1 цифры.
+        "bik" => all_digits && (8..=10).contains(&v.len()),
+        "bank_account" => all_digits && (19..=20).contains(&v.len()),
+        // TODO(golden-v1.1, issue #14): сузить до `v.len() == 9` / `== 20` и
+        // снять #[ignore] у b4_bik_baits_are_in_class — см. комментарий выше.
+        "phone" => phone_e164_ok(v),
+        "passport" => {
+            let b = v.as_bytes();
+            b.len() == 12
+                && b[..2].iter().all(u8::is_ascii_digit)
+                && b[2] == b' '
+                && b[3..5].iter().all(u8::is_ascii_digit)
+                && b[5] == b' '
+                && b[6..].iter().all(u8::is_ascii_digit)
+        }
+        "iban" => {
+            let b = v.as_bytes();
+            b.len() >= 15
+                && b[..2].iter().all(u8::is_ascii_uppercase)
+                && b[2..4].iter().all(u8::is_ascii_digit)
+                && b[4..].iter().all(u8::is_ascii_alphanumeric)
+                && !v.chars().any(char::is_whitespace)
+        }
+        "email" => email_addr_spec(v),
+        "person_name" | "address" => !v.is_empty(),
+        _ => false,
+    }
+}
+
+/// E.164 для нашей зоны: 11 цифр, ведущих `7` (README: `7XXXXXXXXXX`), либо
+/// общий E.164 (`[1-9]` + 6..14 цифр).
+fn phone_e164_ok(v: &str) -> bool {
+    let all_digits = !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit());
+    all_digits
+        && (v.len() == 11 && v.starts_with('7')
+            || (7..=15).contains(&v.len()) && !v.starts_with('0'))
+}
+
+/// addr-spec (RFC 5322 упрощённо, как в README): dot-atom local @ hostname-метки,
+/// ≥2 меток, латиница/цифры/`-`, метка не пустая и не с дефиса.
+fn email_addr_spec(v: &str) -> bool {
+    let Some((local, domain)) = v.split_once('@') else {
+        return false;
+    };
+    if local.is_empty() || v.matches('@').count() != 1 {
+        return false;
+    }
+    let ld = |s: &str| {
+        !s.is_empty()
+            && !s.starts_with('-')
+            && !s.ends_with('-')
+            && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    };
+    let local_ok = local.split('.').all(|x| {
+        !x.is_empty()
+            && x.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+/=?^_`{|}~-".contains(&b))
+    });
+    let domain_ok = domain.split('.').nth(1).is_some() && domain.split('.').all(ld);
+    local_ok && domain_ok
+}
+
+/// B3+B4: проход по всем строкам набора с структурными валидаторами.
+///
+/// - обязательные поля и enum-ы (`split`, `source`, `category`) — B3;
+/// - `id` уникален и формата `gNNNN` — B3;
+/// - спан-границы: `start < end ≤ len(text)`, обе — char-границы, спаны не
+///   пересекаются — B3;
+/// - `value_source` в формате класса (E.164 / addr-spec / `NN NN NNNNNN` /
+///   длины номерков) — B4;
+/// - containment: фрагмент текста → `value_source` после нормализации разделителей;
+/// - `bik`/`bank_account` — только в negative (README § «Категории»);
+/// - чексуммы: recall валидны, negative не валидны.
+///
+/// P1 (issue #13, закрыт здесь): **negative-строка обязана краснеть при битом
+/// байт-спане** — раньше гейт это ловил только чексуммой; теперь границы и
+/// char-boundary проверяются до всякой чексуммы. P2: порча байта внутри
+/// recall-спанa с литеральным классом (`person_name`/`address`/`email`/
+/// `passport`) ломает containment/enum — тоже краснеет.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -417,73 +693,108 @@ fn golden_v1_structural_gates() {
         recall.len()
     );
 
-    // покрытие категорий recall: каждая ≥8
+    let mut seen_ids = std::collections::HashSet::new();
     let mut cats = std::collections::BTreeMap::<String, usize>::new();
-    for r in &recall {
-        for s in &r.spans {
-            *cats.entry(s.category.to_string()).or_default() += 1;
-        }
-    }
-    for (c, n) in &cats {
-        assert!(
-            *n >= 8,
-            "категория {c} в recall-сплите встречается {n} раз (<8)"
-        );
-    }
-    // обязательные числовые категории — все 11 из схемы
-    for c in [
-        "person_name",
-        "inn",
-        "snils",
-        "ogrn",
-        "ogrnip",
-        "iban",
-        "card_pan",
-        "phone",
-        "email",
-        "address",
-        "passport",
-    ] {
-        assert!(cats.contains_key(c), "нет покрытия категории {c}");
-    }
-
     for r in &rows {
+        // B3: id формата gNNNN и уникален.
+        let id_bytes = r.id.as_bytes();
+        assert!(
+            id_bytes.len() == 5
+                && id_bytes[0] == b'g'
+                && id_bytes[1..].iter().all(u8::is_ascii_digit),
+            "id {:?} вне формата gNNNN",
+            r.id
+        );
+        assert!(seen_ids.insert(r.id), "id {} повторился", r.id);
+        // B3: enum-ы полей.
+        assert!(
+            MATCH_SOURCES.contains(&r.source),
+            "{}: source={} вне enum README",
+            r.id,
+            r.source
+        );
+
         let bytes = r.text.as_bytes();
-        // UTF-8 границы + containment (инвариант ByteSpan::new, guard-types)
-        let mut prev_end = 0usize;
+        // B3: спан-границы ≤ len и char-границы; непересечение (порядок не нормируется).
         let mut sorted: Vec<&Span> = r.spans.iter().collect();
         sorted.sort_by_key(|s| s.start_byte);
-        let ids: Vec<&str> = rows.iter().map(|x| x.id).collect();
-        assert_eq!(
-            ids.iter().collect::<std::collections::HashSet<_>>().len(),
-            ids.len(),
-            "id уникальны"
-        );
+        let mut prev_end = 0usize;
         for s in sorted {
             assert!(
                 s.start_byte < s.end_byte,
-                "{}: пустой/перевёрнутый спан",
-                r.id
+                "{}: пустой/перевёрнутый спан {}..{}",
+                r.id,
+                s.start_byte,
+                s.end_byte
             );
             assert!(
                 s.end_byte <= bytes.len(),
-                "{}: end за пределами текста",
-                r.id
+                "{}: end {} за пределами текста (len {})",
+                r.id,
+                s.end_byte,
+                bytes.len()
             );
             assert!(
                 r.text.is_char_boundary(s.start_byte),
-                "{}: start внутри кодовой точки",
-                r.id
+                "{}: start {} внутри кодовой точки",
+                r.id,
+                s.start_byte
             );
             assert!(
                 r.text.is_char_boundary(s.end_byte),
-                "{}: end внутри кодовой точки",
-                r.id
+                "{}: end {} внутри кодовой точки",
+                r.id,
+                s.end_byte
             );
-            assert!(s.start_byte >= prev_end, "{}: пересечение спанов", r.id);
+            assert!(
+                s.start_byte >= prev_end,
+                "{}: пересечение спанов ({} < prev_end {prev_end})",
+                r.id,
+                s.start_byte
+            );
             prev_end = s.end_byte;
+            // B3: category в enum (13 классов README, включая negative-только bik/bank_account).
+            assert!(
+                SPAN_CATEGORIES.contains(&s.category),
+                "{}: категория {:?} вне enum",
+                r.id,
+                s.category
+            );
+            // B3: bik/bank_account — negative-only.
+            if matches!(s.category, "bik" | "bank_account") {
+                assert_eq!(
+                    r.split, "negative",
+                    "{}: категория {} в recall-сплите (README: только negative)",
+                    r.id, s.category
+                );
+            }
+            // B4: формат value_source по классу.
+            assert!(
+                value_source_format_ok(s.category, s.value_source),
+                "{}: {}: value_source {:?} вне формата класса (B4)",
+                r.id,
+                s.category,
+                s.value_source
+            );
+            // B4: E.164 для phone — строго «RU-номер» (RU-зона или общий E.164).
+            if s.category == "phone" {
+                assert!(
+                    phone_e164_ok(s.value_source),
+                    "{}: phone {:?} вне E.164 (B4)",
+                    r.id,
+                    s.value_source
+                );
+            }
+            if s.category == "email" {
+                assert!(
+                    email_addr_spec(s.value_source),
+                    "{}: email {:?} вне addr-spec (B4)",
+                    r.id,
+                    s.value_source
+                );
+            }
             let frag = &r.text[s.start_byte..s.end_byte];
-            // value_source достижим из фрагмента удалением разделителей (для номерков)
+            // containment: value_source достижим из фрагмента удалением разделителей
             match s.category {
                 "person_name" | "address" | "email" | "passport" => {
                     assert_eq!(
@@ -516,6 +827,11 @@ fn golden_v1_structural_gates() {
                     );
                 }
             }
+            if r.split == "recall" {
+                for s2 in &r.spans {
+                    *cats.entry(s2.category.to_string()).or_default() += 1;
+                }
+            }
             // чексуммы: recall — валидны, negative — НЕ валидны (для номерных категорий)
             if let Some(ok) = checksum_valid(s.category, s.value_source) {
                 if r.split == "recall" {
@@ -537,6 +853,17 @@ fn golden_v1_structural_gates() {
                 }
             }
         }
+    }
+    // покрытие recall-категорий: каждая ≥8
+    for (c, n) in &cats {
+        assert!(
+            *n >= 8,
+            "категория {c} в recall-сплите встречается {n} раз (<8)"
+        );
+    }
+    // обязательные числовые категории — все 11 из схемы
+    for c in RECALL_CATEGORIES {
+        assert!(cats.contains_key(c), "нет покрытия категории {c}");
     }
     // мульти-сущностные строки обязательны (гейт §5 п.7: mix)
     let multi = recall.iter().filter(|r| r.spans.len() >= 2).count();
@@ -565,4 +892,85 @@ fn golden_v1_structural_gates() {
         .filter(|r| r.split == "negative" && r.spans.is_empty())
         .count();
     assert!(empty_neg >= 15, "пустых negative-строк {empty_neg} (<15)");
+}
+
+// ================================================================ B3/B4 (issue #14)
+// специализированные гейты поверх общего структурного прохода
+//
+// B3 «битый бейт становится валидным §7b → тест зелёный; поймано порчей»:
+// отдельный тест, который **сам портит** negative-приманку bik/bank_account и
+// требует, чтобы валидатор класса её покраснил. Если гейт деградирует
+// (пропуск None как true), тест краснеет.
+#[test]
+fn b3_bik_account_baits_are_red_under_class_validators() {
+    // value_source датасетных negative-приманок §7b/§7 (промер g0166/g0167):
+    let bait_bik = "144525225"; // 9 цифр, не `04` → Some(false)
+    let bait_account = "50702810900000001234"; // 20 цифр, вне плана счетов
+    assert_eq!(
+        bik_valid(bait_bik),
+        Some(false),
+        "B3: negative-бейт БИК {bait_bik} прошёл формат-вето — гейт сломан"
+    );
+    assert_eq!(
+        account_valid(bait_account),
+        Some(false),
+        "B3: negative-бейт счёта {bait_account} прошёл формат-вето — гейт сломан"
+    );
+    // Портаем валидный табличный БИК удалением цифры (8 цифр = None = не класс):
+    assert_eq!(bik_valid("04452522"), None, "B3: 8 цифр не наш класс БИК");
+    // Валидный табличный БИК обязан проходить — иначе вето сломано навсегда:
+    assert_eq!(bik_valid("044525225"), Some(true));
+    assert_eq!(account_valid("40702810900000001234"), Some(true));
+}
+
+/// BIK-вето каскада-0: §7b — 9 ASCII-цифр, `04` в начале; чужая длина = None.
+/// Продублирован из `guard_detectors::checksums` (тест структурный, модуль —
+/// шаг 3; см. док модуля про дублирование формул).
+fn bik_valid(s: &str) -> Option<bool> {
+    let d = digits_only(s);
+    if d.len() != 9 || !d.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(d.starts_with("04"))
+}
+
+/// Вето счёта: §7 — 20 цифр, префикс ∈ {3010, 3011, 40, 42}; чужая длина = None.
+fn account_valid(s: &str) -> Option<bool> {
+    let d = digits_only(s);
+    if d.len() != 20 || !d.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(
+        d.starts_with("3010")
+            || d.starts_with("3011")
+            || d.starts_with("40")
+            || d.starts_with("42"),
+    )
+}
+
+/// B4 KNOWN-GAP (v1.0): датасет содержит внеклассовую БИК-приманку g0168
+/// (`04452522`, 8 цифр — табличный §7b НЕВАЛИДН-вектор «не наш класс»).
+/// Прогон чексумм её **не красит** (None = вне класса), т.е. B4-гейт «бейт
+/// обязан быть класса» для этой строки не выполнен. Тест фиксирует точный
+/// список внеклассовых приманок: **после** дописки golden-v1.1 (атом B1)
+/// сузить `value_source_format_ok` до 9/20 цифр, снять `#[ignore]` — список
+/// обязан опустеть до нуля.
+#[test]
+#[ignore = "B4: g0168 внеклассовая приманка (БИК 8 цифр) — переработать в golden-v1.1, сузить формат до 9/20 цифр и снять ignore (issue #14)"]
+fn b4_bik_baits_are_in_class() {
+    let rows = parse_golden();
+    let out_of_class: Vec<&str> = rows
+        .iter()
+        .flat_map(|r| &r.spans)
+        .filter(|s| matches!(s.category, "bik" | "bank_account"))
+        .filter(|s| {
+            let d = digits_only(s.value_source);
+            (s.category == "bik" && d.len() != 9) || (s.category == "bank_account" && d.len() != 20)
+        })
+        .map(|s| s.value_source)
+        .collect();
+    assert!(
+        out_of_class.is_empty(),
+        "B4: внеклассовые приманки {out_of_class:?} — сузать формат и снять ignore"
+    );
 }
