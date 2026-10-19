@@ -264,8 +264,10 @@ mod tests {
 
     #[test]
     fn empty_input_gives_empty_output() {
-        assert!(merge(&[]).is_empty());
-        assert!(Merger::new().finish().is_empty());
+        let m = merge(&[]);
+        assert!(m.is_empty(), "пустой вход дал спаны: {m:?}");
+        let m = Merger::new().finish();
+        assert!(m.is_empty(), "пустой Merger дал спаны: {m:?}");
     }
 
     #[test]

@@ -628,7 +628,8 @@ mod tests {
 
     #[test]
     fn empty_text_yields_no_chunks() {
-        assert!(chunk("", ChunkCfg::default()).is_empty());
+        let chunks = chunk("", ChunkCfg::default());
+        assert!(chunks.is_empty(), "пустой вход дал чанки: {chunks:?}");
     }
 
     #[test]
@@ -839,12 +840,14 @@ mod tests {
 
     #[test]
     fn plan_batches_degenerate_bmax_and_empty_chunks() {
-        assert!(plan_batches(&[], 4, &DEFAULT_BUCKETS).is_empty());
+        let plan = plan_batches(&[], 4, &DEFAULT_BUCKETS);
+        assert!(plan.is_empty(), "пустой вход дал батчи: {plan:?}");
         let c = Chunk {
             span: ByteSpan::new("ab", 0, 2).unwrap(),
             token_lo: 0,
             token_hi: 1,
         };
-        assert!(plan_batches(&[c], 0, &DEFAULT_BUCKETS).is_empty());
+        let plan = plan_batches(&[c], 0, &DEFAULT_BUCKETS);
+        assert!(plan.is_empty(), "b_max=0 дал батчи: {plan:?}");
     }
 }
