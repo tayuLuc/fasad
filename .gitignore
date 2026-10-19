@@ -32,3 +32,6 @@ onnxruntime.dll
 # review/probe artifacts (never commit)
 .review/
 rust_out
+
+# Состояние харнесса агентов (не продукт)
+.agentplane/
