@@ -903,16 +903,35 @@ fn golden_v1_structural_gates() {
 // (пропуск None как true), тест краснеет.
 #[test]
 fn b3_bik_account_baits_are_red_under_class_validators() {
-    // value_source датасетных negative-приманок §7b/§7 (промер g0166/g0167):
-    let bait_bik = "144525225"; // 9 цифр, не `04` → Some(false)
-    let bait_account = "50702810900000001234"; // 20 цифр, вне плана счетов
+    // Нит ревью PR#24 N2: байты приманок берутся ИЗ ДАСЕТА (id g0166/g0167,
+    // span[0].value_source), не хардкодом — молчаливая подмена или «валидизация»
+    // бейта краснит тест.
+    let rows = parse_golden();
+    let bait_of = |id: &str| -> String {
+        let sp = rows
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.spans.first())
+            .unwrap_or_else(|| panic!("приманка {id} пропала из датасета (B3-N2)"));
+        sp.value_source
+            .chars()
+            .filter(char::is_ascii_digit)
+            .collect()
+    };
+    let bait_bik = bait_of("g0166"); // §7b: 9 цифр, не `04`
+    let bait_account = bait_of("g0167"); // §7: 20 цифр, вне плана счетов
+    assert!(
+        bait_bik.len() == 9 && !bait_bik.starts_with("04"),
+        "g0166 = {bait_bik}"
+    );
+    assert!(bait_account.len() == 20, "g0167 = {bait_account}");
     assert_eq!(
-        bik_valid(bait_bik),
+        bik_valid(&bait_bik),
         Some(false),
         "B3: negative-бейт БИК {bait_bik} прошёл формат-вето — гейт сломан"
     );
     assert_eq!(
-        account_valid(bait_account),
+        account_valid(&bait_account),
         Some(false),
         "B3: negative-бейт счёта {bait_account} прошёл формат-вето — гейт сломан"
     );
