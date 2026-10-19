@@ -36,7 +36,7 @@ IO|out|arbiter|logits|Tensor<f32>(batch, markers)
 
 ## 3. Ключевой вопрос §1.8: маппинг external data
 
-Сессия арбитра (graph + external data 523 МБ) поднялась с RSS 7.5 → **269.0 MiB**.
+Сессия арбитра (graph + external data 523 МБ) поднялась с RSS 7.5 → **269.0 MiB (первый прогон) / 250.3 MiB (второй прогон, воспроизводимость ±7%)**.
 Вывод: q4f16 external data **НЕ маппится целиком в resident-RSS** — ORT лениво/
 частично подгружает веса (промер private-RSS `task_vm_info.internal`, «Память»
 как в мониторе активности). Бюджет SPEC §1 (≤1.8 ГБ):
