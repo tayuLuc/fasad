@@ -34,7 +34,9 @@ use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
 use tokenizers::Tokenizer;
 
+use crate::chunker::{Chunk, ChunkCfg};
 use crate::decide::{self, SPECIALS};
+use guard_types::ByteSpan;
 
 /// Индекс `[SEP_STRUCT]` в таблице [`SPECIALS`] (разделитель схем).
 const SEP_STRUCT: usize = 0;
@@ -100,6 +102,15 @@ pub enum ArbError {
     OutputShape(String),
     /// Констрэкт не прошёл живую сверку (`[UNK]` ≠ 0, потеря слова, группы ≠ схемы).
     Layout(String),
+    /// Кусок чанковки не влезает в бюджет входа (`L_chunk + схема > лимита`).
+    /// Fail-closed: проигнорировать кусок = молча потерять ПДн в нём; обрезать
+    /// хвост состояния = то же самое.
+    ChunkTooLong {
+        /// Фактическая длина входа куска в токенах (после encode).
+        chunk_tokens: u32,
+        /// Разрешённый максимум.
+        limit: u32,
+    },
 }
 
 impl std::fmt::Display for ArbError {
@@ -116,6 +127,13 @@ impl std::fmt::Display for ArbError {
             }
             Self::OutputShape(s) => write!(f, "контракт выхода нарушен: {s}"),
             Self::Layout(s) => write!(f, "констрэкт разметки: {s}"),
+            Self::ChunkTooLong {
+                chunk_tokens,
+                limit,
+            } => write!(
+                f,
+                "чанк {chunk_tokens} токенов > лимита {limit} (бюджет входа Decide)"
+            ),
         }
     }
 }
@@ -330,7 +348,20 @@ impl DecideArbiter {
         schema: &[QuestionSchema<'_>],
     ) -> Result<SchemaPlan, ArbError> {
         let block = Self::schema_block(schema)?;
-        let segments = [block.as_str(), text];
+        self.plan_of_block(&block, text, schema)
+    }
+
+    /// Общий приватный core (4b-2d): готовый блок схем + кусок состояния → план
+    /// (один `encode(concat,false)` + `check_splice` + группировка). Единая
+    /// токенизация для `prompts`/`arbitrate_text`/`arbitrate_chunked` — чанковка
+    /// строит блок схем ОДИН раз на весь текст, а не на каждый кусок.
+    fn plan_of_block(
+        &self,
+        block: &str,
+        text: &str,
+        schema: &[QuestionSchema<'_>],
+    ) -> Result<SchemaPlan, ArbError> {
+        let segments = [block, text];
         let whole = join_segments(&segments);
         let ids = self
             .tokenizer
@@ -341,6 +372,20 @@ impl DecideArbiter {
         self.check_splice(&ids, &segments)?;
         let groups = decide::groups(&ids, [self.ids[L], self.ids[L]]);
         schema_plan(&ids, &groups, schema)
+    }
+
+    /// План ОДНОГО куска (публичный вход чанковки/spike): блок схем + кусок.
+    ///
+    /// # Errors
+    ///
+    /// Ветки [`Self::plan_of_block`] (= [`Self::prompts`]).
+    pub fn plan_for_chunk(
+        &self,
+        block: &str,
+        piece: &str,
+        schema: &[QuestionSchema<'_>],
+    ) -> Result<SchemaPlan, ArbError> {
+        self.plan_of_block(block, piece, schema)
     }
 
     /// Полный путь: план → ОДИН прогон → вердикты по порогу.
@@ -357,6 +402,66 @@ impl DecideArbiter {
         let plan = self.prompts(text, schema)?;
         let logits = self.run_logits(&plan)?;
         Ok(decisions(&plan, &logits, threshold))
+    }
+
+    /// Чанковский арбитраж (4b-2d): текст режется [`crate::chunker::chunk`] по
+    /// `cfg`, на КАЖДЫЙ кусок — отдельный прогон графа (схема prepend-ится к
+    /// куску одним `encode`, общий core [`Self::plan_of_block`]), вердикты
+    /// склеиваются [`merge_arb_hits`] в ОРИГИНАЛЬНЫХ байтовых координатах
+    /// (`Chunk::span` уже оригинальные, конверсии нет — инвариант теста
+    /// `chunked_hits_have_original_coords`).
+    ///
+    /// Бюджет входа (`DECIDE_REL_MAX_DISTANCE`) — ПРАКТИЧЕСКИЙ потолок O(L²)/RSS
+    /// (см. док константы, §5.6: Decide = rel-pos bias, не seq-cap). Окно
+    /// `cfg.window + SCHEMA_OVERHEAD_TOKENS` обязан уложить в лимит ВЫЗЫВАЮЩИЙ
+    /// ([`arb_chunk_cfg`]); этот метод перепроверяет ФАКТИЧЕСКИЙ `L` после encode
+    /// и отказывает [`ArbError::ChunkTooLong`], а не молча гонит oversize.
+    ///
+    /// Ошибка одного куска валит весь вызов (fail-closed).
+    ///
+    /// # Errors
+    ///
+    /// [`ArbError::ChunkTooLong`] (перерасход бюджета), плюс ветки
+    /// [`Self::plan_for_chunk`] / [`Self::run_logits`] / [`Self::schema_block`].
+    pub fn arbitrate_chunked(
+        &mut self,
+        text: &str,
+        schema: &[QuestionSchema<'_>],
+        cfg: ChunkCfg,
+        threshold: f32,
+    ) -> Result<ChunkedDecision, ArbError> {
+        let block = Self::schema_block(schema)?;
+        let chunks: Vec<Chunk> = crate::chunker::chunk(text, cfg);
+        let mut per_chunk = Vec::with_capacity(chunks.len());
+        let mut hits: Vec<ArbHit> = Vec::new();
+        for ch in chunks {
+            let piece = ch.span.slice(text).unwrap_or("");
+            let plan = self.plan_for_chunk(&block, piece, schema)?;
+            let l = u32::try_from(plan.ids.len()).unwrap_or(u32::MAX);
+            if l > DECIDE_REL_MAX_DISTANCE {
+                return Err(ArbError::ChunkTooLong {
+                    chunk_tokens: l,
+                    limit: DECIDE_REL_MAX_DISTANCE,
+                });
+            }
+            let logits = self.run_logits(&plan)?;
+            let ds = decisions(&plan, &logits, threshold);
+            for d in ds.iter().filter(|d| d.hit) {
+                hits.push(ArbHit {
+                    span: ch.span,
+                    label: d.label.clone(),
+                    prob: d.prob,
+                });
+            }
+            per_chunk.push(ChunkDecision {
+                span: ch.span,
+                decisions: ds,
+            });
+        }
+        Ok(ChunkedDecision {
+            per_chunk,
+            merged_hits: merge_arb_hits(&hits),
+        })
     }
 
     /// Инференция готового плана: плоские `logits` в порядке `plan.markers`.
@@ -612,6 +717,101 @@ pub fn decisions(plan: &SchemaPlan, logits: &[f32], threshold: f32) -> Vec<Quest
             }
         })
         .collect()
+}
+
+/// Байтовый размер чанка в `tokens` при оценке [`crate::chunker::approx_tokens`]
+/// (`BYTES_PER_TOKEN_U` байт/токен, округление вверх).
+#[must_use]
+pub fn tokens_to_bytes(tokens: u32) -> usize {
+    usize::try_from(tokens)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(crate::chunker::BYTES_PER_TOKEN_U)
+}
+
+/// Максимум токенов куска под лимит `limit` с overhead `overhead`; saturating.
+#[must_use]
+pub fn max_chunk_tokens(limit: u32, overhead: u32) -> u32 {
+    limit.saturating_sub(overhead)
+}
+
+/// Конфиг чанковки арбитра: окно = `min(cfg.window, DECIDE_REL_MAX_DISTANCE −
+/// overhead)`. `None` = после сужения окно вне `256..=384`
+/// ([`ChunkCfg::new`] откажет) — вызывающий обязан отказать fail-closed, а не
+/// гонять oversize. Дефолт (384) и руберт (448) при overhead 56 проходят БЕЗ
+/// сужения (384+56=440, 448+56=504 ≤ 512; промер 4b-2d).
+#[must_use]
+pub fn arb_chunk_cfg(cfg: ChunkCfg, overhead: u32) -> Option<ChunkCfg> {
+    let cap = max_chunk_tokens(DECIDE_REL_MAX_DISTANCE, overhead);
+    let w = cfg.window_tokens.0.min(cap);
+    ChunkCfg::new(w, cfg.overlap_tokens).ok().map(|mut c| {
+        c.sentence_boundaries = cfg.sentence_boundaries;
+        c
+    })
+}
+
+/// Хит чанковского арбитража: **оригинальные** байтовые координаты + победившая
+/// метка + вероятность.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArbHit {
+    /// Интервал в байтах исходного текста (не куска!).
+    pub span: ByteSpan,
+    /// Метка («да»), победившая в группе вопроса.
+    pub label: String,
+    /// Вероятность первой метки (softmax внутри группы).
+    pub prob: f32,
+}
+
+/// Результат чанковского арбитража.
+#[derive(Debug, Clone)]
+pub struct ChunkedDecision {
+    /// Вердикты по каждому чанку (порядок = порядок [`crate::chunker::chunk`]).
+    pub per_chunk: Vec<ChunkDecision>,
+    /// Слитые хиты: union одинакового класса над перекрывающимися окнами,
+    /// оригинальные координаты, `prob` = max по поглощённым.
+    pub merged_hits: Vec<ArbHit>,
+}
+
+/// Вердикт одного чанка: его спан + решения по вопросам схемы.
+#[derive(Debug, Clone)]
+pub struct ChunkDecision {
+    /// Спан куска в оригинальных координатах.
+    pub span: ByteSpan,
+    /// Решения по вопросам (порядок = порядок схемы).
+    pub decisions: Vec<QuestionDecision>,
+}
+
+/// Мёрж чанковских хитов: union-интервалы одинакового `label` над
+/// перекрывающимися/стыкующимися спанами; `prob` = **max** (FN фатален, ниже не
+/// берём — AGENTS §Инварианты). Детерминирован: сортировка `(start↑, end↓,
+/// prob↓)` (тот же ключ, что `merger`). Идемпотентен.
+#[must_use]
+pub fn merge_arb_hits(hits: &[ArbHit]) -> Vec<ArbHit> {
+    let mut v: Vec<ArbHit> = hits.to_vec();
+    v.sort_by(|a, b| {
+        a.span
+            .start
+            .cmp(&b.span.start)
+            .then(b.span.end.cmp(&a.span.end))
+            .then(b.prob.total_cmp(&a.prob))
+    });
+    let mut out: Vec<ArbHit> = Vec::with_capacity(v.len());
+    for h in v {
+        match out
+            .iter_mut()
+            .find(|last| last.label == h.label && h.span.start <= last.span.end)
+        {
+            Some(last) => {
+                if h.span.end > last.span.end {
+                    last.span.end = h.span.end;
+                }
+                if h.prob > last.prob {
+                    last.prob = h.prob;
+                }
+            }
+            None => out.push(h),
+        }
+    }
+    out
 }
 
 /// Softmax по логитам ОДНОЙ схемы (контракт «softmax within each question's
