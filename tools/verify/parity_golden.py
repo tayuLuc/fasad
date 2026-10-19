@@ -30,9 +30,9 @@
 
 Запуск (веса: scripts/fetch-models.sh, tools/verify/fetch_manifest_weights.sh):
   uvx --python ~/.local/bin/python3.13 --with numpy --with onnxruntime \\
-      --with tokenizers python tools/verify/parity_golden.py --model lockr
-(py3.13: wheels onnxruntime ≤cp314; системный 3.9 не годится. uvx — вне дерева
-сборки, AGENTS §Порядок п.6.)
+      --with tokenizers --with psutil python tools/verify/parity_golden.py --model lockr
+(py3.13: wheels onnxruntime ≤cp314; системный 3.9 не годится. psutil — RSS
+пика (fallback vmmap/VmRSS). uvx — вне дерева сборки, AGENTS §Порядок п.6.)
 """
 from __future__ import annotations
 
