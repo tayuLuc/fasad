@@ -743,17 +743,15 @@ pub fn max_chunk_tokens(limit: u32, overhead: u32) -> u32 {
 pub fn arb_chunk_cfg(cfg: ChunkCfg, overhead: u32) -> Option<ChunkCfg> {
     let cap = max_chunk_tokens(DECIDE_REL_MAX_DISTANCE, overhead);
     let w = cfg.window_tokens.0.min(cap);
-    if w == cfg.window_tokens.0 {
-        // Сужения нет — окно легально как есть: 256..=384 (конфиг A) ИЛИ 448
-        // (конфиг B §5.7, строится вне ChunkCfg::new — переделывать через new
-        // означало бы сломать руберт-конфиг). Иначе (cap < 256) — None.
-        let legal = (256..=384).contains(&w) || w == crate::chunker::RUBERT_WINDOW_TOKENS;
-        return legal.then_some(cfg);
-    }
-    ChunkCfg::new(w, cfg.overlap_tokens).ok().map(|mut c| {
-        c.sentence_boundaries = cfg.sentence_boundaries;
-        c
-    })
+    let mut out = cfg;
+    out.window_tokens.0 = w;
+    // Легальность проверяется на ИТОГОВОМ окне: множество A `256..=384` плюс
+    // B-значение 448 (§5.7). Сужение 448 -> 400 (завышенный overhead) — вне
+    // множества => None (fail-closed), а не тихий полутактический гибрид.
+    let legal = (crate::chunker::WINDOW_TOKENS_MIN..=crate::chunker::WINDOW_TOKENS_MAX)
+        .contains(&w)
+        || w == crate::chunker::RUBERT_WINDOW_TOKENS;
+    legal.then_some(out)
 }
 
 /// Хит чанковского арбитража: **оригинальные** байтовые координаты + победившая
@@ -1101,6 +1099,16 @@ mod tests {
         );
         // Завышенный overhead => cap < 256 => None (fail-closed, не oversize).
         assert!(arb_chunk_cfg(ChunkCfg::default(), 300).is_none());
+        // Сужение 448 -> 400: вне 256..=384 и вне {448} => отказ.
+        assert!(
+            arb_chunk_cfg(ChunkCfg::rubert(), 112).is_none(),
+            "448->400 нелегально"
+        );
+        // Сужение 448 -> 384: легально, окно становится A-валидным.
+        assert_eq!(
+            arb_chunk_cfg(ChunkCfg::rubert(), 128).map(|c| c.window_tokens.0),
+            Some(384)
+        );
         assert!(
             arb_chunk_cfg(ChunkCfg::default(), 256).is_some(),
             "ровно cap=256"
