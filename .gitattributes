@@ -1,0 +1,6 @@
+# Золотые данные — байтовые эталоны: CRLF-конверсия Windows-чек аута ломает
+# sha256-гейт B2 (issue #14, CI windows-2022 red 39209776769: файл с CRLF на
+# винде ≠ хэш LF-оригинала). -text = ни нормализации, ни конверсии.
+data/golden/** -text
+*.onnx binary
+*.safetensors binary
