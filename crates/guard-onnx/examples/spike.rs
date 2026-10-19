@@ -7,6 +7,9 @@
 //! Запуск (после `scripts/fetch-models.sh`, веса в ~/.cache/fasad-models):
 //! ```text
 //! cargo run --release --features ort-inference --example spike -- --arb --lockr
+//! # 4b-2d: --arb-chunked [--window 384|448] (чанкованный арбитр: покрытие
+//! # длинных входов, латентность), --arb-budget (пик RSS двух моделей в ОДНОМ
+//! # процессе, вердикт SPEC <2 ГБ). dylib-контракт: см. ниже (N6, ревью #32).
 //! ```
 //! Контракт dylib (нить N6, ревью #32): build И run — ОДНИМИ env
 //! (`ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=…`, цель `just spike-dylib`).
@@ -403,6 +406,16 @@ fn run_spike(
     }
     if argv.iter().any(|a| a == "--lockr") {
         measure_lockr(cache, &env, threads)?;
+    }
+    if argv.iter().any(|a| a == "--arb-chunked") {
+        let wi = argv
+            .iter()
+            .position(|a| a == "--window")
+            .and_then(|i| argv.get(i + 1));
+        arb_chunked_run(cache, &env, threads, wi.map(String::as_str))?;
+    }
+    if argv.iter().any(|a| a == "--arb-budget") {
+        arb_budget_run(cache, &env, threads)?;
     }
     Ok(())
 }
@@ -1070,6 +1083,398 @@ fn dual_gate(inline: &InlineArb, mod_probs: &[f64]) -> Result<(), Box<dyn std::e
     println!("DUAL|maxdiff|{maxdiff:.3e}");
     if maxdiff > 1e-3 {
         return Err(format!("DUAL|maxdiff={maxdiff:.3e} > 1e-3 — модуль ≠ инлайн-контур").into());
+    }
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4b-2d: чанкованный арбитр + бюджет RSS двух моделей.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Максимум из фоновых снимков footprint (vmmap — внешний процесс: не трясёт
+/// allocator, но бьёт по «не более, чем»; живой floor — `rss()` в точках).
+#[cfg(feature = "ort-inference")]
+fn vmfoot_mib() -> Option<f64> {
+    let out = std::process::Command::new("vmmap")
+        .arg(std::process::id().to_string())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let txt = String::from_utf8_lossy(&out.stdout);
+    for line in txt.lines() {
+        let l = line.trim();
+        if l.starts_with("Physical footprint:") || l.starts_with("Physical Footprint:") {
+            let tail = l.rsplit(' ').next()?;
+            let (num, unit) = match tail.strip_suffix("M") {
+                Some(n) => (n, 'M'),
+                None => match tail.strip_suffix("K") {
+                    Some(n) => (n, 'K'),
+                    None => continue,
+                },
+            };
+            let v: f64 = num.trim().parse().ok()?;
+            return Some(match unit {
+                'M' => v,
+                _ => v / 1024.0,
+            });
+        }
+    }
+    None
+}
+
+/// Чанкованный арбитр (`--arb-chunked`, 4b-2d): state = склейка `spike_texts()`
+/// (тот же вход, что `--arb`), режется [`guard_onnx::chunker::chunk`] под
+/// бюджет Decide, на каждый кусок — отдельный прогон `DecideArbiter`.
+/// Метрики: промеры `L_chunk`, `p50` latency на текст (ожидание ТЗ ≤1500 мс
+/// против 5963 мс one-прогона — см. сырьё и разбор в audit §5.6), покрытие
+/// `merged`-хитов оригинального текста.
+#[cfg(feature = "ort-inference")]
+fn arb_chunked_run(
+    cache: &std::path::Path,
+    env: &ort::environment::Environment,
+    threads: usize,
+    argv_window: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use guard_onnx::arbitrate::{DecideArbiter, SCHEMA_OVERHEAD_TOKENS, arb_chunk_cfg};
+    let model = cache
+        .join("onnx-community/GLiNER2.5-Decide-ONNX")
+        .join("onnx/model_q4f16.onnx");
+    let tok_path = cache
+        .join("onnx-community/GLiNER2.5-Decide-ONNX")
+        .join("tokenizer.json");
+    require_weight(&model)?;
+    require_weight(&data_side(&model))?;
+    require_weight(&tok_path)?;
+    let owned = arb_mod_schema();
+    let schema = owned
+        .iter()
+        .map(|(q, l)| (*q, *l))
+        .collect::<Vec<(&str, &[&str])>>();
+    let block = DecideArbiter::schema_block(&schema)?;
+    println!("OVERHEAD|block_alone_tokens={SCHEMA_OVERHEAD_TOKENS}");
+    let mut t = Instant::now();
+    let mut arb = DecideArbiter::load(env, &model, &tok_path, threads)?;
+    println!("METRIC|load_ms_arbchunked|{:.1}", ms(t));
+    let _ = arb_load_probe(&mut arb);
+    let state = spike_texts().join(" ");
+    // --window <токенов> (дефолт 384 = SPEC §2; промер B-окна 448). Поле pub —
+    // конструктор new() зажимает 256..=384, поэтому мутацией (spike-инструмент).
+    let want = argv_window
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(384);
+    let base = guard_onnx::chunker::ChunkCfg {
+        window_tokens: guard_onnx::chunker::WindowTokens(u32::try_from(want).unwrap_or(384)),
+        ..guard_onnx::chunker::ChunkCfg::default()
+    };
+    let cfg = arb_chunk_cfg(base, SCHEMA_OVERHEAD_TOKENS)
+        .ok_or("arb_chunk_cfg: окно не влезает в бюджет/легальность — баг")?;
+    println!(
+        "CHUNK|window_tokens|{}|overlap_tokens|{}",
+        cfg.window_tokens.0, cfg.overlap_tokens
+    );
+    let chunks = guard_onnx::chunker::chunk(&state, cfg);
+    println!("CHUNK|count|{}", chunks.len());
+    let sizes: Vec<u32> = chunks
+        .iter()
+        .map(|c| u32::try_from(c.span.byte_len()).unwrap_or(u32::MAX))
+        .collect();
+    println!(
+        "CHUNK|sizes_bytes|{}",
+        join_ms_f(&sizes.iter().map(|&x| f64::from(x)).collect::<Vec<_>>())
+    );
+    // Точная токен-длина каждого куска (не байтовая оценка): живой encode.
+    let l_exact = chunk_token_lengths(&tok_path, &block, &state, &chunks)?;
+    println!(
+        "IO|tokens|arbiter_chunked|{}",
+        join_ms_f(
+            &l_exact
+                .iter()
+                .map(|&x| f64::from(u32::try_from(x).unwrap_or(u32::MAX)))
+                .collect::<Vec<_>>()
+        )
+    );
+    println!(
+        "METRIC|L_chunk_max_exact|{}",
+        l_exact.iter().max().copied().unwrap_or(0)
+    );
+    let mut lat = Vec::new();
+    let mut res = None;
+    for r in 0..5 {
+        t = Instant::now();
+        let cd = arb.arbitrate_chunked(&state, &schema, cfg, 0.5)?;
+        let dt = ms(t);
+        if r >= 1 {
+            lat.push(dt); // warmup первого прогона (инициализация орт-пулов)
+        }
+        res = Some(cd);
+    }
+    let cd = res.ok_or("чанковка не выполнилась")?;
+    let lat_p50 = p50(lat.clone());
+    println!("METRIC|lat_chunked_p50_ms|{lat_p50:.1}");
+    println!("METRIC|lat_chunked_all_ms|{}", join_ms(&lat));
+    // ЧИСТЫЙ инференс без токенизации (декомпозиция latency, ревью п.3).
+    let (ro, run_only) = time_runs_only(&mut arb, &block, &state, &schema, &chunks)?;
+    let n_chunks = chunks.len();
+    println!("METRIC|lat_chunked_runs_only_p50_ms|{ro:.1}");
+    println!("METRIC|lat_chunked_runs_only_all_ms|{}", join_ms(&run_only));
+    println!(
+        "LAT|per_chunk_ms_avg|{:.1}",
+        ro / f64::from(u32::try_from(n_chunks).unwrap_or(1))
+    );
+    let cov = union_bytes(&cd.merged_hits);
+    println!(
+        "COVERAGE|hits|{}|covered_bytes|{cov}|text_bytes|{}",
+        cd.merged_hits.len(),
+        state.len()
+    );
+    Ok(())
+}
+
+/// Живые токен-длины кусков (encode block+piece; вход прогона +0/−1 разделитель).
+#[cfg(feature = "ort-inference")]
+fn chunk_token_lengths(
+    tok_path: &std::path::Path,
+    block: &str,
+    state: &str,
+    chunks: &[guard_onnx::chunker::Chunk],
+) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
+    let mut tt = tokenizers::Tokenizer::from_file(tok_path)
+        .map_err(|e| format!("токенизатор L-промер: {e}"))?;
+    tt.with_post_processor(Option::<tokenizers::processors::template::TemplateProcessing>::None);
+    let mut out = Vec::with_capacity(chunks.len());
+    for c in chunks {
+        let piece = c.span.slice(state).unwrap_or("");
+        let enc = tt
+            .encode(format!("{block} {piece}"), false)
+            .map_err(|e| format!("encode L-промер: {e}"))?;
+        out.push(enc.get_ids().len());
+    }
+    Ok(out)
+}
+
+/// Размер объединения интервалов хитов (пересечения не суммируются).
+#[cfg(feature = "ort-inference")]
+fn union_bytes(hits: &[guard_onnx::arbitrate::ArbHit]) -> usize {
+    let mut spans: Vec<(usize, usize)> = hits.iter().map(|h| (h.span.start, h.span.end)).collect();
+    spans.sort_unstable();
+    let mut cov = 0usize;
+    let mut cur = None::<(usize, usize)>;
+    for (a, b) in spans {
+        match cur {
+            Some((ca, cb)) if a <= cb => cur = Some((ca, cb.max(b))),
+            Some((ca, cb)) => {
+                cov += cb - ca;
+                cur = Some((a, b));
+            }
+            None => cur = Some((a, b)),
+        }
+    }
+    if let Some((ca, cb)) = cur {
+        cov += cb - ca;
+    }
+    cov
+}
+
+/// Таймер ЧИСТОГО инференса (без токенизации/чанковки): планы строятся
+/// заранее, таймер окружает только `run_logits` по всем кускам.
+#[cfg(feature = "ort-inference")]
+fn time_runs_only(
+    arb: &mut guard_onnx::arbitrate::DecideArbiter,
+    block: &str,
+    state: &str,
+    schema: &[(&str, &[&str])],
+    chunks: &[guard_onnx::chunker::Chunk],
+) -> Result<(f64, Vec<f64>), Box<dyn std::error::Error>> {
+    let plans: Vec<_> = chunks
+        .iter()
+        .map(|c| {
+            arb.plan_for_chunk(block, c.span.slice(state).unwrap_or(""), schema)
+                .map_err(|e| format!("plan: {e}"))
+        })
+        .collect::<Result<_, _>>()?;
+    let mut run_only = Vec::new();
+    for _ in 0..3 {
+        let t = Instant::now();
+        for pl in &plans {
+            let lg = arb.run_logits(pl)?;
+            std::hint::black_box(lg.len());
+        }
+        run_only.push(ms(t));
+    }
+    Ok((p50(run_only.clone()), run_only))
+}
+
+/// Прогон-разминка после load (первый ран всегда медленный — пулы ORT);
+/// возвращает вероятность первой группы для совместимости с вызовом выше.
+#[cfg(feature = "ort-inference")]
+fn arb_load_probe(arb: &mut guard_onnx::arbitrate::DecideArbiter) -> f64 {
+    let owned = arb_mod_schema();
+    let schema = owned.iter().map(|(q, l)| (*q, *l)).collect::<Vec<_>>();
+    arb.arbitrate_text("test", &schema, 0.5)
+        .ok()
+        .and_then(|v| v.first().map(|d| f64::from(d.prob)))
+        .unwrap_or(0.0)
+}
+
+/// Join чисел через `|`.
+#[cfg(feature = "ort-inference")]
+fn join_ms_f(v: &[f64]) -> String {
+    v.iter()
+        .map(|x| format!("{x:.0}"))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+/// Живой ран lockR-сессии + сэмпл пика; возвращает обновлённый пик MiB.
+#[cfg(feature = "ort-inference")]
+fn budget_lockr_step(
+    cache: &std::path::Path,
+    s1: &mut ort::session::Session,
+    mut peak: f64,
+) -> Result<f64, Box<dyn std::error::Error>> {
+    use ort::value::Tensor;
+    let tokp = cache
+        .join("lockR/rubert-base-pii-ner-onnx")
+        .join("tokenizer.json");
+    require_weight(&tokp)?;
+    let tok =
+        tokenizers::Tokenizer::from_file(&tokp).map_err(|e| format!("токенизатор lockR: {e}"))?;
+    let pad = tok.get_vocab(true).get("[PAD]").copied().unwrap_or(0);
+    let enc = tok
+        .encode(spike_texts()[0], true)
+        .map_err(|e| format!("encode: {e}"))?;
+    let mut enc = enc;
+    enc.pad(
+        256,
+        pad,
+        0,
+        "[PAD]",
+        tokenizers::utils::padding::PaddingDirection::Right,
+    );
+    let ids: Vec<i64> = enc.get_ids().iter().map(|&v| i64::from(v)).collect();
+    let mask: Vec<i64> = enc
+        .get_attention_mask()
+        .iter()
+        .map(|&v| i64::from(v))
+        .collect();
+    let types = vec![0i64; 256];
+    let order: Vec<String> = s1.inputs().iter().map(|i| i.name().to_string()).collect();
+    let built = [
+        ("input_ids", ids),
+        ("attention_mask", mask),
+        ("token_type_ids", types),
+    ];
+    let inputs: Vec<(String, ort::value::DynTensor)> = order
+        .iter()
+        .filter_map(|n| {
+            built
+                .iter()
+                .find(|(k, _)| k == n)
+                .map(|(_, v)| {
+                    Tensor::from_array(([1usize, 256], v.clone().into_boxed_slice())).ok()
+                })
+                .map(|r| (n.clone(), r))
+        })
+        .map(|(n, r)| r.map(|x| (n, x.upcast())))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("lockR: сборка входов не удалась")?;
+    let t = Instant::now();
+    let outs = s1.run(inputs)?;
+    println!("METRIC|run_ms_extractor1b|{:.1}", ms(t));
+    let elems: usize = outs
+        .iter()
+        .map(|(_, v)| v.try_extract_tensor::<f32>().map_or(0, |(_, d)| d.len()))
+        .sum();
+    std::hint::black_box(elems);
+    peak = peak.max(rss("after_run_extractor1b"));
+    if let Some(f) = vmfoot_mib() {
+        peak = peak.max(f); // floor для macOS-18-без-vmmap (защита деградации)
+    }
+    Ok(peak)
+}
+
+/// SPEC <2 ГБ = 1843.2 MiB (1.8 × 1024); вердикт сравнивает ПИК (ревью
+/// родителя п.2: строка обязана читаться сама из себя).
+#[cfg(feature = "ort-inference")]
+const BUDGET_MIB: f64 = 1843.2;
+
+/// Бюджет двух моделей (`--arb-budget`, 4b-2d): в ОДНОМ процессе поднимаются
+/// extractor1b (lockR fp16) и Decide-arbiter (q4f16), между шагами — сэмпл
+/// пика RSS. Пик = max(живые `rss()`-точки, фоновые `vmmap`-снимки). Вердикт
+/// SPEC §1: <1.8 GiB = 1843 MiB.
+#[cfg(feature = "ort-inference")]
+fn arb_budget_run(
+    cache: &std::path::Path,
+    env: &ort::environment::Environment,
+    threads: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use guard_onnx::arbitrate::DecideArbiter;
+    let mut peak = rss("before_both");
+    if let Some(f) = vmfoot_mib() {
+        peak = peak.max(f); // floor для macOS-18-без-vmmap (защита деградации)
+    }
+    // 1) extractor lockR.
+    let lockr = cache
+        .join("lockR/rubert-base-pii-ner-onnx")
+        .join("model.optimized.fp16.onnx");
+    require_weight(&lockr)?;
+    let before1 = peak.max(rss_mib().unwrap_or(peak));
+    let t = Instant::now();
+    let mut s1 = open_session(env, &lockr, threads)?;
+    println!("METRIC|load_ms_extractor1b|{:.1}", ms(t));
+    let a1 = rss("after_load_extractor1b");
+    peak = peak.max(a1);
+    println!("METRIC|delta_mib_extractor1b|{:.1}", a1 - before1);
+    if let Some(f) = vmfoot_mib() {
+        peak = peak.max(f); // floor для macOS-18-без-vmmap (защита деградации)
+    }
+    // один живой ран lockR (pad 256, как measure_lockr) + пик-сэмпл после него.
+    peak = budget_lockr_step(cache, &mut s1, peak)?;
+
+    // 2) Decide-арбитр ВТОРОЙ сессией (нюанс ревью #34 в: вторая сессия НЕ
+    // шерится с первой — общий env только, веса/ORB-кэши независимы).
+    let decide = cache
+        .join("onnx-community/GLiNER2.5-Decide-ONNX")
+        .join("onnx/model_q4f16.onnx");
+    let tokp = cache
+        .join("onnx-community/GLiNER2.5-Decide-ONNX")
+        .join("tokenizer.json");
+    require_weight(&decide)?;
+    require_weight(&data_side(&decide))?;
+    require_weight(&tokp)?;
+    let owned = arb_mod_schema();
+    let schema = owned.iter().map(|(q, l)| (*q, *l)).collect::<Vec<_>>();
+    let before2 = rss_mib().unwrap_or(0.0);
+    let t = Instant::now();
+    let mut arb = DecideArbiter::load(env, &decide, &tokp, threads)?;
+    println!("METRIC|load_ms_arbiter|{:.1}", ms(t));
+    let a2 = rss("after_load_arbiter");
+    peak = peak.max(a2);
+    // Дельта ВТОРОЙ сессии при живой первой: сравнима с alone-дельтой §5
+    // (шеринг/не-шеринг весов — ревью #34 в, нит #38 N2).
+    println!("METRIC|delta_mib_arbiter2nd|{:.1}", a2 - before2);
+    if let Some(f) = vmfoot_mib() {
+        peak = peak.max(f); // floor для macOS-18-без-vmmap (защита деградации)
+    }
+    let state = spike_texts().join(" ");
+    let t = Instant::now();
+    let probs = arb.arbitrate_text(&state, &schema, 0.5)?;
+    println!("METRIC|run_ms_arbiter|{:.1}", ms(t));
+    println!("BUDGET|decide_probs|{}", probs.len());
+    peak = peak.max(rss("after_run_arbiter"));
+    if let Some(f) = vmfoot_mib() {
+        peak = peak.max(f); // floor для macOS-18-без-vmmap (защита деградации)
+    }
+    let after = rss("after_both");
+    println!("METRIC|rss_peak_mib_both_models|{peak:.1}");
+    println!("METRIC|rss_after_both_mib|{after:.1}");
+    println!("METRIC|budget_limit_mib|{BUDGET_MIB:.1}");
+    if peak < BUDGET_MIB {
+        println!("BUDGET|verdict=ok|{peak:.1}<{BUDGET_MIB:.1}");
+    } else {
+        println!("BUDGET|verdict=over|{peak:.1}>={BUDGET_MIB:.1}");
     }
     Ok(())
 }
