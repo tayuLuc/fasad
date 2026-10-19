@@ -11,6 +11,71 @@
 
 /// Структурные спец-токены Decide-разметки: имя + id (промерены из
 /// `tokenizer.json` рев. `18271032`, манифест `models/manifest.md`).
+/// id2label 0..42 token-classification head lockR — первичка `config.json`
+/// репо `lockR/rubert-base-pii-ner-onnx@ea7610b22…` (hf_hub_download 20.10).
+/// Зеркало `ID2LABEL` в `tools/verify/parity_golden.py` (одна константа на
+/// два места; тест `lockr_id2label_matches_verify_mirror` читает скрипт).
+pub const ID2LABEL: [&str; 43] = [
+    "O", "B-PASSPORT", "I-PASSPORT", "B-CREDIT_CARD", "I-CREDIT_CARD",
+    "B-DRIVER_LICENSE", "I-DRIVER_LICENSE", "B-INN", "I-INN", "B-SNILS", "I-SNILS",
+    "B-MILITARY_ID", "I-MILITARY_ID", "B-BIRTH_CERTIFICATE", "I-BIRTH_CERTIFICATE",
+    "B-OMS", "I-OMS", "B-CITY", "B-COUNTRY", "B-DISTRICT", "B-EMAIL", "B-FIRST_NAME",
+    "B-HOUSE", "B-IP_ADDRESS", "B-LAST_NAME", "B-MIDDLE_NAME", "B-PHONE", "B-REGION",
+    "B-STREET", "B-URL", "I-CITY", "I-COUNTRY", "I-DISTRICT", "I-EMAIL",
+    "I-FIRST_NAME", "I-HOUSE", "I-IP_ADDRESS", "I-LAST_NAME", "I-MIDDLE_NAME",
+    "I-PHONE", "I-REGION", "I-STREET", "I-URL",
+];
+
+/// BIO-скобка lockR (Begin/Inside ОДНОЙ головы): цепочка `B-класс` +
+/// непрерывные `I-` того же класса; `O`/чужой `I` обрывают. Возвращает
+/// (класс, tok_start, tok_end_excl) — индексы ТОКЕНОВ; конверсию в байты
+/// делает потребитель (offsets токенизатора в парити/рантайме). Чистая функция
+/// (без фичи ort) — тестируется на голых тегах.
+#[must_use]
+pub fn lockr_bio_group(tags: &[&str]) -> Vec<(String, usize, usize)> {
+    let mut out: Vec<(String, usize, usize)> = Vec::new();
+    let mut cur: Option<(String, usize, usize)> = None;
+    for (t, &tag) in tags.iter().enumerate() {
+        if let Some(b) = tag.strip_prefix("B-") {
+            if let Some(c) = cur.take() {
+                out.push(c);
+            }
+            cur = Some((b.to_string(), t, t + 1));
+        } else if let Some(i) = tag.strip_prefix("I-") {
+            if cur.as_ref().is_some_and(|(c, _, _)| c == i) {
+                if let Some(c) = cur.as_mut() {
+                    c.2 = t + 1;
+                }
+            } else if let Some(c) = cur.take() {
+                out.push(c);
+            }
+        } else if let Some(c) = cur.take() {
+            out.push(c);
+        }
+    }
+    if let Some(c) = cur {
+        out.push(c);
+    }
+    out
+}
+
+/// Теги позиции с порогом: ниже `threshold` — `O` (prob считается softmax-ом
+/// строки логитов вызывающим кодом; здесь — чистый фильтр argmax-индексов).
+#[must_use]
+pub fn lockr_tags(argmax: &[usize], probs: &[f64], threshold: f64) -> Vec<&'static str> {
+    argmax
+        .iter()
+        .zip(probs)
+        .map(|(&i, &p)| {
+            if p >= threshold {
+                ID2LABEL.get(i).copied().unwrap_or("O")
+            } else {
+                "O"
+            }
+        })
+        .collect()
+}
+
 /// Маркер `marker_positions` — индекс токена `[L]` (первичка: `config.json`
 /// глоссарий «index of each `[L]` token» + карточка @18271032 §Graph;
 /// референс `fastino-ai/GLiNER2` `gliner2/classification/scoring.py` греет
@@ -149,6 +214,48 @@ mod tests {
             Some(128_007)
         );
         assert_eq!(id_of(&std::collections::HashMap::new(), "[L]"), None);
+    }
+
+    #[test]
+    fn lockr_bio_group_brackets_and_breaks() {
+        // B-PHONE I-PHONE B-EMAIL O B-PHONE → 3 спана, последний 1 токен;
+        // чужой I (I-INN после B-PHONE) обрывает и НЕ открывает (B- нет).
+        let tags = ["O", "B-PHONE", "I-PHONE", "B-EMAIL", "I-INN", "O", "B-PHONE"];
+        let sp = lockr_bio_group(&tags);
+        assert_eq!(sp.len(), 3, "телефон(1-3) + почта + телефон(6)");
+        assert_eq!(&sp[0], &("PHONE".to_string(), 1, 3));
+        assert_eq!(&sp[1].0, "EMAIL", "I-INN не продлил EMAIL и не стал спаном");
+        assert_eq!(&sp[1], &("EMAIL".to_string(), 3, 4));
+        assert_eq!(&sp[2], &("PHONE".to_string(), 6, 7));
+    }
+
+    #[test]
+    fn lockr_tags_threshold_gates_to_o() {
+        let argmax = [26usize, 27, 26]; // B-PHONE, I-PHONE, B-PHONE
+        let probs = [0.9, 0.4, 0.5];
+        let t = lockr_tags(&argmax, &probs, 0.5);
+        assert_eq!(t, vec!["B-PHONE", "O", "B-PHONE"], "порог включительно");
+        assert!(lockr_tags(&[999], &[1.0], 0.5) == vec!["O"], "вне 43 — O");
+    }
+
+    #[test]
+    fn lockr_id2label_matches_verify_mirror() {
+        // Один источник истины на два места (паттерн DECIDE_* констант):
+        // скрипт-парити несёт ТЕ ЖЕ 43 тега.
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tools/verify/parity_golden.py"
+        ))
+        .expect("скрипт парити рядом с деревом сборки");
+        let start = src.find("ID2LABEL = [").expect("ID2LABEL в parity_golden.py");
+        // граница зеркала — перевод строки: список многострочный, `]` вложен.
+        let end = src[start..]
+            .find("\n]")
+            .map_or(src.len(), |o| start + o + 2);
+        let body = &src[start..end];
+        for tag in ID2LABEL {
+            assert!(body.contains(&format!("\"{tag}\"")), "тег {tag} потерян");
+        }
     }
 
     #[test]
