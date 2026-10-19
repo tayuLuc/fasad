@@ -714,6 +714,7 @@ dependencies = [
  "aho-corasick",
  "guard-types",
  "regex",
+ "serde_json",
 ]
 
 [[package]]
