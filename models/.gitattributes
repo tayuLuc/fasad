@@ -1,0 +1,6 @@
+# Веса никогда в гит (закон source-capture: URL+revision+sha, не blob).
+# M-строка нужна, чтобы git checkout не ломал ort-граф: без CRLF-нормализации
+# бинарь побайтно идентичен промеренному sha256.
+*.onnx binary
+*.onnx_data binary
+manifest.tsv text eol=lf

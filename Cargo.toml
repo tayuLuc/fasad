@@ -20,7 +20,7 @@ default-members = [
 # здесь, чтобы нарушение ловилось локальной сборкой, а не только красным CI.
 [workspace.lints.rust]
 missing_docs = "warn"
-unsafe_code  = "forbid"
+unsafe_code  = "deny"
 
 [workspace.lints.clippy]
 unwrap_used       = "deny"

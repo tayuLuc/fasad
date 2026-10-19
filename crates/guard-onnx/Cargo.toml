@@ -19,6 +19,8 @@ default = []
 # Включение ORT-бэкенда: тянет ort (см. комментарий в корневом Cargo.toml) с
 # download-binaries+copy-dylibs — доставка библиотеки onnxruntime на CI-раннере.
 # Шаг 1 инференса не содержит, поэтому фича off-by-default.
+# SPIKE(step2, issue #6): example `spike` собирается с этой фичей; CI (`just lint`
+# = --all-targets без фич) получает no-op-версию example и НЕ требует весов.
 ort-inference = ["dep:ort", "dep:tokenizers"]
 
 [dependencies]
@@ -29,3 +31,13 @@ ort        = { workspace = true, optional = true }
 
 [lints]
 workspace = true
+# SPIKE(step2, issue #6, ревью #9 нит #15): финальный контракт unsafe (19.10):
+# workspace `unsafe_code = "deny"` + `#![forbid(unsafe_code)]` во всех src-крейтах
+# — библиотека остаётся forbid-контрактной изнутри (промер ревьюера: внутренний
+# forbid при внешнем deny держится; package-[lints]-overide действительно нельзя,
+# «cannot override workspace.lints» — воспроизведено). Точечный #[allow] на
+# mod ffi example работает БЕЗ всяких RUSTFLAGS; фиктивная команда
+# RUSTFLAGS="-A unsafe_code" из старой инструкции удалена. Инверты workspace
+# forbid промерены и мертвы (E0453 / cannot-override / [patch.lints]-не-ключ /
+# RUSTFLAGS проигрывает -F) — см. git-историю этого файла, коммит be2bf9a.
+
