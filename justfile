@@ -39,6 +39,11 @@ ort-dylib *ARGS:
     ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib}" {{ARGS}}
 
 # Полный spike-прогон релиза на dylib (issue #11 гейт): сборка release + --arb --lockr.
+# Контракт (нить N6, ревью #32): build и run — ОДНИМИ env ниже. Build без
+# ORT_PREFER_DYNAMIC_LINK → путь download-binaries (pyke-статика 1.23) +
+# copy-dylibs кладёт шейды libonnxruntime*.dylib рядом с бинарём → plain-run
+# бинаря, линкованного на 1.31 = SIGSEGV (промер ревью #32; снятие:
+# rm target/release/examples/libonnxruntime*.dylib или rebuild с env).
 spike-dylib:
     ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib}" cargo build --release --features ort-inference --example spike
     ORT_PREFER_DYNAMIC_LINK=1 target/release/examples/spike --arb --lockr
