@@ -194,7 +194,10 @@ impl Chunk {
 ///
 /// Тип, а не голое `u32`, потому что контракт SPEC §2 запрещает окно вне
 /// диапазона: `WindowTokens(4096)` компилировался бы и молча убивал бы память
-/// демона квадратом attention.
+/// демона квадратом attention. Поле `pub` — осознанный escape-hatch
+/// property-генератора; прод-пути — только [`ChunkCfg::new`] /
+/// [`ChunkCfg::rubert`], валидатор зафиксирован тестом
+/// `window_tokens_validated_on_cfg`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct WindowTokens(pub u32);
 
