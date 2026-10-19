@@ -12,6 +12,12 @@
 //! зажаты на `ort =rc.9` + `tokenizers ^0.21` (SPEC §7, промер 18.10 подтвердил
 //! конфликт) — они остаются только референсом кода декодирования.
 
+/// Живой Decide-арбитр (4b-2c): констрэкт разметки + инференция + softmax по
+/// группам. За фичей `ort-inference`: тип держит сессию `ort::session::Session`,
+/// поэтому чистая часть ([`softmax`], [`decide_probs`]) доступна только с ней —
+/// контракт §7 (крейт без фичи не тянет onnxruntime, `cargo check` обеих ОС лёгкий).
+#[cfg(feature = "ort-inference")]
+pub mod arbitrate;
 pub mod chunker;
 pub mod decide;
 pub mod merger;
