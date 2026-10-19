@@ -66,6 +66,15 @@ GatherElements до lockR-мерки).
    `-Wl,-undefined,dynamic_lookup` (нужен из-за §5.2) + `-lSystem` порядок в
    release. НЕ правим: `[profile.release]` workspace (запрет родителя); чинить
    заменой линк-стратегии (ORT dylib/`load-dynamic` фича) в шаге 4.
+   **РЕШЕНО 19.10 06:34 (промеры release, issue #11):** официальный dylib-путь
+   `ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=… -Wl,-rpath,…`: 1.20.1/1.23.0/1.24.4/
+   1.26.0 — не крашатся (мягкий exit 101 «api-31 → supported [1,NN]», NN=минор);
+   **1.31.0 — прогон живой**: exit 1 (GatherElements §5.3, ожидаемо до шага 4),
+   `env_init_ms|40.3`, `rss_mib_after_load_arbiter|387.4` (сырые /tmp/mg43-45.out).
+   Дефект = статик-линковка pyke-сборки (min=11.0 × chained fixups → unresolved
+   helper = прыжок в 0x0, см. crash-reports). Релизный путь §9 везёт dylib anyway;
+   бюджет-гейт закрыт release-числом (387.4 ≤ dev-разброс 250–385). Конфиг
+   `ort-dylib` (just-цель + build.rs env) — шаг 4.
 2. **`___isPlatformVersionAtLeast` undefined в release-линке**: орт-статик
    rc.14 (host_utils.mm/model.mm) ссылается на clang-runtime-хелпер, бэкпорт
    которого в libSystem требует min≥12.3, а cargo печатает min=11.0. Все обходы
