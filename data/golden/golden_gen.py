@@ -651,8 +651,17 @@ def main():
 
     for i, r in enumerate(rows, 1):
         r["id"] = "g%04d" % i
-    for r in rows:
-        sys.stdout.write(json.dumps(r, ensure_ascii=False, separators=(',', ':')) + "\n")
+    # Побайтовый вывод: sys.stdout в текстовом режиме Windows транслирует
+    # "\n" → "\r\n" — генератор переставал быть кросс-ОС-детерминированным
+    # (issue #39, промер CI python-golden windows: regen 65ff9488… ≠ B2
+    # 3c431174…, ubuntu pass). buffer.write обходит трансляцию; на Linux
+    # байты идентичны прежнему выводу (гейт golden-verify на ubuntu зелёный
+    # ДО и ПОСЛЕ — промер в PR #40).
+    out = b"".join(
+        (json.dumps(r, ensure_ascii=False, separators=(',', ':')) + "\n").encode("utf-8")
+        for r in rows
+    )
+    sys.stdout.buffer.write(out)
 
     sys.stderr.write("TOTAL %d RECALL %d NEG %d SPANS %d\n"
                      % (total, recall, neg, sum(len(r["spans"]) for r in rows)))
