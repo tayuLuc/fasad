@@ -103,7 +103,7 @@ pub enum ArbError {
     /// Констрэкт не прошёл живую сверку (`[UNK]` ≠ 0, потеря слова, группы ≠ схемы).
     Layout(String),
     /// Кусок чанковки не влезает в бюджет входа (`L_chunk + схема > лимита`).
-    /// Fail-closed: проигнорировать кусок = молча потерять ПДн в нём; обрезать
+    /// Fail-closed: проигнорировать кусок = молча потерять `ПДн` в нём; обрезать
     /// хвост состояния = то же самое.
     ChunkTooLong {
         /// Фактическая длина входа куска в токенах (после encode).
@@ -743,6 +743,13 @@ pub fn max_chunk_tokens(limit: u32, overhead: u32) -> u32 {
 pub fn arb_chunk_cfg(cfg: ChunkCfg, overhead: u32) -> Option<ChunkCfg> {
     let cap = max_chunk_tokens(DECIDE_REL_MAX_DISTANCE, overhead);
     let w = cfg.window_tokens.0.min(cap);
+    if w == cfg.window_tokens.0 {
+        // Сужения нет — окно легально как есть: 256..=384 (конфиг A) ИЛИ 448
+        // (конфиг B §5.7, строится вне ChunkCfg::new — переделывать через new
+        // означало бы сломать руберт-конфиг). Иначе (cap < 256) — None.
+        let legal = (256..=384).contains(&w) || w == crate::chunker::RUBERT_WINDOW_TOKENS;
+        return legal.then_some(cfg);
+    }
     ChunkCfg::new(w, cfg.overlap_tokens).ok().map(|mut c| {
         c.sentence_boundaries = cfg.sentence_boundaries;
         c
@@ -796,9 +803,14 @@ pub fn merge_arb_hits(hits: &[ArbHit]) -> Vec<ArbHit> {
     });
     let mut out: Vec<ArbHit> = Vec::with_capacity(v.len());
     for h in v {
+        // Слияем ТОЛЬКО с последним интервалом той же метки: sorted по start ⇒
+        // хит, пересекающийся с любым ранним, пересекается и с последним того
+        // же класса; иначе union [0,8)+[14,24] склеил бы «дыру» 8..14.
         match out
             .iter_mut()
-            .find(|last| last.label == h.label && h.span.start <= last.span.end)
+            .rev()
+            .find(|last| last.label == h.label)
+            .filter(|last| h.span.start <= last.span.end)
         {
             Some(last) => {
                 if h.span.end > last.span.end {
@@ -1065,5 +1077,133 @@ mod tests {
     fn join_segments_is_single_space_concat() {
         assert_eq!(join_segments(&["a", "b", "c"]), "a b c");
         assert_eq!(join_segments(&["only"]), "only");
+    }
+
+    #[test]
+    fn budget_constants_and_chunk_cfg_fit_position() {
+        // Побитовая привязка к промеру 4b-2d (живой tokenizer.json Decide rev
+        // 18271032): schema_block(trio 3×2) = 56 токенов; константы не дрейфуют.
+        assert_eq!(DECIDE_REL_MAX_DISTANCE, 512);
+        assert_eq!(SCHEMA_OVERHEAD_TOKENS, 56);
+        assert_eq!(MAX_STATE_TOKENS, 456);
+        assert_eq!(max_chunk_tokens(512, 56), 456);
+        assert_eq!(max_chunk_tokens(300, 512), 0, "saturating");
+        // Дефолт A 384 + 56 = 440 ≤ 512 — НЕ сужается.
+        assert_eq!(
+            arb_chunk_cfg(ChunkCfg::default(), SCHEMA_OVERHEAD_TOKENS).map(|c| c.window_tokens.0),
+            Some(384)
+        );
+        // Конфиг B §5.7: 448 + 56 = 504 ≤ 512 — влезает ПОЛНОСТЬЮ; arb_chunk_cfg
+        // обязан НЕ переделывать через ChunkCfg::new (448 вне 256..=384, но легален).
+        assert_eq!(
+            arb_chunk_cfg(ChunkCfg::rubert(), SCHEMA_OVERHEAD_TOKENS).map(|c| c.window_tokens.0),
+            Some(448)
+        );
+        // Завышенный overhead => cap < 256 => None (fail-closed, не oversize).
+        assert!(arb_chunk_cfg(ChunkCfg::default(), 300).is_none());
+        assert!(
+            arb_chunk_cfg(ChunkCfg::default(), 256).is_some(),
+            "ровно cap=256"
+        );
+    }
+
+    #[test]
+    fn threshold_hit_set_monotonic_in_threshold() {
+        // Монотонность порога (чистый путь): три группы P(yes)=высокая/средняя/
+        // равная; множество hit не растёт с ростом порога.
+        let groups = vec![
+            (1usize, vec![1, 2]),
+            (3usize, vec![3, 4]),
+            (5usize, vec![5, 6]),
+        ];
+        let schema: [QuestionSchema<'_>; 3] = [
+            ("q1?", &["yes", "no"][..]),
+            ("q2?", &["yes", "no"][..]),
+            ("q3?", &["yes", "no"][..]),
+        ];
+        let ids = [
+            128_003u32, 128_007, 128_007, 128_007, 128_007, 128_007, 128_007, 128_001,
+        ];
+        let plan = schema_plan(&ids, &groups, &schema).unwrap();
+        let logits = [4.0f32, -4.0, 1.15, -1.15, 0.0, 0.0];
+        let hits = |thr: f32| {
+            decisions(&plan, &logits, thr)
+                .into_iter()
+                .filter(|d| d.hit)
+                .count()
+        };
+        assert!(hits(0.0) >= hits(0.4));
+        assert!(hits(0.4) >= hits(0.8));
+        assert!(hits(0.8) >= hits(1.5), "монотонное спадание");
+        assert_eq!(hits(0.0), 3);
+        assert_eq!(hits(1.5), 0);
+    }
+
+    #[test]
+    fn chunked_hits_keep_original_coords_and_do_not_bridge_gaps() {
+        // Инвариант 4b-2d: мёрж не трогает оригинальные координаты; union только
+        // ПЕРЕСЕКАЮЩИХСЯ окон одного label (дыра не склеивается); prob = max;
+        // идемпотентен. Текст ASCII — байтовые координаты = символьные.
+        let text = "012345678901234567890123456789";
+        let mk = |a, b, lab: &str, pr| ArbHit {
+            span: ByteSpan::new(text, a, b).unwrap(),
+            label: lab.to_string(),
+            prob: pr,
+        };
+        let hits = vec![
+            mk(0, 8, "tin", 0.7),
+            mk(14, 24, "card", 0.6),
+            mk(9, 30, "card", 0.95),
+        ];
+        let m = merge_arb_hits(&hits);
+        assert_eq!(m.len(), 2, "card-union + tin отдельно");
+        let card = m.iter().find(|h| h.label == "card").unwrap();
+        assert_eq!((card.span.start, card.span.end), (9, 30), "union-интервал");
+        assert!(
+            card.span.slice(text).is_some(),
+            "оригинальные координаты валидны"
+        );
+        assert!((card.prob - 0.95).abs() < 1e-6, "prob = max");
+        let disjoint = vec![mk(0, 8, "tin", 0.7), mk(14, 24, "tin", 0.9)];
+        assert_eq!(
+            merge_arb_hits(&disjoint).len(),
+            2,
+            "дыра 8..14 не склеивается"
+        );
+        assert_eq!(merge_arb_hits(&m), m, "идемпотентность");
+        assert!(merge_arb_hits(&[]).is_empty());
+    }
+
+    #[test]
+    fn chunk_partition_no_gaps_original_coords() {
+        // Паттерн chunker::tests: union == [0,len), start не убывает, кусок =
+        // подстрока оригинала — то, чем чанковка гарантирует отсутствие молча
+        // потерянных окон ПДн.
+        let mut text = String::new();
+        for i in 1..=80 {
+            use std::fmt::Write as _;
+            let _ = writeln!(text, "Предложение номер {i} содержит ровно семь слов тут.");
+        }
+        let cfg = arb_chunk_cfg(ChunkCfg::default(), SCHEMA_OVERHEAD_TOKENS).unwrap();
+        let cs = crate::chunker::chunk(&text, cfg);
+        assert!(cs.len() > 3, "длинный текст режется");
+        assert_eq!(cs[0].span.start, 0);
+        assert_eq!(cs.last().unwrap().span.end, text.len());
+        for w in cs.windows(2) {
+            assert!(w[1].span.start >= w[0].span.start, "start не убывает");
+            assert!(
+                w[1].span.start <= w[0].span.end,
+                "дыра {}..{}",
+                w[0].span.end,
+                w[1].span.start
+            );
+        }
+        for c in &cs {
+            let piece = c.span.slice(&text).unwrap_or_default();
+            assert!(
+                !piece.is_empty() && text.contains(piece),
+                "кусок = подстрока"
+            );
+        }
     }
 }
