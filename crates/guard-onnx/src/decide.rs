@@ -12,23 +12,58 @@
 /// Структурные спец-токены Decide-разметки: имя + id (промерены из
 /// `tokenizer.json` рев. `18271032`, манифест `models/manifest.md`).
 /// id2label 0..42 token-classification head lockR — первичка `config.json`
-/// репо `lockR/rubert-base-pii-ner-onnx@ea7610b22…` (hf_hub_download 20.10).
+/// репо `lockR/rubert-base-pii-ner-onnx@ea7610b22…` (`hf_hub_download` 20.10).
 /// Зеркало `ID2LABEL` в `tools/verify/parity_golden.py` (одна константа на
 /// два места; тест `lockr_id2label_matches_verify_mirror` читает скрипт).
 pub const ID2LABEL: [&str; 43] = [
-    "O", "B-PASSPORT", "I-PASSPORT", "B-CREDIT_CARD", "I-CREDIT_CARD",
-    "B-DRIVER_LICENSE", "I-DRIVER_LICENSE", "B-INN", "I-INN", "B-SNILS", "I-SNILS",
-    "B-MILITARY_ID", "I-MILITARY_ID", "B-BIRTH_CERTIFICATE", "I-BIRTH_CERTIFICATE",
-    "B-OMS", "I-OMS", "B-CITY", "B-COUNTRY", "B-DISTRICT", "B-EMAIL", "B-FIRST_NAME",
-    "B-HOUSE", "B-IP_ADDRESS", "B-LAST_NAME", "B-MIDDLE_NAME", "B-PHONE", "B-REGION",
-    "B-STREET", "B-URL", "I-CITY", "I-COUNTRY", "I-DISTRICT", "I-EMAIL",
-    "I-FIRST_NAME", "I-HOUSE", "I-IP_ADDRESS", "I-LAST_NAME", "I-MIDDLE_NAME",
-    "I-PHONE", "I-REGION", "I-STREET", "I-URL",
+    "O",
+    "B-PASSPORT",
+    "I-PASSPORT",
+    "B-CREDIT_CARD",
+    "I-CREDIT_CARD",
+    "B-DRIVER_LICENSE",
+    "I-DRIVER_LICENSE",
+    "B-INN",
+    "I-INN",
+    "B-SNILS",
+    "I-SNILS",
+    "B-MILITARY_ID",
+    "I-MILITARY_ID",
+    "B-BIRTH_CERTIFICATE",
+    "I-BIRTH_CERTIFICATE",
+    "B-OMS",
+    "I-OMS",
+    "B-CITY",
+    "B-COUNTRY",
+    "B-DISTRICT",
+    "B-EMAIL",
+    "B-FIRST_NAME",
+    "B-HOUSE",
+    "B-IP_ADDRESS",
+    "B-LAST_NAME",
+    "B-MIDDLE_NAME",
+    "B-PHONE",
+    "B-REGION",
+    "B-STREET",
+    "B-URL",
+    "I-CITY",
+    "I-COUNTRY",
+    "I-DISTRICT",
+    "I-EMAIL",
+    "I-FIRST_NAME",
+    "I-HOUSE",
+    "I-IP_ADDRESS",
+    "I-LAST_NAME",
+    "I-MIDDLE_NAME",
+    "I-PHONE",
+    "I-REGION",
+    "I-STREET",
+    "I-URL",
 ];
 
 /// BIO-скобка lockR (Begin/Inside ОДНОЙ головы): цепочка `B-класс` +
 /// непрерывные `I-` того же класса; `O`/чужой `I` обрывают. Возвращает
-/// (класс, tok_start, tok_end_excl) — индексы ТОКЕНОВ; конверсию в байты
+/// (`класс`, `tok_start`, `tok_end_excl`) — индексы ТОКЕНОВ; конверсию в байты
 /// делает потребитель (offsets токенизатора в парити/рантайме). Чистая функция
 /// (без фичи ort) — тестируется на голых тегах.
 #[must_use]
@@ -220,7 +255,9 @@ mod tests {
     fn lockr_bio_group_brackets_and_breaks() {
         // B-PHONE I-PHONE B-EMAIL O B-PHONE → 3 спана, последний 1 токен;
         // чужой I (I-INN после B-PHONE) обрывает и НЕ открывает (B- нет).
-        let tags = ["O", "B-PHONE", "I-PHONE", "B-EMAIL", "I-INN", "O", "B-PHONE"];
+        let tags = [
+            "O", "B-PHONE", "I-PHONE", "B-EMAIL", "I-INN", "O", "B-PHONE",
+        ];
         let sp = lockr_bio_group(&tags);
         assert_eq!(sp.len(), 3, "телефон(1-3) + почта + телефон(6)");
         assert_eq!(&sp[0], &("PHONE".to_string(), 1, 3));
@@ -247,12 +284,12 @@ mod tests {
             "/../../tools/verify/parity_golden.py"
         ))
         .expect("скрипт парити рядом с деревом сборки");
-        let start = src.find("ID2LABEL = [").expect("ID2LABEL в parity_golden.py");
-        // граница зеркала — перевод строки: список многострочный, `]` вложен.
-        let end = src[start..]
-            .find("\n]")
-            .map_or(src.len(), |o| start + o + 2);
-        let body = &src[start..end];
+        let start = src
+            .find("ID2LABEL = [")
+            .expect("ID2LABEL в parity_golden.py");
+        // зеркало читаем ВСЕМ оставшимся файлом: `]` вложен (списки-в-строках),
+        // границы искать нечем — проверка «каждый тег упомянут» монолитна.
+        let body = &src[start..];
         for tag in ID2LABEL {
             assert!(body.contains(&format!("\"{tag}\"")), "тег {tag} потерян");
         }
