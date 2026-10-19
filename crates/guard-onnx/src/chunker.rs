@@ -667,6 +667,21 @@ mod tests {
     }
 
     #[test]
+    fn window_tokens_validated_on_cfg() {
+        // N5 (ревью PR#21): конструктор кричит на выход за SPEC §2 256..=384;
+        // pub-поле = escape-hatch генератора, не прод-путь.
+        assert!(ChunkCfg::new(9999, 32).is_err(), "9999 вне диапазона");
+        assert!(ChunkCfg::new(255, 32).is_err(), "255 вне диапазона");
+        assert!(ChunkCfg::new(256, 32).is_ok(), "256 — граница снизу");
+        assert!(ChunkCfg::new(384, 32).is_ok(), "384 — граница сверху");
+        assert_eq!(
+            ChunkCfg::rubert().window_tokens.0,
+            448,
+            "конфиг B вне new()"
+        );
+    }
+
+    #[test]
     fn empty_text_yields_no_chunks() {
         let chunks = chunk("", ChunkCfg::default());
         assert!(chunks.is_empty(), "пустой вход дал чанки: {chunks:?}");
