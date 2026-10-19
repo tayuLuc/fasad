@@ -2,7 +2,7 @@
 
 Прогон: 2026-10-19, macOS (arm64), rustc 1.97.1, ort 2.0.0-rc.14 (download-binaries,
 статик libonnxruntime.a, CPU EP), spike = `crates/guard-onnx/examples/spike.rs`.
-Профиль: **debug** (release-прогон сегфолтится — дефект харнесса, § Дефекты).
+Профиль: **debug** — release-прогон проводился ×5 и падал SIGSEGV 139 в обеих конфигурациях (plain, env 26.0), §5.1; гейт бюджета закрыт dev-числами с оговоркой профиля.
 Веса: `~/.cache/fasad-models`, манифест `models/manifest.tsv`.
 
 ## 1. Модель A — веса (промер shasum -a 256 = LFS-oid HF, rev из GET api/models)
