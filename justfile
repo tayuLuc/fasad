@@ -20,6 +20,14 @@ lint:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used
 
+# Линтер CI-тулчейном (issue #25: CI стабильно свежее локального stable —
+# assert_is_empty-класс drift'а ловится ТОЛЬКО прогоном версии CI).
+# Версию обновлять синхронно с rustc на раннере (промер: gh run view --log).
+lint-ci:
+    rustup run 1.99.1 cargo fmt --all -- --check
+    rustup run 1.99.1 cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used
+    rustup run 1.99.1 cargo clippy -p guard-onnx --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
+
 # Тесты всего workspace.
 test:
     cargo test --workspace
