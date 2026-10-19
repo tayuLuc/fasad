@@ -1,0 +1,30 @@
+# Fasad Python-тулинг (uv). Рулинг оператора 19.10: Python ослаблен до
+# gutter-обязанностей — генераторы шаблонов/данных, конверты, разовые скрипты;
+# рантайм и сборка остаются Rust. Вся обвязка под-lockfile (uv.lock — единственный
+# источник пинов: интерпретатор через .python-version, зависимости через
+# dependency-groups). Никаких pip вручную: только `uv sync` / `uv run`.
+[project]
+name = "fasad-tools"
+version = "0"
+description = "dev tooling: only what scripts/ and data/golden need"
+requires-python = ">=3.10"
+dependencies = []
+
+[dependency-groups]
+dev = ["ruff==0.17.0"]  # пин = промер локали этим дифом, не из головы
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# Каркас E/F/W плюс байт-ловушки (B) и чистка импортов (I).
+select = ["E", "F", "W", "I", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Вывод golden_gen.py побайтово заморожен гейтом B2 (SHA-256 в
+# crates/guard-detectors/tests/golden_verification.rs → golden-v1.jsonl):
+# допуски касаются ТОЛЬКО стиля, исполняемое поведение не трогаем.
+#   E501 — длинные строки табличных пулов (ФИО/векторы), перенос красит читаемость;
+#   E402 — пулы литералов после шапки с формулами: это данные, не исполняемый код.
+"data/golden/golden_gen.py" = ["E501", "E402"]

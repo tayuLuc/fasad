@@ -9,6 +9,8 @@ coverage/
 .cache/
 # Rust / cargo
 /target/
+# python tooling (uv)
+.venv/
 **/target/
 # models: only manifest in git, no weights (внешние веса/данные — наружу; манифест models/manifest.md в гите)
 models/*

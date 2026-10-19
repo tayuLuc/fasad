@@ -7,8 +7,8 @@
 _default:
     @just --list
 
-# Прогнать всё, что блокирует merge: линты + тесты + аудит зависимостей.
-check: lint test deny
+# Прогнать всё, что блокирует merge: линты + тесты + аудит зависимостей + python.
+check: lint python-lint golden-verify test deny
 
 # Авточинит всё, что чинится автоматически (fmt + clippy --fix).
 fix:
@@ -27,6 +27,20 @@ test:
 # Аудит дерева зависимостей (bans/advisories/licenses) — deny.toml.
 deny:
     cargo deny check
+
+# ── Python-тулинг (gutter, рулинг 19.10: AGENTS п.6) ────────────────────────
+# Обвязка под uv: pyproject.toml + uv.lock + .python-version (один источник
+# пинов). `uv run` сам синхронизирует .venv по lockfile. Требуется uv:
+# brew install uv (mac) или taiki-e/install-action в CI.
+
+# Линт Python-скриптов проекта (генератор датасета + verify-скрипты).
+python-lint:
+    uv run --locked ruff check data/golden scripts
+
+# Побайтовая воспроизводимость golden-датасета: реген + сверка с B2-константой
+# (тот же инвариант, что tests/golden_v1.rs::golden_file_sha256_matches_embedded_const).
+golden-verify:
+    uv run --locked python scripts/golden_regen_verify.py
 
 # Релизный путь ORT (issue #11): официальный dylib вместо статики pyke.
 # Каталог lib: MAC — onnxruntime-osx-arm64-1.31.0/lib release-архива
