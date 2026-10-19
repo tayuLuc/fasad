@@ -91,6 +91,47 @@ GatherElements до lockR-мерки).
 4. RSS до lockR-сессии и латентность prefill не сняты (см. 3) — добирается в
    шаге 4 промером на живом декодере.
 
+Addendum 20.10 (4b-2a, issue #23, живой прогон `spike --arb` с живыми маркерами,
+ветка step4b2a-live-markers (issue #23), dylib 1.31, release):
+1. **Живые `marker_positions` = exit 0.** Контракт графа по первичке
+   (карточка `onnx-community/GLiNER2.5-Decide-ONNX@18271032` §Graph + экспорт
+   `conversion/export_onnx.py` + референс-код `fastino-ai/GLiNER2@main`
+   `processor.py`/`classification/scoring.py`): layout
+   `( [P] вопрос ( [L] метка … ) ) [SEP_STRUCT] … [SEP_TEXT] слова`;
+   `marker_positions` = позиции токенов `[L]` (по одной на метку),
+   `logits (batch, M)` — по логиту на маркер, softmax внутри вопроса.
+   spike 4b-2a строит констрэкт (`arb_live_layout` + `decide_marker::groups`)
+   из `spike_texts()` + EN-подсхемы 3 вопросов × 2 метки: живой вход L=1235,
+   M=6, `MARKER|arb|run=ok|markers=6`, `logits|shape=[1, 6]|ok=true`,
+   softmax групп 0.9983/0.0017, 0.9846/0.0154, 0.9994/0.0006 (все три «yes»
+   над PII-текстом — содержательно верно).
+2. **§5.3 воспроизведён И исправлен одновременно.** Точная ошибка ORT на OOB
+   индексе зафиксирована в том же прогоне дословно:
+   `Non-zero status code … GatherElements node. Name:'node_gather_48' …
+   Out of range value in index tensor` (`MARKER|arb|trap=ort_error`).
+   Уточнение рулинга 4b-0 («падение требует НЕПУСТЫХ маркеров»): падают не
+   непустые маркеры сами по себе, а НЕВЫПОЛНИМЫЕ индексы ≥ L; заглушка step-2
+   (`3+i%512`, длина 256) при живом L=1235 целиком легальна и НЕ падает
+   (промер `trap`-фазы). Дефект был в значениях индексов, не в пустоте.
+3. **Метрики нового прогона** (сырой stdout прогона 20.10, трасса METRIC):
+   `load_ms_arbiter` 1180.4, `delta_load_mib_arbiter` 327.5 (первый прогон
+   сессии с живыми входами; Δ ниже §3 из-за иного порядка аллокаций токенизатора
+   до load — токен-работа вынесена до базового замера), `rss_after_load_arbiter`
+   488.6, `run_p50_ms_arbiter` 5963.0 (prefill L=1235, threads=4, CPU;
+   промеры прогонов 4728/7825/5963 — разброс ×1.7 без пула),
+   `rss_after_runs_arbiter` 1275.5. Бюджет-гейт ≤1.8 GiB: с 3 текстами в одном
+   входе (в 4.8× длиннее step-2 окна 256) RSS до пика прогона вписывается;
+   чанкер 4b-1 (окна ≤384) даст L≤~400 и ниже.
+4. **Контракт токенизации (промер, не вера):** `encode(целая строка, false)` —
+   HF-эквивалент; побайтный СПЛАЙС отдельных `encode` сегментов НЕ совпадает с
+   конкатенацией на стыке `.`+`[SEP_TEXT]` (Metaspace склейка `▁`+`.`), поэтому
+   spike кодирует цельной строкой и проверяет потерю содержимого сканом слов +
+   наличием всех спец-токенов в id ([UNK]=0). Post-процессор [CLS]/[SEP] снят
+   (`with_post_processor(None)`): спецтокены HF добавляет только post_process
+   (промер tokenizers 0.23.2 `tokenizer/mod.rs`), разметка Decide спецы не
+   содержит (§Graph). В vocab живого `tokenizer.json` все 10 структурных
+   маркеров на манифестных id (`MARKER|vocab|*|true`).
+
 ## 6. CI-контракт
 
 CI spike НЕ гоняет (фича `ort-inference` default-off, example no-op,

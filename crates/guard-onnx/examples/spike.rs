@@ -239,6 +239,192 @@ fn spike_texts() -> [&'static str; 3] {
     ]
 }
 
+/// Маркерные special-токены Decide-разметки (id промерены из `tokenizer.json`
+/// рев. `18271032`, манифест `models/manifest.md`; карточка @18271032 §Graph).
+#[cfg(feature = "ort-inference")]
+mod decide_marker {
+    /// Все 10 структурных спец-токенов Decide: имя, id, «маркер ли это» — маркер
+    /// = то, на что указывает `marker_positions` (первичка: `config.json`
+    /// глоссарий «index of each `[L]` token» + `marker (batch, labels)`,
+    /// референс `fastino-ai/GLiNER2` `gliner2/classification/scoring.py`
+    /// `_label_names`: label = токен СРАЗУ ПОСЛЕ `[L]`). Позиции пар — это эти
+    /// **лейбл-токены**, не сами `[L]`: один `GatherElements` на маркер в
+    /// `export_onnx.py`, лейбл-эмбеддинг и есть «маркер» у классификатора.
+    pub const SPECIALS: [(&str, u32, bool); 10] = [
+        ("[SEP_STRUCT]", 128_001, false),
+        ("[SEP_TEXT]", 128_002, false),
+        ("[P]", 128_003, false),
+        ("[C]", 128_004, true),
+        ("[E]", 128_005, true),
+        ("[R]", 128_006, true),
+        ("[L]", 128_007, false),
+        ("[EXAMPLE]", 128_008, true),
+        ("[OUTPUT]", 128_009, true),
+        ("[DESCRIPTION]", 128_010, true),
+    ];
+
+    pub fn id_of(vocab: &std::collections::HashMap<String, u32>, name: &str) -> Option<u32> {
+        let manifest = SPECIALS.iter().find(|(n, _, _)| *n == name)?.1;
+        let live = vocab.get(name).copied()?;
+        if manifest == live { Some(live) } else { None }
+    }
+
+    /// Контракт-проба 4b-2a (issue #23): живые `marker_positions` по реальной
+    /// токенизации Decide-layout'а.
+    ///
+    /// Возвращает ГРУППИРОВАННЫЕ позиции маркеров (offset группы → позиции
+    /// `[L]`-маркеров внутри неё), группы режутся по `[SEP_STRUCT]` (`128_001`) /
+    /// `[SEP_TEXT]` (`128_002`) — границам схем и схемы↔текст из
+    /// `_transform_schema`/`_format_input_with_mapping` (первичка референса
+    /// `fastino-ai/GLiNER2@main`: `processor.py::cls_marker_indices` =
+    /// позиции routing-маркеров на схему, `classification/scoring.py` =
+    /// `embs[1:]` — `[P]`-строка отдельная, `[L]`-маркер = эмбеддинг МЕТКИ;
+    /// `export_onnx.py`: один `GatherElements` на позицию).
+    ///
+    /// Форма `(usize, Vec<usize>)` — «минимальный честный контракт» вопросно-
+    /// условной разметки из ТЗ: одна группа = один вопрос, softmax внутри
+    /// группы (карточка @18271032 §Graph: «softmax within each question's
+    /// markers»). При `marker_ids=[L],[L]` группы = `[L]`-маркеры схем; для
+    /// извлечения (`[E]`/`[R]`) — те же группы с другим id.
+    ///
+    /// Пустые группы не выдаются (ленивое выполнение `GatherElements` не роняет
+    /// сессию на пустых маркерах — промер 4b-0, audit §5 п.3).
+    pub fn groups(ids: &[u32], marker_ids: [u32; 2]) -> Vec<(usize, Vec<usize>)> {
+        let mut out: Vec<(usize, Vec<usize>)> = Vec::new();
+        let mut cur: Vec<usize> = Vec::new();
+        for (pos, &id) in ids.iter().enumerate() {
+            if id == marker_ids[0] || id == marker_ids[1] {
+                cur.push(pos);
+            } else if (id == 128_001 || id == 128_002) && !cur.is_empty() {
+                let first = cur[0];
+                out.push((first, std::mem::take(&mut cur)));
+            }
+        }
+        if !cur.is_empty() {
+            let first = cur[0];
+            out.push((first, cur));
+        }
+        out
+    }
+}
+
+/// Реальный вход Decide: ОДИН `encode(join, false)` по конкатенации сегментов
+/// (разделители — обычные пробелы) — HF/python-эквивалент
+/// `tokenizer(text, add_special_tokens=False)`: HF-прогон step-2 строил вход
+/// именно цельным `encode` (промер 4b-2a: побайтный сплайс отдельных `encode`
+/// ≠ конкатенация на стыке `.` + `[SEP_TEXT]` — Metaspace склеивает ведущий
+/// `▁` с точкой предыдущего сегмента). Post-процессор [CLS]/[SEP] снят
+/// (`with_post_processor(None)`), сама разметка Decide спецы не содержит
+/// (карточка @18271032 §Graph: «No `[CLS]`/`[SEP]`»).
+///
+/// Спец-маркеры (`single_word=false`, `normalized=false`) модуль
+/// `AddedVocabulary::extract_and_normalize` вырезает до нормализации; ложных
+/// склеек нет: фрагменты `[`/`]` в vocab есть (промер), строк `p]`, `l]`,
+/// `[p` — нет.
+#[cfg(feature = "ort-inference")]
+fn encode_text_segments(
+    tok: &tokenizers::Tokenizer,
+    segments: &[&str],
+) -> Result<Vec<u32>, String> {
+    let mut whole = String::new();
+    for (i, seg) in segments.iter().enumerate() {
+        if i > 0 {
+            whole.push(' ');
+        }
+        whole.push_str(seg);
+    }
+    let enc = tok
+        .encode(whole.as_str(), false)
+        .map_err(|e| format!("encode(whole): {e}"))?;
+    Ok(enc.get_ids().to_vec())
+}
+
+/// Живая сверка входа (гейт «промер, не вера») — НЕ наивный decode строки:
+/// Metaspace-декодер склеивает `▁(` с соседями (живой промер 4b-2a:
+/// `decode → "([p]"`), потому сравнение идёт по словам/маркерам:
+///     1) каждое слово конкатенации обязано остаться в decode (упорядоченный
+///        подпоследовательностный скан — потеря слова = провал контракта);
+///     2) все спец-токены конкатенации присутствуют в `ids` своими id (промер
+///        `AddedVocabulary::extract_and_normalize`: special+normalized=false
+///        вырезаются до нормализации и не разбиваются).
+/// Возвращает число спец-токенов в `ids`; [UNK] = ошибка контракта.
+#[cfg(feature = "ort-inference")]
+fn check_splice(
+    tok: &tokenizers::Tokenizer,
+    ids: &[u32],
+    segments: &[&str],
+) -> Result<usize, String> {
+    let unk = ids.iter().filter(|&&id| id == 3).count();
+    if unk > 0 {
+        return Err(format!(
+            "{unk} токенов [UNK] в живом входе — контракт токенизации сломан"
+        ));
+    }
+    let mut whole = String::new();
+    for (i, seg) in segments.iter().enumerate() {
+        if i > 0 {
+            whole.push(' ');
+        }
+        whole.push_str(seg);
+    }
+    let back = tok
+        .decode(ids, false)
+        .map_err(|e| format!("decode(live): {e}"))?;
+    let norm = |s: &str| -> String {
+        s.to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let nb = norm(&back);
+    let nw = norm(&whole);
+    // (2) спец-токены конкатенации обязаны быть в ids своими id.
+    let mut pos_scan = 0usize;
+    let mut widx = 0usize;
+    let wtoks: Vec<&str> = nw.split(' ').collect();
+    while widx < wtoks.len() {
+        let w = wtoks[widx];
+        let mid = decide_marker::SPECIALS
+            .iter()
+            .find(|(n, _, _)| *n == w)
+            .map(|(_, id, _)| *id);
+        if let Some(mid) = mid {
+            if !ids[pos_scan..].contains(&mid) {
+                return Err(format!(
+                    "спец-токен {w} потерян в id-последовательности (скан с {pos_scan})"
+                ));
+            }
+            while ids[pos_scan] != mid {
+                pos_scan += 1;
+            }
+            pos_scan += 1;
+        } else {
+            break;
+        }
+        widx += 1;
+    }
+    // (1) скан слов: каждое некопец-слово конкатенации встречается в decode
+    // после предыдущего (упорядоченно, непересекающимися вхождениями).
+    let mut cursor = 0usize;
+    for w in &wtoks[widx..] {
+        if w.is_empty() {
+            continue;
+        }
+        match nb[cursor..].find(w) {
+            Some(rel) => cursor += rel + w.len(),
+            None => {
+                return Err(format!(
+                    "decode живого входа потерял слово {w:?} после смещения {cursor}"
+                ));
+            }
+        }
+    }
+    Ok(ids
+        .iter()
+        .filter(|&&id| decide_marker::SPECIALS.iter().any(|(_, mid, _)| id == *mid))
+        .count())
+}
+
 #[cfg(feature = "ort-inference")]
 fn run_spike(
     cache: &std::path::Path,
@@ -503,16 +689,99 @@ fn measure_lockr(
 
 /// onnx-community/GLiNER2.5-Decide-ONNX q4f16 + external data: load (главный
 /// вопрос промера: дельта RSS vs размер `.onnx_data` — гипотеза ревьюера «ORT
-/// мапит external data целиком») + IO-контракт + прогоны на synthetic-входах
-/// (полноценный entity-препроцесс GLiNER2.5 — шаг 4).
+/// мапит external data целиком») + IO-контракт + прогоны. 4b-2a (issue #23):
+/// входы — ЖИВАЯ токенизация `spike_texts()` + живые маркеры Decide вместо
+/// step-2 заглушки `3 + idx%512`, из-за которой §5.3 падал
+/// `GatherElements: Out of range value in index tensor`.
+///
+/// Контракт маркеров (первичка этого прогона): карточка
+/// `onnx-community/GLiNER2.5-Decide-ONNX@18271032` §Graph — layout
+/// `( [P] prompt ( [L] label_1 [L] label_2 … ) ) [SEP_STRUCT] ( [P] … )
+/// [SEP_TEXT] word word … .`, `marker_positions` = «index of every `[L]`
+/// token», logits = по логиту на маркер; экспорт `conversion/export_onnx.py`
+/// (там же) = `GatherElements(hidden, marker_positions)` — маркерная ветка
+/// исполняется при ЛЮБЫХ int64-позициях, OOB-индекс (> L) роняет именно её
+/// (это и есть §5.3); падение step-2 = OOB, а не «пустые маркеры» (правка
+/// рулинга 4b-0 ниже в audit addendum).
+/// Констрэкт реальной Decide-разметки (стадия 1 `measure_arbiter`): EN-подсхема
+/// вопросов+меток (модель обучена на английском, карточка §Limits) поверх
+/// RU-state из `spike_texts()`. `decide_marker::groups(ids, [L],[L])` даёт по
+/// группе на классификационную схему; `first=(первый [L] группы)` — именно
+/// индекс `[L]`, контракт `marker_positions` (карточка @18271032). Возвращает
+/// id-последовательность, группы и id [L]/[P].
+/// Живой констрэкт: id-последовательность + сгруппированные маркерные позиции.
+#[cfg(feature = "ort-inference")]
+type ArbLayout = (Vec<u32>, Vec<(usize, Vec<usize>)>);
+
+#[cfg(feature = "ort-inference")]
+fn arb_live_layout(
+    tok: &tokenizers::Tokenizer,
+    vocab: &std::collections::HashMap<String, u32>,
+) -> Result<ArbLayout, Box<dyn std::error::Error>> {
+    let l_id = decide_marker::id_of(vocab, "[L]")
+        .ok_or("маркер [L] не в vocab Decide (сверка с манифестом не прошла)")?;
+    let p_id = decide_marker::id_of(vocab, "[P]")
+        .ok_or("маркер [P] не в vocab Decide (сверка с манифестом не прошла)")?;
+    let [t0, t1, t2] = spike_texts();
+    let schema = "( [P] Is there a full name of a person ? ( [L] person [L] no ) \
+                   [SEP_STRUCT] ( [P] Is there a tax identification number ? \
+                   ( [L] tin [L] no ) [SEP_STRUCT] ( [P] Is there a bank card number ? \
+                   ( [L] card [L] no ) ) ) [SEP_TEXT]";
+    let state = format!("{t0} {t1} {t2}");
+    let segments: Vec<&str> = vec![schema, state.as_str()];
+    let ids_u32 = encode_text_segments(tok, &segments)?;
+    let groups = decide_marker::groups(&ids_u32, [l_id, l_id]);
+    if groups.is_empty() {
+        return Err("decide_marker::groups вернул пусто на живом входе — контракт сломан".into());
+    }
+    let n_special = check_splice(tok, &ids_u32, &segments)?;
+    if n_special == 0 {
+        return Err("ни одного спец-токена в живом входе — констрэкт не токенизируется".into());
+    }
+    println!(
+        "MARKER|arb|pairs={}|first=({},{})|l_tokens={}|p_tokens={}|tokens={}",
+        groups.len(),
+        groups[0].1[0],
+        *groups[0].1.last().unwrap_or(&groups[0].1[0]),
+        ids_u32.iter().filter(|&&id| id == l_id).count(),
+        ids_u32.iter().filter(|&&id| id == p_id).count(),
+        ids_u32.len()
+    );
+    let _ = (l_id, p_id);
+    Ok((ids_u32, groups))
+}
+
+/// ФАЗА A (4b-2a): воспроизведение §5.3 — та же живая токенизация, маркерный
+/// вход = step-2 заглушка `3 + i%512` (256 значений). Промер: с L=1235 заглушка
+/// целиком легальна и НЕ падает (ленивый `GatherElements` индексы < L в bounds);
+/// точный §5.3 = индекс ≥ L, поэтому добавлен заглавный OOB-индекс L+4096 —
+/// ошибка ORT печатается дословно, обхода нет (п.3 ТЗ).
+#[cfg(feature = "ort-inference")]
+fn arb_trap(
+    session: &mut ort::session::Session,
+    ids: &[i64],
+    mask: &[i64],
+    l: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut fake: Vec<i64> = (0..256i64).map(|i| 3 + (i % 512)).collect();
+    fake.push(i64::try_from(l + 4096).unwrap_or(i64::MAX));
+    let trap = session
+        .run(tensors_for(session, ids, mask, &fake)?)
+        .map(|_| ())
+        .map_err(|e| e.to_string().replace('\n', " "));
+    match &trap {
+        Ok(()) => println!("MARKER|arb|trap=unexpected_ok"),
+        Err(e) => println!("MARKER|arb|trap=ort_error|msg={e}"),
+    }
+    Ok(())
+}
+
 #[cfg(feature = "ort-inference")]
 fn measure_arbiter(
     cache: &std::path::Path,
     env: &ort::environment::Environment,
     threads: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use ort::value::Tensor;
-
     let path = cache
         .join("onnx-community/GLiNER2.5-Decide-ONNX")
         .join("onnx/model_q4f16.onnx");
@@ -521,10 +790,40 @@ fn measure_arbiter(
         p.push("_data");
         PathBuf::from(p)
     };
+    let tok_path = cache
+        .join("onnx-community/GLiNER2.5-Decide-ONNX")
+        .join("tokenizer.json");
     require_weight(&path)?;
     require_weight(&data)?;
+    require_weight(&tok_path)?;
     println!("IO|external_data_bytes|{}", std::fs::metadata(&data)?.len());
 
+    // Токенизатор + живые входы готовим ДО замера load: дельта RSS = сессия.
+    // Post-процессор [CLS]/[SEP] снимаем — контракт Decide §Graph: «No
+    // `[CLS]`/`[SEP]`» (промер tokenizers 0.23.2 `tokenizer/mod.rs`: спецтокены
+    // добавляет только post_process).
+    let mut tok = tokenizers::Tokenizer::from_file(&tok_path)
+        .map_err(|e| format!("токенизатор Decide ({}): {e}", tok_path.display()))?;
+    tok.with_post_processor(Option::<tokenizers::processors::template::TemplateProcessing>::None);
+    // NB: `get_vocab(true)` ниже намеренно включает added tokens — id маркеров
+    // сверяются с манифестом по реальному vocab.
+    let vocab = tok.get_vocab(true);
+    for (name, _, _) in decide_marker::SPECIALS {
+        let ok = decide_marker::id_of(&vocab, name).is_some();
+        println!("MARKER|vocab|{name}|{ok}");
+        if !ok {
+            return Err(format!("спец-токен {name} не в vocab/не сверен с манифестом").into());
+        }
+    }
+    // id [L]/[P] сверяются и используются в arb_live_layout.
+
+    let (ids_u32, groups) = arb_live_layout(&tok, &vocab)?;
+    let l = ids_u32.len();
+    let ids: Vec<i64> = ids_u32.iter().map(|&u| i64::from(u)).collect();
+    let mask: Vec<i64> = vec![1i64; l];
+
+    // Сессию поднимаем ПОСЛЕ подготовки живых входов: дельта RSS = сессия,
+    // токен-работа в дельту не входит (контракт промера §3 audit).
     let base = rss("before_load_arbiter");
     let t = Instant::now();
     let mut session = open_session(env, &path, threads)?;
@@ -532,25 +831,20 @@ fn measure_arbiter(
     let after = rss("after_load_arbiter");
     print_io(&session, "arbiter");
 
-    // Синтетические входы строго по IO-контракту сессии: int64 [1;L] (id-входы —
-    // фиктивный vocab-диапазон, mask — единицы). Смысловой инференс здесь не цель.
-    let l = 256usize;
-    let ids: Vec<i64> = (0..i64::try_from(l).unwrap_or(i64::MAX))
-        .map(|i| 3 + (i % 512))
+    // (2) ФАЗА A — воспроизведение §5.3 (контракт-провал фиксируется, не обходится).
+    arb_trap(&mut session, &ids, &mask, l)?;
+
+    // (3) ФАЗА B — живые маркеры: marker_positions = позиции первого [L] каждой
+    //     пары (контракт графа = «index of every [L] token», (1,M) INT64),
+    //     M живое. Прогон обязан дать exit 0.
+    let live: Vec<i64> = groups
+        .iter()
+        .flat_map(|(_, ps)| ps.iter().copied())
+        .map(|p| i64::try_from(p).unwrap_or(i64::MAX))
         .collect();
-    let mask: Vec<i64> = vec![1i64; l];
-    let mut inputs: Vec<(String, ort::value::DynTensor)> = Vec::new();
-    for inp in session.inputs() {
-        let name = inp.name().to_string();
-        let v = match name.as_str() {
-            "attention_mask" | "input_mask" | "entity_mask" => mask.clone(),
-            _ => ids.clone(),
-        };
-        inputs.push((
-            name,
-            Tensor::from_array(([1usize, v.len()], v.into_boxed_slice()))?.upcast(),
-        ));
-    }
+    let m = live.len();
+    let inputs = tensors_for(&session, &ids, &mask, &live)?;
+    println!("MARKER|arb|input_shapes|l={l}|m={m}");
 
     let mut runs = Vec::new();
     for _ in 0..3 {
@@ -559,6 +853,41 @@ fn measure_arbiter(
         let n = outputs.values().count();
         runs.push(ms(tr));
         std::hint::black_box(n);
+    }
+    println!("MARKER|arb|run=ok|markers={m}");
+    // (4) Выход: форма (1,M) = по логиту на маркер + softmax по меткам каждой
+    //     пары — первый шаг содержательной сверки контракта logits↔маркеры.
+    if let Ok(outputs) = session.run(inputs.clone()) {
+        if let Some((_, v)) = outputs.iter().next() {
+            if let Ok((shape, data)) = v.try_extract_tensor::<f32>() {
+                let m = i64::try_from(m).unwrap_or(-1);
+                println!(
+                    "MARKER|arb|logits|shape={:?}|ok={}",
+                    shape,
+                    **shape == [1, m] && data.len() == usize::try_from(m).unwrap_or(0)
+                );
+                if **shape == [1, m] {
+                    // marker_positions = concat(групп), логит-слайс группы gi =
+                    // [off, off+n), n = число маркеров группы; softmax внутри —
+                    // контракт «softmax within each question's markers».
+                    let mut off = 0usize;
+                    for (gi, (first, ps)) in groups.iter().enumerate() {
+                        let hi = (off + ps.len()).min(data.len());
+                        let probs = softmax(&data[off..hi]);
+                        off = hi;
+                        let joined = probs
+                            .iter()
+                            .map(|x| format!("{x:.4}"))
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        println!(
+                            "MARKER|arb|softmax|group={gi}|first={first}|n={}|probs={joined}",
+                            ps.len()
+                        );
+                    }
+                }
+            }
+        }
     }
     let rss_after = rss("after_runs_arbiter");
     emit(&Probe {
@@ -569,6 +898,53 @@ fn measure_arbiter(
         rss_after_runs: rss_after,
     });
     Ok(())
+}
+
+/// Собирает входы сессии арбитра по фактическим именам IO: `input_ids`/
+/// `attention_mask` формы (1,L), `marker_positions` (1,M) — M из длины `markers`.
+/// Порядок = порядок `session.inputs()` (контракт run-вызова).
+#[cfg(feature = "ort-inference")]
+fn tensors_for(
+    session: &ort::session::Session,
+    ids: &[i64],
+    mask: &[i64],
+    markers: &[i64],
+) -> Result<Vec<(String, ort::value::DynTensor)>, Box<dyn std::error::Error>> {
+    use ort::value::Tensor;
+    let names: Vec<String> = session
+        .inputs()
+        .iter()
+        .map(|i| i.name().to_string())
+        .collect();
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        let v: ort::value::DynTensor = match name.as_str() {
+            "input_ids" => {
+                Tensor::from_array(([1usize, ids.len()], ids.to_vec().into_boxed_slice()))?.upcast()
+            }
+            "marker_positions" => {
+                Tensor::from_array(([1usize, markers.len()], markers.to_vec().into_boxed_slice()))?
+                    .upcast()
+            }
+            _ => Tensor::from_array(([1usize, mask.len()], mask.to_vec().into_boxed_slice()))?
+                .upcast(),
+        };
+        out.push((name, v));
+    }
+    Ok(out)
+}
+
+/// Софтмакс по slices logits одной классификационной схемы (контракт карточки:
+/// «softmax within each question's markers»).
+#[cfg(feature = "ort-inference")]
+fn softmax(xs: &[f32]) -> Vec<f64> {
+    let max = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let exps: Vec<f64> = xs.iter().map(|&x| f64::from(x - max).exp()).collect();
+    let sum: f64 = exps.iter().sum();
+    if sum == 0.0 || !sum.is_finite() {
+        return exps;
+    }
+    exps.iter().map(|e| e / sum).collect()
 }
 
 #[cfg(feature = "ort-inference")]
