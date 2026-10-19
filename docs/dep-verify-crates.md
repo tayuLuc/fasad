@@ -212,9 +212,11 @@ Latrasis 40, rodem 11, broadwaylamb 5, road21 коммит 1 — дерево п
 в SPEC §7 на git-rev форму.
 
 **Крипто-стек (SPEC §3; режим 3 stateless_token = ChaCha20-Poly1305, AES-GCM там нет).**
-Решение, не промер: runtime AEAD = chacha20poly1305 (уже пин); aes-gcm 0.11.1 + hkdf 0.13.0 +
-sha2 0.11.0 промерялись как кандидат для AAD-связывания (домен-разделение ключей) на случай, если
-шаг 5 выберет envelope с контекстом — тогда это amendment к SPEC §3, а не тихая замена. chacha20poly1305 0.11.0 и zeroize 1.9.1 — существующие пины верны; лицензия
+Решение, не промер: runtime AEAD = chacha20poly1305 (уже пин). Новые пины-кандидаты:
+aes-gcm 0.11.1, hkdf 0.13.0 — для AAD-связывания (домен-разделение ключей) на случай, если
+шаг 5 выберет envelope с контекстом — тогда это amendment к SPEC §3, а не тихая замена.
+Существующие пины верны: chacha20poly1305 0.11.0, zeroize 1.9.1, sha2 0.11.0 (действующий пин
+workspace, Cargo.toml:52 — вторым ключом не дописывать); лицензия
 Apache-2.0 OR MIT у всех, MSRV 1.85 = пин; RUSTSEC-записи по стеку есть, вне наших диапазонов
 (aes-gcm RUSTSEC-2023-0096 patched ≥0.10.3; sha2 RUSTSEC-2021-0100 patched ≥0.9.8) — «advisories ok»
 честно; roundtrip-прогон release на 1.85 чистый
