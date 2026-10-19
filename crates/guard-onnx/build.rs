@@ -19,10 +19,10 @@ fn main() {
     let obj = std::path::PathBuf::from(&out_dir).join("rss_mach.o");
     if target == "macos" {
         println!("cargo:rerun-if-changed=spike/rss_mach.c");
-        println!("cargo:rerun-if-changed=spike/platform_stub.c");
+
         println!("cargo:rerun-if-env-changed=CC");
         // cc-аргументы минимальны: системный SDK, без внешних зависимостей.
-        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into()); // build-script: дефолт cc легален (не prod-путь)
         let ok = std::process::Command::new(&cc)
             .arg("-std=c11")
             .arg("-O0")
@@ -67,7 +67,11 @@ fn main() {
         assert!(ok, "SPIKE(step2): сборка dylib не удалась");
 
         println!("cargo:rustc-env=SPIKE_DYLIB={}", dylib.display());
-        println!("cargo:rustc-link-arg-examples=-Wl,-undefined,dynamic_lookup");
+        if target == "macos" {
+            // GNU-ld не знает dynamic_lookup; Linux-веть spike (/proc VmRSS)
+            // в нём не нуждается (nit #6 ревью #9).
+            println!("cargo:rustc-link-arg-examples=-Wl,-undefined,dynamic_lookup");
+        }
         println!("cargo:rustc-link-arg-examples={}", obj.display());
         // Промеры 19.10 (серия): статический путь (link-arg-examples=.o) не
         // долетает до release-линкера; force_load не спасает (порядок);
@@ -81,19 +85,9 @@ fn main() {
         // остаётся неудовлетворённой в главном образе без dylib в cmdline) →
         // линкуем dylib явно: rpath не нужен, dlopen идёт по абсолютному пути.
         // dylib НЕ линкуем (ссылка ld на него не нужна — грузим по пути из
-        // SPIKE_DYLIB); undefined-хелпер орт-статика резолвится отдельным
-        // объектом-стабом, который линкуется ЯВНО (см. ниже).
-        let stub = std::path::PathBuf::from(&out_dir).join("platform_stub.o");
-        let ok = std::process::Command::new(&cc)
-            .arg("-std=c11")
-            .arg("-c")
-            .arg("spike/platform_stub.c")
-            .arg("-o")
-            .arg(stub.as_path())
-            .status()
-            .is_ok_and(|st| st.success());
-        assert!(ok, "SPIKE(step2): компиляция platform_stub.c не удалась");
-        // (stub больше НЕ линкуется в главный образ: орф-хосты резолвятся через
-        // `-undefined dynamic_lookup`, стаб живёт внутри dylib — см. ниже)
+        // SPIKE_DYLIB); undefined-хелпер орт-статика резолвится СТАБОМ ВНУТРИ
+        // самого TU rss_mach.c (сильное определение, промер 54888b8) — отдельная
+        // platform_stub.c не линкуется никуда (nit #7 ревью #9: мёртвая компиляция
+        // с assert на каждом macOS-билде удалена).
     }
 }

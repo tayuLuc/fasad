@@ -197,6 +197,14 @@ mkdir -p "$CACHE_DIR"
 processed=0
 pending_rows=0
 
+finish() {
+    # Отметка подтверждения — при завершении, если были подтверждённые строки.
+    if [ "$processed" -gt 0 ]; then
+        pending_rows=$processed stamp_manifest_footer
+    fi
+}
+trap finish EXIT
+
 while IFS= read -r line || [ -n "$line" ]; do
     # пропускаем комментарии и пустые строки; CR режем (файл eol=lf, но defensively)
     line=${line%$'\r'}
@@ -213,7 +221,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     source=$(printf '%s\n' "$line" | cut -f7)
 
     [ "$source" = "skip" ] && continue
-    [ "$source" = "hf" ] || die "$role: source='$source' (ожидан hf|local|skip)"
+    [ "$source" = "hf" ] || die "$role: source='$source' (пока только hf; local/skip — TODO)"
 
     case "$want_sha" in
         TBD) : ;;
@@ -256,6 +264,14 @@ while IFS= read -r line || [ -n "$line" ]; do
             else
                 die "$role: скачивание не удалось (fail-closed)"
             fi
+        fi
+        # Проверка ПОСЛЕ скачивания, ДО mv (нит #10 ревью #9): неподтверждённый
+        # файл не попадает в кеш под финальным именем.
+        got_size=$(file_size "$tmp")
+        got_sha=$(sha256_of "$tmp")
+        if [ "$want_size" != "0" ] && [ "$got_size" != "$want_size" ]; then
+            rm -f "$tmp"
+            die "$role: размер $got_size ≠ манифест $want_size ($tmp) — обрезан или подмена"
         fi
         mv -f "$tmp" "$dest"
     fi

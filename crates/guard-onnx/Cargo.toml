@@ -31,22 +31,13 @@ ort        = { workspace = true, optional = true }
 
 [lints]
 workspace = true
-# SPIKE(step2, issue #6): контракт unsafe_code=forbid НЕ понижаем. Промерено в
-# этом заходе (cargo 1.97 / rustc 1.97), инвертов НЕ СУЩЕСТВУЕТ:
-#   - inner/element `#[allow(unsafe_code)]` под `-F` → E0453;
-#   - `[lints.rust]` в пакете поверх `workspace = true` → «cannot override workspace.lints»;
-#   - `[patch.lints]` → не-parsed («entry lints should be a URL»);
-#   - RUSTFLAGS="-A" → проигрывает `-F` из [lints]-механизма;
-#   - safe extern в Rust 2024 → E0133, вызов всё равно unsafe.
-# Вывод (зафиксировать в ПР-решении): spike на macOS несовместим с forbid без
-# точечного послабления workspace-lints; вариант — `[workspace.lints.rust]
-# unsafe_code = "deny"` + `#![forbid(unsafe_code)]` в src-крейтах (guard-daemon,
-# guard-vault уже несут такой внутренний forbid), ЛИБО spike RSS меряется на
-# Linux (CI-матрица: /proc VmRSS, unsafe не нужен) — macOS-промер остаётся
-# ручным прогоном с явным RUSTFLAGS, который документируется командой в аудите.
-# SPIKE(step2, issue #6): контракт unsafe_code=forbid НЕ понижается в манифесте
-# (cargo запрещает over-ride workspace.lints). spike — единственный unsafe-остров
-# (FFI task_info для private-RSS, C с layout-ассертами); исключение фиксируется
-# ЯВНО в команде прогона: RUSTFLAGS="-A unsafe_code" cargo run --features
-# ort-inference --example spike. CI (`just lint`) spike собирает без фичи = no-op.
+# SPIKE(step2, issue #6, ревью #9 нит #15): финальный контракт unsafe (19.10):
+# workspace `unsafe_code = "deny"` + `#![forbid(unsafe_code)]` во всех src-крейтах
+# — библиотека остаётся forbid-контрактной изнутри (промер ревьюера: внутренний
+# forbid при внешнем deny держится; package-[lints]-overide действительно нельзя,
+# «cannot override workspace.lints» — воспроизведено). Точечный #[allow] на
+# mod ffi example работает БЕЗ всяких RUSTFLAGS; фиктивная команда
+# RUSTFLAGS="-A unsafe_code" из старой инструкции удалена. Инверты workspace
+# forbid промерены и мертвы (E0453 / cannot-override / [patch.lints]-не-ключ /
+# RUSTFLAGS проигрывает -F) — см. git-историю этого файла, коммит be2bf9a.
 

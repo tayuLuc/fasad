@@ -1,9 +1,10 @@
 # SPIKE(step2) — issue #6
 
 `rss_mach.c` — C-остров для промера private-RSS (`task_info(TASK_VM_INFO)`) на
-macOS. Workspace-контракт `unsafe_code = forbid` (Cargo.toml `[workspace.lints.rust]`)
-нельзя инвертировать точечным `allow` (rustc E0453), поэтому FFI изолирован в C и
-линкуется `build.rs` **только** в example `spike` (`cargo:rustc-link-arg-examples`).
+macOS. Workspace `unsafe_code = deny` + `#![forbid(unsafe_code)]` в src-крейтах
+(итог ревью #9): библиотеки остаются forbid-контрактными изнутри; example
+(`spike.rs`) несёт точечный `#[allow(unsafe_code)]` на FFI-мосту (dylib+dlsym),
+FFI-логика изолирована здесь, в C с layout-ассертами.
 На Linux RSS берётся из `/proc/self/status` (`VmRSS`) — чистый Rust, C не нужен;
 на Windows spike RSS не меряет (CI-матрица spike не прогоняет вовсе — см. шапку
 `examples/spike.rs`).

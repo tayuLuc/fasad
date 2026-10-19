@@ -1,6 +1,6 @@
 // SPIKE(step2, issue #6): safe-обёртка RSS на macOS.
 //
-// Контракт workspace `unsafe_code = forbid` (Cargo.toml [workspace.lints.rust])
+// Контракт: workspace `unsafe_code = deny`, src-крейты `#![forbid(unsafe_code)]`
 // cargo передаёт на rustc как `-F unsafe-code`, и инвертировать его нельзя
 // НИКАК (промерено в этом заходе, cargo 1.97 / rustc 1.97):
 //   - `#[allow(unsafe_code)]` на элементе/модуле/crate → E0453;
@@ -45,4 +45,17 @@ double fasad_spike_rss(void) {
         return -1.0;
     }
     return out;
+}
+
+/* Сильный стаб clang-runtime helper'а `___isPlatformVersionAtLeast` (см.
+ * docs/model-audit.md §5.2 и nit #7 ревью #9): орт-статик rc.14 ссылается на
+ * него при min<12.3; бэкпорт в libSystem требует min>=12.3, cargo печатает
+ * min=11.0. Стаб внутри ЭТОГО TU (dylib) — не отдельная platform_stub.c:
+ * промер 19.10 (54888b8) — так он линкуется и не мешает орт-хостам. */
+int ___isPlatformVersionAtLeast(int platform, int major, int minor, int patch) {
+    (void)platform;
+    (void)major;
+    (void)minor;
+    (void)patch;
+    return 0;
 }

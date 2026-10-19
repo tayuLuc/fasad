@@ -12,18 +12,15 @@
 //! no-op; тест-прокси сборки помечен `#[ignore]` (`cargo test` его считает,
 //! не запускает). Прогон — только рукаместо (наша машина, macOS/Linux).
 //!
-//! Контракт workspace `unsafe_code = forbid` (Cargo.toml [workspace.lints.rust])
-//! НЕ понижается: spike на macOS читает RSS через C-остров `spike/rss_mach.c`
-//! (build.rs линкует его только в example; `_Static_assert` держат layout
-//! `task_vm_info`). Единственный unsafe в Rust-части — extern-вызов, обёрнут в
-//! `mod ffi` с точечным `#[allow]` (см. ниже rationale) — spike is the only
-//! consumer, рантайм-код (шаг 4) unsafe не содержит.
+//! Контракт unsafe (итог ревью #9): workspace `unsafe_code = deny` + `#![forbid(unsafe_code)]`
+//! во всех src-крейтах; spike — example, точечный `#[allow]` на `mod ffi` (промер:
+//! работает без всяких RUSTFLAGS). Рантайм-код (шаг 4) unsafe не содержит.
 
 #![allow(
     missing_docs,
     dead_code, // spike без фичи ort-inference: main no-op, скелет мёртв by design
     clippy::allow_attributes_without_reason,
-    reason = "SPIKE(step2): бинарь-промер issue #6; mаина без фичи нет — см. cfg"
+    reason = "SPIKE(step2): бинарь-промер issue #6; бинарь без фичи нет — см. cfg"
 )]
 
 use std::path::PathBuf;
@@ -31,16 +28,15 @@ use std::time::Instant;
 
 /// SPIKE(step2): единственная FFI-граница в репозитории.
 ///
-/// Rationale (issue #6, решение ревьюера 19.10): `forbid(unsafe_code)` из
-/// workspace-lints приходит на rustc как `-F unsafe-code`; точечные `allow` по
-/// docs rustc его не перебивают (forbid > command-line > inner-attribute).
-/// Rust-обёртка task_info требует unsafe-блока, C-обёртка (rss_mach.c) — нет:
-/// unsafe остаётся за пределами crate (в C, с layout-ассертами), а Rust-часть
-/// видна как safe extern-вызов.
+/// Rationale (issue #6, ревью #9): workspace-lint `deny` перебивается точечным
+/// `allow` на этом mod (промерен вариант `-F`: inner-allow не работает — E0453,
+/// поэтому в workspace стоит deny, а src-крейты держат forbid изнутри).
+/// Небезопасная граница замкнута в C (`rss_mach.c`, layout-ассерты); Rust-мост
+/// — dlopen/dlsym по dylib (см. build.rs), единственный unsafe-остров spike.
 #[cfg(target_os = "macos")]
 #[allow(
     unsafe_code,
-    reason = "FFI-остров example: граница небезопасности замкнута в C (rss_mach.c, _Static_assert layout); контракт forbid(unsafe_code) — для src-крейтов (#inner forbid в lib.rs), spike не prod-путь"
+    reason = "FFI-остров example: граница небезопасности замкнута в C (rss_mach.c, _Static_assert layout); контракт forbid — для src-крейтов (#![forbid] в lib.rs), spike не prod-путь"
 )]
 #[cfg(feature = "ort-inference")]
 mod ffi {
@@ -55,40 +51,49 @@ mod ffi {
         fn dlclose(handle: *mut std::ffi::c_void) -> i32;
     }
 
-    /// Мост к C-острову (issue #6). Промер cargo 1.97.1: `cargo:rustc-link-arg-examples=<.o>`
-    /// долетает до линкера в dev и НЕ долетает в release (cmdline линкера release
-    /// без rss_mach.o) → прямой extern = Undefined symbol в release-прогоне.
-    /// dlsym(RTLD_DEFAULT) ищет символ по образам процесса; отсутствие даёт None
-    /// (fail-soft: spike без RSS бесполезен, CI промер не гоняет — только локаль).
+    /// Мост к C-острову (issue #6): прямой extern не долетает до release-линковки
+    /// (`docs/model-audit.md` §5); dylib грузится dlopen по полному пути из
+    /// `SPIKE_DYLIB`, фанк-пойтер кэшируется `OnceLock` (nit #18 ревью #9).
+    fn rss_fn() -> Option<extern "C" fn() -> f64> {
+        static CACHE: std::sync::OnceLock<Option<extern "C" fn() -> f64>> =
+            std::sync::OnceLock::new();
+        *CACHE.get_or_init(|| {
+            // dylib собирается build.rs, путь приходит env-переменной компиляции.
+            // dlopen(полный путь) — deterministic (промер 19.10: статический путь
+            // линкуется только в dev). Хэндл НЕ закрываем (nit #18 ревью #9):
+            // spike — одноразовый процесс, dylib живёт до выхода.
+            unsafe {
+                let h = dlopen(
+                    concat!(env!("SPIKE_DYLIB"), "\0").as_ptr().cast(),
+                    RTLD_LAZY,
+                );
+                if h.is_null() {
+                    return None;
+                }
+                let sym = dlsym(h, c"fasad_spike_rss".as_ptr().cast());
+                if sym.is_null() {
+                    dlclose(h);
+                    return None;
+                }
+                // SAFETY: сигнатура `double (void)` зафиксирована rss_mach.c.
+                Some(std::mem::transmute::<
+                    *mut std::ffi::c_void,
+                    extern "C" fn() -> f64,
+                >(sym))
+            }
+        })
+    }
+
     pub fn rss_mib() -> Option<f64> {
-        // dylib собирается build.rs, путь приходит env-переменной компиляции.
-        // dlopen(полный путь) — deterministic: символ гарантированно в этом
-        // образе (промер 19.10: статический путь линкуется только в dev).
-        unsafe {
-            let h = dlopen(
-                concat!(env!("SPIKE_DYLIB"), "\0").as_ptr().cast(),
-                RTLD_LAZY,
-            );
-            if h.is_null() {
-                return None;
-            }
-            let sym = dlsym(h, b"fasad_spike_rss\0".as_ptr().cast());
-            if sym.is_null() {
-                dlclose(h);
-                return None;
-            }
-            let f: extern "C" fn() -> f64 =
-                std::mem::transmute::<*mut std::ffi::c_void, extern "C" fn() -> f64>(sym);
-            let v = f();
-            dlclose(h);
-            if v >= 0.0 { Some(v) } else { None }
-        }
+        let f = rss_fn()?;
+        let v = f();
+        if v >= 0.0 { Some(v) } else { None }
     }
 }
 
 /// RSS процесса в MiB:
 /// macOS — `task_info(TASK_VM_INFO).internal` (private+resident, «Память» из
-/// монитора активности, FFI через C-остров — см. `mod ffi`); Linux — VmRSS из
+/// монитора активности, FFI через C-остров — см. `mod ffi`); Linux — `VmRSS` из
 /// /proc/self/status; Windows/прочее — None (CI spike не прогоняет).
 #[cfg(all(target_os = "macos", feature = "ort-inference"))]
 fn rss_mib() -> Option<f64> {
@@ -175,6 +180,11 @@ fn ms(t: Instant) -> f64 {
 }
 
 fn p50(mut v: Vec<f64>) -> f64 {
+    // nit #17 ревью #9: пустой прогон = 0.0 («na»), а не panic — потеря одной
+    // метрики не должна валить весь промер (ср. rss()/na-ветку).
+    if v.is_empty() {
+        return 0.0;
+    }
     v.sort_by(f64::total_cmp);
     v[v.len() / 2]
 }
@@ -275,9 +285,9 @@ fn emit(p: &Probe) {
     );
 }
 
-/// lockR/rubert-base-pii-ner-onnx fp16: BertForTokenClassification, int64 IO,
+/// `lockR/rubert-base-pii-ner-onnx` fp16: `BertForTokenClassification`, int64 IO,
 /// единый файл без external data (контроль паттерна памяти). Токенизация —
-/// tokenizer.json из кеша (WordPiece), окно pad 256 (SPEC §5.3).
+/// `tokenizer.json` из кеша (`WordPiece`), окно pad 256 (SPEC §5.3).
 #[cfg(feature = "ort-inference")]
 fn measure_lockr(
     cache: &std::path::Path,
@@ -387,7 +397,7 @@ fn measure_lockr(
 }
 
 /// onnx-community/GLiNER2.5-Decide-ONNX q4f16 + external data: load (главный
-/// вопрос промера: дельта RSS vs размер .onnx_data — гипотеза ревьюера «ORT
+/// вопрос промера: дельта RSS vs размер `.onnx_data` — гипотеза ревьюера «ORT
 /// мапит external data целиком») + IO-контракт + прогоны на synthetic-входах
 /// (полноценный entity-препроцесс GLiNER2.5 — шаг 4).
 #[cfg(feature = "ort-inference")]
@@ -420,7 +430,9 @@ fn measure_arbiter(
     // Синтетические входы строго по IO-контракту сессии: int64 [1;L] (id-входы —
     // фиктивный vocab-диапазон, mask — единицы). Смысловой инференс здесь не цель.
     let l = 256usize;
-    let ids: Vec<i64> = (0..l as i64).map(|i| 3 + (i % 512)).collect();
+    let ids: Vec<i64> = (0..i64::try_from(l).unwrap_or(i64::MAX))
+        .map(|i| 3 + (i % 512))
+        .collect();
     let mask: Vec<i64> = vec![1i64; l];
     let mut inputs: Vec<(String, ort::value::DynTensor)> = Vec::new();
     for inp in session.inputs() {

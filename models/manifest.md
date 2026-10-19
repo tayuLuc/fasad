@@ -2,8 +2,8 @@
 
 | роль | HF repo | revision | файл | sha256 | размер | статус |
 |---|---|---|---|---|---|---|
-| extractor-1b RU (готовый ONNX fp16) | lockR/rubert-base-pii-ner-onnx | — | TBD (промер step2) | TBD | 355 541 615 B (fp16, промер 18.10) | spike |
-| arbitrator gray-zone (q4f16) | onnx-community/GLiNER2.5-Decide-ONNX | — | model_q4f16.onnx + .onnx_data | TBD | 341 889 + 1 945 314 448? B (TO PROVE) | spike |
+| extractor-1b RU (готовый ONNX fp16) | lockR/rubert-base-pii-ner-onnx | ea7610b22808c509c0c8b7c7b0f6639c19684d08 | model.optimized.fp16.onnx | 039aba6be0c64f50f37c64ddc6c6d4e2fd91cbdcf5c9291056ec6bc96c70a501 | 355 541 615 B | verified 19.10 |
+| arbitrator gray-zone (q4f16) | onnx-community/GLiNER2.5-Decide-ONNX | 18271032588167fe9a3fbb8c5a4900b1231f8119 | model_q4f16.onnx + .onnx_data | 93f3e0d4ed8bbd4858840f8a2e66028a70e86a482e1ff9822d2ac726381684f6 / df2b05dc97ff875e0d2b51ec21de0049b7b3e7feddaa5224d318dc79e66210e8 | 341 889 + 523 127 808 B (промерен; 1 945 314 448 было fp32, опровергнуто) | verified 19.10 |
 | backup extractor (fp16 триплет) | DanKau/gliner2.5-multi-v1-onnx | — | onnx/*.onnx | TBD | encoder 1 111 MB | spike |
 | backup zero-shot int8 | onnx-community/gliner_multi-v2.1 | — | model_int8.onnx | TBD | 349 120 924 B | spike |
 

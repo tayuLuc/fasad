@@ -16,7 +16,6 @@ models/*
 !models/manifest.tsv
 !models/.gitattributes
 !models/README.md
-!models/manifest.md
 **/model.onnx_data*
 # local transcript export
 transcript.md

@@ -76,7 +76,7 @@ GatherElements до lockR-мерки).
    (`spike/platform_stub.c`).
 3. **Инференс арбитра упал до lockR-мерки**: `GatherElements node_gather_48:
    Out of range value in index tensor` — spike передаёт заглушечные
-   `marker_positions` без構構構構構 semantics SPAN-разметки GLiNER2.5. Это НЕ
+   `marker_positions` без семантики SPAN-разметки GLiNER2.5. Это НЕ
    дефект модели: контракт маркеров строит декодер шага 4 (gline-rs как
    референс). Метки load-time (RSS сессии) получены до инференса — §3 валиден.
 4. RSS до lockR-сессии и латентность prefill не сняты (см. 3) — добирается в
