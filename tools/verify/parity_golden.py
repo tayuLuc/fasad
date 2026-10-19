@@ -476,7 +476,10 @@ def main() -> None:
     if args.model == "lockr":
         d = lockr_logits_delta(res["fp32"], res["qat"])
         print(f"METRIC|parity|lockr|maxabs_logit_delta_f32|{d:.4f}|rows|{len(res['fp32'])}")
-    all_ok = all(report(args.model, res, t) for t in THRESHOLDS)
+    # all() короткозамкнула бы протокол на первом fail (рецидив 4b-3B:
+    # 0.7-строки терялись) — печатаем ВСЕ пороги, вердикт = AND по списку.
+    oks = [report(args.model, res, t) for t in THRESHOLDS]
+    all_ok = all(oks)
     print(f"PARITY|verdict|{'pass' if all_ok else 'fail'}|model|{args.model}"
           f"|gates=pad_le_{RECALL_GATE_PP}pp_class_le_{CLASS_GATE_PP}pp")
     sys.exit(0 if all_ok else 1)
