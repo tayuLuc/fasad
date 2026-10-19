@@ -13,6 +13,7 @@
 //! конфликт) — они остаются только референсом кода декодирования.
 
 pub mod chunker;
+pub mod decide;
 pub mod merger;
 #[cfg(test)]
 mod proptests;
