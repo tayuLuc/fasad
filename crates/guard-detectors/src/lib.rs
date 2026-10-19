@@ -26,29 +26,18 @@ pub mod normalize;
 #[allow(clippy::must_use_candidate)]
 pub mod checksums;
 
-/// Сканер секретов: префикс-фильтр → regex в окне → энтропия.
-///
-/// TODO(шаг 3): двухфазный фильтр через `aho_corasick` (префиксы `AKIA`, `ghp_`,
-/// `sk-`, `eyJ`, `xoxb-`), тяжёлая regex в окне ±200 байт, энтропия Шеннона +
-/// Probability-of-Randomness. Референсы архитектур (не зависимости):
-/// `mongodb/kingfisher`, `praetorian-inc/noseyparker`, `sirwart/ripsecrets`.
+/// Сканер секретов: aho-corasick префикс-фильтр → валидация формы в окне
+/// ±200 байт (свои валидаторы, без крейта `regex`) → энтропия Шеннона ≥4.0 на
+/// 16-окне (SPEC §2, §10 п.3; референсы архитектур, не зависимости:
+/// `mongodb/kingfisher`, `praetorian-inc/noseyparker`, `sirwart/ripsecrets`).
 /// Live-верификацию токенов не делаем (air-gap, AGENTS §Что НЕ делаем).
-pub mod secrets {
-    /// Заглушка модуля.
-    #[derive(Debug, Default, Clone, Copy)]
-    pub struct Placeholder;
-}
+pub mod secrets;
 
-/// Автомат Ахо–Корасика: ОПФ, адресные/паспортные маркеры, суффиксы отчеств.
-///
-/// TODO(шаг 3): один `AhoCorasick` на все маркеры + обратный автомат для форм
-/// суррогатов из vault (SPEC §4: «все формы регистрируются в обратном
-/// `aho-corasick` с привязкой (`EntityId`, `Case`)»).
-pub mod dictionary {
-    /// Заглушка модуля.
-    #[derive(Debug, Default, Clone, Copy)]
-    pub struct Placeholder;
-}
+/// Автомат Ахо–Корасика: словарные маркеры (ОПФ, адресные/паспортные маркеры,
+/// суффиксы отчеств) — SPEC §2, §10 п.3; списки слов приходят из конфигурации,
+/// не из хардкода модуля. Обратный автомат для форм суррогатов из vault —
+/// шаг 5 (SPEC §4, §10 п.5).
+pub mod dictionary;
 
 #[cfg(test)]
 mod tests {
@@ -58,7 +47,7 @@ mod tests {
         // `OffsetMap` проверяется конструктором `default()` — тип из файла
         // `normalize.rs` (шаг 3a), заглушка-единица шага 1 удалена.
         let _ = <super::normalize::OffsetMap as Default>::default();
-        let _ = super::secrets::Placeholder;
-        let _ = super::dictionary::Placeholder;
+        let _ = super::secrets::CONFIDENCE_FORMAT;
+        let _ = super::dictionary::WordBoundary::None;
     }
 }

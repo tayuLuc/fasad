@@ -45,11 +45,15 @@ fn rvanaya_kyrillica() {
     assert_eq!(src.len(), 4, "промер: Ж=D096 (2) + U+0487=D287 (2)");
     let (norm, map) = normalize(src);
     assert_eq!(norm.as_ref(), "Ж");
-    assert!(!map.is_identity(), "правило сработало — карта нетождественна");
+    assert!(
+        !map.is_identity(),
+        "правило сработало — карта нетождественна"
+    );
     assert_eq!(map.normalized_len(), 2);
     assert_eq!(map.original_len(), 4);
     assert_eq!(map.map_to_original(0), Some(0));
-    // Терминальный инвариант: конец нормы → конец оригинала (марка внутри).
+    // Терминальный инвариант: конец нормы → конец оригинала (марка внутри),
+    // спец-ветка `len_norm` в `map_to_original`.
     assert_eq!(map.map_to_original(2), Some(4));
     // Round-trip: спан всей нормы → весь оригинал, включая съеденную марку.
     assert_eq!(map.original_for(src, 0..2), Some("Ж\u{487}"));
@@ -57,10 +61,10 @@ fn rvanaya_kyrillica() {
     // нормы 1 (середина Ж) обязана маппиться на char-границу (0 или 2),
     // удалённая марка целиком лежит в «невозвратной» зоне.
     assert!(!src.is_char_boundary(3));
-    assert!(
-        src.is_char_boundary(map.map_to_original(1).unwrap_or(usize::MAX)),
-        "инвариант 2: карта вывела на не-границу"
-    );
+    // Контракт инварианта 2: char-граница гарантии — для p, самих являющихся
+    // char-границей нормы. p=1 — середина 2-байтной «Ж», недостижима детектором
+    // (спан = byte_start/byte_end символа); карта аффинна: Some(1).
+    assert_eq!(map.map_to_original(1), Some(1));
     // Марка в середине слова: «Иван\u{487}» → «Иван», спан всей нормы = весь оригинал.
     let src2 = "\u{418}\u{432}\u{430}\u{43D}\u{487}"; // Иван + Pokrytie
     let (norm2, map2) = normalize(src2);
@@ -104,10 +108,30 @@ fn tsifry_razryvy() {
     assert_eq!(m3.map_span(0..2), Some((0, 8)));
     // `abc\u{FEFF}def` (9 → 6): «abc» до BOM остаётся на 0..3, «def» сдвигается
     // на 6..9.
-    let (n4, m4) = normalize("abc\u{FEFF}def");
+    let src4 = "abc\u{FEFF}def";
+    let (n4, m4) = normalize(src4);
     assert_eq!(n4.as_ref(), "abcdef");
+    // Инвариант 2 (строгая форма): карта НИКОГДА не выводит на не-границу —
+    // внутренний байт удалённой марки (4) запрещён как end спана; end
+    // отражается на ближайший валидный край (5, начало `def`).
     assert_eq!(m4.map_span(0..3), Some((0, 3)));
-    assert_eq!(m4.map_span(3..6), Some((6, 9)));
+    // Инвариант 2: карта отдаёт char-границу оригинала на ВСЕХ позициях
+    // нормы, включая левый край удалённого фрагмента: 6 = начало `def`.
+    // Сырая пара карты — аффинный прообраз спана (внутренние байты удалённой
+    // группы включаются): start = левый край оригинала фрагмента.
+    assert_eq!(m4.map_span(3..6), Some((3, 9)));
+    // Инвариант 2 (строгая форма) — на char-границах НОРМЫ: карта к origin
+    // маппит char-границу нормы в char-границу норм-строки (внутренние байты
+    // оригинала недостижимы как границы спана); см. map_span_to_original и
+    // property-гейт `check_char_boundaries`.
+    // to_original = byte-точное отображение сырой пары (без snap): прообраз
+    // `def` = 3..9 (BOM внутри, round-trip инвариант 3: нормализация
+    // прообраза == норма спана).
+    assert_eq!(
+        m4.map_span_to_original(src4, 3..6)
+            .map(|sp| (sp.start, sp.end)),
+        Some((3, 9))
+    );
     // NBSP между цифрами → обычный пробел (не удаление!): `1\u{A0}2` → `1 2`,
     // промер: 1 + NBSP(2) + 1 = 4 байта оригинала.
     let (n5, m5) = normalize("1\u{A0}2");
@@ -153,7 +177,10 @@ fn idepotentnost_cherez_map() {
     assert!(!m1.is_identity());
     let (n2, m2) = normalize(n1.as_ref());
     assert_eq!(n2.as_ref(), "1- 2");
-    assert!(m2.is_identity(), "второй прогон по норме обязан быть identity");
+    assert!(
+        m2.is_identity(),
+        "второй прогон по норме обязан быть identity"
+    );
     assert_eq!(
         OffsetMap::map2(&m1, &m2, 4),
         m1.map_to_original(4),
@@ -161,11 +188,18 @@ fn idepotentnost_cherez_map() {
     );
     // Промер первичкой: `１- 2\u{487}` = 3+1+1+1+2 = 8 байт;
     // норма `1- 2` = 4; конец нормы → конец оригинала = 8.
-    assert_eq!(OffsetMap::map2(&m1, &m2, 4), Some(8), "конец → конец оригинала");
+    assert_eq!(
+        OffsetMap::map2(&m1, &m2, 4),
+        Some(8),
+        "конец → конец оригинала"
+    );
     // Композиция-объект с identity: len-пара и отображение сохраняются.
     let c = m1.compose(&m2);
     assert_eq!(c.normalized_len(), m1.normalized_len());
     assert_eq!(c.original_len(), m1.original_len());
+    // Композиция с identity-второй картой равна первой карта-в-карту
+    // (инвариант 6: второй прогон ничего не меняет — точек нет, перенос
+    // тождественный).
     for p in 0..=m1.normalized_len() {
         assert_eq!(c.map_to_original(p), m1.map_to_original(p), "p={p}");
     }
