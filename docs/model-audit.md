@@ -97,3 +97,27 @@ CI spike НЕ гоняет (фича `ort-inference` default-off, example no-op,
 тест-прокси `#[ignore]`); веса в CI не качаются. Прогоны — рукаместо
 (macOS/Linux). Linux-ветка spike читает `/proc/self/status` VmRSS (safe, без
 C-острова) — второй источник метрик с CI-матрицы, когда появится job.
+
+## 8. Релизный путь ORT: официальный dylib 1.31.0 (issue #11, шаг 4a)
+
+1. Причина (промеры §5.1): статик-pyke на macOS release = SIGSEGV (chained fixups ×
+   deployment target 11.0, unresolved `___isPlatformVersionAtLeast` → jmp 0x0); орт-дока и
+   §9 SPEC: релиз поставляет dylib — статик-режим остаётся только CI-линтовкой.
+2. Версия: api-31 (орт rc.14) ⇒ минимум ORT **1.31.0**; graceful-эскалация
+   подтверждена промерами rc.14 с 1.20.1/1.23.0/1.24.4/1.26.0: exit 101
+   «requested API version [31] not available» без краша (sysrc /tmp/mg43-45).
+3. Артефакты релиза v1.31.0 (github.com/microsoft/onnxruntime/releases/tag/v1.31.0,
+   sha256 промерены загрузкой 19.10):
+   - macOS arm64: `onnxruntime-osx-arm64-1.31.0.tgz`
+     sha256 1031b36dd3bdaa8d976a6130d9cf2a05e9be320b93ae804f8427b91dc3432afc (36 549 009 B);
+     dylib внутри: sha256 2a50a63e7f41f8d4d551d3ee47248df3864f6540109fce8ad520ca3b51af4b70.
+   - Linux x64: `onnxruntime-linux-x64-1.31.0.tgz`
+     sha256 cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57 (11 408 003 B).
+   - Windows x64: nupkg `Microsoft.ML.OnnxRuntime.1.31.0` (рантайм-dll в runtimes/win-x64/native,
+     доставка copy-dylibs в шаге 9; sha256 — отдельный промер, не заявляем).
+   - Артефакты НЕ коммитятся в git (AGENTS §Не тащим веса); CI ort-прогонов нет (§6).
+4. Сборка: `ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=<dir>/lib cargo build --release
+   --features ort-inference` — build.rs дописал rpath-ветку (macos|linux), just-рецепты
+   `ort-dylib`/`spike-dylib`. Релизный прогон 19.10 (сырой /tmp/mg48-49.out):
+   exit=1 (GatherElements-заглушка §5.3 — до живых marker_positions шага 4b), env_init
+   37.8–40.3 ms, rss_after_load_arbiter 379.4–387.4 MiB — бюджет-гейт release закрыт.
