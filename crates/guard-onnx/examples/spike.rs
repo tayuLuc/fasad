@@ -7,8 +7,9 @@
 //! Запуск (после `scripts/fetch-models.sh`, веса в ~/.cache/fasad-models):
 //! ```text
 //! cargo run --release --features ort-inference --example spike -- --arb --lockr
-//! // 4b-2d: `--arb-chunked` (чанкованный арбитр, латентность/покрытие) и
-//! // `--arb-budget` (пик RSS двух моделей в ОДНОМ процессе, SPEC <2 ГБ).
+//! # 4b-2d: --arb-chunked [--window 384|448] (чанкованный арбитр: покрытие
+//! # длинных входов, латентность), --arb-budget (пик RSS двух моделей в ОДНОМ
+//! # процессе, вердикт SPEC <2 ГБ). dylib-контракт: см. ниже (N6, ревью #32).
 //! ```
 //! Контракт dylib (нить N6, ревью #32): build И run — ОДНИМИ env
 //! (`ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=…`, цель `just spike-dylib`).
@@ -1419,10 +1420,13 @@ fn arb_budget_run(
         .join("lockR/rubert-base-pii-ner-onnx")
         .join("model.optimized.fp16.onnx");
     require_weight(&lockr)?;
+    let before1 = peak.max(rss_mib().unwrap_or(peak));
     let t = Instant::now();
     let mut s1 = open_session(env, &lockr, threads)?;
     println!("METRIC|load_ms_extractor1b|{:.1}", ms(t));
-    peak = peak.max(rss("after_load_extractor1b"));
+    let a1 = rss("after_load_extractor1b");
+    peak = peak.max(a1);
+    println!("METRIC|delta_mib_extractor1b|{:.1}", a1 - before1);
     if let Some(f) = vmfoot_mib() {
         peak = peak.max(f); // floor для macOS-18-без-vmmap (защита деградации)
     }
@@ -1442,10 +1446,15 @@ fn arb_budget_run(
     require_weight(&tokp)?;
     let owned = arb_mod_schema();
     let schema = owned.iter().map(|(q, l)| (*q, *l)).collect::<Vec<_>>();
+    let before2 = rss_mib().unwrap_or(0.0);
     let t = Instant::now();
     let mut arb = DecideArbiter::load(env, &decide, &tokp, threads)?;
     println!("METRIC|load_ms_arbiter|{:.1}", ms(t));
-    peak = peak.max(rss("after_load_arbiter"));
+    let a2 = rss("after_load_arbiter");
+    peak = peak.max(a2);
+    // Дельта ВТОРОЙ сессии при живой первой: сравнима с alone-дельтой §5
+    // (шеринг/не-шеринг весов — ревью #34 в, нит #38 N2).
+    println!("METRIC|delta_mib_arbiter2nd|{:.1}", a2 - before2);
     if let Some(f) = vmfoot_mib() {
         peak = peak.max(f); // floor для macOS-18-без-vmmap (защита деградации)
     }
