@@ -384,7 +384,15 @@ fn run_spike(
     // Что мерим: только явно запрошенное флагами (issue: основной кандидат —
     // arbiter q4f16; lockR — второй график; backup'и по итогам вердикта).
     if argv.iter().any(|a| a == "--arb") {
-        measure_arbiter(cache, &env, threads)?;
+        let inline = measure_arbiter(cache, &env, threads)?;
+        if argv.iter().any(|a| a == "--arb-mod") {
+            dual_gate(&inline, &arb_mod_run(cache, &env, threads)?)?;
+        }
+    }
+    if argv.iter().any(|a| a == "--arb-mod") && !argv.iter().any(|a| a == "--arb") {
+        // Отделяемый прогон модуля: инлайн-снимка нет — DUAL не меряется.
+        let _ = arb_mod_run(cache, &env, threads)?;
+        println!("DUAL|maxdiff|na");
     }
     if argv.iter().any(|a| a == "--arb-probe") {
         arbiter_probe(cache, &env, threads)?;
@@ -393,6 +401,22 @@ fn run_spike(
         measure_lockr(cache, &env, threads)?;
     }
     Ok(())
+}
+
+/// Снимок инлайн-контура `--arb` для DUAL-сверки с модульным путём (4b-2c).
+#[cfg(feature = "ort-inference")]
+#[allow(
+    dead_code,
+    reason = "logits снят как снимок формы (DUAL меряет вероятности); поле держится для аудита"
+)]
+struct InlineArb {
+    /// Вероятности первой метки по группам (softmax внутри группы), порядок =
+    /// порядок `groups` из `arb_live_layout`.
+    probs: Vec<f64>,
+    /// Число маркеров M, поданное графу.
+    markers: usize,
+    /// Побитовые logits выхода (для сверки форм).
+    logits: Vec<f32>,
 }
 
 /// Контракт-проба 4b-0 (issue #23): НЕ качество инференса — контракт Decide-графа
@@ -670,10 +694,19 @@ fn arb_live_layout(
     let p_id = decide_marker::id_of(vocab, "[P]")
         .ok_or("маркер [P] не в vocab Decide (сверка с манифестом не прошла)")?;
     let [t0, t1, t2] = spike_texts();
-    let schema = "( [P] Is there a full name of a person ? ( [L] person [L] no ) \
-                   [SEP_STRUCT] ( [P] Is there a tax identification number ? \
-                   ( [L] tin [L] no ) [SEP_STRUCT] ( [P] Is there a bank card number ? \
-                   ( [L] card [L] no ) ) ) [SEP_TEXT]";
+    // 4b-2c: схема строится через `guard_onnx::arbitrate::DecideArbiter::schema_block`
+    // — ДВОЙНОЙ ПРАВДЫ НЕТ: инлайн-контур `--arb` и модульный путь `--arb-mod`
+    // гоняют ОДИН И ТОТ ЖЕ вход, поэтому `DUAL|maxdiff` меряет детерминизм
+    // сессии, а не разницу двух констрэктов. Родительский референс-литерал
+    // 4b-2a (`( [P] q ( [L] person [L] no ) … ) )`) свёрнут в `( … ) )` на
+    // схему; контракт ТЗ 4b-2c — сбалансированная `( [P] q ( [L] a [L] b ) )`,
+    // различие = парные скобки, НЕ маркерные `[L]`-позиции (промер 4b-2c:
+    // L=[13,15,30,32,47,49] в обеих формах → `marker_positions` идентичны),
+    // softmax-группы идентичны.
+    let owned = arb_mod_schema();
+    let schema = guard_onnx::arbitrate::DecideArbiter::schema_block(&owned)
+        .map_err(|e| format!("schema_block: {e}"))?;
+    let schema = schema.as_str();
     let state = format!("{t0} {t1} {t2}");
     let segments: Vec<&str> = vec![schema, state.as_str()];
     let ids_u32 = encode_text_segments(tok, &segments)?;
@@ -727,7 +760,7 @@ fn measure_arbiter(
     cache: &std::path::Path,
     env: &ort::environment::Environment,
     threads: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<InlineArb, Box<dyn std::error::Error>> {
     let path = cache
         .join("onnx-community/GLiNER2.5-Decide-ONNX")
         .join("onnx/model_q4f16.onnx");
@@ -792,6 +825,8 @@ fn measure_arbiter(
     let inputs = tensors_for(&session, &ids, &mask, &live)?;
     println!("MARKER|arb|input_shapes|l={l}|m={m}");
 
+    let mut inline_probs: Vec<f64> = Vec::new();
+    let mut inline_logits: Option<Vec<f32>> = None;
     let mut runs = Vec::new();
     for _ in 0..3 {
         let tr = Instant::now();
@@ -816,10 +851,12 @@ fn measure_arbiter(
                     // marker_positions = concat(групп), логит-слайс группы gi =
                     // [off, off+n), n = число маркеров группы; softmax внутри —
                     // контракт «softmax within each question's markers».
+                    inline_logits = Some(data.to_vec());
                     let mut off = 0usize;
                     for (gi, (first, ps)) in groups.iter().enumerate() {
                         let hi = (off + ps.len()).min(data.len());
                         let probs = softmax(&data[off..hi]);
+                        inline_probs.push(probs.first().copied().unwrap_or(0.0));
                         off = hi;
                         let joined = probs
                             .iter()
@@ -843,7 +880,11 @@ fn measure_arbiter(
         runs_ms: runs,
         rss_after_runs: rss_after,
     });
-    Ok(())
+    Ok(InlineArb {
+        probs: inline_probs,
+        markers: m,
+        logits: inline_logits.unwrap_or_default(),
+    })
 }
 
 /// Собирает входы сессии арбитра по фактическим именам IO: `input_ids`/
@@ -939,4 +980,90 @@ mod spike_tests {
     fn spike_manual() {
         let _ = super::spike_texts();
     }
+}
+
+/// Вопросы DUAL-сверки 4b-2c: те же три схемы, что в `arb_live_layout`
+/// (person/tin/card, по две метки, первая = «да»). Статичны — констрэкт
+/// модуля обязан совпасть с инлайн-литералом по форме (не по байтам: скобка,
+/// см. док `arbitrate::schema_block`).
+#[cfg(feature = "ort-inference")]
+fn arb_mod_schema() -> [(&'static str, &'static [&'static str]); 3] {
+    [
+        ("Is there a full name of a person ?", &["person", "no"][..]),
+        ("Is there a tax identification number ?", &["tin", "no"][..]),
+        ("Is there a bank card number ?", &["card", "no"][..]),
+    ]
+}
+
+/// Прогон модульного пути (`DecideArbiter::arbitrate_text`) + строки DECIDE.
+/// Возвращает вероятности первой метки (f64 из f32-поля) для DUAL-гейта.
+#[cfg(feature = "ort-inference")]
+fn arb_mod_run(
+    cache: &std::path::Path,
+    env: &ort::environment::Environment,
+    threads: usize,
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    use guard_onnx::arbitrate::DecideArbiter;
+    let dir = cache.join("onnx-community/GLiNER2.5-Decide-ONNX");
+    let model = dir.join("onnx/model_q4f16.onnx");
+    let tok_path = dir.join("tokenizer.json");
+    require_weight(&model)?;
+    require_weight(&data_side(&model))?;
+    require_weight(&tok_path)?;
+    let base = rss("before_load_arbmod");
+    let t = Instant::now();
+    let mut arb = DecideArbiter::load(env, &model, &tok_path, threads)
+        .map_err(|e| format!("DecideArbiter::load: {e}"))?;
+    println!("METRIC|load_ms_arbmod|{:.1}", ms(t));
+    println!(
+        "METRIC|delta_load_mib_arbmod|{:.1}",
+        rss("after_load_arbmod") - base
+    );
+    let [t0, t1, t2] = spike_texts();
+    let state = format!("{t0} {t1} {t2}");
+    let decisions = arb
+        .arbitrate_text(&state, &arb_mod_schema(), 0.5)
+        .map_err(|e| format!("arbitrate_text: {e}"))?;
+    for d in &decisions {
+        println!("DECIDE|{}|{}|{:.4}|{}", d.question, d.label, d.prob, d.hit);
+    }
+    Ok(decisions.iter().map(|d| f64::from(d.prob)).collect())
+}
+
+/// Путь external data рядом с моделью (`<model>.onnx_data`).
+#[cfg(feature = "ort-inference")]
+fn data_side(model: &std::path::Path) -> PathBuf {
+    let mut p = model.to_path_buf().into_os_string();
+    p.push("_data");
+    PathBuf::from(p)
+}
+
+/// DUAL-гейт 4b-2c: модульные вероятности против инлайн-контура `--arb` на ТОМ
+/// ЖЕ входе. Порог 1e-3 — побитовый детерминизм q4f16 (5/5 прогонов ревью #32),
+/// с запасом на f64→f32 round-trip вероятности в `QuestionDecision::prob`.
+#[cfg(feature = "ort-inference")]
+fn dual_gate(inline: &InlineArb, mod_probs: &[f64]) -> Result<(), Box<dyn std::error::Error>> {
+    if inline.probs.len() != mod_probs.len() {
+        return Err(format!(
+            "DUAL: групп {} против {} — контракты разошлись",
+            inline.probs.len(),
+            mod_probs.len()
+        )
+        .into());
+    }
+    let maxdiff = inline
+        .probs
+        .iter()
+        .zip(mod_probs)
+        .fold(0.0f64, |acc, (a, b)| acc.max((a - b).abs()));
+    println!(
+        "DUAL|markers|inline={}|module={}",
+        inline.markers,
+        mod_probs.len()
+    );
+    println!("DUAL|maxdiff|{maxdiff:.3e}");
+    if maxdiff > 1e-3 {
+        return Err(format!("DUAL|maxdiff={maxdiff:.3e} > 1e-3 — модуль ≠ инлайн-контур").into());
+    }
+    Ok(())
 }
