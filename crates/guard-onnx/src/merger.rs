@@ -181,7 +181,10 @@ impl Merger {
     }
 }
 
-/// Собирает [`Merger`] из слайса и сразу сливает.
+/// Н2 (ревью PR#21): нулевой спан (`start==end`) приоритетом НЕ управляется —
+/// выродыш не является хитом детектора; если он всё же попал во вход, hull
+/// вправе перенять его приоритет — осознанно. Ненулевым спанам правило
+/// «1.0 не понижается» сохраняется полностью.
 #[must_use]
 pub fn merge(hits: &[SpanHit]) -> Vec<SpanHit> {
     let mut m = Merger::new();
@@ -260,6 +263,35 @@ mod tests {
             Category::Checksum,
             1.0,
         )
+    }
+
+    #[test]
+    fn nested_checksum_veto_deterministic() {
+        // N3 (ревью PR#21): детерминированный конфликт — вложенный Checksum 1.0
+        // внутри широкого Entity 0.557 (класс кейса мутации «убрать вето»);
+        // hull широкого, класс/приоритет — вето; оба порядка входа.
+        let text = "0123456789".repeat(10); // 100 байт
+        let wide = SpanHit::new(
+            ByteSpan::new(&text, 1, 99).unwrap(),
+            Category::Entity,
+            0.557,
+        );
+        let inner = SpanHit::new(
+            ByteSpan::new(&text, 57, 98).unwrap(),
+            Category::Checksum,
+            1.0,
+        );
+        for order in [[wide, inner], [inner, wide]] {
+            let out = merge(&order);
+            assert_eq!(out.len(), 1, "сливаются в hull (1,99)");
+            assert_eq!((out[0].span.start, out[0].span.end), (1, 99));
+            assert_eq!(
+                out[0].category,
+                Category::Checksum,
+                "вето 1.0 перехватывает класс"
+            );
+            assert!(out[0].priority.total_cmp(&1.0f32).is_eq());
+        }
     }
 
     #[test]
