@@ -248,6 +248,7 @@ fn spike_texts() -> [&'static str; 3] {
 
 /// Маркерные special-токены Decide-разметки (id промерены из `tokenizer.json`
 /// рев. `18271032`, манифест `models/manifest.md`; карточка @18271032 §Graph).
+#[cfg(feature = "ort-inference")]
 use guard_onnx::decide as decide_marker;
 
 /// Реальный вход Decide: ОДИН `encode(join, false)` по конкатенации сегментов
