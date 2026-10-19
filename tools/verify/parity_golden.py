@@ -88,6 +88,9 @@ GOLDEN_TO_BIO = {
 CLASS_LIST = sorted(GOLDEN_TO_BIO)
 QUESTIONS = {
     "address": "Is there a postal address ?",
+    # card_pan: spike-эталонная формулировка 4b-2a «a bank card number» (не
+    # «payment card…»): переформулировка стоила 24 ложных FN на fp32 (промер
+    # полного ранa 20.10 — сырьё в коммите) — вопрос в модели = контракт.
     "card_pan": "Is there a bank card number ?",
     "email": "Is there an e-mail address ?",
     "inn": "Is there a tax identification number ?",
@@ -321,7 +324,19 @@ def run_decide(rows, threads: int, peak: Peak):
                                    providers=["CPUExecutionProvider"])
         peak.sample()
         for r in rows:  # батч=1: контракт маркеров (1,M), spike-путь
-            ids = tok.encode(block + " " + r["text"], add_special_tokens=False).ids
+            text = r["text"]
+            # КЛИНИНГ состояния = контракт арбитра (crates/guard-onnx
+            # arbitrate.rs:278–279: «спец-токены НЕ ВХОДЯТ в состояние»;
+            # live-check check_splice требует сохранения каждого слова).
+            # Мусор из JSONL (``, `«`, `—`, переводы строк) порождает
+            # ФАНТОМНЫЕ [SEP_STRUCT]/[P]/[L] в состоянии — группы сливаются,
+            # layout FAIL. Клининг: перевод строк в пробел; литералы
+            # спец-токенов вырезаются; на байт-границах не рвём (срез по
+            # символам).
+            text = text.replace("\n", " ")
+            for sp in ("[SEP_STRUCT]", "[SEP_TEXT]", "[P]", "[L]"):
+                text = text.replace(sp, "")
+            ids = tok.encode(block + " " + text, add_special_tokens=False).ids
             groups = decide_groups(ids)
             if len(groups) != len(SCHEMA):
                 sys.exit(f"FAIL layout g{r['id']}: групп {len(groups)} ≠ {len(SCHEMA)}")
@@ -372,6 +387,10 @@ def lockr_counts(samples, thr):
 
 
 def decide_counts(samples, thr):
+    """Счёт ТОЛЬКО по порогам §3.2: hit = P ≥ threshold (включительно) —
+    контракт `decide_probs`/`decisions` (arbitrate.rs, порог включительно).
+    «Отдано на квант» (0.20≤p<0.75) — скоуп 4c (short-circuit), здесь мерится
+    ровно §3.2."""
     tp = {c: 0 for c in CLASS_LIST}
     fn = {c: 0 for c in CLASS_LIST}
     for r, probs in samples:
