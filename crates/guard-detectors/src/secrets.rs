@@ -777,7 +777,8 @@ mod tests {
         let hits = scanner().scan(input.as_bytes());
         assert!(hits.is_empty(), "бытовой текст дал: {hits:?}");
         let prose = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore";
-        assert!(scanner().scan(prose.as_bytes()).is_empty());
+        let hits = scanner().scan(prose.as_bytes());
+        assert!(hits.is_empty(), "проза дала хиты: {hits:?}");
     }
 
     #[test]
@@ -810,7 +811,9 @@ mod tests {
 
     #[test]
     fn clean_input_no_hits() {
-        assert!(scanner().scan(b"").is_empty());
-        assert!(scanner().scan(b"just words, nothing secret").is_empty());
+        let hits = scanner().scan(b"");
+        assert!(hits.is_empty(), "пустой вход дал хиты: {hits:?}");
+        let hits = scanner().scan(b"just words, nothing secret");
+        assert!(hits.is_empty(), "бытовая фраза дала хиты: {hits:?}");
     }
 }
