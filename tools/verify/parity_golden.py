@@ -334,10 +334,6 @@ def decide_groups(ids: list[int]) -> list[list[int]]:
         if x == L_ID:
             cur.append(pos)
         elif x in (SEP_STRUCT_ID, SEP_TEXT_ID) and cur:
-            # 4b-3B OOB-страж (зеркало decide::groups): граница закрывает
-            # НЕПУСТУЮ группу; пустой накопитель НЕ сбрасывается — фантомный
-            # [L] из мусора склеится со следующей живой группой, sizes-гейт
-            # ниже краснеет СИГНАЛОМ, а не тихим OOB-крашем ORT.
             out.append(cur)
             cur = []
     if cur:
