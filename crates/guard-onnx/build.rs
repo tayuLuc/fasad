@@ -16,9 +16,10 @@ fn main() {
             // build-скрипт падает детерминированно, это не runtime-путь.
             panic!("SPIKE(step2): OUT_DIR не задан");
         });
-    let obj = std::path::Path::new(&out_dir).join("rss_mach.o");
+    let obj = std::path::PathBuf::from(&out_dir).join("rss_mach.o");
     if target == "macos" {
         println!("cargo:rerun-if-changed=spike/rss_mach.c");
+        println!("cargo:rerun-if-changed=spike/platform_stub.c");
         println!("cargo:rerun-if-env-changed=CC");
         // cc-аргументы минимальны: системный SDK, без внешних зависимостей.
         let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
@@ -27,6 +28,8 @@ fn main() {
             .arg("-O0")
             .arg("-Wall")
             .arg("-Werror")
+            // Символ доступен из example; статический линк не нужен.
+            .arg("-fPIC")
             .arg("-c")
             .arg("spike/rss_mach.c")
             .arg("-o")
@@ -35,6 +38,62 @@ fn main() {
             .is_ok_and(|s| s.success());
         assert!(ok, "SPIKE(step2): компиляция rss_mach.c не удалась");
         // Только example линкует C-объект (lib-цель его не объявляет).
+        // Промер cargo 1.97.1: `cargo::rustc-link-arg-example-<name>` НЕ принимается
+        // (Unknown key), рабочая форма — `cargo:rustc-link-arg-examples=` (все examples).
+        //
+        // Промер этого захода (issue #6, «конструктив» по директиве родителя):
+        //   - link-arg-examples=<.o>: долетает до линкера в dev, в release НЕ долетает;
+        //   - rustc-link-lib=static (аргумент `-l`): долетает в обоих профилях, но ld
+        //     НЕ вытаскивает объект из архива — единственному .o нет undefined-референса
+        //     (Rust-объявление safe-extern ссылку не эмитит, оно ищется через dlsym) →
+        //     символ не попадает в образ, dlsym(RTLD_DEFAULT)=NULL (промер nm dev: rc=1);
+        //   - рабочий путь: архив как ЯВНЫЙ вход линкера — символ в образе всегда,
+        //     dlsym находит его в dev и release (runtime-мост в spike.rs ffi::rss_mib).
+        // Промеры 19.10 (issue #6, серия): статический путь НЕЛИНКВАБЕЛен в
+        // release — `rustc-link-arg-examples` кладёт аргументы ДО rlib (ld ещё
+        // не знает undefined'ов, dead-strip выбрасывает объект), force_load в
+        // ранней позиции слепнет, `-l static` без undefined-референсов (dlsym
+        // ссылку не эмитит) не вытаскивает член архива. Рабочая конструкция:
+        // собираем DYLIB и грузим его рантаймом через dlopen (полный путь
+        // прописывается во время build — второй dlsym-прогон уже не нужен).
+        let dylib = std::path::PathBuf::from(&out_dir).join("libfasad_spike_dylib.dylib");
+        let ok = std::process::Command::new(&cc)
+            .arg("-dynamiclib")
+            .arg(obj.as_path())
+            .arg("-o")
+            .arg(dylib.as_path())
+            .status()
+            .is_ok_and(|st| st.success());
+        assert!(ok, "SPIKE(step2): сборка dylib не удалась");
+
+        println!("cargo:rustc-env=SPIKE_DYLIB={}", dylib.display());
+        println!("cargo:rustc-link-arg-examples=-Wl,-undefined,dynamic_lookup");
         println!("cargo:rustc-link-arg-examples={}", obj.display());
+        // Промеры 19.10 (серия): статический путь (link-arg-examples=.o) не
+        // долетает до release-линкера; force_load не спасает (порядок);
+        // `-undefined dynamic_lookup` (ld classic) переводит ВСЕ unresolved
+        // (включая ___isPlatformVersionAtLeast из орт-статика) в рантайм-лок
+        // up; helper резолвится из dylib'а, который dlopen'ится первым шагом
+        // main() (см. spike.rs: dylib грузится до Environment::builder()).
+        // dylib грузится рантаймом (env SPIKE_DYLIB), в линковку не нужен;
+        // ld при -dead_strip не знает про dlopen-зависимости, а undefined из
+        // орт-статика резолвится объектом внутри dylib (ссылка host_utils.mm
+        // остаётся неудовлетворённой в главном образе без dylib в cmdline) →
+        // линкуем dylib явно: rpath не нужен, dlopen идёт по абсолютному пути.
+        // dylib НЕ линкуем (ссылка ld на него не нужна — грузим по пути из
+        // SPIKE_DYLIB); undefined-хелпер орт-статика резолвится отдельным
+        // объектом-стабом, который линкуется ЯВНО (см. ниже).
+        let stub = std::path::PathBuf::from(&out_dir).join("platform_stub.o");
+        let ok = std::process::Command::new(&cc)
+            .arg("-std=c11")
+            .arg("-c")
+            .arg("spike/platform_stub.c")
+            .arg("-o")
+            .arg(stub.as_path())
+            .status()
+            .is_ok_and(|st| st.success());
+        assert!(ok, "SPIKE(step2): компиляция platform_stub.c не удалась");
+        // (stub больше НЕ линкуется в главный образ: орф-хосты резолвятся через
+        // `-undefined dynamic_lookup`, стаб живёт внутри dylib — см. ниже)
     }
 }

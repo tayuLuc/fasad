@@ -48,13 +48,41 @@ mod ffi {
     // разрешено без `unsafe extern` в Rust 2024; unsafe остаётся целиком в C
     // (task_info + layout _Static_assert). Контракт workspace forbid(unsafe_code)
     // для src-крейтов не затронут: это example.
+    const RTLD_LAZY: i32 = 0x1;
     unsafe extern "C" {
-        fn fasad_spike_rss() -> f64;
+        fn dlopen(filename: *const i8, flag: i32) -> *mut std::ffi::c_void;
+        fn dlsym(handle: *mut std::ffi::c_void, symbol: *const i8) -> *mut std::ffi::c_void;
+        fn dlclose(handle: *mut std::ffi::c_void) -> i32;
     }
 
+    /// Мост к C-острову (issue #6). Промер cargo 1.97.1: `cargo:rustc-link-arg-examples=<.o>`
+    /// долетает до линкера в dev и НЕ долетает в release (cmdline линкера release
+    /// без rss_mach.o) → прямой extern = Undefined symbol в release-прогоне.
+    /// dlsym(RTLD_DEFAULT) ищет символ по образам процесса; отсутствие даёт None
+    /// (fail-soft: spike без RSS бесполезен, CI промер не гоняет — только локаль).
     pub fn rss_mib() -> Option<f64> {
-        let v = unsafe { fasad_spike_rss() };
-        if v >= 0.0 { Some(v) } else { None }
+        // dylib собирается build.rs, путь приходит env-переменной компиляции.
+        // dlopen(полный путь) — deterministic: символ гарантированно в этом
+        // образе (промер 19.10: статический путь линкуется только в dev).
+        unsafe {
+            let h = dlopen(
+                concat!(env!("SPIKE_DYLIB"), "\0").as_ptr().cast(),
+                RTLD_LAZY,
+            );
+            if h.is_null() {
+                return None;
+            }
+            let sym = dlsym(h, b"fasad_spike_rss\0".as_ptr().cast());
+            if sym.is_null() {
+                dlclose(h);
+                return None;
+            }
+            let f: extern "C" fn() -> f64 =
+                std::mem::transmute::<*mut std::ffi::c_void, extern "C" fn() -> f64>(sym);
+            let v = f();
+            dlclose(h);
+            if v >= 0.0 { Some(v) } else { None }
+        }
     }
 }
 
@@ -206,7 +234,7 @@ fn run_spike(
     cache: &std::path::Path,
     argv: &[String],
     threads: usize,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     rss("baseline");
     let t0 = Instant::now();
     // ORT-окружение: телеметрия OFF (AGENTS: никакой телеметрии).
@@ -255,7 +283,7 @@ fn measure_lockr(
     cache: &std::path::Path,
     env: &ort::environment::Environment,
     threads: usize,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     use ort::value::Tensor;
 
     let path = cache
@@ -367,7 +395,7 @@ fn measure_arbiter(
     cache: &std::path::Path,
     env: &ort::environment::Environment,
     threads: usize,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     use ort::value::Tensor;
 
     let path = cache
@@ -427,7 +455,7 @@ fn measure_arbiter(
 }
 
 #[cfg(feature = "ort-inference")]
-fn require_weight(p: &std::path::Path) -> Result<(), Box<dyn Error>> {
+fn require_weight(p: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     if p.exists() {
         Ok(())
     } else {
@@ -455,7 +483,7 @@ fn open_session(
     env: &ort::environment::Environment,
     path: &std::path::Path,
     threads: usize,
-) -> Result<ort::session::Session, Box<dyn Error>> {
+) -> Result<ort::session::Session, Box<dyn std::error::Error>> {
     Ok(ort::session::Session::builder(env)?
         .with_intra_threads(threads)?
         .with_optimization_level(ort::session::builder::GraphOptimizationLevel::All)?
