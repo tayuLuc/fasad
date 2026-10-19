@@ -12,5 +12,9 @@ guard-types  = { path = "../guard-types" }
 aho-corasick = { workspace = true }
 regex        = { workspace = true }
 
+[dev-dependencies]
+# golden_v1: разбор data/golden/golden-v1.jsonl (SPEC §5 п.7 / §9 golden gate).
+serde_json = { workspace = true }
+
 [lints]
 workspace = true
