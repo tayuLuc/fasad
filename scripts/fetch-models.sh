@@ -198,8 +198,11 @@ processed=0
 pending_rows=0
 
 finish() {
-    # Отметка подтверждения — при завершении, если были подтверждённые строки.
-    if [ "$processed" -gt 0 ]; then
+    # Отметка подтверждения — ТОЛЬКО при чистом завершении (замечание ревью #9
+    # re-review: die → trap не должен ставить штамп «подтверждено» поверх
+    # проваленного прогона).
+    local rc=$?
+    if [ "$rc" -eq 0 ] && [ "$processed" -gt 0 ]; then
         pending_rows=$processed stamp_manifest_footer
     fi
 }
