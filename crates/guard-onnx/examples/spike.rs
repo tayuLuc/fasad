@@ -1389,7 +1389,7 @@ fn budget_lockr_step(
     std::hint::black_box(elems);
     peak = peak.max(rss("after_run_extractor1b"));
     if let Some(f) = vmfoot_mib() {
-        peak = peak.max(f);
+        peak = peak.max(f); // floor для macOS-18-без-vmmap (защита деградации)
     }
     Ok(peak)
 }
@@ -1412,7 +1412,7 @@ fn arb_budget_run(
     use guard_onnx::arbitrate::DecideArbiter;
     let mut peak = rss("before_both");
     if let Some(f) = vmfoot_mib() {
-        peak = peak.max(f);
+        peak = peak.max(f); // floor для macOS-18-без-vmmap (защита деградации)
     }
     // 1) extractor lockR.
     let lockr = cache
@@ -1424,7 +1424,7 @@ fn arb_budget_run(
     println!("METRIC|load_ms_extractor1b|{:.1}", ms(t));
     peak = peak.max(rss("after_load_extractor1b"));
     if let Some(f) = vmfoot_mib() {
-        peak = peak.max(f);
+        peak = peak.max(f); // floor для macOS-18-без-vmmap (защита деградации)
     }
     // один живой ран lockR (pad 256, как measure_lockr) + пик-сэмпл после него.
     peak = budget_lockr_step(cache, &mut s1, peak)?;
@@ -1447,7 +1447,7 @@ fn arb_budget_run(
     println!("METRIC|load_ms_arbiter|{:.1}", ms(t));
     peak = peak.max(rss("after_load_arbiter"));
     if let Some(f) = vmfoot_mib() {
-        peak = peak.max(f);
+        peak = peak.max(f); // floor для macOS-18-без-vmmap (защита деградации)
     }
     let state = spike_texts().join(" ");
     let t = Instant::now();
@@ -1456,7 +1456,7 @@ fn arb_budget_run(
     println!("BUDGET|decide_probs|{}", probs.len());
     peak = peak.max(rss("after_run_arbiter"));
     if let Some(f) = vmfoot_mib() {
-        peak = peak.max(f);
+        peak = peak.max(f); // floor для macOS-18-без-vmmap (защита деградации)
     }
     let after = rss("after_both");
     println!("METRIC|rss_peak_mib_both_models|{peak:.1}");

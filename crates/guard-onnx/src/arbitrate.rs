@@ -409,7 +409,8 @@ impl DecideArbiter {
     /// куску одним `encode`, общий core [`Self::plan_of_block`]), вердикты
     /// склеиваются [`merge_arb_hits`] в ОРИГИНАЛЬНЫХ байтовых координатах
     /// (`Chunk::span` уже оригинальные, конверсии нет — инвариант теста
-    /// `chunked_hits_have_original_coords`).
+    /// `chunked_hits_have_original_coords`). ГРАНУЛЯРНОСТЬ хита = чанк
+    /// (контейнер); entity-HEAD — фоллов [#41](https://github.com/tayuLuc/fasad/issues/41).
     ///
     /// Бюджет входа (`DECIDE_REL_MAX_DISTANCE`) — ПРАКТИЧЕСКИЙ потолок O(L²)/RSS
     /// (см. док константы, §5.6: Decide = rel-pos bias, не seq-cap). Окно
@@ -773,6 +774,10 @@ pub struct ChunkedDecision {
     pub per_chunk: Vec<ChunkDecision>,
     /// Слитые хиты: union одинакового класса над перекрывающимися окнами,
     /// оригинальные координаты, `prob` = max по поглощённым.
+    /// ГРАНУЛЯРНОСТЬ = ЧАНК (container), не entity-HEAD: точные `ByteSpan`
+    /// сущности требуют спан-голов (`hidden_states` + einsum, [claim] карточки
+    /// @18271032) — отдельный атом [#41](https://github.com/tayuLuc/fasad/issues/41),
+    /// не ввозить молча в 4b-2d.
     pub merged_hits: Vec<ArbHit>,
 }
 
@@ -1180,6 +1185,44 @@ mod tests {
         );
         assert_eq!(merge_arb_hits(&m), m, "идемпотентность");
         assert!(merge_arb_hits(&[]).is_empty());
+    }
+
+    #[test]
+    fn chunked_decision_populates_merged_hits() {
+        // Голый мёрж-контракт (без графа): hit'ы разных классов на пересекающихся
+        // кусках -> union только внутри класса. Орт-контур arbitrate_chunked
+        // гоняет ЭТОТ ЖЕ merge_arb_hits; end-to-end заполнение merged_hits
+        // покрывает spike --arb-chunked (COVERAGE|hits>0 на PII-корпусе —
+        // сырой промер 4b-2d, audit §5.6: hits=3, covered=4301/4301).
+        let text = "0123456789";
+        let s0 = ByteSpan::new(text, 0, 5).unwrap();
+        let s1 = ByteSpan::new(text, 3, 9).unwrap();
+        let hits = vec![
+            ArbHit {
+                span: s0,
+                label: "person".to_string(),
+                prob: 0.6,
+            },
+            ArbHit {
+                span: s0,
+                label: "tin".to_string(),
+                prob: 0.8,
+            },
+            ArbHit {
+                span: s1,
+                label: "person".to_string(),
+                prob: 0.9,
+            },
+        ];
+        let m = merge_arb_hits(&hits);
+        assert_eq!(m.len(), 2, "разные классы не сливаются");
+        let person = m.iter().find(|h| h.label == "person").unwrap();
+        assert_eq!(
+            (person.span.start, person.span.end),
+            (0, 9),
+            "union пересекающихся"
+        );
+        assert!((person.prob - 0.9).abs() < 1e-6, "prob = max");
     }
 
     #[test]
