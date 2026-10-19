@@ -95,7 +95,9 @@ pub fn approx_tokens(s: &str) -> u32 {
     u32::try_from(tokens).unwrap_or(u32::MAX)
 }
 
-/// Конец предложения: `.`, `!`, `?` (в т.ч. `…` как многоточие) и пустая строка.
+/// Конец предложения: ASCII `.`, `!`, `?` и пустая строка (`\n\n`).
+/// `…` (U+2026) разделителем НЕ является — незавершённость, не конец (N7
+/// ревью PR#21: док приведён к коду; тест `ellipsis_is_not_a_boundary`).
 ///
 /// Возвращает байтовую позицию СРАЗУ после разделителя — туда и ставится рез,
 /// чтобы точка осталась в левом окне (иначе её потеряет и то, и другое окно).
@@ -627,6 +629,44 @@ mod tests {
     }
 
     #[test]
+    fn window_tokens_rejects_out_of_range() {
+        // N5 (ревью PR#21): конструктор кричит на выход за SPEC §2; поле pub
+        // — осознанный escape-hatch для property-генератора (док WindowTokens).
+        assert!(ChunkCfg::new(9999, 32).is_err(), "9999 вне 256..=384");
+        assert!(ChunkCfg::new(255, 32).is_err(), "255 вне диапазона");
+        assert!(ChunkCfg::new(256, 32).is_ok());
+        assert!(ChunkCfg::new(384, 32).is_ok());
+        assert_eq!(ChunkCfg::rubert().window_tokens.0, 448);
+    }
+
+    #[test]
+    fn ellipsis_is_not_a_boundary() {
+        // N7 (ревью PR#21): `…` НЕ разделитель предложений. Коварный кейс
+        // был в первой редакции теста: «a…»×400, hard_end=1536 припадает
+        // РОВНО на конец U+2026 (1536 % 4 == 0) — фолбэк по краю окна
+        // совпадает с концом многоточия (совпадение по модулю, не «рез по …»).
+        // Фикстура ниже различает: юнит 7 байт «a…b. », 1536 % 7 = 6 ⇒ край
+        // окна никогда не кратен юниту, рез идёт по ASCII-точке; ни один
+        // внутренний край спана не стоит на хвосте «…».
+        let unit = "a…b. ";
+        debug_assert_eq!(unit.len(), 7, "промер фикстуры");
+        let t = unit.repeat(300); // 2100 байт > окна 1536
+        let cs = chunk(&t, ChunkCfg::default());
+        assert!(cs.len() >= 2, "текст длиннее окна обязан резаться");
+        for c in &cs {
+            let e = c.span.end;
+            assert!(t.is_char_boundary(e), "рез {e} внутрь символа");
+            if e >= t.len() || e < 3 {
+                continue;
+            }
+            assert!(
+                &t.as_bytes()[e - 3..e] != [0xE2, 0x80, 0xA6].as_slice(),
+                "рез на байте {e} = конец «…» — многоточие не граница"
+            );
+        }
+    }
+
+    #[test]
     fn empty_text_yields_no_chunks() {
         let chunks = chunk("", ChunkCfg::default());
         assert!(chunks.is_empty(), "пустой вход дал чанки: {chunks:?}");
@@ -674,6 +714,36 @@ mod tests {
                 w[0].span,
                 w[1].span
             );
+        }
+    }
+
+    #[test]
+    fn tail_500_chars_bounded_chunks() {
+        // Ревью PR#21 N1 — ЗАМЕР поведения (редизайн хвостов = issue #3).
+        // Фикстура-дегенерат: 1159 точек + перевод строки + хвост ≤1000.
+        // Жадный leftmost-cut режет по ПЕРВОЙ точке ⇒ шаг 1 байт, ~1160
+        // чанков = ОДИН чанк на байт: линейно по in_len (adversarial
+        // 256→1024 ревьюера = 132→136 — квадратичного blow-up нет).
+        // Сторожим: линейность (≤ len), целое покрытие, монотонность
+        // стартов; всплеск сверх len = регрессия.
+        let base = ".".repeat(1159);
+        for tail in [1usize, 100, 499, 500, 501, 1000] {
+            let t = format!("{base}\n{}", "x".repeat(tail));
+            let cs = chunk(&t, ChunkCfg::default());
+            assert!(
+                cs.len() <= t.len(),
+                "tail={tail}: сверхлинейный всплеск {} чанков на {} Б",
+                cs.len(),
+                t.len()
+            );
+            assert_eq!(
+                cs.last().unwrap().span.end,
+                t.len(),
+                "tail={tail}: покрытие"
+            );
+            for w in cs.windows(2) {
+                assert!(w[0].span.start < w[1].span.start, "tail={tail}: старты");
+            }
         }
     }
 
