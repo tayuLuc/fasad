@@ -169,3 +169,62 @@
 - 4 крейта со сменой минорной (`tower-http`, `chacha20poly1305`, `lz4_flex`, `ndarray`) — по semver это потенциально breaky, bump требует прогона CI-матрицы, а не правки цифры.
 - `petrovich` и `rsmorphy` мертво (2020 и 2018) — кандидаты на замену, отдельная задача по MSRV/лицензиям.
 - `tokenizers` + `tk-encode` живут в одном репо и зарелижены одним днём (2026-09-21); версии надо синхронизировать вручную, API связи между ними не даёт.
+
+## 12. Промер шага 5 (20.10, agent-зонд /tmp/{petrovich-probe,pv-vendor,crypto-probe}; rustc 1.85.0 (4d91de4e4), aarch64-apple-darwin)
+
+Родительские spot-check (тот же вечер, `~/.cargo/registry/src/…/Cargo.toml` + gh api):
+`rust-version="1.85"` у aes-gcm-0.11.1/chacha20poly1305-0.11.0/hkdf-0.13.0/zeroize-1.9.1/sha2-0.11.0
+и `1.75` у keyring-3.6.3 — подтверждено из реестр-кэша; LICENSE-файла в дереве rodem/petrovich-rs@019e06d
+нет (gh api trees: корень = .gitignore Cargo.lock Cargo.toml PLAN.md README.md build.rs cli com examples
+src tests web; `/license` → 404) — подтверждено.
+
+**Морфология (§11 п.4, финальная ветка).** Ветка (а) принята: `petrovich-core` git-rev-пин
+`rodem/petrovich-rs@019e06dd01c590ff4dd82c762b55465bea5c8d2b` (master tip на промер; тегов нет).
+edition 2024 де-факто = MSRV наш пин; runtime-зависимостей 0 (yaml только build-deps,
+serde_yaml_ng 0.10.0 без RUSTSEC-записей; advisory-db HEAD 999ec89, дата записи 2026-10-17,
+на хосте клона нет — промер deny воспроизведён с авто-клоном); build на 1.85 зелёный,
+форма пина под наш `deny.toml wildcards="deny"`: `{ version = "0.2.0", git = …, rev = … }`
+(без version — bans FAILED «found 1 wildcard dependency»; с version — bans ok, lock = git+019e06d;
+промер ревьюера 20.10).
+golden-форка (прогнан ревьюером с нуля на пине, rustc 1.85.0): surnames 79 927/80 025 (99.878 %),
+firstnames 63 088/63 680 (99.07 %), midnames 81 355/81 355 (100 %); расхождения сверяются с
+зафиксированным дампом allowlist (surnames.allow.tsv 98 строк, firstnames.allow.tsv 592 —
+паритет с ЭТАЛОНОМ-DUMP, не с живым Ruby-прогоном).
+API под задачу restore есть: `lastname/firstname/middlename(Gender, &str, Case)→String`,
+`Case` — 5 косвенных (именительный = лемма; формулировку SPEC §4 «все 6 падежей» читать так).
+Ветки отклонены промером: (б) vendor git-dep = 23 МБ (15 МБ чужих корпусов); ручной vendor
+промерян и работает (6 файлов+build.rs = 2 030 строк/61 КБ, golden зелёный) — остаётся
+ЗАПАСНОЙ веткой на случай air-gap-билда; (в) self = переписать 78 правил (10 364 Б MIT-данных)
+и потерять регрессионный гейт корпусов (3 золотых tsv = 275 031 строка, из них харнессом
+проверяется 225 060; все tsv каталога = 322 080 — промеры ревьюера 20.10; цифра 275 148 из
+первички зонда не воспроизвелась ни одной командой — отброшена). Гейт при ветке (а) живёт НЕ
+в cargo graph (tests/ git-dep не входят в граф сборки) — запускать шагу 5 клон-прогон `cargo test -p
+petrovich-core --test golden_declension` на пине; место интеграции (CI-джоба vs release-гейт)
+— open point шага 5. Условие мержа: `THIRD-PARTY-NOTICES.md`
+MIT © 2013–2014 Kozloff & Ustalov (файла LICENSE нет ни в форке, ни в оригинале, ни в .crate —
+текст из апстрим petrovich/petrovich-ruby, MIT-LICENSE).
+Остаток дыры: снятие падежа/леммы с ОРИГИНАЛА по-прежнему на мёртвом rsmorphy — отдельная
+задача (issue #46), приоритетнее реализации vault-морфологии; род для кастомных ФИО через
+`detect_gender` (gender.yml 10.8 КБ) — решение на шаге 5.
+Риск-флаг: форку 35 дней (created 2026-09-15), 0★, дельту пишет 1 автор (contributors всего 4:
+Latrasis 40, rodem 11, broadwaylamb 5, road21 коммит 1 — дерево пина несёт и чужой код) →
+зеркало в собственные remotes перед шагом 5 + синхронная правка строки `petrovich | 0.2`
+в SPEC §7 на git-rev форму.
+
+**Крипто-стек (SPEC §3; режим 3 stateless_token = ChaCha20-Poly1305, AES-GCM там нет).**
+Решение, не промер: runtime AEAD = chacha20poly1305 (уже пин). Новые пины-кандидаты:
+aes-gcm 0.11.1, hkdf 0.13.0 — для AAD-связывания (домен-разделение ключей) на случай, если
+шаг 5 выберет envelope с контекстом — тогда это amendment к SPEC §3, а не тихая замена.
+Существующие пины верны: chacha20poly1305 0.11.0, zeroize 1.9.1, sha2 0.11.0 (действующий пин
+workspace, Cargo.toml:52 — вторым ключом не дописывать); лицензия
+Apache-2.0 OR MIT у всех, MSRV 1.85 = пин; RUSTSEC-записи по стеку есть, вне наших диапазонов
+(aes-gcm RUSTSEC-2023-0096 patched ≥0.10.3; sha2 RUSTSEC-2021-0100 patched ≥0.9.8) — «advisories ok»
+честно; roundtrip-прогон release на 1.85 чистый
+(AES-256-GCM AAD PT38→CT54; XChaCha20 PT27→CT43; HKDF-SHA256→OKM32; ZeroizeOnDrop derive
+работает ТОЛЬКО с `features=["derive"]` — без него `cannot find derive macro`).
+`cargo tree -d` пуст, deny advisories/licenses ok. API-ньюанс: aead 0.6 — `&Nonce`,
+`Array::from_slice` deprecated → `Nonce::try_from`.
+
+**keyring (#31, отложить до шага 8).** Пин 3.6.3 (`apple-native`, rust-version 1.75, билд на
+1.85 зелёный); линейка 4.0.0–4.2.0 = MSRV 1.88 — вне пина, bump MSRV = отдельное решение.
+В SPEC keyring не назван (только «tray (опц.)» L236) → строка §7 пишется на шаге 8.
