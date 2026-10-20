@@ -18,15 +18,25 @@ guard-onnx      = { path = "../guard-onnx" }
 guard-vault     = { path = "../guard-vault" }
 tokio      = { workspace = true }
 axum       = { workspace = true }
+# `BodyExt::frame` — собственный счётчик байт тела: перелив лимита (413)
+# отличаем от битого потока (400). Crate уже в дереве axum, lock не двигается.
+http-body-util = { workspace = true }
 tower-http = { workspace = true }
-reqwest    = { workspace = true }
+# HTTP-клиент из скелета (commit c2cbffd) убран атомом D: демон шага 6 не имеет
+# права линковать клиент вообще (#56 п.5 «не тащи сети», `X-Upstream-URL` — шаг
+# 7). Отсутствие проверяется гейтом `just net-audit` (= интеграционный тест
+# `tests/net_audit.rs`, бежит и на ubuntu, и на windows).
 rust-embed = { workspace = true }
+zeroize    = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 # ServiceExt::oneshot для тестов роутера без поднятия сокета.
 tower = { version = "0.5", features = ["util"] }
+# Проводной e2e-тест разбирает ответы собственного бинаря (`tests/wire_e2e.rs`),
+# для этого нужен парсер JSON на стороне клиента.
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

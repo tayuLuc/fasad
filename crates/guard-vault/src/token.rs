@@ -496,6 +496,19 @@ impl SessionKey {
         Ok(Self(Zeroizing::new(buf)))
     }
 
+    /// Ключ из системного CSPRNG — тот же путь энтропии, что у нонсов
+    /// ([`VaultError::Entropy`] при отказе генератора).
+    ///
+    /// Нужен демону на старте, когда оператор не выдал `FASAD_VAULT_KEY`: ключ
+    /// живёт ровно жизнь процесса, т.е. `deanonymize` переживает перезапуск только
+    /// с явным ключом (README шага 6, девиация #55).
+    pub fn generate() -> Result<Self, VaultError> {
+        let raw = Key::try_generate().map_err(|_| VaultError::Entropy)?;
+        let bytes =
+            <[u8; KEY_LEN]>::try_from(raw.as_slice()).map_err(|_| VaultError::KeyLen(raw.len()))?;
+        Ok(Self(Zeroizing::new(bytes)))
+    }
+
     /// Шифр, подготовленный из этого ключа.
     ///
     /// `KeyInit::new` принимает `&Key` фиксированной длины, а длину гарантирует

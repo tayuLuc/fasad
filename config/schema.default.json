@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "note": [
+    "Канон 8 классов, покрытых головами моделей (issue #53, #56 п.1). Порядок в",
+    "массиве classes — измеренный контракт, а не косметика: u-вероятность Decide",
+    "порядко-зависима, перестановка блока схем двигала recall snils на −24 п.п.",
+    "(issue #53, docs/quant-policy.md §3 п.2b). Правьте состав — правьте вместе с",
+    "перезамером recall по golden-v1.1, молча не переставляйте.",
+    "Поля question/answers/lockr_tags перенесены дословно из измерительного",
+    "харнеса crates/guard-onnx/examples/recall_golden.rs (реvision 08c35c3):",
+    "question_of() / schema: CLASSES.iter().map(|c| (question_of(c), [\"yes\",\"no\"]))",
+    "/ bio_to_class(). Тест schema::tests::questions_match_measured_harness держит",
+    "это равенство байтов, а не намерение.",
+    "Разделение ответственности: ogrn/ogrnip/iban — НЕ вопросы модели (validator_only",
+    "= true), их закрывает детерминированный каскад 0 (checksums::ogrn13/ogrnip15/",
+    "iban, первичка docs/dep-verify-algorithms.md). Для них в модели головы нет,",
+    "и вопрос «Is there a …?» дал бы FP-шум вместо чексуммы.",
+    "Валидаторы без класса схемы есть и ещё (checksums::bik_format, bank_account_format, bik_account_cross — банковские реквизиты SPEC §2): они участвуют в каскаде 0 как перекрёстные проверки, но отдельными классами на шаге 6 не объявляются: их нет ни в 8 покрытых моделью, ни в 11 классах golden-v1.1. Объявить класс без измерения = заводской номер на неповеренном приборе."
+  ],
+  "classes": [
+    {
+      "id": "person_name",
+      "label": "ФИО человека",
+      "question": "Is there a full name of a person ?",
+      "answers": ["yes", "no"],
+      "model": true,
+      "lockr_tags": ["FIRST_NAME", "LAST_NAME", "MIDDLE_NAME"],
+      "validators": [],
+      "validator_only": false
+    },
+    {
+      "id": "inn",
+      "label": "ИНН (10/12 знаков)",
+      "question": "Is there a tax identification number ?",
+      "answers": ["yes", "no"],
+      "model": true,
+      "lockr_tags": ["INN"],
+      "validators": ["inn10", "inn12"],
+      "validator_only": false
+    },
+    {
+      "id": "snils",
+      "label": "СНИЛС",
+      "question": "Is there a pension insurance number ?",
+      "answers": ["yes", "no"],
+      "model": true,
+      "lockr_tags": ["SNILS"],
+      "validators": ["snils"],
+      "validator_only": false
+    },
+    {
+      "id": "card_pan",
+      "label": "Номер банковской карты",
+      "question": "Is there a bank card number ?",
+      "answers": ["yes", "no"],
+      "model": true,
+      "lockr_tags": ["CREDIT_CARD"],
+      "validators": ["luhn"],
+      "validator_only": false
+    },
+    {
+      "id": "phone",
+      "label": "Телефон",
+      "question": "Is there a phone number ?",
+      "answers": ["yes", "no"],
+      "model": true,
+      "lockr_tags": ["PHONE"],
+      "validators": [],
+      "validator_only": false
+    },
+    {
+      "id": "email",
+      "label": "Электронная почта",
+      "question": "Is there an e-mail address ?",
+      "answers": ["yes", "no"],
+      "model": true,
+      "lockr_tags": ["EMAIL"],
+      "validators": [],
+      "validator_only": false
+    },
+    {
+      "id": "address",
+      "label": "Почтовый адрес",
+      "question": "Is there a postal address ?",
+      "answers": ["yes", "no"],
+      "model": true,
+      "lockr_tags": ["CITY", "STREET", "HOUSE", "REGION", "COUNTRY"],
+      "validators": [],
+      "validator_only": false
+    },
+    {
+      "id": "passport",
+      "label": "Серия и номер паспорта",
+      "question": "Is there a passport series and number ?",
+      "answers": ["yes", "no"],
+      "model": true,
+      "lockr_tags": ["PASSPORT"],
+      "validators": [],
+      "validator_only": false
+    }
+  ],
+  "validator_only": [
+    {
+      "id": "ogrn",
+      "label": "ОГРН (13 знаков)",
+      "validators": ["ogrn13"]
+    },
+    {
+      "id": "ogrnip",
+      "label": "ОГРНИП (15 знаков)",
+      "validators": ["ogrnip15"]
+    },
+    {
+      "id": "iban",
+      "label": "IBAN",
+      "validators": ["iban"]
+    }
+    ]
+}

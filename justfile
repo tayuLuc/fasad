@@ -8,7 +8,17 @@ _default:
     @just --list
 
 # Прогнать всё, что блокирует merge: линты + тесты + аудит зависимостей + python.
-check: lint python-lint golden-verify test deny
+check: lint python-lint golden-verify test net-audit deny
+
+# Гейт «демон не тащит сеть» (#56 п.5). Исполняется как обычный интеграционный
+# тест `crates/guard-daemon/tests/net_audit.rs`, а не grep-рецептом: `just` на
+# Windows гоняет рецепты без shebang через `cmd`, где `grep` не обязан быть, и
+# grep-версия к тому же не попадала в CI-матрицу (джобы зовут lint/test/deny
+# поштучно) — т.е. стена была ложно-зелёной на обеих ОС. Три проверки (манифест,
+# исходники, `cargo tree -i`) живут в тесте и бегут в `cargo test --workspace`.
+net-audit:
+    cargo test -p guard-daemon --test net_audit
+    @echo "net-audit ok: манифест, исходники и дерево зависимостей демона чисты от сети"
 
 # Авточинит всё, что чинится автоматически (fmt + clippy --fix).
 fix:
@@ -39,6 +49,10 @@ lint-ci:
 test:
     cargo test --workspace
     cargo test -p guard-vault --features decliner
+    # Тесты примеров БЕЗ ort-inference: формат строки вердикта харнеса гейта #14
+    # (`recall_golden`) — носитель контракта, а под фичей эти тесты не линкуются
+    # на раннерах (нет dylib), поэтому проверяем только то, что от ORT не зависит.
+    cargo test -p guard-onnx --examples
 
 # Аудит дерева зависимостей (bans/advisories/licenses) — deny.toml.
 deny:
