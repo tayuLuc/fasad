@@ -19,11 +19,14 @@
 
 use std::time::Instant;
 
-use guard_types::{AnnotatedSpan, DetectionSource, EntityRole, NewtypeId, ScoreError, Verdict};
+use guard_onnx::routing::{Route, RoutingCfg, ScoredSpan, route_spans};
+use guard_types::{
+    AnnotatedSpan, ClassId, DetectionSource, EntityRole, NewtypeId, ScoreError, Verdict,
+};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::cascade0::{self, Hit};
+use crate::cascade0;
 use crate::config::Config;
 use crate::schema::Schema;
 
@@ -216,23 +219,54 @@ pub fn analyze(
         .transpose()?;
 
     let hits = cascade0::scan(&req.text, schema);
+    // Пороговый гейт — общая функция харнеса, демона и прокси (мандат 7c,
+    // law #53): локальная `passes` была промеренной копией вырожденной пары
+    // `RoutingCfg::single` («score ≥ τ || вето» = `route(score).extracted()`),
+    // и две реализации одного порога расходятся при первой же правке.
+    let routing = RoutingCfg::single(threshold);
+    // `C = &ClassId`: `ClassId` — newtype над `String`, не `Copy`, а
+    // `route_spans` требует `Copy`; заимствование копируется и ничего не стоит.
+    let scored: Vec<ScoredSpan<&ClassId>> = hits
+        .iter()
+        .map(|h| ScoredSpan {
+            class: &h.class,
+            score: h.score(),
+            validator: h.source.deterministic_weight().is_some(),
+        })
+        .collect();
+    let routed_pairs = route_spans(&routing, &scored);
+    // Порядок выхода = порядок входа, поэтому маршруты зиппятся с хитами
+    // позиционно. Утверждение не вербальное: его проверяет
+    // `routing::tests::route_spans_pairs_routes_with_input_order` в guard-onnx
+    // (плюс позиционная проверка классов в `route_spans_vector_table`).
+    let routes: Vec<Route> = routed_pairs.into_iter().map(|r| r.route).collect();
+    drop(scored);
     let mut spans = Vec::with_capacity(hits.len());
-    for h in hits {
-        if !passes(&h, threshold, filter.as_deref()) {
+    for (h, route) in hits.into_iter().zip(routes) {
+        if !route.extracted() {
             continue;
         }
+        if let Some(want) = filter.as_deref() {
+            if !want.iter().any(|w| *w == h.class.as_str()) {
+                continue;
+            }
+        }
+        // Поля читаем до конструктора: `class` — `String`, частичный переезд
+        // ломает последующие заимствования хита.
+        let score = h.score();
+        let validator = h.validator;
         let span = AnnotatedSpan::new(
             h.span,
-            h.class.clone(),
+            h.class,
             // Ролей на шаге 6 нет: SPEC §14 (CLIENT/VENDOR) — шаг 8, а
             // выдумывать их из соседних слов значит генерировать факты.
             None,
             h.source,
-            h.score(),
+            score,
             policy.verdict(),
         )
         .map_err(AnalyzeError::Score)?;
-        spans.push(AnalyzedSpan::from_annotated(&span, Some(h.validator)));
+        spans.push(AnalyzedSpan::from_annotated(&span, Some(validator)));
     }
 
     let max_risk = spans.iter().fold(0.0_f64, |m, s| m.max(s.score));
@@ -265,17 +299,6 @@ fn check_entities(want: &[String], schema: &Schema) -> Result<Vec<String>, Analy
         }
     }
     Ok(want.to_vec())
-}
-
-fn passes(hit: &Hit, threshold: f64, filter: Option<&[String]>) -> bool {
-    if let Some(want) = filter {
-        if !want.iter().any(|w| *w == hit.class.as_str()) {
-            return false;
-        }
-    }
-    // Детерминированное вето весит 1.0 и порогами не понижается (AGENTS);
-    // сравнение оставлено на будущее модельных источников с весом < 1.
-    hit.score() >= threshold || hit.source.deterministic_weight().is_some()
 }
 
 #[cfg(test)]

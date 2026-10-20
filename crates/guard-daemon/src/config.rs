@@ -71,6 +71,18 @@ pub const DEFAULT_THREADS: usize = 8;
 /// решит, что гард просто молчит (AGENTS §Инженерные инварианты, Fail-Closed).
 pub const DEFAULT_TIMEOUT_MS: u64 = 3_000;
 
+/// Бюджет ожидания **входящего** тела, мс (`FASAD_READ_TIMEOUT_MS`).
+///
+/// Отличается от [`DEFAULT_TIMEOUT_MS`] направлением: тот — сколько мы держим
+/// конвейер на один запрос, этот — сколько клиент имеет право молчать, дрипая
+/// телом. Риск был зафиксирован в README §Fail-closed п.4 именно как «отдельная
+/// ручка на таймаут входящего тела, НЕ `FASAD_TIMEOUT_MS`»; закрыт шагом 7c.
+/// Капается по каждому куску тела, а не по телу целиком: медленно капающее тело
+/// не обязан быть медленным целиком, но бесконечное удержание соединения —
+/// отказ, и назван он `408 read_timeout`, а не 413 (ложь о причине = тот же
+/// fail-open в диагностике).
+pub const DEFAULT_READ_TIMEOUT_MS: u64 = 30_000;
+
 /// Режимы хранилища, наружу которых выставляет `/v1/*` (SPEC §3, #56 п.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VaultMode {
@@ -234,6 +246,20 @@ pub struct Config {
     /// отказывает в старте, если испорчен — молча откатиться на дефолт значит
     /// игнорировать волю оператора.
     pub schema_path: Option<std::path::PathBuf>,
+    /// Бюджет тишины между кусками входящего тела, мс
+    /// (`FASAD_READ_TIMEOUT_MS`).
+    pub read_timeout_ms: u64,
+    /// Разрешённые upstream'ы прокси (`FASAD_UPSTREAM_ALLOWLIST`, SPEC §8:
+    /// «никаких сетевых вызовов кроме явного `X-Upstream-URL`»). Пустой список
+    /// — прокси выключен: каждый запрос на `/v1/chat/completions` получает 403
+    /// `allowlist_empty`, потому что молча разрешить адрес из заголовка значит
+    /// сделать из гарда open-recursive relay.
+    pub upstream_allowlist: Vec<AllowedHost>,
+    /// Разрешить `http://` к loopback-upstream (`FASAD_PROXY_LOOPBACK_HTTP`).
+    /// Исключительно тестовая аффорданс: TLS-терминация на тестовом эхо-сервере означал бы либо самоподписанные сертификаты в тесте, либо отказ
+    /// тестировать прокси вовсе. Даже включённый флаг не выпускает трафик за
+    /// пределы машины (см. [`Config::loopback_http_permitted`]).
+    pub proxy_loopback_http: bool,
 }
 
 /// Причина, по которой конфигурация не собрана. Стартовый отказ — правильное
@@ -254,6 +280,22 @@ pub enum ConfigError {
     MlockUnknown(String),
     /// Числовое поле не парсится или нулевое.
     BadNumber {
+        /// Имя переменной.
+        var: &'static str,
+        /// Что нашли.
+        value: String,
+    },
+    /// `FASAD_UPSTREAM_ALLOWLIST`: элемент не является `host[:port]`. Отказ на
+    /// старте, а не на запросе: молча проигнорированный элемент списка — это
+    /// дырка, о которой оператор не знает.
+    BadAllowlist {
+        /// Имя переменной.
+        var: &'static str,
+        /// Что нашли.
+        value: String,
+    },
+    /// Булево поле не `0|1|true|false|on|off`.
+    BadBool {
         /// Имя переменной.
         var: &'static str,
         /// Что нашли.
@@ -285,6 +327,12 @@ impl fmt::Display for ConfigError {
             ),
             Self::BadNumber { var, value } => {
                 write!(f, "{var}={value:?}: не число или нуль")
+            }
+            Self::BadAllowlist { var, value } => {
+                write!(f, "{var}: элемент не формата `host[:port]` — {value:?}")
+            }
+            Self::BadBool { var, value } => {
+                write!(f, "{var}={value:?}: допустимо 0|1|true|false|on|off")
             }
         }
     }
@@ -355,7 +403,23 @@ impl Config {
             threads: usize_or(&mut lookup, "FASAD_THREADS", DEFAULT_THREADS)?,
             model_dir: lookup("FASAD_MODEL_DIR").map(std::path::PathBuf::from),
             schema_path: lookup("FASAD_SCHEMA").map(std::path::PathBuf::from),
+            read_timeout_ms: u64_or(
+                &mut lookup,
+                "FASAD_READ_TIMEOUT_MS",
+                DEFAULT_READ_TIMEOUT_MS,
+            )?,
+            upstream_allowlist: parse_allowlist(lookup("FASAD_UPSTREAM_ALLOWLIST").as_deref())?,
+            proxy_loopback_http: bool_or(&mut lookup, "FASAD_PROXY_LOOPBACK_HTTP", false)?,
         })
+    }
+
+    /// Разрешает ли конфигурация `http://` к upstream (только loopback-адреса).
+    ///
+    /// Название — вопрос, а не поле: сам флаг ничего не разрешает без проверки
+    /// адреса, и путать «включено» с «можно наружу» нельзя.
+    #[must_use]
+    pub const fn loopback_http_permitted(&self) -> bool {
+        self.proxy_loopback_http
     }
 
     /// Краткая строка статуса в `/health`: чем крутится конвейер. Секретов и
@@ -368,6 +432,98 @@ impl Config {
         } else {
             "cascade-0-only"
         }
+    }
+}
+
+/// Элемент `FASAD_UPSTREAM_ALLOWLIST`: хост с необязательным портом.
+///
+/// Храним авторити разобранной, а не строкой: сравнение с URL обязано быть
+/// точным по порту (`evil.com:443` ≠ `evil.com:8080`), а разбор на старте даёт
+/// честный отказ на мусоре вместо молча проигнорированного элемента.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllowedHost {
+    /// Хост в нижнем регистре, как в URL.
+    pub host: String,
+    /// Порт; `None` = порт по умолчанию для схемы запроса.
+    pub port: Option<u16>,
+}
+
+impl AllowedHost {
+    /// Разбор одного элемента списка. Отказ на схеме, пути, учётных данных,
+    /// пробелах и пустом хосте: всё это признаки того, что в env вписали URL
+    /// целиком, а не авторити. Причину не возвращаем: `ConfigError::BadAllowlist`
+    /// назовёт элемент целиком, оператору этого хватает.
+    ///
+    /// Квадратные скобки IPv6-литерала снимаются: [`crate::proxy::Upstream`]
+    /// держит хост без них, и `https://[::1]:9` должен совпасть с записью
+    /// `[::1]:9`, а не отвергнуться молча.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        let s = raw.trim();
+        if s.is_empty() || s.contains('/') || s.contains('@') || s.contains(char::is_whitespace) {
+            return None;
+        }
+        let (host, port) = match s.rsplit_once(':') {
+            Some((h, p)) => {
+                let Ok(port) = p.parse::<u16>() else {
+                    return None;
+                };
+                if port == 0 {
+                    return None;
+                }
+                (h, Some(port))
+            }
+            None => (s, None),
+        };
+        let host = host
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host);
+        if host.is_empty() {
+            return None;
+        }
+        Some(Self {
+            host: host.to_ascii_lowercase(),
+            port,
+        })
+    }
+
+    /// Совпадает ли авторити запроса с этим элементом.
+    #[must_use]
+    pub fn matches(&self, host: &str, port: u16) -> bool {
+        self.host.eq_ignore_ascii_case(host) && self.port.is_none_or(|p| p == port)
+    }
+}
+
+/// Список из env: пусто/нет переменной = пустой список (прокси выключен),
+/// любой мусорный элемент = отказ стартовать.
+fn parse_allowlist(raw: Option<&str>) -> Result<Vec<AllowedHost>, ConfigError> {
+    let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    s.split(',')
+        .map(|entry| {
+            AllowedHost::parse(entry).ok_or_else(|| ConfigError::BadAllowlist {
+                var: "FASAD_UPSTREAM_ALLOWLIST",
+                value: entry.to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// Булево из env со строгой грамматикой; мусор = ошибка, не дефолт.
+fn bool_or<L: FnMut(&'static str) -> Option<String>>(
+    lookup: &mut L,
+    var: &'static str,
+    default: bool,
+) -> Result<bool, ConfigError> {
+    let Some(raw) = lookup(var) else {
+        return Ok(default);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "0" | "false" | "off" => Ok(false),
+        "1" | "true" | "on" => Ok(true),
+        _ => Err(ConfigError::BadBool { var, value: raw }),
     }
 }
 

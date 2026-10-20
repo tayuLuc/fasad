@@ -53,7 +53,7 @@ use axum::http::StatusCode;
 use guard_types::SecretString;
 use guard_vault::cache::{Limits, StoreKey};
 use guard_vault::{Case, Gender, MorphTable, NameType, SpanParse, Surrogat};
-use guard_vault::{Grammar, SessionKey, VaultEngine, VaultError, VaultToken};
+use guard_vault::{Grammar, SessionKey, VaultEngine, VaultError, VaultStream, VaultToken};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -191,6 +191,23 @@ pub struct Deanonymized {
     pub text: Zeroizing<String>,
     /// Сколько подмен развернуто.
     pub substituted: usize,
+}
+
+/// Текст ответа, развёрнутый «мягко» (прокси, шаг 7c).
+///
+/// Отличие от [`Deanonymized`] — два счётчика деградации вместо отказа: нерезолвленный
+/// маркер и незакрытый на хвосте маркер не валят ответ модели, но обязаны быть
+/// видны вызывающему (и наружу, в `X-Guard-Unresolved`).
+pub struct Restored {
+    /// Текст с возвращёнными оригиналами (нерезолвленные маркеры — дословно).
+    pub text: Zeroizing<String>,
+    /// Сколько подмен развернуто.
+    pub substituted: usize,
+    /// Сколько маркеров прошло дословно: чужой/повреждённый токен или метка
+    /// из другой сессии.
+    pub unresolved: usize,
+    /// На хвосте остался незакрытый маркер (поток оборван на середине метки).
+    pub incomplete: bool,
 }
 
 /// Отказ конвейера маскирования с готовым HTTP-отображением.
@@ -570,16 +587,8 @@ impl Vault {
         session: Option<&str>,
         text: &str,
     ) -> Result<Deanonymized, VaultApiError> {
-        let grammar = match self.mode {
-            VaultMode::Stateless => Grammar::F0_INLINE,
-            VaultMode::Session => {
-                self.session_slot(session)?;
-                Grammar::LABEL
-            }
-        };
-        let outcome =
-            self.engine
-                .rewrite_stream(session.unwrap_or_default(), grammar, text.as_bytes());
+        let (grammar, slot) = self.grammar_slot(session)?;
+        let outcome = self.engine.rewrite_stream(&slot, grammar, text.as_bytes());
         if outcome.unresolved > 0 {
             return Err(VaultApiError::Unresolved {
                 count: outcome.unresolved,
@@ -606,6 +615,107 @@ impl Vault {
             text: Zeroizing::new(restored),
             substituted,
         })
+    }
+
+    /// Формы суррогатов сессии (снимок под залоченным мьютексом).
+    ///
+    /// Вынесено из [`Self::deanonymize`] без изменения смысла: потоковый путь
+    /// прокси (шаг 7c) обязан доставать тот же список, что и не-потоковый, иначе
+    /// два канала начнут разно-восстанавливать ФИО.
+    fn session_forms(&self, session: &str) -> Vec<String> {
+        let guard = self.locked();
+        guard
+            .sessions
+            .get(session)
+            .map_or_else(Vec::new, |s| s.forms.clone())
+    }
+
+    /// Разворот для прокси: нерезолвленный маркер **не** валит ответ.
+    ///
+    /// [`Self::deanonymize`] отказывает на `Unresolved`/`IncompleteMarker`, и для
+    /// `/v1/deanonymize` это правильно: клиент просит развернуть ровно то, что мы
+    /// выдали. Прокси стоит между клиентом и LLM, и ответ модели важнее косметики
+    /// разворота: тот же рулинг, что у отката суррогата на метку (#62,reviewer
+    /// R3) — деградация наружу с числом, а не отказ whole-документа. Метка — не
+    /// `ПДн`, поэтому пропуск маркера не утечка; но он обязан быть сочтён и
+    /// показан заголовком `X-Guard-Unresolved`, иначе это ложь о причине
+    /// (AGENTS §Инженерные инварианты, fail-closed в диагностике).
+    ///
+    /// Режим 2 дополнительно разворачивает суррогатные формы: для этого метода
+    /// текст обязан быть целым (потоковый путь держит слово-границу сам, см.
+    /// [`crate::sse`]).
+    ///
+    /// # Errors
+    ///
+    /// [`VaultApiError::BadRequest`] — режим 2 без заголовка сессии;
+    /// [`VaultApiError::Vault`] — хранилище отказало (`NotUtf8` на развороте).
+    pub fn deanonymize_soft(
+        &self,
+        session: Option<&str>,
+        text: &str,
+    ) -> Result<Restored, VaultApiError> {
+        let (grammar, slot) = self.grammar_slot(session)?;
+        let outcome = self.engine.rewrite_stream(&slot, grammar, text.as_bytes());
+        let mut restored = String::from_utf8(outcome.bytes.clone())
+            .map_err(|_| VaultApiError::Vault(VaultError::NotUtf8))?;
+        let mut substituted = outcome.substituted;
+        if self.mode == VaultMode::Session {
+            let forms = self.session_forms(session.unwrap_or_default());
+            substituted +=
+                self.restore_surrogates(session.unwrap_or_default(), &mut restored, &forms);
+        }
+        Ok(Restored {
+            text: Zeroizing::new(restored),
+            substituted,
+            unresolved: outcome.unresolved,
+            incomplete: outcome.incomplete,
+        })
+    }
+
+    /// Потоковая машина разворота для SSE-релая (шаг 7c, SPEC §8).
+    ///
+    /// Грамматика выбирается по режиму хранилища — та же ветка, что у
+    /// [`Self::deanonymize`], потому что две grammar-таблицы в одном файле
+    /// расходятся неизбежно. Суррогатные формы этот объект НЕ разворачивает: он
+    /// оперирует маркерами; слова восстанавливает вызывающий на границе слова
+    /// ([`Self::restore_surrogates_soft`]).
+    ///
+    /// # Errors
+    ///
+    /// [`VaultApiError::BadRequest`] — режим 2 без заголовка сессии: без слота
+    /// разворачивать нечем.
+    pub fn stream(&self, session: Option<&str>) -> Result<VaultStream<'_>, VaultApiError> {
+        let (grammar, slot) = self.grammar_slot(session)?;
+        Ok(self.engine.stream(slot, grammar))
+    }
+
+    /// Одна ветка «режим → грамматика + слот» на весь файл.
+    ///
+    /// Возвращает ключ кэша, под которым лежат оригиналы: в режиме 3 сессии нет,
+    /// и движок использует пустой слот (тот же `unwrap_or_default`, что и
+    /// не-потоковый путь).
+    fn grammar_slot(&self, session: Option<&str>) -> Result<(Grammar, String), VaultApiError> {
+        match self.mode {
+            VaultMode::Stateless => Ok((Grammar::F0_INLINE, String::new())),
+            VaultMode::Session => {
+                // Слот кэша — имя сессии из заголовка, а НЕ nonce: [`Self::session_slot`]
+                // возвращает `(nonce, seq)`, и путаница этих двух стоит ровно «маркер
+                // не развернулся» (промер: 6 тестов этого файла).
+                self.session_slot(session)?;
+                Ok((Grammar::LABEL, session.unwrap_or_default().to_owned()))
+            }
+        }
+    }
+
+    /// Разворот суррогатных форм на отрезке текста, ограниченном словами.
+    ///
+    /// Возвращает число восстановленных имён. Вызывать только на отрезке, который
+    /// начинается и кончается границей слова: форма — один токен, и разрезанная
+    /// посередине форма не восстановится никогда (см. `sse::Relay`, удержание
+    /// хвоста слова).
+    pub fn restore_surrogates_soft(&self, session: &str, text: &mut String) -> usize {
+        let forms = self.session_forms(session);
+        self.restore_surrogates(session, text, &forms)
     }
 
     /// Забыть сессию целиком: кэш оригиналов, метки, формы суррогатов.

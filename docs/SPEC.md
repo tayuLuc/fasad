@@ -309,7 +309,7 @@ gline-rs только как референс алгоритма `[decided]`. П
 Заголовки: вход `X-Upstream-URL`, `X-Session-ID`, `X-Guard-Policy: mask|block|audit_only`;
 выход `X-Guard-Redacted-Count`, `X-Guard-Max-Risk`, `X-Guard-Latency-Ms`.
 SSE: look-ahead буфер до 32 байт — токен `[PERSON_1]` может прилететь нарезанным на
-3 пакета; наивный replace по чанку ломает обратимость `[claim]`
+3 пакета; наивный replace по чанку ломает обратимость `[claim]` — закрыто промером: тест `naive_replace_by_chunk_breaks_roundtrip` (`crates/guard-daemon/src/sse.rs`) гоняет наивный `replace` и `Relay` по одним и тем же границам реза метки
 
 ## 9. CI/CD (GitHub)
 

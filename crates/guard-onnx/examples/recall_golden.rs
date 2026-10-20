@@ -93,9 +93,24 @@ fn main() {
     let threads = arg(&argv, "--threads")
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(4);
-    let thr = arg(&argv, "--thr")
-        .and_then(|v| v.parse::<f64>().ok())
-        .unwrap_or(0.25);
+    // Порог валидируется, а не подменяется дефолтом: `--thr 0,25` (запятая) или
+    // `--thr 3` раньше молча считались 0.25/3.0, и отчёт рисовал порог, который
+    // никто не просил. Отказ с объяснением — единственная честная реакция на
+    // мусор в параметре прогона.
+    let thr = match arg(&argv, "--thr") {
+        None => 0.25,
+        Some(raw) => match raw.parse::<f64>() {
+            Ok(v) if v.is_finite() && (0.0..=1.0).contains(&v) => v,
+            Ok(v) => {
+                eprintln!("--thr {raw}: вне [0, 1] ({v}), порог скора обязан быть вероятностью");
+                std::process::exit(2);
+            }
+            Err(err) => {
+                eprintln!("--thr {raw}: не число ({err})");
+                std::process::exit(2);
+            }
+        },
+    };
     if run(limit, threads, thr).is_err() {
         std::process::exit(1);
     }
@@ -868,6 +883,12 @@ mod lockr_routing_invariance_tests {
         }
         // …а NaN — старое поведение харнеса («conf < thr» ложно ⇒ спан
         // оставался в подсчёте) совпадает с fail-closed Block (extracted).
+        // Сравнение с NaN намеренное: проверяем, что старое поведение харнеса
+        // («conf < thr» ложно) совпадает с новым fail-closed.
+        #[expect(
+            invalid_nan_comparisons,
+            reason = "фальшивость сравнения — предмет теста"
+        )]
         let old_kept = !(f64::NAN < 0.25);
         assert!(old_kept && cfg.route(f64::NAN).extracted());
         assert_eq!(cfg.route(f64::NAN), Route::Block);

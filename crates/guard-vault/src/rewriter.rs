@@ -134,6 +134,26 @@ where
     }
 }
 
+/// Обёртка над замыканием, позволяющая держать [`StreamRewriter`] в поле с
+/// вытертым типом резолвера.
+///
+/// Нужно шагу 7c: SSE-релай в `guard-daemon` держит машину состояния в своей
+/// структуре по одной на `choices[i]`, а замкнуть `VaultEngine` на счётчик
+/// нерезолвленных маркеров в дженерике `R` без имени типа нельзя. Blanket-импл
+/// ниже не конфликтует с `impl<F: FnMut…> MarkerResolver for F`: `FnResolver` —
+/// наш тип, и `FnMut` для него не реализован ни здесь, ни где-либо ещё.
+pub struct FnResolver<F>(pub F);
+
+impl<F: FnMut(&[u8]) -> Resolution> MarkerResolver for FnResolver<F> {
+    fn resolve(&mut self, body: &[u8]) -> Resolution {
+        (self.0)(body)
+    }
+}
+
+/// Машина подмены с резолвером «коробочное замыкание».
+pub type DynStreamRewriter<'a> =
+    StreamRewriter<FnResolver<Box<dyn FnMut(&[u8]) -> Resolution + 'a>>>;
+
 /// Итог одного [`StreamRewriter::push`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Push {

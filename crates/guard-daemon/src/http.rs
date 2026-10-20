@@ -16,7 +16,7 @@
 //!    допустим только на успешном пути (AGENTS: никогда fail-open).
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::extract::{Request, State};
@@ -43,7 +43,7 @@ pub const HEADER_SESSION: HeaderName = HeaderName::from_static("x-session-id");
 /// (входной `X-Guard-Policy` §8 не переиспользуется: он про запрос). Имена —
 /// контракт, таблица в `docs/daemon-scope.md` сверяется с этим кодом тестом
 /// [`header_table_in_docs_matches_emitted_names`].
-mod h {
+pub(crate) mod h {
     use axum::http::HeaderName;
 
     pub const COUNT: HeaderName = HeaderName::from_static("x-guard-redacted-count");
@@ -52,6 +52,13 @@ mod h {
     pub const STAGE: HeaderName = HeaderName::from_static("x-guard-stage");
     pub const POLICY: HeaderName = HeaderName::from_static("x-guard-policy-applied");
     pub const THRESHOLD: HeaderName = HeaderName::from_static("x-guard-score-threshold");
+    /// Сколько маркеров не удалось развернуть (прокси, §8 шаг 7c): absent при
+    /// нуле, потому что ноль — это «развернулось всё», а не «мы не знали».
+    pub const UNRESOLVED: HeaderName = HeaderName::from_static("x-guard-unresolved");
+    /// Тело ответа upstream не разобрано как JSON: разворота не было, и маркеры
+    /// ушли к клиенту дословно. `1` — и только при отказе: отсутствие заголовка
+    /// означает «развернулось», а не «мы не посмотрели».
+    pub const MALFORMED: HeaderName = HeaderName::from_static("x-guard-malformed");
 }
 
 /// Состояние демона: конфиг + схема, читаемые каждым запросом.
@@ -69,6 +76,7 @@ struct Inner {
     schema: Schema,
     health: Health,
     vault: Vault,
+    client: crate::proxy::Client,
 }
 
 impl AppState {
@@ -78,12 +86,14 @@ impl AppState {
     /// отказ старта уже случился бы раньше — здесь инвариант, а не валидация.
     #[must_use]
     pub fn new(cfg: Config, schema: Schema, health: Health, vault: Vault) -> Self {
+        let client = crate::proxy::Client::new(&cfg);
         Self {
             inner: Arc::new(Inner {
                 cfg,
                 schema,
                 health,
                 vault,
+                client,
             }),
         }
     }
@@ -111,6 +121,12 @@ impl AppState {
     pub fn vault(&self) -> &Vault {
         &self.inner.vault
     }
+
+    /// Пул клиентов прокси (`/v1/chat/completions`).
+    #[must_use]
+    pub fn client(&self) -> &crate::proxy::Client {
+        &self.inner.client
+    }
 }
 
 /// Собирает корневой роутер демона.
@@ -120,6 +136,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/analyze", post(analyze_handler))
         .route("/v1/anonymize", post(anonymize_handler))
         .route("/v1/deanonymize", post(deanonymize_handler))
+        .route("/v1/chat/completions", post(crate::proxy::handle))
         .route("/v1/sessions/{id}", delete(invalidate_handler))
         .with_state(state)
 }
@@ -151,16 +168,11 @@ async fn analyze_handler(State(st): State<AppState>, req: Request) -> Response {
 /// оборванный ответ вместо 5xx; обёртка превращает панику в `503
 /// internal_panic` с пустым телом: в паническом сообщении может быть фрагмент
 /// входа, а вход — `ПДн`.
-fn guarded(f: impl FnOnce() -> Result<Response, ApiError>) -> Response {
+pub(crate) fn guarded(f: impl FnOnce() -> Result<Response, ApiError>) -> Response {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(Ok(resp)) => resp,
         Ok(Err(err)) => err.into_response(),
-        Err(_) => ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "internal_panic",
-            "обработчик паниковал; запрос отклонён (fail-closed)",
-        )
-        .into_response(),
+        Err(_) => ApiError::panic().into_response(),
     }
 }
 
@@ -196,13 +208,27 @@ fn guard_headers(
 /// диагностике, поэтому перелив лимита даёт 413 `body_too_large`, а битый
 /// фрейм — 400 `bad_body`. Остаток тела не дочитываем: hyper закроет соединение
 /// после ответа, а клиенту наше решение о его теле не сообщаем.
-async fn read_body(st: AppState, req: Request) -> Result<(HeaderMap, axum::body::Bytes), ApiError> {
+pub(crate) async fn read_body(
+    st: AppState,
+    req: Request,
+) -> Result<(HeaderMap, axum::body::Bytes), ApiError> {
     use http_body_util::BodyExt as _;
     let limit = st.config().max_body_bytes;
+    let idle = Duration::from_millis(st.config().read_timeout_ms);
     let (parts, mut body) = req.into_parts();
     let mut buf: Vec<u8> = Vec::new();
     loop {
-        match body.frame().await {
+        // Тишина между кусками дольше бюджета = `408 read_timeout`, а не 413:
+        // перелив и молчание — разные отказы, и клиент по коду выбирает, что
+        // чинить (первое — тело, второе — скорость отправки).
+        let Ok(next) = tokio::time::timeout(idle, body.frame()).await else {
+            return Err(ApiError::new(
+                StatusCode::REQUEST_TIMEOUT,
+                "read_timeout",
+                "клиент молчал дольше FASAD_READ_TIMEOUT_MS",
+            ));
+        };
+        match next {
             None => break,
             Some(Err(_)) => {
                 return Err(ApiError::new(
@@ -232,7 +258,7 @@ async fn read_body(st: AppState, req: Request) -> Result<(HeaderMap, axum::body:
 
 /// Разбор JSON-тела руками (не экстрактором `Json`): rejection-сообщения axum
 /// и `serde_json` пересказывают вход, а вход — потенциальные `ПДн`.
-fn json_body<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, ApiError> {
+pub(crate) fn json_body<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, ApiError> {
     serde_json::from_slice(body).map_err(|_| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -350,7 +376,7 @@ async fn invalidate_handler(
 /// Различать обязаны: отвечать «заголовка нет» клиенту, который его прислал,
 /// значит соврать о причине отказа. Само значение наружу не цитируется —
 /// непечатаемые байты в сообщении были бы каналом в логи потребителя.
-fn session_of(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
+pub(crate) fn session_of(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
     match headers.get(HEADER_SESSION) {
         None => Ok(None),
         Some(raw) => raw
@@ -368,7 +394,7 @@ fn session_of(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
 
 /// Разбор `X-Guard-Policy`: отсутствие = `mask` (дефолт SPEC §8), неизвестное
 /// значение = 400, а не тихий откат к дефолту.
-fn parse_policy(headers: &HeaderMap) -> Result<Policy, ApiError> {
+pub(crate) fn parse_policy(headers: &HeaderMap) -> Result<Policy, ApiError> {
     match headers.get(HEADER_POLICY) {
         None => Ok(Policy::Mask),
         Some(raw) => raw
@@ -405,7 +431,7 @@ fn analysis_response(res: &Analysis) -> Response {
 /// отказывает; отказ означал бы баг форматирования, и мы оставляем заголовок
 /// отсутствующим (клиент обязан счесть отсутствие счётчика ошибкой, README), а
 /// не подменяем его нулём: ноль — это утверждение «`ПДн` не найдено».
-fn insert<T: std::fmt::Display>(map: &mut HeaderMap, name: HeaderName, value: T) {
+pub(crate) fn insert<T: std::fmt::Display>(map: &mut HeaderMap, name: HeaderName, value: T) {
     if let Ok(hv) = HeaderValue::from_str(&value.to_string()) {
         map.append(name, hv);
     }
@@ -423,7 +449,22 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    fn new(status: StatusCode, code: &'static str, message: &str) -> Self {
+    /// Сообщение паники: одно на все места, потому что «обработчик паниковал»
+    /// — это факт об обработчике, а не о запросе, и варьировать его нечем.
+    pub(crate) const PANIC_MESSAGE: &'static str =
+        "обработчик паниковал; запрос отклонён (fail-closed)";
+
+    /// `503 internal_panic`: тот же ответ, что даёт [`guarded`].
+    #[must_use]
+    pub(crate) fn panic() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "internal_panic",
+            Self::PANIC_MESSAGE,
+        )
+    }
+
+    pub(crate) fn new(status: StatusCode, code: &'static str, message: &str) -> Self {
         Self {
             status,
             code,
@@ -433,7 +474,7 @@ impl ApiError {
 
     /// Отвергнутый запрос ≠ сбой конвейера: 4xx на клиентские ошибки, 500 —
     /// только на нарушение нашего собственного контракта скора.
-    fn from_analysis(e: AnalyzeError) -> Self {
+    pub(crate) fn from_analysis(e: AnalyzeError) -> Self {
         match e {
             AnalyzeError::UnknownPolicy(p) => Self::new(
                 StatusCode::BAD_REQUEST,
@@ -465,7 +506,7 @@ impl ApiError {
     /// Отказ слоя маскирования: статус и код приходят вместе с ошибкой, чтобы
     /// карта «что клиентская ошибка, что сбой сервера» жила в одном месте
     /// (`VaultApiError::status`), а не расползалась по обработчикам.
-    fn from_vault(e: &VaultApiError) -> Self {
+    pub(crate) fn from_vault(e: &VaultApiError) -> Self {
         Self {
             status: e.status(),
             code: e.code(),
@@ -506,6 +547,8 @@ mod tests {
             &h::STAGE,
             &h::POLICY,
             &h::THRESHOLD,
+            &h::UNRESOLVED,
+            &h::MALFORMED,
         ];
         let mut allowed: Vec<String> = emitted
             .iter()
@@ -525,7 +568,7 @@ mod tests {
         }
         assert_eq!(
             seen.len(),
-            8,
+            10,
             "строки таблицы разъехались с кодом: {seen:?}"
         );
         for e in &emitted {
@@ -1018,19 +1061,69 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_route_is_404_not_500() {
-        // Fail-closed на уровне роутера: ничего не проксируем «автоматом»
-        // (шаг 7 поднимет /v1/chat/completions, и только когда поднимет).
+        // Fail-closed на уровне роутера: ничего не проксируем «автоматом».
+        // `/v1/chat/completions` с шага 7c — маршрут настоящий, поэтому зондом
+        // служит имя, которого нет ни в одном роутере.
         let app = router(state());
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/v1/chat/completions")
+                    .uri("/v1/chat/completions/legacy")
                     .body(Body::empty())
                     .expect("запрос строится"),
             )
             .await
             .expect("обработчик не падает");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn proxy_is_off_until_the_allowlist_says_otherwise() {
+        // Дефолтный конфиг теста — пустой список: прокси обязан отвечать
+        // `403 allowlist_empty`, а не «пробуем куда просили» и не 404.
+        let app = router(state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header(
+                        "x-upstream-url",
+                        "https://api.openai.com/v1/chat/completions",
+                    )
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"m","messages":[{"role":"user","content":"x"}]}"#,
+                    ))
+                    .expect("запрос строится"),
+            )
+            .await
+            .expect("обработчик не падает");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn proxy_without_upstream_header_is_400_not_403() {
+        // Причина отказа называется та, что есть: заголовка нет — это 400
+        // `missing_upstream`, а не отговорка про список.
+        let app = router(state_with(
+            Config::from_lookup(|k| {
+                (k == "FASAD_UPSTREAM_ALLOWLIST").then(|| "api.openai.com".to_owned())
+            })
+            .expect("конфиг"),
+        ));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"m","messages":[]}"#))
+                    .expect("запрос строится"),
+            )
+            .await
+            .expect("обработчик не падает");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

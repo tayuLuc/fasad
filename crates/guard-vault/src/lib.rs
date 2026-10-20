@@ -39,7 +39,7 @@ pub mod token;
 
 pub use cache::{Limits, SecretRef, SessionStore, StoreError, StoreKey};
 pub use morph::{Case, Gender, MorphTable, NameType, SpanParse};
-pub use rewriter::{BodyKind, Grammar, Resolution, StreamRewriter};
+pub use rewriter::{BodyKind, DynStreamRewriter, FnResolver, Grammar, Resolution, StreamRewriter};
 pub use token::{MlockPolicy, SessionKey, VaultError, VaultToken};
 
 /// Ошибка выдачи токена: одна из двух причин, обе отказные.
@@ -67,6 +67,59 @@ pub struct StreamOutcome {
     pub unresolved: usize,
     /// На хвосте остался незакрытый маркер — поток надо продолжать.
     pub incomplete: bool,
+}
+
+/// Инкрементальный разворот маркеров, см. [`VaultEngine::stream`].
+///
+/// Обёртка над `StreamRewriter` с вытертым типом резолвера: вызывающему шага 7c
+/// (SSE-релай в `guard-daemon`) нужно держать машину в собственном поле, а имя
+/// типа замыкания, замкнутого на движок, извне не выразить. Состояние — ровно
+/// одно окно look-ahead и счётчик; второго кэша оригиналов здесь нет.
+pub struct VaultStream<'a> {
+    rw: rewriter::DynStreamRewriter<'a>,
+    unresolved: std::rc::Rc<Cell<usize>>,
+}
+
+impl VaultStream<'_> {
+    /// Скормить кусок ответа; всё распознанное и дословное пишется в `out`.
+    pub fn push(&mut self, chunk: &[u8], out: &mut Vec<u8>) -> rewriter::Push {
+        self.rw.push(chunk, out)
+    }
+
+    /// Конец потока: несъевшийся остаток отдаётся дословно.
+    pub fn finish(&mut self, out: &mut Vec<u8>) -> rewriter::Finish {
+        self.rw.finish(out)
+    }
+
+    /// Весь вход за один вызов — путь без стрима (тот же автомат, что у
+    /// [`VaultEngine::rewrite_stream`]).
+    pub fn run_to_end(&mut self, input: &[u8]) -> (Vec<u8>, bool) {
+        self.rw.run_to_end(input)
+    }
+
+    /// Сколько маркеров подменено суммарно.
+    #[must_use]
+    pub fn substituted(&self) -> usize {
+        self.rw.substituted()
+    }
+
+    /// Сколько маркеров прошло дословно как нерезолвленные.
+    #[must_use]
+    pub fn unresolved(&self) -> usize {
+        self.unresolved.get()
+    }
+
+    /// Есть ли на хвосте незакрытый маркер.
+    #[must_use]
+    pub fn is_incomplete(&self) -> bool {
+        self.rw.is_incomplete()
+    }
+}
+
+/// Стирание типа резолвера: поле [`VaultStream`] хочет `DynStreamRewriter`,
+/// а имени типа замыкания, замкнутого на `&self`, снаружи не выразить.
+fn boxed<'a>(f: impl FnMut(&[u8]) -> Resolution + 'a) -> Box<dyn FnMut(&[u8]) -> Resolution + 'a> {
+    Box::new(f)
 }
 
 /// Синтетический суррогат вместо `[PERSON_n]` (SPEC §4, обратимая подмена).
@@ -176,38 +229,69 @@ impl VaultEngine {
     /// [`BodyKind::Label`] оригинал берётся из кэша по `(session, label)`.
     /// Нерезолвнутый маркер проходит дословно и учтён в
     /// [`StreamOutcome::unresolved`].
+    ///
+    /// Не-потоковый случай: весь вход сразу. Для стрима (SSE-прокси, шаг 7c)
+    /// тот же резолвер и тот же счётчик даёт [`Self::stream`]; двух мест, где
+    /// по-своему объясняется «что такое нерезолвленный маркер», быть не может,
+    /// поэтому этот метод собран из того же резолвера.
     #[must_use]
     pub fn rewrite_stream(&self, session: &str, grammar: Grammar, input: &[u8]) -> StreamOutcome {
-        let unresolved = Cell::new(0_usize);
-        let mut rw = StreamRewriter::new(grammar, |body: &[u8]| -> Resolution {
-            let Ok(text) = std::str::from_utf8(body) else {
-                unresolved.set(unresolved.get() + 1);
-                return Resolution::Unknown;
-            };
-            let found = match grammar.body {
-                BodyKind::Base64Url => VaultToken::from_base64url(text)
-                    .and_then(|t| t.open(&self.key))
-                    .map(|plain| plain.as_bytes().to_vec())
-                    .ok(),
-                BodyKind::Label => self
-                    .store
-                    .get(&StoreKey::new(session, text))
-                    .map(|r| r.as_str().as_bytes().to_vec()),
-            };
-            if let Some(bytes) = found {
-                Resolution::Substitute(bytes)
-            } else {
-                unresolved.set(unresolved.get() + 1);
-                Resolution::Unknown
-            }
-        });
-        let (bytes, incomplete) = rw.run_to_end(input);
+        let mut s = self.stream(session.to_owned(), grammar);
+        let (bytes, incomplete) = s.run_to_end(input);
         StreamOutcome {
             bytes,
-            substituted: rw.substituted(),
-            unresolved: unresolved.get(),
+            substituted: s.substituted(),
+            unresolved: s.unresolved(),
             incomplete,
         }
+    }
+
+    /// Инкрементальный разворот маркеров: машина состояния плюс счётчик отказов.
+    ///
+    /// Отличие от [`Self::rewrite_stream`] только в форме вызова — байты
+    /// подкладываются кусками произвольной нарезки, а машина сама держит
+    /// look-ahead ([`Grammar::window`]) и оборванную UTF-8-последовательность на
+    /// границе куска. Это то, что нужно SSE-релая: метку может принести нарезанную
+    /// на два `data:`-события, и наивная подмена по чанку её либо пропустит, либо
+    /// съест (SPEC §8, промер шага 7c — тесты `sse::tests` в `guard-daemon`).
+    /// `session` — владелец строки: машина живёт дольше вызова, поэтому слот
+    /// ей передаётся в собственность, а не взят на заём.
+    ///
+    /// Счётчик [`VaultStream::unresolved`] общий для всех вызовов одной машины:
+    /// нерезолвленный маркер — не ошибка машины, но скрыть его нельзя
+    /// (AGENTS: подмена причины отказа = fail-open в диагностике).
+    #[must_use]
+    pub fn stream(&self, session: String, grammar: Grammar) -> VaultStream<'_> {
+        let unresolved = std::rc::Rc::new(Cell::new(0_usize));
+        let counter = std::rc::Rc::clone(&unresolved);
+        // Боксование явное: имя типа замыкания, замкнутого на движок, извне не
+        // выразить, а поле `VaultStream` хочет `DynStreamRewriter`.
+        let rw = StreamRewriter::new(
+            grammar,
+            FnResolver(boxed(move |body: &[u8]| -> Resolution {
+                let Ok(text) = std::str::from_utf8(body) else {
+                    counter.set(counter.get() + 1);
+                    return Resolution::Unknown;
+                };
+                let found = match grammar.body {
+                    BodyKind::Base64Url => VaultToken::from_base64url(text)
+                        .and_then(|t| t.open(&self.key))
+                        .map(|plain| plain.as_bytes().to_vec())
+                        .ok(),
+                    BodyKind::Label => self
+                        .store
+                        .get(&StoreKey::new(&session, text))
+                        .map(|r| r.as_str().as_bytes().to_vec()),
+                };
+                if let Some(bytes) = found {
+                    Resolution::Substitute(bytes)
+                } else {
+                    counter.set(counter.get() + 1);
+                    Resolution::Unknown
+                }
+            })),
+        );
+        VaultStream { rw, unresolved }
     }
 
     /// Подбирает синтетическое имя того же рода, падежа и типа ФИО-токена.
