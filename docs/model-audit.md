@@ -243,6 +243,100 @@ Addendum 20.10 (4b-2a, issue #23, живой прогон `spike --arb` с жи�
 8. DUAL не прорегрессирован финальным билдом: `DUAL|maxdiff|2.577e-8` exit 0;
    `--arb-budget` BUDGET|decide_probs|3 (модульный путь живой).
 
+### 5.7 Аддендум 20.10 ночь (4b-3B/C, issue #20): парити fp32↔квант + recall каскада-2 на golden-v1.1
+
+Профиль: **debug** (release-SIGSEGV §5.1), threads=8 (recall) / 4 (парити), macOS
+arm64, ORT 1.31.0 dylib. Датасет: golden-v1.1 (204 ряда, split=recall 150, sha
+`546d8c35…`), знаменатель 285 = span-level gold-вхождений 8 покрываемых классов
+(ogrn/ogrnip/iban — вне ONNX-инвентаря моделей, исключены из метрики). Оракул —
+`tools/verify/parity_golden.py` (python-харнес, коммит 0ccf223); Rust-пути
+(`examples/parity_onnx`, `examples/recall_golden`) воспроизводят его контракт.
+
+**B. Парити fp32 ↔ квант (4 порога × 2 модели; протокол = правка тикета
+родителя 20.10: вердикт-агрегат AND только по рабочим τ ≤ 0.25 (SPEC §5.6
+низкий порог экстрактора), τ>0.25 — informational):**
+
+lockR fp16 (`model.optimized.fp16.onnx` vs fp32):
+- `maxabs_logit_delta_f32 = 0.0262` (150 рядов, Δ logits — не квантовый шум fp16
+  weight-only, а переэкзаменация graph-оптимизации; достаточна: argmax-теги не
+  меняются)
+- пороги 0.20/0.25/0.50: recall fp32=fp16=**88.77** (Δ=0.00, tp 253/285, per-class
+  Δ=0.00 все 8); 0.70: 86.67 = 86.67 (Δ=0.00) — **`PARITY|verdict|pass|model|lockr`**
+- BUDGET rss 1166.3 MiB (fp32+fp16 вместе, харнес-pipeline)
+
+Decide q4f16 (`model_q4f16.onnx` vs fp32, row-level «есть класс?»):
+- 0.20: fp32 95.44 → q4f16 **96.84** (Δ −1.40 = квант ЛУЧШЕ; snils +10.34 в
+  пользу кванта: p-флипы 0.45–0.71 зоны, fp32-аномалия, не квантовая деградация)
+- 0.25: fp32 94.39 → q4f16 **95.79** (Δ −1.40; snils +13.79; person_name 0.00) —
+  **`PARITY|verdict|pass|model|decide`** (обе рабочие τ под гейтом ≤0.5 pp)
+- 0.50: 88.07 → 86.32 (Δ **+1.75**, person_name −8.93 pp) — informational fail
+- 0.70: 80.70 → 80.00 (Δ **+0.70**, person_name −3.57 pp) — informational fail
+- флипы individually (τ=0.5): g0012 .709→.581, g0015 .516→.461, g0025 .538→.447,
+  g0044 .599→.478, g0056 .662→.505 — все в gray-band p≈0.45–0.71
+- BUDGET rss 892.2 MiB (fp32+q4f16)
+
+**Формулировка вердикта (рулинг родителя):** q4f16 паритетен в рабочей точке
+арбитр-пайплайна (τ ∈ [0.22, 0.80) gray-zone, SPEC §2; lib.rs:44 TODO
+GrayZone{lo:0.22, hi:0.80}), деградирует выше τ=0.5 на классе person_name.
+Выход за SPEC-гейт «потеря ≤1 pp на любом классе при τ≥0.20» (quant-policy §3.2)
+на τ>0.5 зафиксирован; варианты (не импровизация, на решение): (1) amendment
+quant-policy §17/§3.2 — гейт по рабочей точке, informational выше; (2) re-export
+Decide с собственным квант-эмитентом — backlog за #20.
+
+**C. Recall каскада-2 (runtime lockR-fp16 + Decide-q4f16) на golden-v1.1, τ=0.25:**
+
+```
+RECALL|dataset|golden-v1.1|rows|150|thr|0.25
+RECALL|per_class|person_name|n|56|lockr|100.00|decide|96.43
+RECALL|per_class|inn|n|36|lockr|69.44|decide|100.00
+RECALL|per_class|snils|n|29|lockr|58.62|decide|37.93
+RECALL|per_class|card_pan|n|32|lockr|87.50|decide|100.00
+RECALL|per_class|phone|n|36|lockr|100.00|decide|100.00
+RECALL|per_class|email|n|40|lockr|100.00|decide|100.00
+RECALL|per_class|address|n|40|lockr|100.00|decide|100.00
+RECALL|per_class|passport|n|16|lockr|75.00|decide|100.00
+RECALL|overall|lockr_fp16|89.12|wilson95_lower|84.97|k|254|n|285
+RECALL|overall|decide_q4f16|92.98|wilson95_lower|89.41|k|265|n|285
+```
+
+Метод lockR-части: span-level, decode-контракт харнеса (см. токенизатор-блок
+ниже); smoke 6 рядов = **100.00, 16/16 — побайтовая парити-эквивалентность
+оракулу** (пер-класс 4/2/1/1/2/2/3/1, все gold-хиты; spans+bytes g0001–g0003
+совпали с живым харнесом 12/12 окон, incl. SNILS 203..220, CITY 265..293).
+Full: **89.12 (k=254) против python-оракула fp16 88.77 (k=253, B-матрица)** —
++1 tp на card_pan (28 vs 27, класс 87.50 vs 84.38): один CREDIT_CARD-спан
+(PS-хвост `##` у конца окна — трим-контракт id_to_token vs decode даёт
+разницу ровно на этом хвосте, промер g0001–g0003 совпал весь). Δ=1 span при
+Wilson-lower 84.97 на вердикт гейта не влияет. Детерминизм: два полных прогона
+бинарём с одним контрактом — идентичные RECALL-строки.
+
+Метод decide-части: row-level union (decide_counts), блок схем 8 вопросов +
+sanitize_state, **raw text (№ НЕ заменён)** — UNK-инвентарь 19/150 строк (литера
+`№` → [507,UNK] Spiber; харнес B-прогона кормил raw, q4f16 B-числа получены
+так же — согласовано); гейт layout [P],[L] sizes=[2×8] не сработал ни разу
+(0 layout_miss); hit = p ≥ τ включительно (контракт arbitrate). Decide overall
+92.98 < lockR? НЕТ: Decide 92.98 > lockR 89.12 (row-level union ловит classes
+без span-попадания lockR: inn 100 vs 69.44); snils = известная слабость обеих
+(37.93/58.62) — FN добирается каскадом-1 (чексуммы валидатора, issue #26 хвост).
+`GOLDEN|verdict` печатается из фактических чисел: при Wilson-lower 89.41 < 98 —
+`known-below-98-wilson;gate=#14-deferred-to-cascade-union` (гейт #14 — каскад
+lockR ∨ чексуммы, не один Decide; SPEC §5 п.7).
+
+Токенизатор-контракт Rust↔python (корневые находки 4b-3C, всё в комментариях
+`recall_golden.rs`): (1) `tokenizers` 0.23 encode(true) НЕ применяет
+пост-процессор → `with_post_processor(None)` + ручной `encode_plus`
+(merge_with, спец-слоты (0,0), python-форма 1-в-1 с ids); (2) Rust-оффсеты =
+БАЙТОВАЯ шкала (decode-постпроцессинг WordPiece переписывает char→utf8:
+g0001 'Ушакова' char (56,63) = rust (87,101) = python-byte) ⇒ харнесная
+`len(text[:c].encode())` = прямой читок, char2byte поверх = двойная конверсия;
+(3) `decode([CLS]) = ''` (не '[CLS]') ⇒ special-фильтр харнеса ЛОЖЕН на
+спецах — O красит argmax модели (O@1.0), id-множество спец-id = эквивалент;
+(4) `decode([PS]) = '##вич'` python, Rust decode ОДИНОЧНОГО id маркер ЧИСТИТ
+('вич') ⇒ PS-трим по `id_to_token` (vocab) = python-эквивалент; (5) `i0 =
+t0−1` в python-поле om ≡ `om1[t0−1]` encode_plus-поля (спец-плейсхолдеры
+1-в-1, без сдвига); (6) `lockr_bio_group` возвращает ГОЛЫЙ класс — двойной
+strip префикса обнулял карту классов (первая 0.00).
+
 ## 6. CI-контракт
 
 CI spike НЕ гоняет (фича `ort-inference` default-off, example no-op,

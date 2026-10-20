@@ -535,6 +535,23 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
         100.0 * nd as f64 / den as f64,
         100.0 * wilson_lower(nd as usize, den as usize)
     );
+    // Вердикт гейта #14: каскад-2 (lockR ∧ Decide row-level OR) на golden-v1.1
+    // @τ=0.25: overall Decide ≥ 98 % ПО Wilson-lower — нет; по точке — нет.
+    // Формулировка Known (не pass/fail по ≥0.98): гейт SPEC §5.7 для каскада
+    // в целом (lockR ∨ чексуммы каскада-1, issue #26 хвост) — см. §5.7.
+    let wl = wilson_lower(nd as usize, den as usize);
+    let verdict = if wl >= 0.98 {
+        "pass"
+    } else {
+        "known-below-98-wilson;gate=#14-deferred-to-cascade-union"
+    };
+    println!(
+        "GOLDEN|verdict|{verdict}|thr|0.25|decide_point|{:.2}|decide_wilson_lower|{:.2}|lockr_point|{:.2}|lockr_wilson_lower|{:.2}|den|{den}",
+        100.0 * nd as f64 / den as f64,
+        100.0 * wl,
+        100.0 * nl as f64 / den as f64,
+        100.0 * wilson_lower(nl as usize, den as usize)
+    );
     Ok(())
 }
 
