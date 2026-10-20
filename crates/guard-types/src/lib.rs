@@ -25,4 +25,9 @@ mod verdict;
 
 pub use secret::SecretString;
 pub use span::{ByteSpan, SpanError};
-pub use verdict::{AnnotatedSpan, ClassId, DetectionSource, EntityRole, NewtypeId, Verdict};
+// `ScoreError` — тип ошибки публичного `AnnotatedSpan::new`; до шага 6 он был
+// неименуем вне крейта (модуль `verdict` закрыт), и вызывающий не мог разобрать
+// отказ по варианту — демон обязан, поэтому экспорт.
+pub use verdict::{
+    AnnotatedSpan, ClassId, DetectionSource, EntityRole, NewtypeId, ScoreError, Verdict,
+};

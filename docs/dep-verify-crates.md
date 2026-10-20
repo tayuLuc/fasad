@@ -228,3 +228,30 @@ Apache-2.0 OR MIT у всех, MSRV 1.85 = пин; RUSTSEC-записи по с�
 **keyring (#31, отложить до шага 8).** Пин 3.6.3 (`apple-native`, rust-version 1.75, билд на
 1.85 зелёный); линейка 4.0.0–4.2.0 = MSRV 1.88 — вне пина, bump MSRV = отдельное решение.
 В SPEC keyring не назван (только «tray (опц.)» L236) → строка §7 пишется на шаге 8.
+
+## 13. Промер шага 6 (21.10, `just check` rc=0 на tip `ec05ae5`; rustc 1.97.0 / канон 1.85, aarch64-apple-darwin)
+
+**http-body-util (добавлен сверх SPEC §7).** Причина одна: `BodyExt::frame` —
+собственный счётчик байт тела в `guard-daemon::http::read_body`, чтобы перелив
+лимита (`413 body_too_large`) отличался от оборванного потока (`400 bad_body`).
+Через `axum::body::to_bytes` различить нечем: `axum_core::Error` = прозрачная
+обёртка над `BoxError`, `is_length_limit()` в 0.5.6 нет (промер
+`~/.cargo/registry/src/*/axum-core-0.5.6/src/error.rs`).
+Промер реестр-кэша `~/.cargo/registry/index/*/.cache/ht/tp/http-body-util`
+запись `0.1.5`: `rust_version = "1.61"` (≤ пина 1.85 ✓), `yanked = false`,
+`features.default = []` (дефолтов нам хватает, ничего не включали). Поле
+`license` в записи кэша = `null` ⇒ лицензию из индекса **не подтверждаем**; по
+объявлению крейта — Apache-2.0 OR MIT, как и весь http-стек (подтвердить
+первичкой — LICENSE в `.crate`, на шаге 8 вместе с bump-прогоном).
+Крейт уже в дереве axum 0.8.9 ⇒ `Cargo.lock` = ровно одна добавленная строка
+имени в списке deps `guard-daemon`, ни одна версия не сдвинута (промер
+`git diff Cargo.lock`). `just net-audit` зелёный: `FORBIDDEN_MANIFEST` =
+reqwest/ureq/hyper/rustls/tonic, `http-body-util` не клиент и в запрещённых нет.
+Чего НЕ брали вместо: `tower-http` (`features = ["timeout","limit","catch-panic"]`
+уже подключены в workspace) — его 413/panic-ответы это plain text вне нашего
+конверта `{"error":{code,message}}`, т.е. клиент, различающий 4xx по `code`,
+на переполнении слепнет; отказ от слоя задокументирован в `read_body`.
+Таймаут чтения тела этим выбором не закрыт: `tower-http::timeout` дал бы
+`408` вне конверта, а штатного места поставить свою дедлайн-петлю в шаге 6 нет
+(нужна отдельная переменная, `FASAD_TIMEOUT_MS` занята таймаутом наружу) —
+риск открыт до шага 7, README §«Fail-closed: компас статусов» п.4.

@@ -48,7 +48,7 @@ authors      = ["fasad contributors"]
 serde       = { version = "1.0.228", features = ["derive"] }
 serde_json  = { version = "1.0.154" }
 thiserror   = { version = "2.0.17" }
-zeroize     = { version = "1.9.1", features = ["derive"] }
+zeroize     = { version = "1.9.1", features = ["derive", "serde"] }
 # issue #14 B2 (golden-гейт, dev-only): SHA-256-привязка теста к файлу датасета.
 # Пин = версия уже сидящая в Cargo.lock (промер `cargo tree -i sha2` в заходе
 # issue #14: sha2 v0.11.0 через rust-embed-utils → guard-daemon) — новых узлов
@@ -98,6 +98,9 @@ tokenizers = { version = "0.23.2", default-features = false, features = ["onig"]
 # --- HTTP-слой демона ---
 tokio      = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
 axum       = { version = "0.8.9", features = ["json", "http1", "http2"] }
+# Прямая зависимость guard-daemon ради `BodyExt::frame` (собственный счётчик
+# байт тела, см. http::read_body). Уже в дереве axum 0.8.9, lock не двигается.
+http-body-util = "0.1.5"
 tower-http = { version = "0.7.1", features = ["cors", "trace", "timeout", "limit", "catch-panic"] }
 reqwest    = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "stream", "json"] }
 rust-embed = { version = "8.13.0", features = ["compression"] }

@@ -96,6 +96,51 @@ fn main() {
     }
 }
 
+/// Строка вердикта гейта #14.
+///
+/// Вынесена из `run` и намеренно НЕ зависит от фичи `ort-inference`: формат
+/// строки — носитель контракта «порог в строке = порог прогона». До этого правки
+/// поле `thr|0.25` было литералом: прогон с `--thr 0.20` печатал 0.25, т.е.
+/// ложно-зелёный класс по нашей же доктрине (число в отчёте должно браться из
+/// замера, а не из шаблона).
+#[cfg_attr(
+    not(feature = "ort-inference"),
+    expect(
+        dead_code,
+        reason = "звонит только ort-ветка run(); тесты формата живут под cfg(test)"
+    )
+)]
+#[must_use]
+fn verdict_line(
+    thr: f64,
+    verdict: &str,
+    decide_hits: u64,
+    lockr_hits: u64,
+    den: u64,
+    decide_wl: f64,
+    lockr_wl: f64,
+) -> String {
+    let d = den.max(1) as f64;
+    format!(
+        "GOLDEN|verdict|{verdict}|thr|{thr}|decide_point|{:.2}|decide_wilson_lower|{:.2}|lockr_point|{:.2}|lockr_wilson_lower|{:.2}|den|{den}",
+        100.0 * decide_hits as f64 / d,
+        100.0 * decide_wl,
+        100.0 * lockr_hits as f64 / d,
+        100.0 * lockr_wl,
+    )
+}
+
+/// Пары «ключ|значение» после `GOLDEN|verdict|<вердикт>` — для тестов формата.
+#[cfg(test)]
+fn verdict_fields(line: &str) -> Vec<(String, String)> {
+    line.split('|')
+        .skip(3)
+        .collect::<Vec<_>>()
+        .chunks(2)
+        .map(|c| (c[0].to_owned(), c[1].to_owned()))
+        .collect()
+}
+
 fn arg<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
     argv.iter()
         .position(|a| a == flag)
@@ -530,9 +575,10 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
         100.0 * wilson_lower(nd as usize, den as usize)
     );
     // Вердикт гейта #14: каскад-2 (lockR ∧ Decide row-level OR) на golden-v1.1
-    // @τ=0.25: overall Decide ≥ 98 % ПО Wilson-lower — нет; по точке — нет.
-    // Формулировка Known (не pass/fail по ≥0.98): гейт SPEC §5.7 для каскада
-    // в целом (lockR ∨ чексуммы каскада-1, issue #26 хвост) — см. §5.7.
+    // при фактическом пороге прогона (он же в строке): overall Decide ≥ 98 % ПО
+    // Wilson-lower — нет; по точке — нет. Формулировка Known (не pass/fail по
+    // ≥0.98): гейт SPEC §5.7 для каскада в целом (lockR ∨ чексуммы каскада-1,
+    // issue #26 хвост) — см. §5.7.
     let wl = wilson_lower(nd as usize, den as usize);
     let verdict = if wl >= 0.98 {
         "pass"
@@ -540,11 +586,16 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
         "known-below-98-wilson;gate=#14-deferred-to-cascade-union"
     };
     println!(
-        "GOLDEN|verdict|{verdict}|thr|0.25|decide_point|{:.2}|decide_wilson_lower|{:.2}|lockr_point|{:.2}|lockr_wilson_lower|{:.2}|den|{den}",
-        100.0 * nd as f64 / den as f64,
-        100.0 * wl,
-        100.0 * nl as f64 / den as f64,
-        100.0 * wilson_lower(nl as usize, den as usize)
+        "{}",
+        verdict_line(
+            thr,
+            verdict,
+            nd,
+            nl,
+            den,
+            wl,
+            wilson_lower(nl as usize, den as usize)
+        )
     );
     Ok(())
 }
@@ -635,6 +686,86 @@ fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("RECALL|skipped|no-ort-inference|промер гоняется --features ort-inference");
     Ok(())
+}
+
+#[cfg(test)]
+mod verdict_format_tests {
+    use super::*;
+
+    #[test]
+    fn threshold_field_is_the_measured_one() {
+        // Тот самый регресс: прогон при 0.20 обязан сообщить 0.2, а не литерал.
+        let at_20 = verdict_line(
+            0.20,
+            "known-below-98-wilson;gate=#14-deferred-to-cascade-union",
+            270,
+            247,
+            285,
+            0.915,
+            0.8223,
+        );
+        assert!(at_20.contains("|thr|0.2|"), "{at_20}");
+        assert!(
+            !at_20.contains("thr|0.25"),
+            "старый литерал вернулся: {at_20}"
+        );
+        let at_25 = verdict_line(0.25, "pass", 280, 250, 285, 0.99, 0.9);
+        assert!(at_25.contains("|thr|0.25|"), "{at_25}");
+    }
+
+    #[test]
+    fn field_order_and_head_are_stable_for_grep_consumers() {
+        // Строку жрут `grep`/`awk` в отчётах: порядок полей — контракт.
+        let line = verdict_line(0.20, "pass", 270, 247, 285, 0.915, 0.8223);
+        let parts: Vec<&str> = line.split('|').collect();
+        assert_eq!(
+            &parts[..4],
+            ["GOLDEN", "verdict", "pass", "thr"],
+            "{parts:?}"
+        );
+        let fields = verdict_fields(&line);
+        let keys: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "thr",
+                "decide_point",
+                "decide_wilson_lower",
+                "lockr_point",
+                "lockr_wilson_lower",
+                "den"
+            ]
+        );
+        let get = |want: &str| {
+            fields
+                .iter()
+                .find(|(k, _)| k == want)
+                .expect("поле есть")
+                .1
+                .clone()
+        };
+        assert_eq!(get("thr"), "0.2");
+        assert_eq!(get("decide_point"), "94.74");
+        assert_eq!(get("lockr_point"), "86.67");
+        assert_eq!(get("den"), "285");
+    }
+
+    #[test]
+    fn zero_denominator_does_not_produce_nan() {
+        // Пустой прогон (den=0) обязан остаться машиночитаемым: NaN в поле
+        // вердикта читается как «метрика есть, значение странное».
+        let line = verdict_line(
+            0.25,
+            "known-below-98-wilson;gate=#14-deferred-to-cascade-union",
+            0,
+            0,
+            0,
+            0.0,
+            0.0,
+        );
+        assert!(!line.contains("NaN"), "{line}");
+        assert!(line.contains("|den|0"), "{line}");
+    }
 }
 
 #[cfg(all(test, feature = "ort-inference"))]
