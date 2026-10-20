@@ -324,8 +324,25 @@ gline-rs только как референс алгоритма `[decided]`. П
 | DELETE `/v1/sessions/{id}`, PUT `/v1/schema` | REST | сброс сессии / горячая смена схемы категорий |
 | GET `/ui` | — | зашитая песочница (подсветка α=confidence) |
 
-Заголовки: вход `X-Upstream-URL`, `X-Session-ID`, `X-Guard-Policy: mask|block|audit_only`;
-выход `X-Guard-Redacted-Count`, `X-Guard-Max-Risk`, `X-Guard-Latency-Ms`.
+Заголовки: вход `X-Upstream-URL`, `X-Session-ID`, `X-Guard-Policy: mask|block|audit_only`.
+Выход — полная сетка того, что демон действительно отправляет (имена констант в
+`crates/guard-daemon/src/http.rs` первичны, обе сетки — эту и таблицу
+`docs/daemon-scope.md` — сверяет с кодом тест
+`header_table_in_docs_matches_emitted_names`):
+- `X-Guard-Redacted-Count` — число подмен; на `analyze` найденных спанов, на
+  `deanonymize` возвращённых токенов; `0` — осмысленный ноль, отсутствие на 2xx
+  клиент обязан считать ошибкой (нулём мы значение не подменяем)
+- `X-Guard-Max-Risk` — максимальный `score` (только `analyze`)
+- `X-Guard-Latency-Ms` — миллисекунды, округление вниз
+- `X-Guard-Stage` — какая ступень каскада отработала (`cascade-0-only` на шаге 6)
+- `X-Guard-Policy-Applied` — применённая политика; расширение поверх транскрипта
+  (§8 описывает входной `X-Guard-Policy`, на выходе мы его не отправляем)
+- `X-Guard-Score-Threshold` — фактически применённый порог; расширение
+- `X-Guard-Unresolved` — сколько обещанных разворотов не состоялось: нерезолвленные
+  маркеры плюс суррогатные формы, отвергнутые из-за расхождения со свидетелем
+  выдачи (#60 п.3); только на прокси-маршруте, при нуле заголовка нет
+- `X-Guard-Malformed` — `1`, если разворот для тела невыполним (тело не JSON,
+  речевое поле пришло структурой вместо строки); только на прокси-маршруте
 SSE: look-ahead буфер до 32 байт — токен `[PERSON_1]` может прилететь нарезанным на
 3 пакета; наивный replace по чанку ломает обратимость `[claim]` — закрыто промером: тест `naive_replace_by_chunk_breaks_roundtrip` (`crates/guard-daemon/src/sse.rs`) гоняет наивный `replace` и `Relay` по одним и тем же границам реза метки
 

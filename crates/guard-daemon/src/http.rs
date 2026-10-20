@@ -607,6 +607,46 @@ mod tests {
                 e.as_str()
             );
         }
+
+        // SPEC §8 обязан называть всю эмиссию, а не три имени из транскрипта:
+        // расхождение сетки §8 — это обещание клиенту, которое мы не отправляем.
+        let spec =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/SPEC.md"))
+                .expect("SPEC читается");
+        let section = spec
+            .split(
+                "
+## ",
+            )
+            .find(|s| s.starts_with("8."))
+            .expect("раздел 8 в SPEC есть");
+        let mut grid: Vec<String> = Vec::new();
+        for line in section.lines().filter(|l| l.starts_with("- `X-")) {
+            grid.push(
+                line.split('`')
+                    .nth(1)
+                    .expect("имя заголовка в бэктиках")
+                    .to_ascii_uppercase(),
+            );
+        }
+        assert_eq!(
+            grid.len(),
+            emitted.len(),
+            "сетка SPEC §8 разъехалась с эмиссией: {grid:?}"
+        );
+        for g in &grid {
+            assert!(
+                allowed.contains(g),
+                "SPEC §8 обещает «{g}», а такого заголовка мы не отправляем"
+            );
+        }
+        for e in &emitted {
+            assert!(
+                grid.contains(&e.as_str().to_ascii_uppercase()),
+                "код отправляет «{}», а SPEC §8 о нём молчит",
+                e.as_str()
+            );
+        }
     }
 
     use super::*;
