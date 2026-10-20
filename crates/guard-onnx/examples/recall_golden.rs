@@ -20,19 +20,13 @@
 #![allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
+    clippy::cast_lossless,
     clippy::too_many_lines,
     clippy::default_trait_access,
-    clippy::items_after_statements,
-    clippy::useless_conversion,
-    clippy::redundant_clone,
-    clippy::doc_markdown,
-    clippy::needless_range_loop,
     clippy::manual_contains,
-    clippy::cast_lossless,
     clippy::iter_cloned_collect,
-    reason = "measurement-харнес: счётчики ≤ 2^53 (n=285), один прогонный main, форматирование метрик; prod-кодом не является (example)"
+    clippy::doc_markdown,
+    reason = "measurement-харнес: счётчики ≤ 2^53 (n=285), один прогонный main; список = ровно сработавшие классы clippy 1.99 (ревью PR#49 нит №5 — мёртвые позиции срезаны); prod-кодом не является (example)"
 )]
 
 #[cfg(feature = "ort-inference")]
@@ -335,31 +329,32 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
         // Прогон по ВСЕМ B/I-группам (класс-фильтр GOLDEN_TO_BIO — в счёте
         // хита, lockr_counts L410–412: address-спан ловится CITY/STREET/HOUSE).
         for (cls_tok, ts, te) in lockr_bio_group(&tagv) {
-            // Оракул харнеса run_lockr L266–278, дословно:
+            // Оракул харнеса run_lockr (после фикса блокера №1 ревью PR#49):
             //   i1 = min(t1, len(ids_e)) − 1
-            //   while i1 > t0 − 1 and tok.decode([ids_e[i1]]).startswith('##'): i1 −= 1
-            //   i0 = max(t0 − 1, 0); if i1 < i0: skip
+            //   while i1 >= t0 and decode(ids[i1]).startswith('##'): i1 −= 1
+            //   i0 = t0; if i1 < i0: skip
             //   c0 = om[i0][0]; c1 = om[min(i1, len(om) − 1)][1]
             //   b0 = len(text[:c0].encode()); b1 = len(text[:c1].encode())
             // om = encode_plus (python-форма 1-в-1 с ids, спец = (0,0)):
-            // om[17]=(87,101) = харнесное om[17] (байтовая шкала — см. ниже).
-            // PS-трим харнеса L270 `tok.decode([id]).startswith('##')`:
+            // промер 20.10 g0001: len(ids)=len(offs)=75, om[17]=(56,63)='Ушакова'
+            // → байт 87 = gold start_byte (двойной промер python/rust, ревьюер
+            // PR#49 + родитель). РЕЦИДИВ −1, исправлен в обоих харнесах: om[t0−1]
+            // = ':' → b0=85 — сдвиг влево, пересечение только ДОБАВЛЯЛО хиты.
+            // PS-трим харнеса `tok.decode([id]).startswith('##')`:
             // python decode([PS]) = '##вич' ⇒ трим живой (промер 4b-3C). Rust
             // decode ОДИНОЧНОГО PS-id ЧИСТИТ маркер ('вич') — на decode
             // условие молча ложно, окна PS-склеек завышаются (первая 0.00).
             // Эквивалент python-декода = vocab `id_to_token` ('##вич').
             let mut i1 = (te - 1).min(ids_u.len() - 1);
-            while i1 > ts.saturating_sub(1)
+            while i1 >= ts
                 && ltok
                     .id_to_token(ids_u[i1])
                     .is_some_and(|tk| tk.starts_with("##"))
             {
                 i1 -= 1;
             }
-            // i0 = max(t0−1, 0) харнеса; om = encode_plus (python-форма 1-в-1
-            // с ids: спец-плейсхолдеры (0,0) на своих местах) ⇒ om[i0] =
-            // om_py[t0−1]: ':' (54,55) → b 85 = oracle b0 LAST_NAME g0001.
-            let i0 = ts.saturating_sub(1);
+            // i0 = t0: индекс полного списка = индекс om без сдвига (см. выше).
+            let i0 = ts;
             if i1 < i0 {
                 continue;
             }
@@ -463,17 +458,16 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
             .map(|(f, ls)| (f - 1, ls))
             .collect();
         let sizes: Vec<usize> = gl.iter().map(|(_, g)| g.len()).collect();
-        // Фантом-гейт (4b-3B): все [L] первой группы ПОСЛЕ первой границы
-        // `[SEP_*]` (иначе groups() склеила пред-граничный [L]-фантом со
-        // схемной группой — исторический контракт сканера, см. decide.rs).
-        let phantom = false;
+        // Фантом-гейт (4b-3B) НЕ реализован в этом харнесе: детект фантома
+        // требует позиции первой границы `[SEP_*]`, которой у groups() нет.
+        // layout_miss ниже ловит и фантом, и любой иной разрыв layout —
+        // diagnostic-строка честно не различает (ревью PR#49 нит №8).
         if gl.len() != schema.len() || !sizes.iter().all(|&n| n == 2) {
             // Разрыв layout = дефект ДАННЫХ (фантом в хвосте блока), не
-            // прогона: класс-строка «na» уже напечатается нулём знаменателя?
-            // Нет — fail-closed ТЗ: считаем такие строки как miss по всем
-            // классам (UNK-вето живого пути = та же судьба: None → no-hit).
+            // прогона: считаем такие строки как miss по всем классам
+            // (UNK-вето живого пути = та же судьба: None → no-hit).
             eprintln!(
-                "RECALL|layout_miss|g{}|{} групп sizes {sizes:?}|фантом|{phantom}",
+                "RECALL|layout_miss|g{}|{} групп sizes {sizes:?}",
                 r.id,
                 gl.len()
             );

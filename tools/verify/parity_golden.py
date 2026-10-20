@@ -15,8 +15,9 @@
           API; id2label 0..42 — config.json@ea7610b2 (hf_hub_download). WordPiece
           [CLS]/[SEP], pad [PAD]=0 вправо до 256 (контракт spike --lockr).
           Декодер: argmax, BIO B/i-скобка, вероятность = softmax строки логитов.
-          Зеркало Rust-декодера — crates/guard-onnx/src/lockr.rs (тот же
-          ID2LABEL/GOLDEN_TO_BIO, unit-тесты без фичи ort).
+          Зеркало Rust-декодера — crates/guard-onnx/src/decide.rs:34-107 (тот же
+          ID2LABEL; GOLDEN_TO_BIO живёт в examples/recall_golden.rs::bio_to_class,
+          множество классов идентично — промер ревью PR#49).
   Decide  fp32 onnx/model.onnx(+_data f5aef45f…) vs квант onnx/model_q4f16.onnx
           (93f3e0d4…): int64-входы, logits float (1,M) — промер Session API.
           Блок схем = зеркало arbitrate.rs::schema_block; один encode(concat,
@@ -269,12 +270,15 @@ def run_lockr(rows, threads: int, peak: Peak, batch: int):
                 tags = spans_bio_tags(lg[j], ln, list(e.ids), tok)
                 ids_e = list(e.ids)
                 for cls, t0, t1, conf in spans_grouped(tags):
-                    om = e.offsets  # НЕ-special токены: токен p ↔ offset p-1
+                    om = e.offsets  # 1-в-1 с e.ids (промер 20.10: 75/75, спец=(0,0));
+                    # индекс полного списка = индекс om, БЕЗ сдвига (рецидив −1:
+                    # om[t0−1] давал ':' перед фамилией → b0=85 при gold b0=87,
+                    # ревью PR#49 блокер №1).
                     # PS-хвосты (##piece) НЕ расширяют спан: последний НЕ-special
                     i1 = min(t1, len(ids_e)) - 1
-                    while i1 > t0 - 1 and tok.decode([ids_e[i1]]).startswith("##"):
+                    while i1 >= t0 and tok.decode([ids_e[i1]]).startswith("##"):
                         i1 -= 1
-                    i0 = max(t0 - 1, 0)
+                    i0 = t0
                     if i1 < i0 or i0 >= len(om) or i1 < 0:
                         continue
                     c0 = om[i0][0]
