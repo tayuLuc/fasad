@@ -43,10 +43,11 @@ mod tests {
     use tower::ServiceExt as _;
 
     #[tokio::test]
-    async fn health_returns_200_with_scaffold_stage() {
+    async fn health_reports_stage_and_mode() {
         let app = router(crate::Health {
             version: env!("CARGO_PKG_VERSION"),
-            stage: "scaffold",
+            stage: "cascade-0-only",
+            mode: "stateless",
         });
         let resp = app
             .oneshot(
@@ -62,7 +63,8 @@ mod tests {
             .await
             .expect("тело читается");
         let v: serde_json::Value = serde_json::from_slice(&bytes).expect("валидный JSON");
-        assert_eq!(v["stage"], "scaffold");
+        assert_eq!(v["stage"], "cascade-0-only");
+        assert_eq!(v["mode"], "stateless");
         assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
     }
 
@@ -71,7 +73,8 @@ mod tests {
         // Fail-closed на уровне роутера: ничего не проксируем «автоматом».
         let app = router(crate::Health {
             version: env!("CARGO_PKG_VERSION"),
-            stage: "scaffold",
+            stage: "cascade-0-only",
+            mode: "stateless",
         });
         let resp = app
             .oneshot(

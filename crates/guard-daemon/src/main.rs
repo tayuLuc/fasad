@@ -7,63 +7,45 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::unwrap_used)]
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
 use guard_daemon::Health;
+use guard_daemon::config::{Config, ConfigError};
 
-/// Порт по умолчанию; переопределяется `FASAD_PORT` (значение не распарсится —
-/// дефолт, молча: это эргономика разработки, не контракт безопасности).
-const DEFAULT_PORT: u16 = 8765;
-
-fn port_from_env() -> u16 {
-    port_from_value(std::env::var("FASAD_PORT").ok().as_deref())
-}
-
-/// Чистая часть разбора: значение env → порт; мусор = дефолт.
-/// Вынесена из [`port_from_env`], чтобы тестировать без мутации среды процесса.
-fn port_from_value(raw: Option<&str>) -> u16 {
-    raw.and_then(|s| s.trim().parse::<u16>().ok())
-        .unwrap_or(DEFAULT_PORT)
-}
+/// Код выхода при отклонённой конфигурации: отдельный от сетевых ошибок, чтобы
+/// systemd/докер видели «неверный конфиг» как неверный конфиг, а не как порт
+/// занят (перезапуск с backoff тут бессмыслен и маскирует опечатку).
+const EXIT_BAD_CONFIG: i32 = 2;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Loopback обязателен: гард не сетевой сервис (SPEC §1 п.6).
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port_from_env());
+    let cfg = match Config::from_env() {
+        Ok(cfg) => cfg,
+        Err(e) => fail_closed_config(&e),
+    };
 
+    // Loopback обязателен и проверен на разборе: гард не сетевой сервис
+    // (SPEC §1 п.6), и `0.0.0.0` сюда протаскивается только через эту стену.
     let app = guard_daemon::http::router(Health {
         version: env!("CARGO_PKG_VERSION"),
-        stage: "scaffold",
+        stage: cfg.stage(),
+        mode: cfg.vault_mode.as_str(),
     });
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
     println!(
-        "fasad {} scaffold, listening on http://{addr}/health",
-        env!("CARGO_PKG_VERSION")
+        "fasad {} {}, listening on http://{}/health",
+        env!("CARGO_PKG_VERSION"),
+        cfg.stage(),
+        cfg.addr
     );
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)] // в тестах паника = красный CI, это канал ответа
-mod tests {
-    use super::*;
-
-    /// Порт из env: только читатель, без мутаций среды — `set_var` в тестах требовал бы
-    /// unsafe (edition 2024) и конфликтовал бы с параллельными тестами.
-    #[test]
-    fn default_port_is_a_dozen_four_k() {
-        assert_eq!(DEFAULT_PORT, 8765);
-        assert_eq!(port_from_value(Some("9999")), 9999);
-        assert_eq!(port_from_value(Some(" 1234 ")), 1234);
-    }
-
-    #[test]
-    fn port_garbage_falls_back_to_default() {
-        assert_eq!(port_from_value(Some("abc")), DEFAULT_PORT);
-        assert_eq!(port_from_value(Some("70000")), DEFAULT_PORT);
-        assert_eq!(port_from_value(Some("")), DEFAULT_PORT);
-        assert_eq!(port_from_value(None), DEFAULT_PORT);
-    }
+/// Отказ по конфигу: напечатать причину и выйти, не поднимая сокет.
+///
+/// Вынесено в `-> !`, чтобы поток управления был явен для компилятора, а не
+/// через `unwrap_or_else(|e| todo!())`.
+fn fail_closed_config(err: &ConfigError) -> ! {
+    eprintln!("fasad: конфигурация отклонена, сокет не поднимается: {err}");
+    std::process::exit(EXIT_BAD_CONFIG);
 }
