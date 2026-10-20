@@ -412,3 +412,78 @@ C-острова) — второй источник метрик с CI-матр�
    `ort-dylib`/`spike-dylib`. Релизный прогон 19.10 (сырой /tmp/mg48-49.out):
    exit=1 (GatherElements-заглушка §5.3 — до живых marker_positions шага 4b), env_init
    37.8–40.3 ms, rss_after_load_arbiter 379.4–387.4 MiB — бюджет-гейт release закрыт.
+
+## 9. Release RSS (шаг 9, релизный контур, SPEC §10 п.9)
+
+Замеры живые (21.10), метод печатается в каждой строке вывода
+`scripts/measure-rss.sh`: контур каскада-0 = `ps -o rss` (KB→MiB) плюс macOS
+`footprint phys_footprint` («Память» Activity Monitor); контур полного каскада
+= in-process `task_info(TASK_VM_INFO).internal` из C-острова
+`crates/guard-onnx/spike/rss_mach.c` (Linux-ветка — `/proc/self/status` VmRSS).
+
+Хост: macOS arm64, rustc 1.99.1, профиль `release` (`lto="fat"`,
+`codegen-units=1`, `panic="unwind"`, `strip="symbols"` — `[profile.release]`
+в Cargo.toml). Замер при `FASAD_THREADS=2`, `CARGO_BUILD_JOBS=2` (рюлинг
+оператора 21.10 «не грузить CPU ноута», прогоны по одному за раз). Настоящий
+рычаг потоков демона — `FASAD_THREADS` (`crates/guard-daemon/src/config.rs:67`,
+дефолт 8); харнеса — флаг `--threads` (`crates/guard-onnx/examples/spike.rs:158`
+`unwrap_or(4)`). `OMP_NUM_THREADS` в методику НЕ входит: он инертен, вендорный
+`libonnxruntime` osx-arm64 собран без OpenMP и переменную не читает (первичка
+правки к рюлингу — `otool`/`strings` по dylib, ревью #73). Точки, инструменты
+и семантика вердикта не менялись относительно §5.6.
+
+1. **Каскад-0 (публикуемый бинарь `target/release/fasad`, HTTP-прогон).**
+   `just measure-rss` поднимает демон на `FASAD_PORT=0`, прогревает 3×
+   `/v1/analyze` и 1× `/v1/anonymize` (контракт `vault.rs::AnonymizeRequest =
+   {text, spans}`: спаны берутся из ответа analyze, голый `{"text":…}` = 400 —
+   промер живым POST 21.10) и снимает две точки. Сырые строки прогона при
+   `FASAD_THREADS=2` (INFO: `env=FASAD_THREADS=2`):
+   `RSS|cascade0|idle|2.7|ps -o rss (KB->MiB, resident)`,
+   `RSS|cascade0|idle|1.4|footprint phys_footprint (macOS, «Память» Activity Monitor)`,
+   `RSS|cascade0|after_warm|3.4|ps -o rss (KB->MiB, resident)`,
+   `RSS|cascade0|after_warm|1.6|footprint phys_footprint (macOS, …)`,
+   вердикт `BUDGET|cascade0|ok|peak_mib=3.4|budget_mib=1843.2`.
+   Прогон на демоне с дефолтом `FASAD_THREADS=8`: idle 2.2/1.4,
+   after_warm 2.8/1.6, `peak_mib=2.8`.
+   Разброс `ps` против `footprint` ≈ 1.2 MiB — это разные метрики (resident
+   против phys_footprint), обе строки остаются в выводе, метод не выбирается
+   в пользу одной. Пик = 0.15 % бюджета SPEC §1 (1843.2 MiB): контур демона
+   бюджет не задействует.
+2. **Полный каскад 1–2 (харнес spike, релизный профиль, официальный dylib ORT
+   1.31.0, `--arb-budget --arb --lockr`; веса из кэша `~/.cache/fasad-models`
+   по models/manifest.md):**
+   `RSS|full|peak_both_models|976.3|spike task_info …` (метод в самой строке),
+   вердикт
+   `BUDGET|full|ok|peak_mib=976.3|budget_mib=1843.2` (53 % бюджета) при
+   `--threads 4` (дефолт харнеса), wall-clock 2m42s. Прогон `--threads 2`
+   (рюлинг 21.10): `RSS|full|peak_both_models|889.1`,
+   `BUDGET|full|ok|peak_mib=889.1<1843.2` (48 % бюджета), wall-clock 10m20s.
+   Для бюджета держим КОНСЕРВАТИВНУЮ точку 976.3 = max из двух (та же
+   семантика, что в §5.6 п.5).
+3. **Оговорка профиля (§5 п.1, §5.6 п.5) по этой точке снята.** Прежний
+   бюджет-гейт был закрыт dev-числом `peak_max = 1434.6 MiB` (3 прогона 19.10,
+   debug-профиль — заголовок §2 «dev-профиль», §5 п.1 про SIGSEGV release на
+   статике pyke). Релизный профиль на официальном dylib = 976.3 MiB, на
+   458.3 MiB меньше (арифметика над двумя промеренными числами):
+   dev-консервативность подтверждена в безопасную сторону. Причина разницы
+   (lto/codegen-units против раздувания обобщений ort/tokenizers в debug)
+   не промерена и не заявляется.
+4. **Потоки: на каскаде-0 почти не влияют, на каскаде 1–2 влияют (промер
+   21.10).** Полный каскад `--threads 4` = 976.3 MiB против `--threads 2` =
+   889.1 MiB ⇒ −87.2 MiB (−9 % пика; арифметика над промеренными числами).
+   Механизм (арена/пул на поток в ort/tokenizers) не промерен. Каскад-0 на
+   паре `FASAD_THREADS=8` против `=2`: пики 3.4 и 2.8 MiB, разница лежит в
+   шуме pages-wiring (§5.6 п.5 про ленивость mapper'а) — для контура демона
+   потоки не фактор. Следствие: число потоков — часть методики, оно
+   печатается в INFO-строке; бюджет-вердикт считается по max из прогонов.
+5. **Windows-контур не промерен.** `scripts/measure-rss.sh` на `MINGW*`/`MSYS*`
+   падает с exit 2 и явной причиной (реализованы Darwin/Linux). PowerShell-метод
+   (`Get-Process` `WorkingSet64`/`PrivateMemorySize64`) не реализован и не
+   промерен; в CI шаг RAM-гейта на windows-2022 выключен условием
+   `if: matrix.os != 'windows-2022'`. Числа для Windows = «не промерено»
+   (docs/release.md §RAM).
+6. **CI-coverage ветки.** Job `dist` матрицы прогоняет `just measure-rss
+   --skip-build` на ubuntu-24.04 и macos-14 (Linux-ветка = `/proc/self/status`
+   VmRSS, тот же контракт `RSS|…`-строк): это закрывает §6 («второй источник
+   метрик с CI-матрицы, когда появится job») для каскада-0. Полный каскад в CI
+   не гоняется и дальше (веса в CI не качаются, §6), его промеры — рукаместо.

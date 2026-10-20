@@ -39,7 +39,12 @@ set -euo pipefail
 TARGET_DIR="${FASAD_RSS_TARGET:-target/release}"
 ORT_DIR="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0}"
 WARMUP="${FASAD_RSS_WARMUP:-3}"
-BUDGET_MIB=1843.2 # SPEC §1 п.1: «<2 ГБ», бюджет-гейт §5.6 = 1.8 GiB
+BUDGET_MIB=1843.2
+# Пул потоков орт-харнеса (рюлинг оператора 21.10: не грузить CPU ноута; spike
+# по умолчанию берёт 4, spike.rs:158). Это собственный рычаг харнеса:
+# OMP_NUM_THREADS на вендорном libonnxruntime osx-arm64 инертен (первичка
+# ревью #73: otool/strings), поэтому рулим флагом `--threads`.
+SPIKE_THREADS="${FASAD_SPIKE_THREADS:-2}" # SPEC §1 п.1: «<2 ГБ», бюджет-гейт §5.6 = 1.8 GiB
 RUN_CASCADE0=0
 RUN_FULL=0
 SKIP_BUILD=0
@@ -159,7 +164,17 @@ run_cascade0() {
     log="$(mktemp)"
     # FASAD_PORT=0 = «дай свободный», баннер печатает фактический адрес
     # (crates/guard-daemon/src/main.rs, local_addr).
-    FASAD_PORT=0 FASAD_VAULT_MODE=stateless "$bin" >"$log" 2>&1 &
+    # FASAD_THREADS=2: рюлинг оператора 21.10 «не грузить CPU ноута»; флаг
+    # реальный — `FASAD_THREADS` в crates/guard-daemon/src/config.rs:403,
+    # дефолт `DEFAULT_THREADS = 8` (config.rs:67) — НАСТОЯЩИЙ рычаг потоков
+    # демона. Поправка к рюлингу 21.10 (ревью #73, первичка otool/strings
+    # вендорного libonnxruntime osx-arm64): `OMP_NUM_THREADS` инертен, в этом
+    # дереве переменная не читается, так что в методику она не входит.
+    # На каскаде-0 разницы по потокам не промерено (пики 2.8 и 3.4 MiB в шуме
+    # pages-wiring, docs/model-audit.md §9 п.4); метод замера не меняется,
+    # окружение печатается в INFO-строке.
+    FASAD_PORT=0 FASAD_VAULT_MODE=stateless FASAD_THREADS="${FASAD_THREADS:-2}" \
+        "$bin" >"$log" 2>&1 &
     pid="$!"
     # shellcheck disable=SC2064
     trap "kill '$pid' 2>/dev/null || true; rm -f '$log'" EXIT
@@ -175,7 +190,8 @@ run_cascade0() {
     done
     [ -n "$port" ] || die "демон не поднялся за 10 с: $(cat "$log")"
 
-    printf 'INFO|cascade0|pid=%s|port=%s|bin=%s\n' "$pid" "$port" "$bin"
+    printf 'INFO|cascade0|pid=%s|port=%s|bin=%s|env=FASAD_THREADS=%s\n' \
+        "$pid" "$port" "$bin" "${FASAD_THREADS:-2}"
     report_point cascade0 idle "$pid"
     track_peak "$PEAK_MIB"
 
@@ -228,10 +244,19 @@ run_full() {
 
     # --arb-budget = обе модели в ОДНОМ процессе, пик по всем точкам: контракт
     # docs/model-audit.md §5.6 п.5 (именно эта точка закрывает бюджет SPEC §1).
-    printf 'INFO|full|harness=spike --arb-budget --arb --lockr|ort_dylib=%s\n' "$lib"
+    # Пул потоков инференса = FASAD_SPIKE_THREADS (по умолчанию 2): ruling
+    # оператора от 21.10 «не нагружать CPU ноута» (ORT-сессии спайка по
+    # умолчанию гоняют threads=4, spike.rs:158 `unwrap_or(4)`; это собственный
+    # рычаг харнеса — OMP_NUM_THREADS на вендорном onnxruntime инертен,
+    # поправка ревью #73). Метод замера не меняется, но потоки — часть
+    # методики: пик двух моделей на них реагирует (промер 21.10: threads=4 →
+    # 976.3 MiB, threads=2 → 889.1 MiB, docs/model-audit.md §9 п.4), поэтому
+    # число печатается в INFO-строке, а бюджет-вердикт считается по max.
+    printf 'INFO|full|harness=spike --arb-budget --arb --lockr --threads %s|ort_dylib=%s\n' "$SPIKE_THREADS" "$lib"
     out="$(mktemp)"
     set +e
-    ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="$ORT_DIR/lib" "$ex" --arb-budget --arb --lockr >"$out" 2>&1
+    ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="$ORT_DIR/lib" \
+        "$ex" --arb-budget --arb --lockr --threads "$SPIKE_THREADS" >"$out" 2>&1
     rc="$?"
     set -e
     grep -E '^(METRIC\|rss|BUDGET\||ERROR)' "$out" || true
