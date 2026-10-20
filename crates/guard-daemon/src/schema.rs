@@ -528,13 +528,13 @@ mod tests {
         );
         for v in &s.validator_only {
             assert!(s.knows(&v.id));
-            assert!(!v.validators.is_empty());
+            assert_ne!(v.validators, [] as [String; 0]);
         }
         // Валидаторы объявлены там, где чексумма реально есть.
         assert_eq!(names(s.validators_for("inn")), vec!["inn10", "inn12"]);
         assert_eq!(names(s.validators_for("card_pan")), vec!["luhn"]);
-        assert!(s.validators_for("person_name").is_empty());
-        assert!(s.validators_for("нет-такого").is_empty());
+        assert_eq!(s.validators_for("person_name"), [] as [String; 0]);
+        assert_eq!(s.validators_for("нет-такого"), [] as [String; 0]);
         assert!(!s.knows("нет-такого"));
     }
 }

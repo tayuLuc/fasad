@@ -405,7 +405,7 @@ mod tests {
         // Хэш/артикул: цифры прижаты к латинице — окно не изолировано.
         // Число — валидный ИНН 10 из golden-v1.jsonl, иначе тест проходил бы
         // по причине «чексумма не сошлась», а не по причине склейки.
-        assert!(scan("sha256=2482014338abc", &schema()).is_empty());
+        assert_eq!(scan("sha256=2482014338abc", &schema()), [] as [Hit; 0]);
         // То же число с пробелами — находится.
         assert!(classes(&scan("sha 2482014338 ok", &schema())).contains(&"inn"));
     }
@@ -457,9 +457,9 @@ mod tests {
 
     #[test]
     fn nothing_to_find_costs_nothing() {
-        assert!(scan("", &schema()).is_empty());
-        assert!(scan("нет цифр вовсе", &schema()).is_empty());
-        assert!(scan("---  ---", &schema()).is_empty());
+        assert_eq!(scan("", &schema()), [] as [Hit; 0]);
+        assert_eq!(scan("нет цифр вовсе", &schema()), [] as [Hit; 0]);
+        assert_eq!(scan("---  ---", &schema()), [] as [Hit; 0]);
     }
 
     #[test]

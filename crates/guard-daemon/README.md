@@ -276,3 +276,15 @@ ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="$HOME/onnxruntime-dylib/onnxruntime-osx-
   cargo build --release --offline --features ort-inference --example recall_golden
 ./target/release/examples/recall_golden --threads 8 --thr 0.20
 ```
+
+**Версия компилятора гейтов.** `rust-toolchain.toml` в репозитории нет, CI
+ставит `stable` через `dtolnay/rust-toolchain` (`.github/workflows/ci.yml:30`),
+т.е. версия CI = актуальный stable и может опережать локальный дефолт: промер
+21.10 — CI clippy 1.99.0/1.99.1 против локального 1.97.1, и на этой разнице
+`just lint` покраснел в CI, оставаясь зелёным дома (новый линт
+`clippy::assert_is_empty`, 8 sites в тестах демона). Вывод, годный как
+инвариант: гейт, меряемый одной локальной версией, не гейт — перед пушем
+`just lint` прогоняется ещё и `rustup run <CI-версия> cargo clippy --workspace
+--all-targets -- -D warnings -D clippy::unwrap_used` (промер: rc=0, плюс
+ort- и decliner-строки на 1.99.1 rc=0). Пин версии в `rust-toolchain.toml` —
+решение не этого шага, оно убирает саму категорию расхождения.

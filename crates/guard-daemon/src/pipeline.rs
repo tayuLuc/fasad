@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn empty_text_is_a_valid_empty_analysis() {
         let a = analyze(&req(""), &schema(), &cfg(), Policy::Mask).expect("пустой текст не ошибка");
-        assert!(a.spans.is_empty());
+        assert_eq!(a.spans, [] as [AnalyzedSpan; 0]);
         assert_eq!(a.max_risk, 0.0);
         assert_eq!(a.stage, "cascade-0-only");
     }
