@@ -39,6 +39,10 @@ lint-ci:
 test:
     cargo test --workspace
     cargo test -p guard-vault --features decliner
+    # Тесты примеров БЕЗ ort-inference: формат строки вердикта харнеса гейта #14
+    # (`recall_golden`) — носитель контракта, а под фичей эти тесты не линкуются
+    # на раннерах (нет dylib), поэтому проверяем только то, что от ORT не зависит.
+    cargo test -p guard-onnx --examples
 
 # Аудит дерева зависимостей (bans/advisories/licenses) — deny.toml.
 deny:
