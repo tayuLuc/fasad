@@ -542,7 +542,7 @@ mod tests {
     }
 
     /// KAT-первичка — IETF `draft-irtf-cfrg-xchacha-03`, Appendix A.1 «Example
-    /// and Test Vector for AEAD_XCHACHA20_POLY1305»
+    /// and Test Vector for `AEAD_XCHACHA20_POLY1305»`
     /// <https://www.ietf.org/archive/id/draft-irtf-cfrg-xchacha-03.txt>
     /// (скачан 20.10, 36 930 Б ASCII, sha256
     /// `fa796b50265eeee383d40e82fed880267c7835e1b3d64c50c4f06162adaa1cfd`,
