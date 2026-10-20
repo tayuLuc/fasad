@@ -141,10 +141,39 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn health_handler(State(st): State<AppState>) -> axum::Json<Health> {
+/// Ответ `/health` с счётчиками деградации хранилища.
+///
+/// Статика [`Health`] лежит на верхнем уровне, как лежала: добавляется только
+/// объект `vault`. Счётчики здесь, а не в отладочном режиме, потому что обе
+/// метрики молчат по отдельности: `surrogate_fallbacks` растёт, когда пул мал,
+/// `unrestored_mismatch` — когда разворот отказал по расхождению с
+/// реверс-индексом. Оператор обязан видеть это до разбора логов.
+#[derive(Debug, serde::Serialize)]
+struct HealthReply {
+    #[serde(flatten)]
+    health: Health,
+    vault: VaultCounters,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct VaultCounters {
+    /// ФИО, ушедших на метку вместо суррогата из-за занятого слота.
+    surrogate_fallbacks: u64,
+    /// Разворотов, отказавших по расхождению формы с реверс-индексом.
+    unrestored_mismatch: u64,
+}
+
+async fn health_handler(State(st): State<AppState>) -> axum::Json<HealthReply> {
     // Ответ осознанно не содержит никаких пользовательских данных (§1 п.6:
     // весь разбор завершается на 127.0.0.1 до первой сокет-операции).
-    axum::Json(st.health())
+    let vault = st.vault();
+    axum::Json(HealthReply {
+        health: st.health(),
+        vault: VaultCounters {
+            surrogate_fallbacks: vault.surrogate_fallbacks(),
+            unrestored_mismatch: vault.unrestored_mismatch(),
+        },
+    })
 }
 
 async fn analyze_handler(State(st): State<AppState>, req: Request) -> Response {
@@ -578,6 +607,46 @@ mod tests {
                 e.as_str()
             );
         }
+
+        // SPEC §8 обязан называть всю эмиссию, а не три имени из транскрипта:
+        // расхождение сетки §8 — это обещание клиенту, которое мы не отправляем.
+        let spec =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/SPEC.md"))
+                .expect("SPEC читается");
+        let section = spec
+            .split(
+                "
+## ",
+            )
+            .find(|s| s.starts_with("8."))
+            .expect("раздел 8 в SPEC есть");
+        let mut grid: Vec<String> = Vec::new();
+        for line in section.lines().filter(|l| l.starts_with("- `X-")) {
+            grid.push(
+                line.split('`')
+                    .nth(1)
+                    .expect("имя заголовка в бэктиках")
+                    .to_ascii_uppercase(),
+            );
+        }
+        assert_eq!(
+            grid.len(),
+            emitted.len(),
+            "сетка SPEC §8 разъехалась с эмиссией: {grid:?}"
+        );
+        for g in &grid {
+            assert!(
+                allowed.contains(g),
+                "SPEC §8 обещает «{g}», а такого заголовка мы не отправляем"
+            );
+        }
+        for e in &emitted {
+            assert!(
+                grid.contains(&e.as_str().to_ascii_uppercase()),
+                "код отправляет «{}», а SPEC §8 о нём молчит",
+                e.as_str()
+            );
+        }
     }
 
     use super::*;
@@ -641,6 +710,16 @@ mod tests {
         assert_eq!(v["stage"], "cascade-0-only");
         assert_eq!(v["mode"], "stateless");
         assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        // Счётчики деградации хранилища — часть контракта `/health` (#60 п.3):
+        // без них метрика живёт только в тестах, а это не «видно оператору».
+        assert_eq!(
+            v["vault"]["surrogate_fallbacks"], 0,
+            "свежее хранилище чисто"
+        );
+        assert_eq!(
+            v["vault"]["unrestored_mismatch"], 0,
+            "расхождений ещё не было"
+        );
     }
 
     #[tokio::test]

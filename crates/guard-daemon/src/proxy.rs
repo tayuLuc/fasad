@@ -852,8 +852,13 @@ async fn buffer_through(
 /// Пишем только ненулевое: `absent` лучше фиктивного нуля (та же логика, что у
 /// `guard_headers`), и «мы не посмотрели» не должно читаться как «всё чисто».
 fn report_restored(headers: &mut HeaderMap, restored: &Restored) {
-    if restored.unresolved > 0 {
-        insert(headers, h::UNRESOLVED, restored.unresolved);
+    // Отвергнутые развороты (запись расходится со свидетельством, #60 п.3)
+    // считаются в том же заголовке, что и нерезолвленные маркеры: для клиента это
+    // одно событие — «то, что мы обещали развернуть и не развернули». Компонента
+    // видна отдельно в SSE-трейлере (`unrestored=`).
+    let unrestored = restored.unresolved + restored.restore_refused;
+    if unrestored > 0 {
+        insert(headers, h::UNRESOLVED, unrestored);
     }
     if restored.malformed {
         insert(headers, h::MALFORMED, 1);
@@ -1027,6 +1032,8 @@ fn error_event(code: &str, message: &str) -> Vec<u8> {
 struct Restored {
     /// Сколько маркеров прошло дословно (чужой токен, другая сессия).
     unresolved: usize,
+    /// Сколько суррогатных форм отвернуто при развороте (#60 п.3).
+    restore_refused: usize,
     /// Тело ответа не разбиралось как JSON.
     malformed: bool,
 }
@@ -1053,6 +1060,7 @@ fn deanonymize_json_body(
             raw.to_vec(),
             Restored {
                 unresolved: 0,
+                restore_refused: 0,
                 malformed: true,
             },
         ));
@@ -1079,6 +1087,7 @@ fn deanonymize_json_body(
                 };
                 let r = st.vault().deanonymize_soft(session, text)?;
                 restored.unresolved += r.unresolved;
+                restored.restore_refused += r.restore_refused;
                 if r.substituted + r.unresolved > 0 {
                     edits.push((ci, field, r.text.to_string()));
                 }
@@ -1191,6 +1200,27 @@ mod tests {
 
     fn body(json: &str) -> serde_json::Value {
         serde_json::from_str(json).unwrap()
+    }
+
+    /// Заголовок `X-Guard-Unresolved` обязан суммировать маркеры и отвергнутые
+    /// развороты: для клиента это одно событие — «обещали развернуть и не
+    /// развернули» (R7 ревью #70, #60 п.3).
+    #[test]
+    fn header_sums_refused_restores_into_unresolved() {
+        let mut h = HeaderMap::new();
+        report_restored(
+            &mut h,
+            &Restored {
+                unresolved: 1,
+                restore_refused: 2,
+                malformed: false,
+            },
+        );
+        assert_eq!(
+            h.get(h::UNRESOLVED).and_then(|v| v.to_str().ok()),
+            Some("3"),
+            "1 маркер + 2 отвергнутых разворота = 3 в заголовке"
+        );
     }
 
     #[test]

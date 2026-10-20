@@ -25,11 +25,16 @@
 //!
 //! Тонкой прокладкой между четырьмя модулями — [`VaultEngine`]. HTTP, мандатов
 //! вызывающего и обратного aho-corasick здесь нет: это шаг 6 (`guard-daemon`).
-//! Политик удержания, кроме кэша, тут тоже нет.
+//! Политик удержания — кэш, и только он держит оригиналы. Сверх кэша живёт
+//! реверс-индекс целостности разворота: в нём ключёвые отпечатки форм, а не
+//! `ПДн` (см. [`VaultEngine::restoration_mismatches`]).
 
 use std::cell::Cell;
+use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
 
 use guard_types::SecretString;
+use sha2::{Digest as _, Sha256};
 
 pub mod cache;
 pub mod morph;
@@ -146,7 +151,11 @@ pub struct Surrogat {
 // Здесь остаются только правила выбора слота.
 
 /// Префикс метки, под которой движок кэширует обратное соответствие суррогата.
-const SRG_PREFIX: &str = "SRG#";
+///
+/// Публично: форма ключа — часть контракта хранилища (её печатает README
+/// §«Хранилище» и ею же говорит промер `pool_probe -- integrity`, которому нужно
+/// снять запись так, как её снимет `idle`-лимит).
+pub const SRG_PREFIX: &str = "SRG#";
 
 /// Отказ выдачи суррогатной формы.
 ///
@@ -166,6 +175,67 @@ pub enum SurrogatError {
     Store(#[from] StoreError),
 }
 
+/// Исход разворота одной суррогатной формы ([`VaultEngine::try_restore`]).
+///
+/// `PartialEq` не выводится: `SecretRef` намеренно не сравнивается (секреты не
+/// сверяют знаком равенства), а сравнивать исходы «по содержимому» негде.
+#[derive(Debug, Clone)]
+pub enum Restore {
+    /// Оригинал найден, его отпечаток совпал со свидетельством выдачи.
+    Found(SecretRef),
+    /// Записи нет: форма этой сессии не выдавалась, или её снял TTL / teardown.
+    Absent,
+    /// Запись есть, но её отпечаток не совпал со свидетельством выдачи.
+    /// Разворот запрещён: отдать чужое имя дороже, чем оставить форму в тексте.
+    Diverged,
+}
+
+/// Длина отпечатка в реверс-индексе целостности: усечённый ключёвый хэш.
+const ISSUE_TAG_LEN: usize = 8;
+
+/// Отпечаток оригинала, подставленного в форму.
+type IssueTag = [u8; ISSUE_TAG_LEN];
+
+/// Остаточный риск — коллизия самого отпечатка: 8 байт, то есть вероятность
+/// молчаливой подмены на одно событие перенятого слота ≈ 2⁻⁶⁴. Полный хэш в
+/// индексе стоил бы вдвое больше памяти и ничего не добавил бы против перебора
+/// ключа сессии, который и так нужен, чтобы форму вообще подобрать.
+///
+/// Реверс-индекс целостности разворота: `(сессия, форма)` → отпечаток того
+/// оригинала, который МЫ в эту форму подставили.
+///
+/// Нужен потому, что владение слотом в [`SessionStore`] живёт ровно столько,
+/// сколько запись: скользящий `idle` 15 мин (SPEC §3 п.2) и evict по байтовому
+/// бюджету снимают её, а у клиента остаётся текст с формой в руках. Проверка
+/// «слота нет» на голом кэше означает «слот свободен», тогда как это «свидетельство
+/// потеряно»: следующая фамилия, упавшая в ту же корзину пула, получает чужую
+/// форму, а разворот молча отдаёт не то, что подставлялось. Индекс переживает
+/// снятие записи, потому что держит не `ПДн`, а 8-байтный отпечаток под ключом
+/// сессии: прямого обращения нет, словарную проверку «было ли в этой сессии
+/// имя X» делает только тот, у кого уже есть ключ сессии.
+#[derive(Default)]
+struct Integrity {
+    /// Что мы подставляли: `(сессия, форма)` → отпечаток оригинала.
+    issued: HashMap<(String, String), IssueTag>,
+    /// Расхождения на развороте по живым сессиям.
+    mismatches: HashMap<String, u64>,
+    /// Сумма расхождений уже снятых сессий: метрика обязана пережить teardown,
+    /// иначе счётчик исчезает вместе с проблемой.
+    retired: u64,
+}
+
+impl std::fmt::Debug for Integrity {
+    /// Отпечатки в `Debug` не печатаются: сами по себе они не `ПДн`, но это
+    /// ключёвый MAC, а `Debug` имеет привычку уезжать в логи.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Integrity")
+            .field("issued", &self.issued.len())
+            .field("mismatched_sessions", &self.mismatches.len())
+            .field("retired", &self.retired)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Прокладка «токен + кэш + переписыватель + морфология».
 ///
 /// `Debug` безопасен: [`SessionKey`] печатается как `SessionKey("[REDACTED]")`,
@@ -174,6 +244,8 @@ pub enum SurrogatError {
 pub struct VaultEngine {
     store: SessionStore,
     key: SessionKey,
+    /// Реверс-индекс «форма → что в неё подставили» (см. [`Integrity`]).
+    integrity: Mutex<Integrity>,
 }
 
 impl VaultEngine {
@@ -183,6 +255,7 @@ impl VaultEngine {
         Self {
             store: SessionStore::new(limits),
             key,
+            integrity: Mutex::new(Integrity::default()),
         }
     }
 
@@ -387,6 +460,16 @@ impl VaultEngine {
         })
     }
 
+    /// Один ли это человек в двух написаниях: сечение множеств лемм непустое.
+    ///
+    /// Вынесено из ветки отказа, потому что сравнение нужно и там, где индекс уже
+    /// подтвердил владение слотом. Без таблицы морфологии отличить одного от двоих
+    /// нельзя, и решаем в пользу отказа: угадать владельца — тихая подмена.
+    fn is_same_owner_word(prev: &str, word: &str) -> bool {
+        MorphTable::shipped()
+            .is_some_and(|tb| !Self::lemma_set(tb, prev).is_disjoint(&Self::lemma_set(tb, word)))
+    }
+
     /// Множество лемм, формой которых слово может быть. Пустое — не разобралось,
     /// тогда подставляем нормализацию, чтобы сравнение осталось честным.
     ///
@@ -444,6 +527,32 @@ impl VaultEngine {
         self.surrogat_for_gender_in(session, word, want, gender, ty, pool::lemmas(ty, gender))
     }
 
+    /// Ключёвый отпечаток оригинала для данной `(сессия, форма)`.
+    ///
+    /// Конвертный SHA-256 (ключ в начале И в конце), усечённый до 8 байт. Не
+    /// HMAC: узла `hmac` в дереве нет, а требование здесь одно — невозможность
+    /// обратного обращения и словарной проверки без ключа сессии; length-extension
+    /// SHA-256 закрыт хвостовым ключом. Отпечаток — не `ПДн`: по нему имя не
+    /// восстановить, а длина оригинала из него не читается.
+    fn issue_tag(&self, session: &str, form: &str, original: &str) -> IssueTag {
+        let key = self.key.key_bytes();
+        let mut h = Sha256::new();
+        h.update(key);
+        h.update(session.as_bytes());
+        h.update(form.as_bytes());
+        h.update(original.as_bytes());
+        h.update(key);
+        let digest = h.finalize();
+        let mut tag = [0_u8; ISSUE_TAG_LEN];
+        tag.copy_from_slice(&digest[..ISSUE_TAG_LEN]);
+        tag
+    }
+
+    /// Ключом реверс-индекса — `(сессия, форма)`.
+    fn form_key(session: &str, form: &str) -> (String, String) {
+        (session.to_owned(), form.to_owned())
+    }
+
     /// То же, но с подставной корзиной лемм — нужно тесту дири-голо, чтобы не
     /// зависеть от размера артефакта (иначе расширение пула превратило бы тест
     /// в гонку за длиной списка).
@@ -460,39 +569,183 @@ impl VaultEngine {
             return Ok(None);
         };
         let key = StoreKey::new(session, &format!("{SRG_PREFIX}{}", srg.form));
-        if let Some(prev) = self.store.get(&key) {
-            // Владелец опознаётся по ПЕРЕСЕЧЕНИЮ МНОЖЕСТВ ЛЕММ, а не по поверхности и не
-            // по лемме пула: «Ушакова» и «ушаковой» — один человек в двух
-            // падежах, обязан получить ту же форму (иначе обратимость рвётся по
-            // падежам); «Ушакова» и «Жукова» — два человека в одном слоте, и
-            // это отказ. Лемму берём по любому кандидату (не по запрошенному
-            // падежу): у слова в творительном падеже кандидат с `case=Gen` не
-            // находится, и сравнение разбилось бы на регистре, а не на человеке.
-            // Пул-лемма сравнивать нельзя: у коллизии она у обоих одна и та же
-            // по построению.
-            let same_owner = MorphTable::shipped().is_some_and(|tb| {
-                !Self::lemma_set(tb, prev.as_str()).is_disjoint(&Self::lemma_set(tb, word))
-            });
-            if !same_owner {
+        let form_key = Self::form_key(session, &srg.form);
+        let tag = self.issue_tag(session, &srg.form, word);
+        // Вся цепочка «индекс → кэш → запись в кэш → запись в индекс» под одним
+        // замком. Короткая критическая секция здесь была бы дырой, а не
+        // добродетелью: два параллельных запроса в одной сессии на коллизирующей
+        // паре успевали пройти проверку до записи соперника, форма выдавалась
+        // дважды, индекс молча перезаписывался вторым владельцем, а
+        // `restoration_mismatches` показывал ноль (промер ревьюера #70: 26 двойных
+        // выдач из 300 раундов, в развороте чужое имя у обоих). Цена — серийная
+        // выдача на процесс; для loopback-демона с операцией в микросекунды это ноль.
+        let mut gi = self
+            .integrity
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(seen) = gi.issued.get(&form_key).copied() {
+            if seen != tag {
+                // Форма уже светилась с ДРУГИМ оригиналом. Молча занять её —
+                // значит выдать клиенту разворот не тем именем, что подставлялось;
+                // отказ тут дешевле, чем там, где его не поймут (B2/P8).
                 return Err(SurrogatError::Collision { form: srg.form });
             }
+            // Тот же оригинал в той же форме: слот обязан жить, иначе разворот
+            // прежнего текста даст пустоту.
+            if self.store.get(&key).is_none() {
+                self.store
+                    .insert(&key, SecretString::new(word.to_owned()))?;
+            }
+            return Ok(Some(srg));
+        }
+        if let Some(prev) = self.store.get(&key) {
+            // Замок держится с начала функции: проверка индекса, чтение стора
+            // и запись — одна атомарная цепочка, между её шагами никто не успевает
+            // пересоздать слот.
+            // Записи в индексе нет, а слот занят: запись сюда попала до индекса
+            // (перезапуск демона) или из `store()` напрямую. Владелец опознаётся
+            // по ПЕРЕСЕЧЕНИЮ МНОЖЕСТВ ЛЕММ, а не по поверхности и не по лемме
+            // пула: «Ушакова» и «ушаковой» — один человек в двух падежах, обязан
+            // получить ту же форму (иначе обратимость рвётся по падежам);
+            // «Ушакова» и «Жукова» — два человека в одном слоте, и это отказ.
+            // Лемму берём по любому кандидату (не по запрошенному падежу): у
+            // слова в творительном падеже кандидат с `case=Gen` не находится, и
+            // сравнение разбилось бы на регистре, а не на человеке. Пул-лемму
+            // сравнивать нельзя: у коллизии она у обоих одна и та же.
+            if !Self::is_same_owner_word(prev.as_str(), word) {
+                return Err(SurrogatError::Collision { form: srg.form });
+            }
+            // Тег берётся от ВЛАДЕЛЬЦА записи, а не от текущего запроса: «Ушакова»
+            // и «ушаковой» — один человек, а в кэше лежит surface прошлой выдачи.
+            // Записать тег запроса значило бы на развороте посчитать ложное
+            // расхождение там, где всё честно (R5 ревью #70).
+            gi.issued
+                .insert(form_key, self.issue_tag(session, &srg.form, prev.as_str()));
             return Ok(Some(srg));
         }
         self.store
             .insert(&key, SecretString::new(word.to_owned()))?;
+        gi.issued.insert(form_key, tag);
         Ok(Some(srg))
     }
 
     /// Оригинальное слово по суррогатной форме (обратный ход подмены).
+    ///
+    /// Разворот обязан вернуть ровно то, что было подставлено. Если индекс
+    /// помнит в этой форме другое имя, запись в кэше сменила владельца (slot
+    /// retake после evict — см. [`Integrity`]), и молча отдавать её нельзя:
+    /// клиент получил бы чужие `ПДн` на месте своих. Такой разворот считается
+    /// расхождением целостности ([`VaultEngine::restoration_mismatches`]) и
+    /// отдаётся как `None` — то есть как неразвёрнутый маркер, а не как чужое имя.
     #[must_use]
     pub fn original_of_surrogat(&self, session: &str, form: &str) -> Option<SecretRef> {
-        self.store
+        match self.try_restore(session, form) {
+            Restore::Found(v) => Some(v),
+            Restore::Absent | Restore::Diverged => None,
+        }
+    }
+
+    /// То же, что [`Self::original_of_surrogat`], но исход различим: «записи нет»
+    /// и «запись расходится со свидетельством» — для клиента разные события.
+    ///
+    /// Первое — косметика истёкшей или снятой сессии: форма остаётся в тексте, и
+    /// это не `ПДн`. Второе — событие целостности: прокси обязано показать его
+    /// числом (#60 п.3, R7 ревью #70), иначе молчание выдаёт отказ разворота за
+    /// успешный разворот.
+    #[must_use]
+    pub fn try_restore(&self, session: &str, form: &str) -> Restore {
+        let form_key = Self::form_key(session, form);
+        let mut gi = self
+            .integrity
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        // Кэш читается под тем же замком, что и индекс: иначе параллельная выдача
+        // влезает между двумя чтениями, и пара «значение / тег» приходит из двух
+        // разных миров — ложное расхождение на ровном месте.
+        let Some(found) = self
+            .store
             .get(&StoreKey::new(session, &format!("{SRG_PREFIX}{form}")))
+        else {
+            return Restore::Absent;
+        };
+        // Свидетель обязателен: разворачиваем только то, за что ручаемся. Запись
+        // без строки индекса — это либо состояние гонки teardown и выдачи (её
+        // закрывает порядок захвата замка выше), либо писатель в обход движка; в
+        // обоих случаях мы не знаем, тот ли это оригинал, что был выдан, и
+        // выдавать его наружу нельзя. Отказ здесь — не событие целостности (нет
+        // с чем сравнить), поэтому `Absent`, а не `Diverged`: счётчик `unrestored
+        // _mismatch` остаётся метрикой именно расхождений.
+        let Some(seen) = gi.issued.get(&form_key).copied() else {
+            return Restore::Absent;
+        };
+        if seen != self.issue_tag(session, form, found.as_str()) {
+            *gi.mismatches.entry(session.to_owned()).or_insert(0) += 1;
+            return Restore::Diverged;
+        }
+        Restore::Found(found)
+    }
+
+    /// Сколько разворотов отказало из-за расхождения с реверс-индексом.
+    ///
+    /// Процессный счётчик, переживает teardown сессий. Вне отладочного режима
+    /// виден в `GET /health` объектом `vault` (поля `unrestored_mismatch`).
+    #[must_use]
+    pub fn restoration_mismatches(&self) -> u64 {
+        let gi = self
+            .integrity
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        gi.retired + gi.mismatches.values().sum::<u64>()
+    }
+
+    /// То же, но по одной сессии: чтобы отказ разворота был атрибутируем, а не
+    /// «где-то в процессе».
+    #[must_use]
+    pub fn restoration_mismatches_for(&self, session: &str) -> u64 {
+        self.integrity
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .mismatches
+            .get(session)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Сбрасывает всё, что накоплено сессией (конец диалога, выход из запроса).
     pub fn invalidate_session(&self, session: &str) -> u64 {
-        self.store.invalidate_session(session)
+        // Замок берётся ДО снятия записей стора, а не после. Иначе выдача,
+        // вклинившаяся между `store.invalidate_session` и чисткой индекса,
+        // застаёт строку индекса живой, записи мёртвой — и возвращает в стор
+        // оригинал для сессии, индекс которой уже вычищен: оригинал переживает
+        // удаление сессии без свидетеля, а разворот потом молча его находит
+        // (промер барьерного теста: 1 нарушение инварианта из 2000 раундов).
+        // Цена — teardown сериализован с выдачей; для стора в десятки записей
+        // это микросекунды.
+        let mut gi = self
+            .integrity
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let removed = self.store.invalidate_session(session);
+        gi.issued.retain(|(s, _), _| s != session);
+        if let Some(n) = gi.mismatches.remove(session) {
+            gi.retired += n;
+        }
+        removed
+    }
+
+    /// Тестовый наблюдатель: есть ли у формы строка в индексе целостности.
+    ///
+    /// `#[cfg(test)]`: индекс — внутреннее состояние, продуктовый код не имеет
+    /// права на него опираться, а тесту нужно отличать «записи нет» от «запись
+    /// есть, а свидетеля уже сняли».
+    #[cfg(test)]
+    #[must_use]
+    pub fn issued_witness(&self, session: &str, form: &str) -> bool {
+        self.integrity
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .issued
+            .contains_key(&(session.to_owned(), form.to_owned()))
     }
 }
 
@@ -708,6 +961,416 @@ mod tests {
             }
             Err(other) => panic!("неожиданный отказ: {other:?}"),
         }
+    }
+
+    /// Граница опознавания владельца: та же фамилия в другом регистре — это для
+    /// движка ДРУГОЙ человек, и слот он не смещает.
+    ///
+    /// `is_same_owner_word` сравнивает множества лемм регистрозависимо: лемма
+    /// прописной фамилии из словаря — «Ушакова», строчной формы того же слова —
+    /// «ушаков», пересечения нет. Владелец при этом не сдвигается: вторая выдача
+    /// отказывает (`Collision`), разворот первой остаётся целым, счётчик
+    /// целостности молчит. Побочный эффект границы — consistency: один и тот же
+    /// человек в одном тексте получает суррогат и метку, утечки в этом нет (для
+    /// отказа выдача уходит в метку, оригинал наружу не просачивается), и это
+    /// зафиксировано здесь, а не в молчании.
+    ///
+    /// Тест написан вместо просившегося дискриминатора «тег от `prev`»: на
+    /// достижимых входах `prev == word` (запись стора пишется из запросного
+    /// слова), единственный способ их разъехать — другой регистр, и он упирается
+    /// в этот отказ. Мутация `issue_tag(…, word)` вместо `prev.as_str()` на
+    /// прогоне всего набора (223 теста) не роняет ни одного: мутант эквивалентен
+    /// на достижимых входах, R5 — защита от писателя в обход движка.
+    #[test]
+    fn case_variant_of_issued_word_is_refused_not_displaced() {
+        let e = engine();
+        let sess = "s24";
+        let one = ["Тенина"];
+        let ask = |word: &str| {
+            e.surrogat_for_gender_in(sess, word, Case::Nom, Gender::Fem, NameType::Surname, &one)
+        };
+        let first = ask("Ушакова")
+            .expect("прописная выдаётся")
+            .expect("форма слота");
+        match ask("ушакова") {
+            Ok(Some(second)) => {
+                assert_eq!(
+                    first.form, second.form,
+                    "если движок всё же опознал владельца, слот обязан остаться тот же"
+                );
+            }
+            Ok(None) => panic!("строчная форма обязана разбираться в фамилию"),
+            Err(SurrogatError::Collision { form }) => {
+                assert_eq!(form, first.form, "отказ обязан назвать занятую форму");
+            }
+            Err(other) => panic!("неожиданный отказ: {other:?}"),
+        }
+        assert!(
+            matches!(e.try_restore(sess, &first.form), Restore::Found(_)),
+            "отказ второй выдачи не имел права тронуть первую"
+        );
+        assert_eq!(
+            e.restoration_mismatches(),
+            0,
+            "здесь не о чем расходиться: отказ не пишет свидетель"
+        );
+    }
+
+    /// Базлайн, зафиксированный промером до правки: слот, опустевший по TTL или
+    /// evict по байтовому бюджету, выглядит для голой проверки кэша
+    /// свободным, и
+    /// следующая фамилия получала чужую форму молча.
+    ///
+    /// Мутация (проверена снятием индекса): без реверс-индекса третий вызов
+    /// отдаёт ту же форму, а `original_of_surrogat` возвращает «Родионова» там,
+    /// где в текст клиента было подставлено «Ушакова» — тихая подмена `ПДн`.
+    /// С индексом отказ происходит на выдаче (`Collision`), разворот прежнего маркера
+    /// остаётся пустым, и счётчик целости молчит: нечего считать.
+    #[test]
+    fn slot_retaken_after_record_died_is_refused_not_swallowed() {
+        let e = engine();
+        let one = ["Тенина"];
+        let ask = |word: &str| {
+            e.surrogat_for_gender_in("s17", word, Case::Nom, Gender::Fem, NameType::Surname, &one)
+        };
+        let first = ask("Ушакова").expect("первый").expect("форма");
+        // Снятие записи — тем же примитивом, которым её снимает `idle`-лимит или
+        // evict по байтовому бюджету: для теста важно состояние «строки кэша нет,
+        // а индекс помнит», а не то, какой именно таймер его породил. Таймеры в
+        // тесте = плавающий CI (промер wire-сюиты #66: 23/23 только на свежем
+        // процессе, любое sleep-племя нервничает под нагрузкой раннера).
+        e.store().invalidate(&StoreKey::new(
+            "s17",
+            &format!("{SRG_PREFIX}{}", first.form),
+        ));
+        assert!(
+            e.original_of_surrogat("s17", &first.form).is_none(),
+            "промер: запись снята — свидетель потерялся, а индекс остался"
+        );
+        let err = ask("Родионова").expect_err("вернуть форму второму владельцу нельзя");
+        assert_eq!(
+            err,
+            SurrogatError::Collision {
+                form: first.form.clone()
+            }
+        );
+        assert!(
+            e.original_of_surrogat("s17", &first.form).is_none(),
+            "отказ не имел права ни занять слот, ни развернуть его в чужое имя"
+        );
+        assert_eq!(
+            ask("Ушакова")
+                .expect("владелец индекса")
+                .expect("форма")
+                .form,
+            first.form,
+            "тот же оригинал обязан получить свою форму обратно, а не новую"
+        );
+        assert_eq!(
+            e.original_of_surrogat("s17", &first.form)
+                .expect("разворот после оживления")
+                .as_str(),
+            "Ушакова",
+            "разворот обязан вернуть то, что подставлялось"
+        );
+        assert_eq!(
+            e.restoration_mismatches(),
+            0,
+            "ложного расхождения быть не должно"
+        );
+    }
+
+    /// Расхождение, которого штатный путь не создаёт: кэш говорит одно, индекс —
+    /// другое. Так выглядит перезаписанная извне запись (старый бинарь, откат,
+    /// прямой `store()`), и разворота чужим именем здесь быть не должно.
+    #[test]
+    fn divergent_store_entry_refuses_restore_and_is_counted() {
+        let e = engine();
+        let one = ["Тенина"];
+        let a = e
+            .surrogat_for_gender_in(
+                "s18",
+                "Ушакова",
+                Case::Nom,
+                Gender::Fem,
+                NameType::Surname,
+                &one,
+            )
+            .expect("выдача")
+            .expect("форма");
+        e.store()
+            .insert(
+                &StoreKey::new("s18", &format!("{SRG_PREFIX}{}", a.form)),
+                SecretString::new("Родионова".to_owned()),
+            )
+            .expect("запись вручную");
+        assert!(
+            e.original_of_surrogat("s18", &a.form).is_none(),
+            "форма, под которую подложено другое имя, разворачиваться не обязана"
+        );
+        assert_eq!(
+            e.restoration_mismatches(),
+            1,
+            "расхождение обязано быть посчитано"
+        );
+        assert_eq!(
+            e.restoration_mismatches_for("s18"),
+            1,
+            "и быть атрибутируемо сессии"
+        );
+        assert_eq!(
+            e.restoration_mismatches_for("s19"),
+            0,
+            "чужая сессия не при чём"
+        );
+    }
+
+    /// Запись в сторе без строки в индексе не разворачивается.
+    ///
+    /// Так выглядит и состояние гонки teardown с выдачей (её закрывает порядок
+    /// захвата замка), и запись, положенная в обход движка. Держим отдельным
+    /// тестом, потому что это граница утечки: форма пула известна всем (пул в
+    /// репозитории), и разворот записи без свидетеля в переиспользованном id
+    /// сессии выдал бы новому клиенту оригинал из чужой, уже удалённой сессии.
+    #[test]
+    fn record_without_witness_is_not_restored() {
+        let e = engine();
+        let sess = "s21";
+        e.store()
+            .insert(
+                &StoreKey::new(sess, &format!("{SRG_PREFIX}Тенина")),
+                SecretString::new("Ушакова Кира Саввична".to_owned()),
+            )
+            .expect("запись в обход движка");
+        assert!(
+            !e.issued_witness(sess, "Тенина"),
+            "свидетеля в индексе действительно нет"
+        );
+        assert!(
+            matches!(e.try_restore(sess, "Тенина"), Restore::Absent),
+            "нет свидетеля — нет разворота: молчаливый возврат чужого оригинала              и есть та утечка, ради которой этот индекс заводится",
+        );
+        assert_eq!(
+            e.restoration_mismatches(),
+            0,
+            "разворот без свидетеля — отсутствие доказательства, а не расхождение"
+        );
+    }
+
+    /// Самопроверка R1: teardown обязан быть сериализован с выдачей.
+    ///
+    /// `invalidate_session` снимал записи стора ДО того, как брал замок индекса.
+    /// Выдача, вклинившаяся в это окно, видела строку индекса (её ещё не сняли),
+    /// не видела записи стора (их уже сняли) и возвращала запись в стор — итог:
+    /// оригинал сессии пережил её удаление, а свидетеля у него нет. Инвариант,
+    /// который это ловит: запись в сторе и строка в индексе живут ровно вместе.
+    ///
+    /// Мощность промера измерена на предке 79d5687 в изолированном target-каталоге
+    /// (общий target давал аномалии списков тестов, для базлайнов не годится): из
+    /// четырёх прогонов красятся два — 13 и 1 нарушение из 2000 раундов. Зелёный
+    /// прогон — сетка, а не доказательство: окно в десятки инструкций
+    /// детерминировать без тестовой щели в продуктовом коде нельзя, гарантия —
+    /// порядок захвата замка. Детерминированный напарник этого теста —
+    /// `record_without_witness_is_not_restored`, он на предке краснеет всегда.
+    #[test]
+    fn teardown_and_issue_never_leave_record_without_witness() {
+        const ROUNDS: usize = 2_000;
+        let e = VaultEngine::new(
+            SessionKey::new([7_u8; KEY_LEN]),
+            Limits::for_test(
+                std::time::Duration::from_secs(600),
+                std::time::Duration::from_secs(600),
+            ),
+        );
+        // Четыре выдавщика на один teardown: окно между снятием стора и чисткой
+        // индекса узкое, одним выдавщиком ловилось 1 нарушение из 2000 раундов и
+        // промахивалось в трёх прогонах подряд.
+        let issuers = 4_usize;
+        let word = "Ушакова";
+        let one = ["Тенина"];
+        let mut bad = 0_usize;
+        let mut first_bad = String::new();
+        for r in 0..ROUNDS {
+            let sess = format!("td{r}");
+            let form = e
+                .surrogat_for_gender_in(
+                    &sess,
+                    word,
+                    Case::Nom,
+                    Gender::Fem,
+                    NameType::Surname,
+                    &one,
+                )
+                .expect("первая выдача не валится")
+                .expect("первая выдача даёт форму")
+                .form;
+            let bar = std::sync::Barrier::new(1 + issuers);
+            std::thread::scope(|s| {
+                let t1 = s.spawn(|| {
+                    bar.wait();
+                    e.invalidate_session(&sess);
+                });
+                let issuers: Vec<_> = (0..issuers)
+                    .map(|_| {
+                        s.spawn(|| {
+                            bar.wait();
+                            e.surrogat_for_gender_in(
+                                &sess,
+                                word,
+                                Case::Nom,
+                                Gender::Fem,
+                                NameType::Surname,
+                                &one,
+                            )
+                        })
+                    })
+                    .collect();
+                t1.join().expect("teardown не паникует");
+                for h in issuers {
+                    let _second = h.join().expect("выдача не паникует");
+                }
+            });
+            let store_has = e
+                .store()
+                .get(&StoreKey::new(&sess, &format!("{SRG_PREFIX}{form}")))
+                .is_some();
+            let index_has = e.issued_witness(&sess, &form);
+            if store_has != index_has {
+                bad += 1;
+                if first_bad.is_empty() {
+                    first_bad = format!(
+                        "раунд {r}: форма {form}: запись в сторе = {store_has},                          свидетель в индексе = {index_has}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            bad, 0,
+            "запись без свидетеля переживает teardown {bad} раз(а) из {ROUNDS}; {first_bad}"
+        );
+    }
+
+    /// Гонка на коллизирующей паре в ОДНОЙ сессии (R1 ревью #70) — постоянная
+    /// версия промера ревьюера: живым демоном такое воспроизведение не повторяемо.
+    ///
+    /// Два потока, свежая сессия на раунд, одна корзина пула (обе фамилии дают
+    /// лемму «Тенина», то есть обязаны сойтись на одной форме). Пока цепочка
+    /// «проверка индекса → запись в кэш → запись в индекс» не под одним замком,
+    /// оба потока видят пустой индекс, форма уходит двоим, индекс молча
+    /// перезаписывается вторым владельцем, а `restoration_mismatches` остаётся
+    /// нулевым — метрика лжёт ровно там, где обязана кричать.
+    #[test]
+    fn concurrent_issue_never_hands_one_form_to_two_owners() {
+        use std::sync::{Arc, Barrier};
+        const ROUNDS: usize = 2_000;
+        let e = Arc::new(VaultEngine::new(
+            SessionKey::new([7_u8; KEY_LEN]),
+            Limits::for_test(
+                std::time::Duration::from_secs(600),
+                std::time::Duration::from_secs(600),
+            ),
+        ));
+        let one = ["Тенина"];
+        let bar = Arc::new(Barrier::new(2));
+        // Оба потока запускаются до первого join: барьер на двух участников,
+        // а join по очереди означал бы, что первый ждёт второго вечно.
+        let mut handles = Vec::new();
+        for word in ["Ушакова", "Родионова"] {
+            let (eng, gate) = (Arc::clone(&e), Arc::clone(&bar));
+            handles.push(std::thread::spawn(move || {
+                let mut got = Vec::with_capacity(ROUNDS);
+                for r in 0..ROUNDS {
+                    gate.wait();
+                    let sess = format!("race{r}");
+                    // Отказ (`Collision`) и промах морфологии сводятся к None:
+                    // нас интересует только случай «оба ушли с формой».
+                    let form = match eng.surrogat_for_gender_in(
+                        &sess,
+                        word,
+                        Case::Nom,
+                        Gender::Fem,
+                        NameType::Surname,
+                        &one,
+                    ) {
+                        Ok(Some(s)) => Some(s.form),
+                        _ => None,
+                    };
+                    got.push(form);
+                }
+                got
+            }));
+        }
+        let runs: Vec<Vec<Option<String>>> = handles
+            .into_iter()
+            .map(|h| h.join().expect("поток выдачи не паникует"))
+            .collect();
+        let mut double = 0_usize;
+        let mut first_bad = String::new();
+        for (r, (fa, fb)) in runs[0].iter().zip(&runs[1]).enumerate() {
+            let (Some(fa), Some(fb)) = (fa.clone(), fb.clone()) else {
+                continue;
+            };
+            assert_eq!(
+                fa, fb,
+                "корзина из одной леммы не может выдать двум потокам разные формы"
+            );
+            double += 1;
+            if first_bad.is_empty() {
+                let back = e
+                    .original_of_surrogat(&format!("race{r}"), &fa)
+                    .map_or_else(
+                        || "<разворота нет>".to_owned(),
+                        |v| v.expose().expose_to_validator().to_owned(),
+                    );
+                first_bad = format!("раунд {r}: форма {fa} выдана обоим, разворот = {back}");
+            }
+        }
+        assert_eq!(
+            double, 0,
+            "двойных выдач {double} из {ROUNDS} раундов; {first_bad}"
+        );
+        assert_eq!(
+            e.restoration_mismatches(),
+            0,
+            "атомарная выдача не имеет права порождать расхождений"
+        );
+    }
+
+    /// Счётчик обязан пережить `invalidate_session`: иначе метрика исчезает
+    /// вместе с сессией, то есть ровно тогда, когда её хотят посмотреть.
+    #[test]
+    fn mismatch_counter_survives_session_teardown() {
+        let e = engine();
+        let one = ["Тенина"];
+        let a = e
+            .surrogat_for_gender_in(
+                "s19",
+                "Ушакова",
+                Case::Nom,
+                Gender::Fem,
+                NameType::Surname,
+                &one,
+            )
+            .expect("выдача")
+            .expect("форма");
+        e.store()
+            .insert(
+                &StoreKey::new("s19", &format!("{SRG_PREFIX}{}", a.form)),
+                SecretString::new("Родионова".to_owned()),
+            )
+            .expect("запись вручную");
+        assert!(e.original_of_surrogat("s19", &a.form).is_none());
+        e.invalidate_session("s19");
+        assert_eq!(
+            e.restoration_mismatches_for("s19"),
+            0,
+            "живой сессии больше нет"
+        );
+        assert_eq!(
+            e.restoration_mismatches(),
+            1,
+            "сумма процесса обязана остаться"
+        );
     }
 
     /// B2/P8: слот занят другим оригиналом — отказ, первый владелец остаётся.

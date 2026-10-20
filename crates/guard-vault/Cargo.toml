@@ -16,6 +16,10 @@ region            = { workspace = true }
 zeroize           = { workspace = true }
 base64            = { workspace = true }
 thiserror         = { workspace = true }
+# Ключёвый отпечаток для реверс-индекса целостности (#60 п.3). Узел уже в
+# `Cargo.lock` через rust-embed-utils (промер #14, `docs/dep-verify-crates.md:218`),
+# нового узла в дереве не появляется.
+sha2              = { workspace = true }
 
 [features]
 default = []

@@ -395,6 +395,113 @@ fn session_mode_roundtrips_surrogates_and_teardown() {
     );
 }
 
+/// Метрики деградации хранилища обязаны быть видны извне без отладочного
+/// режима (#60 п.3): живой бинарь отдаёт их в `/health` объектом `vault`.
+/// Здесь проверяется наличие и тип — значение двигает юнит-тест
+/// `divergent_form_refuses_restore_and_shows_in_counter`, которому нужно
+/// полезное состояние хранилища, а его через HTTP не подделать.
+#[test]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // в тестах паника = красный CI, это канал ответа
+fn health_exposes_degradation_counters_on_the_wire() {
+    let d = Daemon::start(&[]);
+    let reply = call(&d.addr, "GET", "/health", &[], b"");
+    assert_eq!(reply.status, 200, "health: {}", reply.text());
+    let v = reply.json();
+    for name in ["surrogate_fallbacks", "unrestored_mismatch"] {
+        assert!(
+            v["vault"][name].is_number(),
+            "счётчик {name} обязан быть числом в /health, полученный ответ: {}",
+            reply.text()
+        );
+    }
+    assert_eq!(
+        v["vault"]["unrestored_mismatch"].as_u64().expect("число"),
+        0,
+        "свежий демон ещё не видел расхождений разворота"
+    );
+}
+
+/// Проводная версия барьерного теста движка (R1 ревью #70): два параллельных
+/// `/v1/anonymize` в ОДНОЙ сессии на коллизирующей паре фамилий — тот же скелет,
+/// которым ревьюер снял 26 двойных выдач из 300 раундов на живом демоне.
+///
+/// Держим два инварианта: у двух владельцев не может быть одной суррогатной
+/// фамилии, и в развороте не может появиться чужое имя. Проводной уровень нужен
+/// затем, чтобы регресс «замок сняли» или «появился второй путь выдачи» был виден
+/// не только на движке: тут выдача идёт через HTTP, разбор тела и реестр форм.
+#[test]
+fn parallel_anonymize_in_one_session_never_leaks_across_owners() {
+    // 200 раундов — не круглая красота, а мощность промера: довоенный код давал
+    // ~9 % попаданий (26 из 300), на 200 раундах шанс промахнуться пренебрежим.
+    const ROUNDS: usize = 200;
+    let key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    let d = Daemon::start(&[("FASAD_VAULT_MODE", "session"), ("FASAD_VAULT_KEY", key)]);
+    for r in 0..ROUNDS {
+        let sess = format!("race{r}");
+        let masked = std::thread::scope(|s| {
+            let mut hs = Vec::new();
+            for fio in ["Бабинова Аглая Тимофеевна", "Тихомирова Аглая Тимофеевна"]
+            {
+                let (addr, sess) = (d.addr.clone(), sess.clone());
+                hs.push(s.spawn(move || {
+                    let rep = call(
+                        &addr,
+                        "POST",
+                        "/v1/anonymize",
+                        &[
+                            ("content-type", "application/json"),
+                            ("x-session-id", &sess),
+                        ],
+                        &anonymize_body(fio, &[("person_name".to_owned(), 0, fio.len())]),
+                    );
+                    assert_eq!(rep.status, 200, "anonymize {fio}: {}", rep.text());
+                    rep.json()["text"].as_str().expect("текст").to_owned()
+                }));
+            }
+            hs.into_iter()
+                .map(|h| h.join().expect("поток маскирования не паникует"))
+                .collect::<Vec<String>>()
+        });
+        let form = |t: &str| t.split(' ').next().unwrap_or_default().to_owned();
+        let (a, b) = (&masked[0], &masked[1]);
+        assert_ne!(
+            form(a),
+            form(b),
+            "раунд {r}: одна суррогатная фамилия на двух владельцев — {a} / {b}"
+        );
+        for (t, mine, foreign) in [(a, "Бабинова", "Тихомирова"), (b, "Тихомирова", "Бабинова")]
+        {
+            let back = call(
+                &d.addr,
+                "POST",
+                "/v1/deanonymize",
+                &[
+                    ("content-type", "application/json"),
+                    ("x-session-id", &sess),
+                ],
+                format!(r#"{{"text":"{}"}}"#, t.replace('"', "\\\"")).as_bytes(),
+            );
+            assert_eq!(back.status, 200, "deanonymize: {}", back.text());
+            let got = back.json()["text"].as_str().expect("текст").to_owned();
+            assert!(
+                !got.contains(foreign),
+                "раунд {r}: чужое имя в развороте — {got}"
+            );
+            assert!(
+                got.contains(mine) || t.contains('['),
+                "раунд {r}: своё имя {mine} обязало вернуться либо уйти меткой, а в ответе {got}"
+            );
+        }
+        call(&d.addr, "DELETE", &format!("/v1/sessions/{sess}"), &[], b"");
+    }
+    let h = call(&d.addr, "GET", "/health", &[], b"").json();
+    assert_eq!(
+        h["vault"]["unrestored_mismatch"].as_u64().expect("число"),
+        0,
+        "атомарная выдача не имеет права порождать расхождений разворота"
+    );
+}
+
 #[test]
 fn oversized_body_comes_back_as_413_envelope_on_the_wire() {
     let d = Daemon::start(&[("FASAD_MAX_BODY_BYTES", "1024")]);
@@ -565,6 +672,13 @@ fn double_anonymization_is_refused_before_it_corrupts() {
         back.json()["text"].as_str().expect("текст"),
         fio,
         "вот здесь до правки появлялась выдуманная фамилия"
+    );
+    assert_eq!(
+        back.json()["restore_refused"]
+            .as_u64()
+            .expect("отказ разворота обязан быть виден в ответе (R7 ревью #70)"),
+        0,
+        "на честном round-trip отказов разворота быть не может"
     );
 }
 
