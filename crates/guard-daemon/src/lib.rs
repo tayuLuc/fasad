@@ -9,8 +9,10 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, clippy::unwrap_used)]
 
+pub mod cascade0;
 pub mod config;
 pub mod http;
+pub mod pipeline;
 pub mod schema;
 
 /// Ответ `/health`: чем крутится демон и что в нём реально включено.

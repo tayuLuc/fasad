@@ -1,14 +1,16 @@
 //! Точка входа демона `fasad`.
 //!
-//! Шаг 1: слушает 127.0.0.1 (SPEC §1 п.6: никаких сетевых вызовов, кроме явного
-//! `X-Upstream-URL`, и старт только на loopback) и отдаёт `/health`.
-//! Конфиг-файл, tray и rust-embed UI — шаги 6/8.
+//! Шаг 6: слушает 127.0.0.1 (SPEC §1 п.6: никаких сетевых вызовов, кроме явного
+//! `X-Upstream-URL`, и старт только на loopback), поднимает `/health` и
+//! `/v1/analyze`; конфиг из `FASAD_*`-переменных, схема из встроенного канона
+//! (или `FASAD_SCHEMA`). Tray и UI — шаги 8+.
 
 #![forbid(unsafe_code)]
 #![warn(clippy::unwrap_used)]
 
 use guard_daemon::Health;
 use guard_daemon::config::Config;
+use guard_daemon::http::AppState;
 use guard_daemon::schema::Schema;
 
 /// Код выхода при отклонённой конфигурации: отдельный от сетевых ошибок, чтобы
@@ -33,11 +35,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Loopback обязателен и проверен на разборе: гард не сетевой сервис
     // (SPEC §1 п.6), и `0.0.0.0` сюда протаскивается только через эту стену.
-    let app = guard_daemon::http::router(Health {
+    let health = Health {
         version: env!("CARGO_PKG_VERSION"),
         stage: cfg.stage(),
         mode: cfg.vault_mode.as_str(),
-    });
+    };
+    let classes = schema.classes.len();
+    let app = guard_daemon::http::router(AppState::new(cfg.clone(), schema, health));
 
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
     println!(
@@ -45,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         env!("CARGO_PKG_VERSION"),
         cfg.stage(),
         cfg.addr,
-        schema.classes.len()
+        classes
     );
     axum::serve(listener, app).await?;
     Ok(())
