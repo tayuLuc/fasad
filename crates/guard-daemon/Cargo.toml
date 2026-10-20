@@ -31,6 +31,9 @@ serde_json = { workspace = true }
 [dev-dependencies]
 # ServiceExt::oneshot для тестов роутера без поднятия сокета.
 tower = { version = "0.5", features = ["util"] }
+# Проводной e2e-тест разбирает ответы собственного бинаря (`tests/wire_e2e.rs`),
+# для этого нужен парсер JSON на стороне клиента.
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

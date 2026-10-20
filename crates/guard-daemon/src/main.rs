@@ -73,11 +73,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = guard_daemon::http::router(AppState::new(cfg.clone(), schema, health, vault));
 
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
+    // Порт в баннере — фактически занятый, а не запрошенный: `FASAD_PORT=0`
+    // означает «дай свободный», и без `local_addr` оператор (и e2e-тест
+    // `tests/wire_e2e.rs`, который поднимает этот бинарь) увидел бы в баннере
+    // ноль и не узнал, куда стучаться.
+    let addr = listener.local_addr()?;
     println!(
         "fasad {} {}, listening on http://{}/health (классов схемы: {}, vault: {}/{}, ключ: {})",
         env!("CARGO_PKG_VERSION"),
         cfg.stage(),
-        cfg.addr,
+        addr,
         classes,
         cfg.vault_mode.as_str(),
         cfg.mlock.as_str(),
