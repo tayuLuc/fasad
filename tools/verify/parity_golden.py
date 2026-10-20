@@ -95,6 +95,8 @@ GOLDEN_TO_BIO = {
 # заморозит его в schema.default.json), НЕ алфавит: u-вероятность Decide
 # зависит от порядка вопросов (ревью PR#49: snils 62.07→37.93 при перестановке,
 # репромер r2_pyB_rustorder). sorted() здесь = рассинхрон B↔C на 2.81 pp.
+# Держать синхронно с GOLDEN_TO_BIO (классы) и recall_golden.rs::CLASSES
+# (порядок) — новый класс = правка трёх мест, иначе молча разные метрики.
 CLASS_LIST = ("person_name", "inn", "snils", "card_pan", "phone",
               "email", "address", "passport")
 QUESTIONS = {
