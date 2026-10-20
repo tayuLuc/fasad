@@ -610,3 +610,43 @@ fn stateless_marker_in_input_is_refused_not_double_masked() {
     );
     assert_eq!(r2.json()["error"]["code"], "reanonymize_surrogate");
 }
+
+/// B2/P8 проводной промер цепочки ревьюера: два разных ФИО в свежей сессии.
+/// До правки второй запрос давал `200`, а `deanonymize` первого возвращал чужое
+/// имя. Теперь второй — `422 surrogate_collision`, а разворот первого цел.
+#[test]
+fn second_full_name_in_one_session_is_refused_not_overwritten() {
+    let key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    let d = Daemon::start(&[("FASAD_VAULT_MODE", "session"), ("FASAD_VAULT_KEY", key)]);
+    let hdr = [("content-type", "application/json"), ("x-session-id", "b2")];
+    let anonymize = |name: &str| {
+        call(
+            &d.addr,
+            "POST",
+            "/v1/anonymize",
+            &hdr,
+            &anonymize_body(name, &[("person_name".to_owned(), 0, name.len())]),
+        )
+    };
+    let a = anonymize("Ушакова Кира Саввична");
+    assert_eq!(a.status, 200, "первое имя: {}", a.text());
+    let masked = a.json()["text"].as_str().expect("текст").to_owned();
+
+    let b = anonymize("Родионова Милана Саввична");
+    assert_eq!(b.status, 422, "слот не перезаписывается: {}", b.text());
+    assert_eq!(b.json()["error"]["code"], "surrogate_collision");
+
+    let back = call(
+        &d.addr,
+        "POST",
+        "/v1/deanonymize",
+        &hdr,
+        format!(r#"{{"text":"{}"}}"#, masked.replace('"', "\\\"")).as_bytes(),
+    );
+    assert_eq!(back.status, 200, "разворот: {}", back.text());
+    assert_eq!(
+        back.json()["text"].as_str().expect("текст"),
+        "Ушакова Кира Саввична",
+        "имя первого владельца обязано остаться его"
+    );
+}

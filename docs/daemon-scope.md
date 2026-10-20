@@ -13,10 +13,16 @@
 | `X-Guard-Max-Risk` | `analyze` | максимальный `score` |
 | `X-Guard-Latency-Ms` | все четыре POST/DELETE | миллисекунды, округление вниз |
 | `X-Guard-Stage` | все успешные ответы | `cascade-0-only` на шаге 6 |
-| `X-Guard-Policy` | ответ `analyze` | какая политика применена |
-| `X-Guard-Threshold` | ответ `analyze` | фактически применённый порог |
+| `X-Guard-Policy-Applied` | ответ `analyze` | какая политика применена; **наше расширение, вне SPEC §8** |
+| `X-Guard-Score-Threshold` | ответ `analyze` | фактически применённый порог; **наше расширение, вне SPEC §8** |
 | `X-Session-ID` | запрос (`session`) | id сессии: непустой, ≤ 64 байт, алфавит ASCII-буквы/цифры + `.` `_` `-` |
 | `X-Upstream-URL` | — | **шаг 7**, сейчас игнорируется |
+
+Из выходных заголовков SPEC §8 задаёт только `X-Guard-Redacted-Count`,
+`X-Guard-Max-Risk` и `X-Guard-Latency-Ms`; входной `X-Guard-Policy` §8 — про
+запрос, мы его не отправляем (наш выход называется `-Policy-Applied`, чтобы не
+столкнуться). Остальные три — расширения; имена констант в `http.rs` первичны,
+таблица обязана с ними совпадать (тест `header_table_in_docs_matches_emitted_names`).
 
 Отсутствие `X-Guard-Redacted-Count` на 2xx клиент обязан считать ошибкой:
 мы никогда не подменяем счётчик нулём, если не знаем значения.

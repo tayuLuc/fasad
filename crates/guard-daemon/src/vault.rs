@@ -21,14 +21,21 @@
 //! приставка на сессию делает такую подделку перебором 2³² вариантов, а
 //! легитимному клиенту nonce приходит в самом ответе `anonymize`. Для
 //! суррогатной формы та же защита не работает в принципе (пул имён открыт в
-//! коде), поэтому обратный ход суррогатов ограничен рамками одной сессии и
-//! честно задокументирован в README как свойство режима 2.
+//! коде), поэтому обратный ход суррогатов ограничен рамками одной сессии.
+//!
+//! Раньше здесь стояло «и честно задокументирован в README как свойство режима
+//! 2» — это была ложь: до правки B2/P8 второй оригинал молча перезаписывал
+//! чужой слот (`let _ = store.insert(…)`), и `deanonymize` возвращал чужое имя
+//! с `200 OK`. Теперь слот закреплён за первичным писателем, повторный захват
+//! — `422 surrogate_collision`. Само ограничение пула (4 имени на пару
+//! род/тип) остаётся и измерено; описано в README §«Хранилище», чинится на
+//! шаге 7.
 //!
 //! # Что здесь fail-closed
 //!
 //! * Нерезолвнутый маркер (`[[F0#…]]`, которого мы не выпускали, или метка из
 //!   другой сессии) = 422 и **ничего** в ответе: отдать текст с дыркой означало
-//!   бы выдатьpartial-restore как полный.
+//!   бы выдать partial-restore как полный.
 //! * Хвостовой незакрытый маркер = 422: входящий текст обрезан на середине
 //!   токена, а не «просто символы».
 //! * Отказ `mlock` при `FASAD_MLOCK=strict`, отказ энтропии, переполненный пул
@@ -59,8 +66,10 @@ use crate::schema::Schema;
 struct PendingForms {
     /// Уже сохранённые формы сессии на момент начала запроса.
     base: usize,
-    /// Новые формы запроса, дедуплицированные внутри запроса.
-    items: Vec<String>,
+    /// Новые формы запроса: `(форма, поверхность токена-оригинала)`.
+    /// Дедуплицированы внутри запроса, но владелец у формы тоже проверяется —
+    /// см. [`PendingForms::push`] (B2/P8, пред-проверка до обращения к движку).
+    items: Vec<(String, String)>,
 }
 
 impl PendingForms {
@@ -72,8 +81,17 @@ impl PendingForms {
     }
 
     /// Зарезервировать место под форму и положить её в пачку.
-    fn push(&mut self, form: String) -> Result<(), VaultApiError> {
-        if self.items.contains(&form) {
+    ///
+    /// `owner` — поверхность токена, из которого форма получена. Форма,
+    /// повторно появившаяся в этом же запросе от ДРУГОГО токена, — это коллизия
+    /// двух оригиналов в одном слоте: отказываем здесь, не доходя до движка,
+    /// чтобы запрос «всё или ничего» не оставил в кэше движка записей от
+    /// заведомо отвергнутого спана (B2/P8).
+    fn push(&mut self, form: String, owner: &str) -> Result<(), VaultApiError> {
+        if let Some((_, prev)) = self.items.iter().find(|(f, _)| f == &form) {
+            if prev != owner {
+                return Err(VaultApiError::SurrogateCollision { form });
+            }
             return Ok(());
         }
         if self.base + self.items.len() >= MAX_FORMS_PER_SESSION {
@@ -81,7 +99,7 @@ impl PendingForms {
                 max: MAX_FORMS_PER_SESSION,
             });
         }
-        self.items.push(form);
+        self.items.push((form, owner.to_owned()));
         Ok(())
     }
 }
@@ -213,12 +231,20 @@ pub enum VaultApiError {
     /// Сессию вытеснили (FIFO по `MAX_SESSIONS`) между созданием слота и
     /// коммитом форм — гонка двух запросов, а не ошибка клиента в данных.
     SessionGone,
-    /// Текст спана — уже замазанное этой же сессией: метка или текущий
-    /// суррогат. Повторная анонимизация уничтожает раннюю связь (промер P6),
-    /// поэтому отказ, а не мутация.
+    /// Текст спана — уже замазанное нашим же механизмом: метка или текущий
+    /// суррогат. Повторная анонимизация уничтожает раннюю связь (промер P6,
+    /// и в режиме 3 — тоже), поэтому отказ, а не мутация.
     ReanonymizeSurrogate {
         /// Класс спана, на котором произошёл отказ.
         class: String,
+    },
+    /// Слот суррогата занят ДРУГИМ оригиналом этой сессии (B2/P8): первый
+    /// писатель владеет формой до конца сессии, второго не пускаем — иначе
+    /// `deanonymize` вернул бы чужое имя как настоящие `ПДн`. Форма — выдуманное
+    /// имя, в сообщении она безопасна.
+    SurrogateCollision {
+        /// Занятая форма.
+        form: String,
     },
     /// Хранилище отказало по причине, зависящей от сервера: `mlock` при
     /// `FASAD_MLOCK=strict`, отказ CSPRNG, переполнение пула буферов.
@@ -258,6 +284,12 @@ impl std::fmt::Display for VaultApiError {
                 "спан класса {class:?} — уже замазанный нашим же механизмом текст \
                  (метка или суррогат); повторная анонимизация запрещена"
             ),
+
+            Self::SurrogateCollision { form } => write!(
+                f,
+                "суррогат «{form}» в этой сессии уже выдан другому оригиналу; \
+                 расширение пула суррогатов — шаг 7"
+            ),
         }
     }
 }
@@ -275,6 +307,7 @@ impl VaultApiError {
             Self::TooManyForms { .. } => "too_many_forms",
             Self::SessionGone => "session_gone",
             Self::ReanonymizeSurrogate { .. } => "reanonymize_surrogate",
+            Self::SurrogateCollision { .. } => "surrogate_collision",
             Self::IncompleteMarker => "incomplete_marker",
             Self::Vault(_) => "vault_error",
         }
@@ -296,6 +329,7 @@ impl VaultApiError {
             | Self::TooLong { .. }
             | Self::TooManyForms { .. }
             | Self::ReanonymizeSurrogate { .. }
+            | Self::SurrogateCollision { .. }
             | Self::EmptyOriginal => StatusCode::UNPROCESSABLE_ENTITY,
         }
     }
@@ -440,7 +474,8 @@ impl Vault {
     /// # Errors
     ///
     /// См. [`VaultApiError`]: чужой класс, не-граница символов, пересечение
-    /// спанов, отсутствующая сессия в режиме 2, отказ хранилища.
+    /// спанов, отсутствующая сессия в режиме 2, повторная анонимизация своего
+    /// же выхода, коллизия суррогатного слота, отказ хранилища.
     pub fn anonymize(
         &self,
         session: Option<&str>,
@@ -738,17 +773,18 @@ impl Vault {
         let Some(s) = guard.sessions.get_mut(session.unwrap_or_default()) else {
             return Err(VaultApiError::SessionGone);
         };
-        let fresh: Vec<&String> = pending
+        let fresh: Vec<String> = pending
             .items
             .iter()
-            .filter(|f| !s.forms.iter().any(|e| e == *f))
+            .filter(|(f, _)| !s.forms.iter().any(|e| e == f))
+            .map(|(f, _)| f.clone())
             .collect();
         if s.forms.len() + fresh.len() > MAX_FORMS_PER_SESSION {
             return Err(VaultApiError::TooManyForms {
                 max: MAX_FORMS_PER_SESSION,
             });
         }
-        s.forms.extend(fresh.into_iter().cloned());
+        s.forms.extend(fresh);
         Ok(())
     }
 
@@ -806,19 +842,31 @@ impl Vault {
         original: &str,
         pending: &mut PendingForms,
     ) -> Result<Option<String>, VaultApiError> {
-        let Some((out, forms)) = self.surrogate_forms(session, original) else {
+        let Some((out, forms)) = self.surrogate_forms(session, original)? else {
             return Ok(None);
         };
-        for f in forms {
-            pending.push(f)?;
+        for (f, owner) in forms {
+            pending.push(f, &owner)?;
         }
         Ok(Some(out))
     }
 
-    /// Суррогат по оригиналу, **без записи в реестр**: формы возвращаются вместе
-    /// с текстом, а решатель о capacities живёт снаружи (`PendingForms`).
-    fn surrogate_forms(&self, session: &str, original: &str) -> Option<(String, Vec<String>)> {
-        let table = MorphTable::shipped()?;
+    /// Суррогат по оригиналу, **без записи в реестр демона**: формы возвращаются
+    /// вместе с текстом, а решение о capacities живёт снаружи (`PendingForms`).
+    ///
+    /// В кэше движка записи остаются и при отказе (слот занят — первый владелец
+    /// не смещается, а запрос не выдал токен): реестр форм демона о такой записи
+    /// не знает, `deanonymize` идёт по реестру — запись недостижима и снимается
+    /// TTL или teardown. Осознанно не откатываем: откат требовал бы удалить чужую
+    /// запись, то есть снова трогать чужой слот.
+    fn surrogate_forms(
+        &self,
+        session: &str,
+        original: &str,
+    ) -> Result<Option<SurrogateOutcome>, VaultApiError> {
+        let Some(table) = MorphTable::shipped() else {
+            return Ok(None);
+        };
         let (lemmas, case, gender) = match table.parse_span(original) {
             SpanParse::Unique {
                 lemmas,
@@ -833,22 +881,26 @@ impl Vault {
                 // Род не сошёлся: колонка `genders` у именных правил `f,m`,
                 // и док модуля прямо отсылает шаг 6 проверять род по маске.
                 // Маску даёт окончание первого токена — оно же флагман рода.
-                let first = original.split_whitespace().next()?;
-                let g = suffix_gender(first)?;
+                let Some(first) = original.split_whitespace().next() else {
+                    return Ok(None);
+                };
+                let Some(g) = suffix_gender(first) else {
+                    return Ok(None);
+                };
                 if !genders.contains(&g) {
-                    return None;
+                    return Ok(None);
                 }
                 (lemmas, case, g)
             }
-            SpanParse::Ambiguous(_) | SpanParse::NoMatch(_) => return None,
+            SpanParse::Ambiguous(_) | SpanParse::NoMatch(_) => return Ok(None),
         };
         let tokens: Vec<&str> = original.split_whitespace().collect();
         if tokens.len() != lemmas.len() || tokens.len() > NameType::ORDER.len() {
-            return None;
+            return Ok(None);
         }
         let mut out = String::with_capacity(original.len());
         let mut word = String::new();
-        let mut forms: Vec<String> = Vec::new();
+        let mut forms: Vec<FormWithOwner> = Vec::new();
         let mut idx = 0_usize;
         for c in original.chars() {
             if c.is_alphabetic() {
@@ -856,14 +908,14 @@ impl Vault {
                 continue;
             }
             if !word.is_empty() {
-                let srg = self.engine.surrogat_for_gender(
-                    session,
-                    &word,
-                    case,
-                    gender,
-                    NameType::ORDER[idx],
-                )?;
-                forms.push(srg.form.clone());
+                let Some(srg) = self
+                    .engine
+                    .surrogat_for_gender(session, &word, case, gender, NameType::ORDER[idx])
+                    .map_err(surrogat_err)?
+                else {
+                    return Ok(None);
+                };
+                forms.push((srg.form.clone(), word.clone()));
                 word.clear();
                 out.push_str(&srg.form);
             }
@@ -873,20 +925,20 @@ impl Vault {
             }
         }
         if !word.is_empty() {
-            let srg = self.engine.surrogat_for_gender(
-                session,
-                &word,
-                case,
-                gender,
-                NameType::ORDER[idx],
-            )?;
-            forms.push(srg.form.clone());
+            let Some(srg) = self
+                .engine
+                .surrogat_for_gender(session, &word, case, gender, NameType::ORDER[idx])
+                .map_err(surrogat_err)?
+            else {
+                return Ok(None);
+            };
+            forms.push((srg.form.clone(), word.clone()));
             out.push_str(&srg.form);
         }
         if forms.len() != tokens.len() {
-            return None;
+            return Ok(None);
         }
-        Some((out, forms))
+        Ok(Some((out, forms)))
     }
 
     /// Обратный ход суррогатов: подставляем оригиналы по зарегистрированным
@@ -907,6 +959,14 @@ impl Vault {
         n
     }
 }
+
+/// Суррогатный выход одного спана: подставленный текст и формы с поверхностями
+/// токенов-оригиналов, из которых они выросли (владелец нужен пред-проверке
+/// `PendingForms`, B2/P8).
+type SurrogateOutcome = (String, Vec<FormWithOwner>);
+
+/// Форма вместе с токеном-владельцем.
+type FormWithOwner = (String, String);
 
 /// Отпечаток маркера как hex-строка (первые `len` символов base64url,
 /// приведённые к верхнему регистру алфавита метки).
@@ -973,6 +1033,17 @@ fn hex_key(raw: &str) -> Option<[u8; 32]> {
         *byte = u8::from_str_radix(&trimmed[i * 2..i * 2 + 2], 16).ok()?;
     }
     Some(out)
+}
+
+/// [`SurrogatError`] в отказ API: коллизия слота — отказ по данным запроса
+/// (`422 surrogate_collision`), остальное уходит в [`store_err`].
+fn surrogat_err(e: guard_vault::SurrogatError) -> VaultApiError {
+    match e {
+        guard_vault::SurrogatError::Collision { form } => {
+            VaultApiError::SurrogateCollision { form }
+        }
+        guard_vault::SurrogatError::Store(se) => store_err(se),
+    }
 }
 
 /// [`StoreError`] в отказ API: обе ветки — про данные спана, не про сервер.
@@ -1422,6 +1493,267 @@ mod tests {
             )
             .expect("свежее имя в свежей сессии — не наш суррогат");
         assert!(!other.text.contains(NAME_B));
+    }
+
+    /// P4: атомарность отказа держится для **реестра форм**, но не для счётчика
+    /// меток. Замер 20.10: `[INN_1_…]`, затем запрос «ИНН + коллидирующее ФИО»
+    /// даёт `422`, а следующая метка — `[INN_3_…]`: счётчик ушёл вперёд на
+    /// провалившемся запросе. Это не дыра (номер метки — не секрет, плотность
+    /// нумерации не обещана), и счётчик мы не откатываем: откат требовал бы
+    /// трогать чужой слот. Тест держит ровно обещанное: отказ не двигает реестр
+    /// форм и не даёт переиспользовать номер.
+    #[test]
+    fn refused_request_moves_only_the_label_counter() {
+        let v = vault(VaultMode::Session);
+        let colliding = "Родионова Милана Саввична";
+        v.anonymize(
+            Some("p4"),
+            NAME_A,
+            &[span("person_name", NAME_A, NAME_A)],
+            &schema(),
+        )
+        .expect("первое имя");
+        let first = v
+            .anonymize(
+                Some("p4"),
+                "ИНН 2482014338",
+                &[span("inn", "ИНН 2482014338", "2482014338")],
+                &schema(),
+            )
+            .expect("метка")
+            .text;
+        assert!(first.contains("[INN_1_"), "{first}");
+        let forms = v.forms_len(Some("p4"));
+        let two = format!("ИНН 5001001000 и {colliding}");
+        let err = v
+            .anonymize(
+                Some("p4"),
+                &two,
+                &[
+                    span("inn", &two, "5001001000"),
+                    span("person_name", &two, colliding),
+                ],
+                &schema(),
+            )
+            .expect_err("коллизия");
+        assert!(
+            matches!(err, VaultApiError::SurrogateCollision { .. }),
+            "{err:?}"
+        );
+        assert_eq!(v.forms_len(Some("p4")), forms, "реестр форм не тронут");
+        let next = v
+            .anonymize(
+                Some("p4"),
+                "ИНН 6002002000",
+                &[span("inn", "ИНН 6002002000", "6002002000")],
+                &schema(),
+            )
+            .expect("метка после отказа")
+            .text;
+        assert!(
+            next.contains("[INN_3_") || next.contains("[INN_2_"),
+            "номер не переиспользуется, но плотность не обещана: {next}"
+        );
+    }
+
+    /// P3: `invalidate` идёт «движок → реестр», путь запроса — «реестр, отпустить,
+    /// движок». Тест держит этот порядок под конкуренцией: гонка двух потоков на
+    /// одной сессии обязана давать только легальные ответы и не укладывать демон
+    /// в клинч (мёртвая блокировка выглядела бы как висящий тест).
+    #[test]
+    fn invalidate_racing_anonymize_keeps_only_legal_outcomes() {
+        let v = vault(VaultMode::Session);
+        let inn = "ИНН 2482014338";
+        let (codes, dropped) = std::thread::scope(|s| {
+            let writer = s.spawn(|| {
+                let mut out = Vec::new();
+                for _ in 0..200 {
+                    let r = v.anonymize(
+                        Some("p3"),
+                        inn,
+                        &[span("inn", inn, "2482014338")],
+                        &schema(),
+                    );
+                    out.push(match r {
+                        Ok(_) => 200,
+                        Err(e) => e.status().as_u16(),
+                    });
+                }
+                out
+            });
+            let eraser = s.spawn(|| {
+                let mut n = 0_u64;
+                for _ in 0..200 {
+                    n += v.invalidate("p3");
+                }
+                n
+            });
+            (
+                writer.join().expect("поток запросов не паникует"),
+                eraser.join().expect("поток invalidate не паникует"),
+            )
+        });
+        let bad: Vec<u16> = codes
+            .iter()
+            .copied()
+            .filter(|c| *c != 200 && *c != 400)
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "гонка выдала нелегальные статусы: {bad:?} (400 = сессию стёрли между проверкой и вставкой)"
+        );
+        assert!(codes.contains(&200), "хоть один запрос прошёл");
+        v.anonymize(
+            Some("p3"),
+            inn,
+            &[span("inn", inn, "2482014338")],
+            &schema(),
+        )
+        .expect("после гонки демон работает");
+        // Поток `invalidate` дешевле потока запроса и мог весь пройти до первой
+        // вставки — это не дефект, поэтому проверяем не сумму за гонку, а что
+        // механизм не обескровлен: свежая запись находится.
+        assert!(
+            v.invalidate("p3") > 0 || dropped > 0,
+            "invalidate перестал видеть записи сессии: {dropped}"
+        );
+    }
+
+    /// B2/P8: второе ФИО, попавшее в занятый слот, — отказ всего запроса, а не
+    /// тихая смена владельца. Пара промерена на текущем пуле (4 имени на пару
+    /// (род, тип)): обе фамилии дают «Тенина», и до правки второй запрос
+    /// перезаписывал обратную связь, после чего `deanonymize` первого возвращал
+    /// чужое имя с `200 OK`.
+    #[test]
+    fn second_name_on_taken_slot_refuses_whole_request() {
+        let v = vault(VaultMode::Session);
+        let other = "Родионова Милана Саввична";
+        let a = v
+            .anonymize(
+                Some("b2"),
+                NAME_A,
+                &[span("person_name", NAME_A, NAME_A)],
+                &schema(),
+            )
+            .expect("первое имя");
+        let forms = v.forms_len(Some("b2"));
+        let err = v
+            .anonymize(
+                Some("b2"),
+                other,
+                &[span("person_name", other, other)],
+                &schema(),
+            )
+            .expect_err("слот занят первым");
+        assert!(
+            matches!(err, VaultApiError::SurrogateCollision { .. }),
+            "{err:?}"
+        );
+        assert_eq!(err.code(), "surrogate_collision");
+        assert_eq!(err.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(v.forms_len(Some("b2")), forms, "отказ не тронул реестр");
+        assert_eq!(
+            v.deanonymize(Some("b2"), &a.text)
+                .expect("разворачивается")
+                .text
+                .as_str(),
+            NAME_A,
+            "вот здесь до правки появлялось чужое имя"
+        );
+    }
+
+    /// Пред-проверка по `PendingForms`: два разных ФИО в ОДНОМ запросе,
+    /// влезшие в один слот, отвергаются до обращения к движку — реестр форм не
+    /// пополняется, в кэше движка не остаётся записей от заведомо отвергнутого
+    /// спана. Отказ тот же: `422 surrogate_collision`.
+    #[test]
+    fn two_colliding_names_in_one_request_refuse_before_the_engine() {
+        let v = vault(VaultMode::Session);
+        let other = "Родионова Милана Саввична";
+        let text = format!("{NAME_A} и {other}");
+        let spans = vec![
+            span("person_name", &text, NAME_A),
+            span("person_name", &text, other),
+        ];
+        let err = v
+            .anonymize(Some("b2req"), &text, &spans, &schema())
+            .expect_err("два оригинала в один слот");
+        assert!(
+            matches!(err, VaultApiError::SurrogateCollision { .. }),
+            "{err:?}"
+        );
+        assert_eq!(
+            v.forms_len(Some("b2req")),
+            0,
+            "реестр пуст: отказ до подмен"
+        );
+    }
+
+    /// Белая коробка для пред-проверки: `PendingForms` сам по себе отвергает
+    /// второй оригинал одной формы. Через API эта ветка не отличима от отказа
+    /// движка (обе дают тот же `422`), поэтому проверка белая коробка.
+    #[test]
+    fn pending_forms_rejects_second_owner_of_one_form() {
+        let mut p = PendingForms::new(0);
+        p.push("Тенина".to_owned(), "Ушакова")
+            .expect("первый владелец");
+        p.push("Тенина".to_owned(), "Ушакова")
+            .expect("тот же владелец идемпотентен");
+        let err = p
+            .push("Тенина".to_owned(), "Родионова")
+            .expect_err("второй владелец того же слота");
+        assert!(
+            matches!(err, VaultApiError::SurrogateCollision { ref form } if form == "Тенина"),
+            "{err:?}"
+        );
+        assert_eq!(p.items.len(), 1, "отказ не резервирует место");
+    }
+
+    /// Тот же оригинал повторно — идемпотентен: слот принадлежит ему, отказывать
+    /// не на чем (правки ради этого asserts и держится — иначе `422` посыпался бы
+    /// на повторной отправке того же документа).
+    #[test]
+    fn same_name_twice_in_one_session_is_idempotent() {
+        let v = vault(VaultMode::Session);
+        let a = v
+            .anonymize(
+                Some("b2i"),
+                NAME_A,
+                &[span("person_name", NAME_A, NAME_A)],
+                &schema(),
+            )
+            .expect("первый");
+        let b = v
+            .anonymize(
+                Some("b2i"),
+                NAME_A,
+                &[span("person_name", NAME_A, NAME_A)],
+                &schema(),
+            )
+            .expect("второй — тот же оригинал");
+        assert_eq!(a.text, b.text, "та же форма, та же метка");
+        assert_eq!(b.items[0].byte_start, a.items[0].byte_start);
+    }
+
+    /// KNOWN-RED B2 (ревью #58): документ с двумя разными ФИО обязан и замаскироваться,
+    /// и развернуться целиком. Краснеет сегодня на отказе второго имени — зеленым
+    /// станет после расширения пула (issue шага 7).
+    #[test]
+    #[ignore = "KNOWN-RED B2: пул 4 имени на (род, тип), второе ФИО в слот не влезает"]
+    fn known_red_two_names_in_one_session_mask_and_restore() {
+        let v = vault(VaultMode::Session);
+        let text = "Ф.И.О. подряд: Ушакова Кира Саввична и Родионова Милана Саввична.";
+        let spans = vec![
+            span("person_name", text, "Ушакова Кира Саввична"),
+            span("person_name", text, "Родионова Милана Саввична"),
+        ];
+        let a = v
+            .anonymize(Some("b2doc"), text, &spans, &schema())
+            .expect("оба имени обязаны замаскироваться");
+        let back = v
+            .deanonymize(Some("b2doc"), &a.text)
+            .expect("оба обязаны развернуться");
+        assert_eq!(back.text.as_str(), text, "разворот обязан быть byte-exact");
     }
 
     #[test]

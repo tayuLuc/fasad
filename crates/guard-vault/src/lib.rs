@@ -88,6 +88,12 @@ pub struct Surrogat {
 
 /// Пул суррогатов: по четыре имени на пару (тип, род).
 ///
+/// 4 слота на позицию = дири-голо на 5-м имени: в `golden-v1` 27 суррогатных
+/// ФИО делят хотя бы один слот в 347 парах из 351 (промер 20.10), поэтому
+/// выдача формы сделана first-writer-wins с отказом ([`SurrogatError::Collision`])
+/// — иначе второй оригинал молча смещал бы первого, и разворот возвращал чужое
+/// имя. Расширение пула — шаг 7 (KNOWN-RED-тест `known_red_b2_…` держит условие).
+///
 /// Имена подобраны так, чтобы ни одного не было в `data/golden/golden-v1.jsonl`
 /// (тест `surrogate_pool_is_clean_and_declinable`); суррогат, совпадающий с
 /// реальной фамилией из другого документа, сломал бы обратимость подмены.
@@ -124,6 +130,24 @@ const SURROGATES: &[(&str, Gender, NameType)] = &[
 
 /// Префикс метки, под которой движок кэширует обратное соответствие суррогата.
 const SRG_PREFIX: &str = "SRG#";
+
+/// Отказ выдачи суррогатной формы.
+///
+/// Отдельно от [`VaultError`]: тот описывает криптографию токена, а здесь —
+/// политика слота в кэше сессии.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SurrogatError {
+    /// Форма уже выдана ДРУГОМУ оригиналу этой сессии. First-writer-wins:
+    /// владеющий слотом не смещается, второй просит — отказ (B2/P8).
+    #[error("суррогат «{form}» в этой сессии уже выдан другому оригиналу")]
+    Collision {
+        /// Занятая форма. Это выдуманное имя, не `ПДн`, — его можно в сообщение.
+        form: String,
+    },
+    /// Хранилище отказало по своей причине (`TooBig` / `Empty`).
+    #[error("хранилище сессий отказало: {0}")]
+    Store(#[from] StoreError),
+}
 
 /// Прокладка «токен + кэш + переписыватель + морфология».
 ///
@@ -224,45 +248,58 @@ impl VaultEngine {
 
     /// Подбирает синтетическое имя того же рода, падежа и типа ФИО-токена.
     ///
-    /// Возвращает `None`, если слово не разбирается таблицу с **одним** родом:
-    /// этот порт берёт род из колонки `genders` правила, а она для именных форм
-    /// `f,m` (промер 0/56 в доке [`morph`]), так что род обязан прийти извне —
+    /// `Ok(None)` — слово не разбирается таблицу с **одним** родом: этот порт
+    /// берёт род из колонки `genders` правила, а она для именных форм `f,m`
+    /// (промер 0/56 в доке [`morph`]), так что род обязан прийти извне —
     /// [`Self::surrogat_for_gender`] принимает его явно.
     ///
-    /// Обратное соответствие (суррогат → оригинал) кладётся в кэш под меткой
-    /// `SRG#<ФОРМА>`; реестр для обратного aho-corasick — шаг 6.
-    #[must_use]
-    pub fn surrogat_for(&self, session: &str, word: &str) -> Option<Surrogat> {
-        let table = MorphTable::shipped()?;
+    /// `Err(`[`SurrogatError::Collision`]`)` — выбранная форма уже принадлежит
+    /// другому оригиналу этой же сессии (B2/P8), см. [`Self::pick_surrogat`].
+    ///
+    /// # Errors
+    ///
+    /// [`SurrogatError::Collision`] — слот занят другим оригиналом;
+    /// [`SurrogatError::Store`] — отказ хранилища сессий.
+    pub fn surrogat_for(
+        &self,
+        session: &str,
+        word: &str,
+    ) -> Result<Option<Surrogat>, SurrogatError> {
+        let Some(table) = MorphTable::shipped() else {
+            return Ok(None);
+        };
         let cands = table.cands_any(word);
         let mut cases: Vec<Case> = cands.iter().map(|c| c.case).collect();
         cases.sort_unstable();
         cases.dedup();
         if cases.len() != 1 {
-            return None;
+            return Ok(None);
         }
         let case = cases[0];
         let mask = cands
             .iter()
             .filter(|c| c.case == case)
             .fold(0_u8, |acc, c| acc | c.genders);
-        let gender = morph::sole_gender(mask)?;
-        let ty = *NameType::ORDER
+        let Some(gender) = morph::sole_gender(mask) else {
+            return Ok(None);
+        };
+        let Some(ty) = NameType::ORDER
             .iter()
-            .find(|t| cands.iter().any(|c| &c.ty == *t && c.case == case))?;
+            .find(|t| cands.iter().any(|c| &c.ty == *t && c.case == case))
+            .copied()
+        else {
+            return Ok(None);
+        };
         self.surrogat_for_gender(session, word, case, gender, ty)
     }
 
-    /// То же, что [`Self::surrogat_for`], но род, падеж и тип заданы явно
-    /// (метка детектора, разбор спана).
-    pub fn surrogat_for_gender(
-        &self,
-        session: &str,
-        word: &str,
-        want: Case,
-        gender: Gender,
-        ty: NameType,
-    ) -> Option<Surrogat> {
+    /// Чистый выбор суррогата: пул и морфология, хранилище не тронуто.
+    ///
+    /// Нужен вызывающему, чтобы проверить слот **до первой подмены**:
+    /// [`Self::surrogat_for_gender`] пишет сразу, и без чистого пика коллизия
+    /// всплывала бы уже после уничтожения прежней связи.
+    #[must_use]
+    pub fn pick_surrogat(word: &str, want: Case, gender: Gender, ty: NameType) -> Option<Surrogat> {
         let table = MorphTable::shipped()?;
         let pool: Vec<&'static str> = SURROGATES
             .iter()
@@ -281,18 +318,94 @@ impl VaultEngine {
             .map_or_else(|| morph::norm(word), |c| c.lemma);
         let lemma = pool[pick_index(&pick_key, pool.len())];
         let form = table.inflect_typed(lemma, want, gender, ty)?;
-        let srg = Surrogat {
+        Some(Surrogat {
             form,
             lemma,
             ty,
             case: want,
             gender,
+        })
+    }
+
+    /// Множество лемм, формой которых слово может быть. Пустое — не разобралось,
+    /// тогда подставляем нормализацию, чтобы сравнение осталось честным.
+    ///
+    /// Именно множество, а не «первая лемма»: таблица для «Ушакова» даёт первым
+    /// кандидатом `УШАКОВА`, а для «ушаковой» — `УШАКОВОЙ`, и сравнение по
+    /// первому кандидату развело бы одного человека на двоих (промер 20.10:
+    /// `Collision` на повторе того же слова в другом падеже).
+    fn lemma_set(table: &MorphTable, word: &str) -> std::collections::BTreeSet<String> {
+        let mut set: std::collections::BTreeSet<String> =
+            table.cands_any(word).into_iter().map(|c| c.lemma).collect();
+        if set.is_empty() {
+            set = table
+                .cands_any(&Self::upper_first(word))
+                .into_iter()
+                .map(|c| c.lemma)
+                .collect();
+        }
+        if set.is_empty() {
+            set.insert(morph::norm(word));
+        }
+        set
+    }
+
+    /// Первая буква заглавная — только для добора по индексу таблицы.
+    fn upper_first(word: &str) -> String {
+        let mut out = word.to_owned();
+        if let Some(first) = word.chars().next() {
+            out.replace_range(..first.len_utf8(), &first.to_uppercase().to_string());
+        }
+        out
+    }
+
+    /// То же, что [`Self::surrogat_for`], но род, падеж и тип заданы явно.
+    ///
+    /// First-writer-wins (B2/P8): слот принадлежит первому оригиналу до конца
+    /// сессии. Тот же оригинал повторно — идемпотентно та же форма; ДРУГОЙ
+    /// оригинал на занятый слот — [`SurrogatError::Collision`]. Прежняя
+    /// реализация писала `let _ = store.insert(…)`: результат вставки
+    /// отбрасывался, слот доставался последнему писателю, и `deanonymize`
+    /// возвращал чужое имя как настоящие `ПДн` (промер: 347 пар из 351 в
+    /// golden-v1 делят хотя бы один слот).
+    /// # Errors
+    ///
+    /// [`SurrogatError::Collision`] — слот формы занят ДРУГИМ оригиналом этой
+    /// сессии; [`SurrogatError::Store`] — отказ хранилища. При отказе ничего не
+    /// перезаписывается: первый владелец остаётся владельцем.
+    pub fn surrogat_for_gender(
+        &self,
+        session: &str,
+        word: &str,
+        want: Case,
+        gender: Gender,
+        ty: NameType,
+    ) -> Result<Option<Surrogat>, SurrogatError> {
+        let Some(srg) = Self::pick_surrogat(word, want, gender, ty) else {
+            return Ok(None);
         };
-        let _ = self.store.insert(
-            &StoreKey::new(session, &format!("{SRG_PREFIX}{}", srg.form)),
-            SecretString::new(word.to_owned()),
-        );
-        Some(srg)
+        let key = StoreKey::new(session, &format!("{SRG_PREFIX}{}", srg.form));
+        if let Some(prev) = self.store.get(&key) {
+            // Владелец опознаётся по ПЕРЕСЕЧЕНИЮ МНОЖЕСТВ ЛЕММ, а не по поверхности и не
+            // по лемме пула: «Ушакова» и «ушаковой» — один человек в двух
+            // падежах, обязан получить ту же форму (иначе обратимость рвётся по
+            // падежам); «Ушакова» и «Жукова» — два человека в одном слоте, и
+            // это отказ. Лемму берём по любому кандидату (не по запрошенному
+            // падежу): у слова в творительном падеже кандидат с `case=Gen` не
+            // находится, и сравнение разбилось бы на регистре, а не на человеке.
+            // Пул-лемма сравнивать нельзя: у коллизии она у обоих одна и та же
+            // по построению.
+            let same_owner = MorphTable::shipped().is_some_and(|tb| {
+                !Self::lemma_set(tb, prev.as_str()).is_disjoint(&Self::lemma_set(tb, word))
+            });
+            if !same_owner {
+                return Err(SurrogatError::Collision { form: srg.form });
+            }
+            return Ok(Some(srg));
+        }
+        self.store
+            .insert(&key, SecretString::new(word.to_owned()))?;
+        Ok(Some(srg))
     }
 
     /// Оригинальное слово по суррогатной форме (обратный ход подмены).
@@ -459,6 +572,7 @@ mod tests {
         let e = engine();
         let srg = e
             .surrogat_for_gender("s7", "Ушакова", Case::Nom, Gender::Fem, NameType::Surname)
+            .expect("отказа быть не может: сессия свежая")
             .expect("суррогат для женской фамилии");
         assert_ne!(srg.form, "Ушакова");
         assert_eq!(srg.gender, Gender::Fem);
@@ -482,30 +596,167 @@ mod tests {
         let e = engine();
         let a = e
             .surrogat_for_gender("s8", "Ушакова", Case::Gen, Gender::Fem, NameType::Surname)
-            .expect("первый");
+            .expect("первый")
+            .expect("форма");
         let b = e
             .surrogat_for_gender("s8", "ушаковой", Case::Gen, Gender::Fem, NameType::Surname)
-            .expect("второй");
+            .expect("второй")
+            .expect("форма");
         assert_eq!(
             a.form, b.form,
             "одна и та же фамилия обязана давать один суррогат"
         );
-        let c = e
-            .surrogat_for_gender("s8", "Жукова", Case::Gen, Gender::Fem, NameType::Surname)
-            .expect("третий");
-        assert_ne!(
-            a.lemma, c.lemma,
-            "разные фамилии должны редко давать одну лемму"
+        // Третья фамилия обязана дать ЛИБО другой слот, ЛИБО отказ. Тихо
+        // сместить первого писателя — нельзя ни при каком пуле (B2/P8), и
+        // ровно это раньше и происходило: `let _ = store.insert(…)`.
+        match e.surrogat_for_gender("s8", "Жукова", Case::Gen, Gender::Fem, NameType::Surname)
+        {
+            Ok(Some(c)) => assert_ne!(a.lemma, c.lemma, "разные слоты — ок"),
+            Ok(None) => panic!("Жукова обязана разбираться в женскую фамилию"),
+            Err(SurrogatError::Collision { form }) => {
+                assert_eq!(form, a.form, "отказ обязан называть занятую форму");
+                assert_eq!(
+                    e.original_of_surrogat("s8", &a.form)
+                        .expect("первый жив")
+                        .as_str(),
+                    "Ушакова",
+                    "отказ не имел права сместить владельца слота"
+                );
+            }
+            Err(other) => panic!("неожиданный отказ: {other:?}"),
+        }
+    }
+
+    /// B2/P8: слот занят другим оригиналом — отказ, первый владелец остаётся.
+    ///
+    /// Пара промерена на текущем пуле: обе фамилии дают «Тенина».
+    #[test]
+    fn surrogate_slot_refuses_second_original_and_keeps_the_first() {
+        let e = engine();
+        let a = e
+            .surrogat_for_gender("s10", "Ушакова", Case::Nom, Gender::Fem, NameType::Surname)
+            .expect("первый")
+            .expect("форма");
+        let again = e
+            .surrogat_for_gender("s10", "Ушакова", Case::Nom, Gender::Fem, NameType::Surname)
+            .expect("идемпотентность")
+            .expect("форма");
+        assert_eq!(a.form, again.form, "тот же оригинал — та же форма");
+        let err = e
+            .surrogat_for_gender(
+                "s10",
+                "Родионова",
+                Case::Nom,
+                Gender::Fem,
+                NameType::Surname,
+            )
+            .expect_err("занятый слот не перезаписывается");
+        assert_eq!(
+            err,
+            SurrogatError::Collision {
+                form: a.form.clone()
+            }
         );
+        assert_eq!(
+            e.original_of_surrogat("s10", &a.form)
+                .expect("владелец на месте")
+                .as_str(),
+            "Ушакова",
+            "разворота чужим именем быть не могло"
+        );
+        // Другая сессия тем же слотом владеет отдельно.
+        let other = e
+            .surrogat_for_gender(
+                "s11",
+                "Родионова",
+                Case::Nom,
+                Gender::Fem,
+                NameType::Surname,
+            )
+            .expect("своя сессия")
+            .expect("форма");
+        assert_eq!(other.form, a.form, "пул общий, владение — посессионное");
+    }
+
+    /// Дири-голо: `N + 1` разных фамилий при пуле из `N` обязаны дать хотя бы
+    /// один отказ. Тест не зависит от размера пула и переживёт его расширение.
+    #[test]
+    fn surrogate_pigeonhole_refuses_within_pool_plus_one() {
+        let e = engine();
+        let slots = SURROGATES
+            .iter()
+            .filter(|(_, g, t)| *g == Gender::Fem && *t == NameType::Surname)
+            .count();
+        let words = [
+            "Блякова",
+            "Вжикова",
+            "Глюкова",
+            "Джельменова",
+            "Ёлочкина",
+            "Жмыхова",
+            "Кляйменова",
+        ];
+        assert!(words.len() > slots, "выборки мало для дири-голо");
+        let refusals = words
+            .iter()
+            .filter(|w| {
+                matches!(
+                    e.surrogat_for_gender("s12", w, Case::Nom, Gender::Fem, NameType::Surname),
+                    Err(SurrogatError::Collision { .. })
+                )
+            })
+            .count();
+        assert!(
+            refusals >= words.len() - slots,
+            "при {slots} слотах и {} именах отказов должно быть не меньше {}: {refusals}",
+            words.len(),
+            words.len() - slots
+        );
+    }
+
+    /// KNOWN-RED B2 (review #58): документ с несколькими разными ФИО обязан
+    /// разворачиваться целиком и байт-в-байт. Краснеет сегодня на дири-голо:
+    /// 25 имён в 4 слота — это отказ, а не маскирование. Зеленым станет после
+    /// расширения пула (issue шага 7), здесь держим как измерение границы.
+    #[test]
+    #[ignore = "KNOWN-RED B2: пул 4 имени на (род, тип); ждёт расширения на шаге 7"]
+    fn known_red_b2_multi_name_document_roundtrips_byte_exact() {
+        let e = engine();
+        let words: Vec<String> = (0..25).map(|i| format!("Тестова{i:02}")).collect();
+        let mut forms = Vec::new();
+        for w in &words {
+            let s = e
+                .surrogat_for_gender("b2", w, Case::Nom, Gender::Fem, NameType::Surname)
+                .expect("расширенный пул не должен отказывать")
+                .expect("форма");
+            forms.push((w.clone(), s.form));
+        }
+        for (w, f) in &forms {
+            assert_eq!(
+                e.original_of_surrogat("b2", f)
+                    .expect("обратная связь")
+                    .as_str(),
+                w.as_str(),
+                "форма {f} разворачивается не того владельца"
+            );
+        }
     }
 
     #[test]
     fn surrogat_for_needs_unambiguous_gender() {
         let e = engine();
         // Именная форма: таблица даёт род `f,m` ⇒ без явного рода None (fail-closed).
-        assert!(e.surrogat_for("s9", "Ушакова").is_none());
+        assert!(
+            e.surrogat_for("s9", "Ушакова")
+                .expect("не хранилище")
+                .is_none()
+        );
         // Несклоняемое — тоже None.
-        assert!(e.surrogat_for("s9", "825082492964").is_none());
+        assert!(
+            e.surrogat_for("s9", "825082492964")
+                .expect("не хранилище")
+                .is_none()
+        );
     }
 
     #[test]

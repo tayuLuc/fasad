@@ -36,7 +36,13 @@ pub const HEADER_POLICY: HeaderName = HeaderName::from_static("x-guard-policy");
 /// Идентификатор сессии (`X-Session-ID`, SPEC §8). Для режима 3 не требуется.
 pub const HEADER_SESSION: HeaderName = HeaderName::from_static("x-session-id");
 
-/// Выходные заголовки `X-Guard-*` (SPEC §8).
+/// Выходные заголовки `X-Guard-*`.
+///
+/// SPEC §8 определяет из выходов только Count / Max-Risk / Latency; `Stage`,
+/// `Policy-Applied` и `Score-Threshold` — наши расширения вне спецификации
+/// (входной `X-Guard-Policy` §8 не переиспользуется: он про запрос). Имена —
+/// контракт, таблица в `docs/daemon-scope.md` сверяется с этим кодом тестом
+/// [`header_table_in_docs_matches_emitted_names`].
 mod h {
     use axum::http::HeaderName;
 
@@ -480,6 +486,57 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // в тестах паника = красный CI, это канал ответа
 mod tests {
+
+    /// P1: таблица заголовков в доке обязана совпадать с тем, что мы реально
+    /// отправляем. До правки две строки доки называли `X-Guard-Policy` и
+    /// `X-Guard-Threshold` — имён, которых в коде нет: SPEC §8 определяет
+    /// `X-Guard-Policy` как **входной** заголовок, а выходов с такими именами
+    /// не задаёт вовсе. Правка пошла по доке, константы не тронуты.
+    #[test]
+    fn header_table_in_docs_matches_emitted_names() {
+        let doc = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/daemon-scope.md"
+        ))
+        .expect("док с таблицей заголовков читается");
+        let emitted = [
+            &h::COUNT,
+            &h::MAX_RISK,
+            &h::LATENCY,
+            &h::STAGE,
+            &h::POLICY,
+            &h::THRESHOLD,
+        ];
+        let mut allowed: Vec<String> = emitted
+            .iter()
+            .map(|n| n.as_str().to_ascii_uppercase())
+            .collect();
+        allowed.push(HEADER_SESSION.as_str().to_ascii_uppercase());
+        allowed.push("X-UPSTREAM-URL".to_owned());
+        let mut seen: Vec<String> = Vec::new();
+        for line in doc.lines().filter(|l| l.starts_with("| `X-")) {
+            let name = line.split('`').nth(1).expect("имя в бэктиках");
+            let up = name.to_ascii_uppercase();
+            assert!(
+                allowed.contains(&up),
+                "док обещает «{name}», а такого заголовка мы не отправляем"
+            );
+            seen.push(up);
+        }
+        assert_eq!(
+            seen.len(),
+            8,
+            "строки таблицы разъехались с кодом: {seen:?}"
+        );
+        for e in &emitted {
+            assert!(
+                seen.contains(&e.as_str().to_ascii_uppercase()),
+                "код отправляет «{}», а док о нём молчит",
+                e.as_str()
+            );
+        }
+    }
+
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
