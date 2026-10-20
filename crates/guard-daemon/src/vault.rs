@@ -213,6 +213,13 @@ pub enum VaultApiError {
     /// Сессию вытеснили (FIFO по `MAX_SESSIONS`) между созданием слота и
     /// коммитом форм — гонка двух запросов, а не ошибка клиента в данных.
     SessionGone,
+    /// Текст спана — уже замазанное этой же сессией: метка или текущий
+    /// суррогат. Повторная анонимизация уничтожает раннюю связь (промер P6),
+    /// поэтому отказ, а не мутация.
+    ReanonymizeSurrogate {
+        /// Класс спана, на котором произошёл отказ.
+        class: String,
+    },
     /// Хранилище отказало по причине, зависящей от сервера: `mlock` при
     /// `FASAD_MLOCK=strict`, отказ CSPRNG, переполнение пула буферов.
     Vault(VaultError),
@@ -246,6 +253,11 @@ impl std::fmt::Display for VaultApiError {
                 "форм суррогатов больше {max}: отказ до первой подмены, а не partial-restore"
             ),
             Self::SessionGone => write!(f, "сессия вытеснена во время запроса"),
+            Self::ReanonymizeSurrogate { class } => write!(
+                f,
+                "спан класса {class:?} — уже замазанный текст этой сессии (метка или суррогат); \
+                 повторная анонимизация запрещена"
+            ),
         }
     }
 }
@@ -262,6 +274,7 @@ impl VaultApiError {
             Self::EmptyOriginal => "empty_span",
             Self::TooManyForms { .. } => "too_many_forms",
             Self::SessionGone => "session_gone",
+            Self::ReanonymizeSurrogate { .. } => "reanonymize_surrogate",
             Self::IncompleteMarker => "incomplete_marker",
             Self::Vault(_) => "vault_error",
         }
@@ -282,6 +295,7 @@ impl VaultApiError {
             | Self::IncompleteMarker
             | Self::TooLong { .. }
             | Self::TooManyForms { .. }
+            | Self::ReanonymizeSurrogate { .. }
             | Self::EmptyOriginal => StatusCode::UNPROCESSABLE_ENTITY,
         }
     }
@@ -459,6 +473,26 @@ impl Vault {
             }
         }
 
+        // P6: вход, равный нашей же подмене этой сессии, принимается отказом до
+        // любой мутации. Причина не в гигиене протокола, а в ключах хранилища:
+        // реверс-индекс `guard-vault` ищет оригинал по суррогату
+        // (`StoreKey::new(session, "srg:" + form)`, lib.rs:300-303), поэтому
+        // анонимизация собственного суррогата перезатирать будет уже не связь
+        // «метка → оригинал», а связь «суррогат → оригинал» раннего прохода —
+        // и `deanonymize` вернёт смесь чужой фамилии с настоящими именем и
+        // отчеством как настоящие данные. Проверка по любому классу, не только
+        // по `person_name`: класс дефекта — ключ хранилища, а не тип ПДн.
+        if self.mode == VaultMode::Session {
+            let sid = session.unwrap_or_default();
+            for s in &spans {
+                if self.is_current_surrogate(sid, &text[s.byte_start..s.byte_end]) {
+                    return Err(VaultApiError::ReanonymizeSurrogate {
+                        class: s.entity_type.clone(),
+                    });
+                }
+            }
+        }
+
         // Формы коммитятся пачкой после успешного прохода: до первой подмены
         // мутаций нет, значит `TooManyForms` — отказ всего запроса, а не
         // «одни имена запомнили, другие нет».
@@ -627,6 +661,45 @@ impl Vault {
             });
         }
         Ok(label)
+    }
+
+    /// Текущий ли это выход демона для этой сессии: метка режима 2 по грамматике
+    /// или суррогатное слово, которое хранилище знает как подмену.
+    ///
+    /// Ложный отказ возможен: настоящая фамилия клиента может совпасть с нашим
+    /// суррогатом из этой же сессии. Отказ здесь дороже точности, чем тихая
+    /// подмена данных, — см. комментарий в `anonymize`.
+    fn is_current_surrogate(&self, session: &str, piece: &str) -> bool {
+        if Self::has_marker(piece) {
+            return true;
+        }
+        // Ключ реверс-индекса — словоформа, а не ФИО целиком: «Тенина Агафья
+        // Афанасьевна» целиком формой не является, но её первое слово является,
+        // и перезатирание начинается именно с него.
+        if self.engine.original_of_surrogat(session, piece).is_some() {
+            return true;
+        }
+        piece
+            .split_whitespace()
+            .any(|w| self.engine.original_of_surrogat(session, w).is_some())
+    }
+
+    /// Содержит ли спан метку режима 2 (`[КЛАСС_СЧЁТЧИК_NONCE]`, алфавит
+    /// `Grammar::LABEL` = `A-Z0-9_`).
+    ///
+    /// Именно «содержит», а не «равна»: запрос замазать `ИНН [INN_1_X]` — это
+    /// метка-в-метке, тот же класс порчи, что и суррогат-в-суррогате, и приходит
+    /// он целиком как один спан.
+    fn has_marker(piece: &str) -> bool {
+        piece.split('[').skip(1).any(|rest| {
+            rest.split(']')
+                .next()
+                .is_some_and(|inner| !inner.is_empty() && inner.chars().all(Self::is_label_char))
+        })
+    }
+
+    fn is_label_char(c: char) -> bool {
+        c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'
     }
 
     /// Сколько форм уже лежит в сессии (0 вне режима 2).
@@ -1232,12 +1305,23 @@ mod tests {
         assert!(!anon.text.contains(NAME_A), "имя должно быть заменено");
         assert_eq!(v.forms_len(Some("cap")), max, "потолок достигнут точно");
 
-        // 2. Следующий запрос обязан быть отвергнут ЦЕЛИКОМ.
+        // 2. Запрос, которому не хватает одного слота, обязан быть отвергнут
+        //    ЦЕЛИКОМ. Отдельная сессия на `max - 2`, потому что в `cap` имя из
+        //    шага 1 уже стало суррогатом, и повтор его же просил бы отказ по
+        //    другой причине (P6, `reanonymize_surrogate`).
+        v.anonymize(
+            Some("cap2"),
+            inn,
+            &[span("inn", inn, "2482014338")],
+            &schema(),
+        )
+        .expect("слот");
+        seed_forms(&v, "cap2", max - 2);
         let err = v
             .anonymize(
-                Some("cap"),
-                NAME_B,
-                &[span("person_name", NAME_B, NAME_B)],
+                Some("cap2"),
+                NAME_A,
+                &[span("person_name", NAME_A, NAME_A)],
                 &schema(),
             )
             .expect_err("места нет");
@@ -1252,7 +1336,85 @@ mod tests {
             "переполнение лимита — отказ клиента, а не 5xx"
         );
         // 3. И ничего не изменено: ни число форм, ни то, что сессия уже знала.
-        assert_eq!(v.forms_len(Some("cap")), max, "отказ не мутирует реестр");
+        assert_eq!(
+            v.forms_len(Some("cap2")),
+            max - 2,
+            "отказ не мутирует реестр"
+        );
+    }
+
+    /// P6: повторная анонимизация собственного выхода = отказ до первой
+    /// подмены. Замеренная до правки порча: три раунда на одном имени давали
+    /// `deanonymize` выдуманную смесь («Ветрова Кира Саввична») с `200 OK`.
+    #[test]
+    fn reanonymizing_own_output_is_refused_for_any_class() {
+        let v = vault(VaultMode::Session);
+        let inn = "ИНН 2482014338";
+        let a = v
+            .anonymize(
+                Some("p6"),
+                inn,
+                &[span("inn", inn, "2482014338")],
+                &schema(),
+            )
+            .expect("метка");
+        let err = v
+            .anonymize(
+                Some("p6"),
+                &a.text,
+                &[span("inn", &a.text, &a.text)],
+                &schema(),
+            )
+            .expect_err("метку повторно не мажут");
+        assert!(
+            matches!(err, VaultApiError::ReanonymizeSurrogate { .. }),
+            "{err:?}"
+        );
+        assert_eq!(err.code(), "reanonymize_surrogate");
+        assert_eq!(err.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Тот же отказ по классу ФИО и честный round-trip после него.
+        let n = v
+            .anonymize(
+                Some("p6b"),
+                NAME_A,
+                &[span("person_name", NAME_A, NAME_A)],
+                &schema(),
+            )
+            .expect("раунд 1");
+        let err2 = v
+            .anonymize(
+                Some("p6b"),
+                &n.text,
+                &[span("person_name", &n.text, &n.text)],
+                &schema(),
+            )
+            .expect_err("раунд 2 запрещён");
+        assert!(
+            matches!(err2, VaultApiError::ReanonymizeSurrogate { ref class } if class == "person_name"),
+            "{err2:?}"
+        );
+        let back = v
+            .deanonymize(Some("p6b"), &n.text)
+            .expect("отказ ничего не перезатёр");
+        assert_eq!(
+            back.text.as_str(),
+            NAME_A,
+            "имя восстановлено точно, а не смесью"
+        );
+        assert_eq!(v.forms_len(Some("p6b")), 3, "отказ не мутирует реестр");
+
+        // Проверка не должна стать отказом мазать всё подряд: настоящее имя,
+        // не фигурировавшее в этой сессии как подмена, мажется как обычно.
+        let other = v
+            .anonymize(
+                Some("p6c"),
+                NAME_B,
+                &[span("person_name", NAME_B, NAME_B)],
+                &schema(),
+            )
+            .expect("свежее имя в свежей сессии — не наш суррогат");
+        assert!(!other.text.contains(NAME_B));
     }
 
     #[test]

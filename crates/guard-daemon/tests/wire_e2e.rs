@@ -485,3 +485,91 @@ fn non_ascii_session_id_is_refused_as_invalid_not_missing() {
         "клиент заголовок прислал — «требует» было бы ложью: {body}"
     );
 }
+
+/// P6: повторная анонимизация собственного замазанного текста отвергается до
+/// первой подмены. Замеренная до правки порча — три раунда на одном имени
+/// в той же сессии: на третьем перезатиралась связь «суррогат → оригинал»
+/// (ключ реверс-индекса — само суррогатное слово), и `deanonymize` возвращал
+/// `200 OK` с выдуманным именем «Ветрова Кира Саввична» — чужая фамилия плюс
+/// настоящие имя и отчество. Тест проверяет и отказ, и то, что после него
+/// round-trip остаётся честным.
+#[test]
+fn double_anonymization_is_refused_before_it_corrupts() {
+    let key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    let d = Daemon::start(&[("FASAD_VAULT_MODE", "session"), ("FASAD_VAULT_KEY", key)]);
+    let hdr = [("content-type", "application/json"), ("x-session-id", "p6")];
+    let fio = "Ушакова Кира Саввична";
+    let r1 = call(
+        &d.addr,
+        "POST",
+        "/v1/anonymize",
+        &hdr,
+        &anonymize_body(fio, &[("person_name".to_owned(), 0, fio.len())]),
+    );
+    assert_eq!(r1.status, 200, "раунд 1: {}", r1.text());
+    let a1 = r1.json()["text"].as_str().expect("текст").to_owned();
+    assert!(!a1.contains("Ушакова"), "имя не подменено: {a1}");
+    assert!(!a1.contains('['), "ФИО в режиме 2 идёт суррогатом: {a1}");
+
+    let r2 = call(
+        &d.addr,
+        "POST",
+        "/v1/anonymize",
+        &hdr,
+        &anonymize_body(&a1, &[("person_name".to_owned(), 0, a1.len())]),
+    );
+    assert_eq!(r2.status, 422, "переанонимизация: {}", r2.text());
+    assert_eq!(r2.json()["error"]["code"], "reanonymize_surrogate");
+
+    let back = call(
+        &d.addr,
+        "POST",
+        "/v1/deanonymize",
+        &hdr,
+        format!(r#"{{"text":"{}"}}"#, a1.replace('"', "\\\"")).as_bytes(),
+    );
+    assert_eq!(back.status, 200, "deanonymize: {}", back.text());
+    assert_eq!(
+        back.json()["text"].as_str().expect("текст"),
+        fio,
+        "вот здесь до правки появлялась выдуманная фамилия"
+    );
+}
+
+/// Тот же класс для метки: запрос замазать текст, внутри которого уже лежит
+/// наша метка, обязан получить отказ, а не метку-в-метке.
+#[test]
+fn marker_in_input_is_refused_not_double_masked() {
+    let key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    let d = Daemon::start(&[("FASAD_VAULT_MODE", "session"), ("FASAD_VAULT_KEY", key)]);
+    let hdr = [
+        ("content-type", "application/json"),
+        ("x-session-id", "p6m"),
+    ];
+    let text = "ИНН 2482014338";
+    let r1 = call(
+        &d.addr,
+        "POST",
+        "/v1/anonymize",
+        &hdr,
+        &anonymize_body(text, &[("inn".to_owned(), 4, text.len())]),
+    );
+    assert_eq!(r1.status, 200, "раунд 1: {}", r1.text());
+    let masked = r1.json()["text"].as_str().expect("текст").to_owned();
+    assert!(masked.contains("[INN_1_"), "метки нет: {masked}");
+
+    let r2 = call(
+        &d.addr,
+        "POST",
+        "/v1/anonymize",
+        &hdr,
+        &anonymize_body(&masked, &[("inn".to_owned(), 0, masked.len())]),
+    );
+    assert_eq!(
+        r2.status,
+        422,
+        "метку внутри текста приняли повторно: {}",
+        r2.text()
+    );
+    assert_eq!(r2.json()["error"]["code"], "reanonymize_surrogate");
+}
