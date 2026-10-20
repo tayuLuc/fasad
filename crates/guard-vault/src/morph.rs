@@ -875,6 +875,54 @@ pub fn inflect(lemma: &str, want: Case, gender: Gender) -> Option<String> {
     MorphTable::shipped().and_then(|t| t.inflect(lemma, want, gender))
 }
 
+/// Род по окончанию — единственный источник рода для гладкой подмены.
+///
+/// Порядок проверок выбран так, чтобы ложный род был невозможен: сначала
+/// отчества (`-ич`/`-евна`), потом женские фамильные и именные окончания, потом
+/// мужские. Всё, что не подпало ни под одну ветку (несклоняемые «Шварценеггер»,
+/// «Гете», имя «Александр» без суффиксного признака), возвращает `None` — и
+/// спан уходит в метку, а не в угаданное имя.
+///
+/// Живёт здесь, а не в демоне, с шага 7а (#60): этим же правилом пользуется
+/// промер пула (`crates/guard-vault/examples/pool_probe.rs`), и держать его
+/// копию означало бы мерить коллизии одним оракулом, а работать другим.
+#[must_use]
+pub fn suffix_gender(word: &str) -> Option<Gender> {
+    let w = word.trim_end_matches(['.', ',', ')', '»']).to_lowercase();
+    let s = w.as_str();
+    if s.ends_with("ич") || s.ends_with("уевич") || s.ends_with("ович") {
+        return Some(Gender::Masc);
+    }
+    if s.ends_with("ична") || s.ends_with("евна") || s.ends_with("вна") || s.ends_with("чна")
+    {
+        return Some(Gender::Fem);
+    }
+    if s.ends_with("ова")
+        || s.ends_with("ёва")
+        || s.ends_with("ева")
+        || s.ends_with("ина")
+        || s.ends_with("ына")
+        || s.ends_with("ская")
+        || s.ends_with("цкая")
+        || s.ends_with("али")
+    {
+        return Some(Gender::Fem);
+    }
+    // «Иванова» и «Кира»: женское окончание -а/-я после согласной.
+    if s.ends_with('а') || s.ends_with('я') {
+        return Some(Gender::Fem);
+    }
+    if s.ends_with('й')
+        || s.ends_with("ь")
+        || s.chars()
+            .last()
+            .is_some_and(|c| c.is_ascii() && c.is_ascii_alphabetic())
+    {
+        return Some(Gender::Masc);
+    }
+    None
+}
+
 /// Разбирает ФИО-спан целиком (обёртка над [`MorphTable::parse_span`]).
 #[must_use]
 pub fn parse_span(value: &str) -> SpanParse {
@@ -892,6 +940,34 @@ pub fn parse_span(value: &str) -> SpanParse {
 )] // паника в тесте = красный CI, это канал ответа
 mod tests {
     use super::*;
+
+    /// Род по окончанию — опора и демона, и промера пула: тесты переехали сюда
+    /// вместе с функцией (#60), иначе перенос остался бы без собственного
+    /// покрытия, а `pool_probe` мерил бы по ней.
+    #[test]
+    fn suffix_gender_reads_the_flag_without_guessing() {
+        use super::suffix_gender as sg;
+        assert_eq!(sg("Ушакова"), Some(Gender::Fem));
+        // Косвенный падеж женской фамилии (`-ой`) читается как Masc — правило
+        // смотрит на окончание, а не на лексико-род. Безопасно тем, что
+        // вызывающий сверяет ответ с `genders` разбора (`parse_span`), и
+        // несовпавший род отсекается до маскировки: спан уходит в метку.
+        assert_eq!(sg("ушаковой"), Some(Gender::Masc));
+        assert_eq!(sg("Ивановна"), Some(Gender::Fem));
+        assert_eq!(sg("Пименовна"), Some(Gender::Fem));
+        assert_eq!(sg("Аннуаровна"), Some(Gender::Fem));
+        // Голый мужской корон на согласную флага не даёт: «Ушаков» = None,
+        // и спан уходит в метку, а не в угаданный мужской род.
+        assert_eq!(sg("Ушаков"), None);
+        assert_eq!(sg("Пименович"), Some(Gender::Masc));
+        assert_eq!(sg("Кира"), Some(Gender::Fem));
+        // Латиница в конце — мужской флаг («Schmidt»), как в исходном правиле.
+        assert_eq!(sg("Schmidt"), Some(Gender::Masc));
+        // Несклоняемое и не имеющее флага — None, не угаданный род.
+        assert_eq!(sg("Шварценеггер"), None);
+        assert_eq!(sg("Гете"), None);
+        assert_eq!(sg(""), None);
+    }
 
     /// сверка формы с golden через ту же норму, что и сопоставление.
     fn same_form(a: &str, b: &str) -> bool {
