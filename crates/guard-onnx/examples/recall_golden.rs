@@ -164,9 +164,7 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
     require(&ltok_path)?;
     let mut ltok = tokenizers::Tokenizer::from_file(&ltok_path)
         .map_err(|e| format!("токенизатор lockR: {e}"))?;
-    ltok.with_post_processor(
-        Option::<tokenizers::processors::template::TemplateProcessing>::None,
-    );
+    ltok.with_post_processor(Option::<tokenizers::processors::template::TemplateProcessing>::None);
     // Rust-`tokenizers` encode(true) НЕ применяет TemplateProcessing и
     // WordPiece-декодер переписывает offsets на байтовую шкалу (промер 4b-3C)
     // ⇒ снимаем пост-процессор ЯВНО; base = encode(false) даёт ЧАРЗ-оффсеты
@@ -188,11 +186,11 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
         .get("[SEP]")
         .copied()
         .ok_or("vocab lockR: нет [SEP]")?;
-    // НЕ используется в 4b-3C: decode-фильтр харнеса (`tok.decode([id]) in
+    // Спец-позиции: decode-фильтр харнеса (`tok.decode([id]) in
     // LOCKR_SPECIALS`) ЛОЖЕН на спецах — python decode ОДИНОЧНОГО спец-id =
     // '' (WordPiece склеивает пустые; промер 4b-3C), O там красит argmax
-    // модели (O@1.0). Id-множество спецев = эквивалент, НЕ нужен; оставлен
-    // только как документация контракта (unit-test ниже).
+    // модели (O@1.0). Id-множество = эквивалент того же контракта (PS-иды
+    // decode='##вич' ∉ сете — фильтр их не трогает).
     let lockr_special: Vec<u32> = LOCKR_SPECIALS
         .iter()
         .filter_map(|t| ltok.get_vocab(true).get(*t).copied())
@@ -202,7 +200,6 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
         .with_intra_threads(threads)?
         .with_optimization_level(ort::session::builder::GraphOptimizationLevel::All)?
         .commit_from_file(&lmodel)?;
-
 
     // Счётчики span-level: total[class] по gold; hits по моделям.
     let mut total = [0u64; 8];
@@ -314,11 +311,7 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
             let special = t < ids_u.len() && lockr_special.contains(&ids_u[t]);
             // ПОРОГА В ТЕГАХ НЕТ (spans_bio_tags): thr — к conf спана после
             // скобки (lockr_counts L410); пре-гейт рвёт I-скобки (промер).
-            tagv.push(if special {
-                "O"
-            } else {
-                ID2LABEL[best]
-            });
+            tagv.push(if special { "O" } else { ID2LABEL[best] });
             probv.push(p);
         }
         // Прогон по ВСЕМ B/I-группам (класс-фильтр GOLDEN_TO_BIO — в счёте
@@ -461,7 +454,11 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
             // прогона: класс-строка «na» уже напечатается нулём знаменателя?
             // Нет — fail-closed ТЗ: считаем такие строки как miss по всем
             // классам (UNK-вето живого пути = та же судьба: None → no-hit).
-            eprintln!("RECALL|layout_miss|g{}|{} групп sizes {sizes:?}|фантом|{phantom}", r.id, gl.len());
+            eprintln!(
+                "RECALL|layout_miss|g{}|{} групп sizes {sizes:?}|фантом|{phantom}",
+                r.id,
+                gl.len()
+            );
             continue;
         }
         let (flat, sz) = guard_onnx::arbitrate::marker_positions(&gl);
@@ -522,7 +519,6 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
     );
     Ok(())
 }
-
 
 #[cfg(feature = "ort-inference")]
 #[must_use]
