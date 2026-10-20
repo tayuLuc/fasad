@@ -7,7 +7,7 @@
 //! это — контракт, который оператор видит в терминале, а `oneshot` — нет.
 //!
 //! Клиент написан вручную (`std::net::TcpStream` + `Connection: close`), а не
-//!taken из крейта: HTTP-клиент в dev-зависимях демона поймал бы себе
+//!не берём из крейта: HTTP-клиент в dev-зависимях демона поймал бы себе
 //! `net-audit`-гейт (он читает манифест целиком, dev-секция тоже считается), и
 //! это правильно — у продукта их быть не должно, и тестам не дозволено его
 //! маскировать.
@@ -732,6 +732,55 @@ struct ToySeen {
 /// Размер фрейма отделён CRLF: `writeln!` дал бы `\n`, и `ureq` честит это как
 /// «chunk length cannot be read as a number» — на этой игрушке мы это и поймали
 /// (ложь об отказе со стороны клиента, а не сервера).
+/// Ответы игрушки, которые обязаны быть отказом прокси, а не ответом: молчание,
+/// оборванное тело, редирект, оборванный стрим. Возвращает `true`, если соединение
+/// уже обслужено (или брошено) и дальше идти не надо.
+fn misbehaviour(path: &str, sock: &mut std::net::TcpStream) -> bool {
+    match path {
+        "/hang" => {
+            // Намеренно молчим: таймаут обязан прийти со стороны демона.
+            std::thread::sleep(Duration::from_secs(30));
+            true
+        }
+        "/abort" => {
+            // Обещаем тело в 400 байт и закрываем соединение на 23-м: заголовок
+            // ответа получен, поэтому отказ обязан называть обрыв, а не «upstream
+            // недоступен».
+            let _ = sock.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 400\r\n\r\n{\"choices\":[{\"content\":",
+            );
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+            true
+        }
+        "/redirect" => {
+            // 302 с `Location`: транзитом это вранье вдвойне — статус дошёл бы,
+            // цель наш фильтр заголовков вырезал бы.
+            let _ = sock.write_all(
+                b"HTTP/1.1 302 Found\r\nLocation: https://example.invalid/\r\nContent-Length: 0\r\n\r\n",
+            );
+            true
+        }
+        "/sse-then-drop" => {
+            // Первый кадр стрима отправлен, соединение брошено на середине
+            // второго: заголовок ушёл клиенту раньше, поэтому отказ обязан
+            // прийти кадром `event: error` с кодом обрыва, а не
+            // `upstream_unreachable`.
+            let _ = sock.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            );
+            let first =
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"начало\"}}]}\n\n";
+            let _ = write!(sock, "{:x}\r\n", first.len());
+            let _ = sock.write_all(first.as_bytes());
+            let _ = sock.write_all(b"\r\n");
+            let _ = sock.flush();
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+            true
+        }
+        _ => false,
+    }
+}
+
 fn chunked(content_type: &str, payload: &[u8], step: usize) -> Vec<u8> {
     let mut frames = Vec::new();
     for chunk in payload.chunks(step.max(1)) {
@@ -798,20 +847,7 @@ fn toy_upstream() -> (String, std::sync::mpsc::Receiver<ToySeen>) {
             {
                 return;
             }
-            if path == "/hang" {
-                // Намеренно молчим: таймаут обязан прийти с стороны демона.
-                std::thread::sleep(Duration::from_secs(30));
-                continue;
-            }
-            if path == "/abort" {
-                // Обещаем тело в 400 байт и закрываем соединение на 63-м:
-                // заголовок ответа получен, поэтому отказ обязан называть обрыв,
-                // а не «upstream недоступен».
-                let _ = sock.write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                      Content-Length: 400\r\n\r\n{\"choices\":[{\"content\":",
-                );
-                let _ = sock.shutdown(std::net::Shutdown::Both);
+            if misbehaviour(&path, &mut sock) {
                 continue;
             }
             // Что отправляем: `/sse/<k>` — эхо, нарезанное chunked-фреймами по
@@ -834,12 +870,21 @@ fn toy_upstream() -> (String, std::sync::mpsc::Receiver<ToySeen>) {
                 );
                 chunked("text/event-stream", frames.as_bytes(), 256)
             } else {
+                // `/object-content` — та же реплика, но речевое поле лежит
+                // списком частей (`content: [{type,text}]`), как у провайдеров с
+                // блоками. Ретранслятор строку в нём не видит, и обязан честно
+                // сказать `malformed`, а не «развёрнуто 0 маркеров».
+                let content: serde_json::Value = if path == "/object-content" {
+                    serde_json::json!([{"type": "text", "text": echo}])
+                } else {
+                    serde_json::Value::String(echo)
+                };
                 let json = serde_json::json!({
                     "id": "toy",
                     "object": "chat.completion",
                     "choices": [{
                         "index": 0,
-                        "message": {"role": "assistant", "content": echo},
+                        "message": {"role": "assistant", "content": content},
                         "finish_reason": "stop",
                     }],
                 });
@@ -1018,6 +1063,12 @@ fn proxy_stream_survives_every_chunk_slicing() {
         assert!(
             !text.contains("[[F0#"),
             "шаг {step}: нарезка съела границу маркера, наружу ушёл он, а не оригинал: {text}"
+        );
+        // Трейлер счётчиков обещан доком на каждом стриме, включая нарезанный.
+        assert!(
+            reply.text().contains(": guard substituted="),
+            "шаг {step}: стрим закрылся без трейлера счётчиков: {}",
+            reply.text()
         );
         assembled.push((step, text));
         let gone = seen
@@ -1260,6 +1311,109 @@ fn silent_upstream_is_504_upstream_timeout() {
     );
 }
 
+/// Непрослеживаемое речевое поле (список частей вместо строки) — `malformed=1`
+/// в заголовке, маркеры при этом уходят транзитом целыми: `ПДн` в них нет, а
+/// «развёрнуто 0» на невидимой структуре было бы враньём о гарантий.
+#[test]
+fn opaque_speech_field_is_counted_malformed() {
+    let (toy, _seen) = toy_upstream();
+    let d = Daemon::start(&[
+        ("FASAD_PROXY_LOOPBACK_HTTP", "1"),
+        ("FASAD_UPSTREAM_ALLOWLIST", toy.as_str()),
+    ]);
+    let reply = call(
+        &d.addr,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("content-type", "application/json"),
+            (
+                "x-upstream-url",
+                upstream_url(&toy, "/object-content").as_str(),
+            ),
+        ],
+        &chat_body(TWO_SPAN_TEXT),
+    );
+    assert_eq!(reply.status, 200, "ответ прокси: {}", reply.text());
+    assert_eq!(
+        reply.header("x-guard-malformed"),
+        Some("1"),
+        "непрослеживаемая структура не названа: {}",
+        reply.text()
+    );
+    let text = reply.text();
+    assert!(
+        text.contains("[[F0#") && !text.contains("2482014338"),
+        "маркеры не доехали целыми либо ПДн протекло: {text}"
+    );
+}
+
+/// Порядок отказов прокси: сначала то, что правит клиент, потом то, что правит
+/// оператор. Клиент с нечитаемым `X-Session-ID` обязан слышать `400` про
+/// заголовок, а не `403` про allowlist — иначе его отправляют чинить чужую
+/// конфигурацию. До правки проверка списка шла первой, и этот тест краснел по
+/// коду.
+#[test]
+fn bad_session_precedes_allowlist_refusal() {
+    let d = Daemon::start(&[
+        ("FASAD_PROXY_LOOPBACK_HTTP", "1"),
+        ("FASAD_UPSTREAM_ALLOWLIST", "127.0.0.1:1"),
+    ]);
+    let body = br#"{"model":"m","messages":[{"role":"user","content":"x"}]}"#;
+    let mut req = Vec::new();
+    req.extend_from_slice(
+        b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ",
+    );
+    req.extend_from_slice(body.len().to_string().as_bytes());
+    req.extend_from_slice(
+        b"\r\nConnection: close\r\nX-Upstream-URL: http://127.0.0.1:9/x\r\nX-Session-ID: ",
+    );
+    req.extend_from_slice(b"\xff\xfe");
+    req.extend_from_slice(b"\r\n\r\n");
+    req.extend_from_slice(body);
+    let r = call_raw(&d.addr, &req);
+    let text = String::from_utf8_lossy(&r.body).into_owned();
+    assert_eq!(r.status, 400, "клиентская правка спрятана за 403: {text}");
+    assert!(
+        text.contains("печатаемым ASCII"),
+        "причина не названа: {text}"
+    );
+    assert!(
+        !text.contains("allowlist"),
+        "подмена причины на конфиг: {text}"
+    );
+}
+
+/// Редирект upstream — отказ с настоящим именем причины, а не транзит 302.
+/// Враньё тут двукратное: клиенту пришло бы «перенаправляйся», цель он бы не
+/// увидел (`Location` вырезается фильтром переносимых заголовков), и позволило
+/// бы ему уйти на адрес вне allowlist.
+#[test]
+fn redirect_from_upstream_is_refused_not_transited() {
+    let (toy, _seen) = toy_upstream();
+    let d = Daemon::start(&[
+        ("FASAD_PROXY_LOOPBACK_HTTP", "1"),
+        ("FASAD_UPSTREAM_ALLOWLIST", toy.as_str()),
+    ]);
+    let reply = call(
+        &d.addr,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("content-type", "application/json"),
+            ("x-upstream-url", upstream_url(&toy, "/redirect").as_str()),
+        ],
+        &chat_body("проверка"),
+    );
+    assert_eq!(reply.status, 502, "ответ прокси: {}", reply.text());
+    assert_eq!(reply.json()["error"]["code"], "upstream_redirect");
+    assert!(
+        !reply.text().contains("example.invalid"),
+        "цель редиректа просочилась клиенту: {}",
+        reply.text()
+    );
+}
+
 /// Обрыв ответа посреди тела — это `upstream_aborted`, а не `upstream_unreachable`.
 /// Ложь о причине отправила бы оператора чинить DNS и адрес, когда upstream
 /// отдал заголовок и потерял соединение на теле.
@@ -1286,6 +1440,52 @@ fn truncated_upstream_body_is_aborted_not_unreachable() {
         !reply.text().contains("unreachable"),
         "причина подменена: {}",
         reply.text()
+    );
+}
+
+/// Стрим оборвался после первого кадра: 200 уже ушёл, значит причина обязана
+/// приехать кадром `event: error`, и называть она обязана обрыв, а не
+/// недоступность. Ловит подмену `Unreachable` вместо `StreamAborted`: с ней
+/// тест краснеет по коду, хоть HTTP-статус и остался 200.
+#[test]
+fn dropped_stream_reports_abort_in_error_frame() {
+    let (toy, _seen) = toy_upstream();
+    let d = Daemon::start(&[
+        ("FASAD_PROXY_LOOPBACK_HTTP", "1"),
+        ("FASAD_UPSTREAM_ALLOWLIST", toy.as_str()),
+    ]);
+    let reply = call(
+        &d.addr,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("content-type", "application/json"),
+            (
+                "x-upstream-url",
+                upstream_url(&toy, "/sse-then-drop").as_str(),
+            ),
+        ],
+        &chat_body_stream("проверка"),
+    );
+    assert_eq!(
+        reply.status,
+        200,
+        "заголовок ушёл до обрыва: {}",
+        reply.text()
+    );
+    let text = reply.text();
+    assert!(
+        text.contains("начало"),
+        "первый кадр потерялся, значит это не обрыв середины: {text}"
+    );
+    assert!(text.contains("event: error"), "нет err-кадра: {text}");
+    assert!(
+        text.contains("upstream_aborted"),
+        "err-кадр не называет обрыв: {text}"
+    );
+    assert!(
+        !text.contains("upstream_unreachable"),
+        "причина подменена на недоступность: {text}"
     );
 }
 

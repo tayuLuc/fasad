@@ -290,6 +290,19 @@ impl<'a> Relay<'a> {
                 continue;
             };
             for field in SPEECH_FIELDS {
+                // Речевое поле не-строкой — структура, которую наш ретранслятор
+                // не видит: гарантию подмены для неё выполнить нельзя, и молчать
+                // о ней значило бы врать в трейлере (`malformed=0` при живых
+                // маркерах внутри массива). Считаем кадр непрослеживаемым; сами
+                // байты идут транзитом — surrogate-метки не ПДн, утечки нет.
+                // `null` не считается: провайдеры им пишут «в этом кадре текста
+                // нет», и это штатная форма, а не невидимая структура.
+                if !matches!(
+                    delta.get(field),
+                    None | Some(Value::Null | Value::String(_))
+                ) {
+                    self.stats.malformed += 1;
+                }
                 let Some(text) = delta.get(field).and_then(Value::as_str).map(str::to_owned) else {
                     continue;
                 };
@@ -538,6 +551,8 @@ fn synthetic(template: Option<&Value>, index: u32, text: &str) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)] // в тестах паника = красный CI, это канал ответа
 mod tests {
     use super::*;
+    use crate::schema::Schema;
+    use crate::vault::SpanIn;
 
     /// Хвостовые кадры обязан определять вход, а не обход `HashMap`.
     ///
@@ -594,6 +609,137 @@ mod tests {
         assert!(
             orders.iter().all(|o| *o == want),
             "порядок хвостовых кадров не определён входом: {orders:?}"
+        );
+    }
+
+    /// Дискриминатор SPEC §8: наивная замена по чанкам ломает разворот.
+    ///
+    /// Трём один и тот же поток дважды. Наивно: каждый чанк отдельно через
+    /// `str::replace` — метка, разрезанная пополам границей чанка, не находится
+    /// ни в одном из них, и разворота не происходит. Нашим релаем: те же
+    /// границы реза, тот же вход — и исход побайтно совпадает с целым стримом.
+    /// Без этого теста утверждение «наивный replace непригоден» оставалось бы
+    /// декларацией, а не фактом.
+    #[test]
+    fn naive_replace_by_chunk_breaks_roundtrip() {
+        let text = "Иванов Пётр Сергеевич, ИНН 2482014338";
+        let cfg = Config::from_lookup(|_| None).expect("дефолты sane");
+        let vault = Vault::startup(VaultMode::Session, crate::config::Mlock::BestEffort)
+            .expect("хранилище в режиме 2 поднимается");
+        let needle = "Иванов Пётр Сергеевич";
+        let start = text.find(needle).expect("подстрока есть в тестовом входе");
+        let spans = vec![SpanIn {
+            entity_type: "person_name".to_owned(),
+            byte_start: start,
+            byte_end: start + needle.len(),
+        }];
+        let anon = vault
+            .anonymize(
+                Some("naive"),
+                text,
+                &spans,
+                &Schema::embedded().expect("канон валиден"),
+            )
+            .expect("анонимизация");
+        let masked = anon.text.clone();
+        let mstart = masked.find('[').expect("метка на месте");
+        let mend = masked.find(']').expect("метка закрыта");
+        let marker = masked[mstart..=mend].to_owned();
+        assert!(
+            marker.len() > 6 && marker.starts_with('[') && marker.ends_with(']'),
+            "ожидался маркер вида `[КЛАСС_1_…]]`, получено {marker}"
+        );
+        let payload = format!(
+            "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"{masked}\"}}}}]}}\n\ndata: [DONE]\n\n"
+        );
+        // Резаем ровно посередине метки: открывающая скобка остаётся в левой
+        // половинке, закрывающая — в правой, так что упрёк в многобайтовости
+        // не отмажет.
+        let marker_start = payload.find(&marker).expect("метка в стриме есть");
+        let cut = marker_start + marker.len() / 2;
+        let parts = [&payload[..cut], &payload[cut..]];
+        assert!(
+            parts[0].contains('[') && parts[1].contains(']'),
+            "разрез не внутри метки: тест ничего не проверяет"
+        );
+
+        // Наивный путь: замена независимо по каждому чанку.
+        let naive: String = parts
+            .iter()
+            .map(|chunk| String::from_utf8_lossy(chunk.as_bytes()).replace(&marker, needle))
+            .collect();
+        assert!(
+            naive.contains('[') || naive.contains(']'),
+            "наивный путь чудесным образом собрал метку — тест обесценен"
+        );
+        assert!(
+            !naive.contains(text),
+            "наивный разворот прошёл целиком, значит тест не дискриминирует"
+        );
+
+        // Наш путь: те же границы реза, побайтно совпадающий результат.
+        let whole = run_relay(&vault, &cfg, payload.as_bytes(), &[]);
+        let split = run_relay(&vault, &cfg, parts[0].as_bytes(), &[parts[1].as_bytes()]);
+        assert_eq!(
+            split, whole,
+            "релай разошёлся с целым стримом на тех же границах"
+        );
+        assert!(
+            whole.contains(needle) && !whole.contains(&marker),
+            "разворот не случился и у релая: {whole}"
+        );
+    }
+
+    /// Прогон стрима через `Relay`: один кусок целиком + остальные досылом.
+    fn run_relay(vault: &Vault, cfg: &Config, first: &[u8], rest: &[&[u8]]) -> String {
+        let mut relay = Relay::new(vault, Some("naive"), cfg).expect("релай поднимается");
+        let mut out = Vec::new();
+        relay
+            .push(first, &mut out)
+            .expect("первый кусок принимается");
+        for chunk in rest {
+            relay.push(chunk, &mut out).expect("кусок принимается");
+        }
+        relay.finish(&mut out);
+        String::from_utf8(out).expect("оболочка — UTF-8")
+    }
+
+    /// Непрослеживаемое речевое поле: список частей вместо строки.
+    ///
+    /// Контракт стрима — текстовый, поэтому структура внутри `delta.content`
+    /// для ретранслятора невидима, и молчать о ней значило бы врать в трейлере.
+    /// Отдельно проверяем `null`: провайдеры им пишут «в этом кадре текста нет»,
+    /// это штатная форма, а не невидимая структура.
+    #[test]
+    fn opaque_delta_field_counts_malformed() {
+        let cfg = Config::from_lookup(|_| None).expect("дефолты sane");
+        let vault = Vault::startup(VaultMode::Session, crate::config::Mlock::BestEffort)
+            .expect("хранилище в режиме 2 поднимается");
+        let mut relay = Relay::new(&vault, Some("opaque"), &cfg).expect("релай поднимается");
+        let marker = "[[F0#aaaaaaaa]]";
+        let frame = format!(
+            "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{marker}\"}}]}}}}]}}\n\n"
+        );
+        let mut out = Vec::new();
+        relay
+            .push(frame.as_bytes(), &mut out)
+            .expect("кадр целый даже с невидимым полем");
+        let text = String::from_utf8(out).expect("оболочка — UTF-8");
+        assert!(
+            text.contains(marker),
+            "маркер обязан уйти транзитом целым: {text}"
+        );
+        assert_eq!(relay.stats().malformed, 1, "невидимое поле не посчитано");
+        relay
+            .push(
+                b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":null}}]}\n\n",
+                &mut Vec::new(),
+            )
+            .expect("кадр целый");
+        assert_eq!(
+            relay.stats().malformed,
+            1,
+            "`null` — штатная форма, счётчик её не двигает"
         );
     }
 

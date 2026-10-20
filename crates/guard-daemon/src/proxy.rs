@@ -183,10 +183,6 @@ impl ProxyError {
     /// `http_status_as_error(false)`, то есть `4xx`/`5xx` upstream — это ответ,
     /// а не ошибка, и мы пробрасываем его код как есть.
     #[must_use]
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "стадии таймаута достаются из значения: по ссылке пришлось бы держать временный Error"
-    )]
     fn from_ureq(err: ureq::Error) -> Self {
         use ureq::Error as U;
         match err {
@@ -200,11 +196,22 @@ impl ProxyError {
                 ureq::Timeout::Global => "global",
                 _ => "unknown",
             }),
-            U::TooManyRedirects | U::RedirectFailed => Self::Redirect,
+            // `TooManyRedirects`/`RedirectFailed` сюда не доходят: при
+            // `max_redirects = 0` `ureq` не считает превышением (промер
+            // `ureq-3.4.2/src/config.rs:257-259`: ошибка требует > 0), а
+            // возвращает 3xx обычным ответом. Редирект ловим сами —
+            // [`refuse_redirect`] на стороне ответа, а не [`Self::Redirect`] из
+            // разбора ошибки: в этом матчинге ветка была бы мёртвым кодом.
             U::RequireHttpsOnly(_) => Self::Insecure,
-            U::ConnectionFailed | U::HostNotFound | U::Io(_) => Self::Unreachable,
+            e @ (U::ConnectionFailed | U::HostNotFound | U::Io(_)) => {
+                eprintln!("ПРОБНИК unreachable: {e:?}");
+                Self::Unreachable
+            }
             U::Tls(_) => Self::Tls,
-            _ => Self::Protocol,
+            other => {
+                eprintln!("ПРОБНИК ureq: {other:?}");
+                Self::Protocol
+            }
         }
     }
 }
@@ -534,14 +541,17 @@ pub async fn handle(State(st): State<AppState>, req: Request) -> Response {
     // Порядок отказов: сначала то, что клиент обязан исправить в запросе
     // (заголовок, политика, сессия), потом конфигурация. Иначе `audit_only`
     // на неизвестном хосте получает «хост не в списке» — правка env не лечит
-    // настоящую причину, и это тот же класс лжи о причине отказа.
-    if let Err(err) = upstream.check(st.config()) {
-        return ApiError::from(err).into_response();
-    }
+    // настоящую причину, и это тот же класс лжи о причине отказа. Сессия стоит
+    // рядом с заголовком upstream именно по этой причине: проверка списка
+    // Ранее список проходил первым, и клиент с битым `X-Session-ID` слышал
+    // `403` про чужой ему allowlist. Проверяется `bad_session_precedes_allowlist_refusal`.
     let session = match session_of(&headers) {
         Ok(s) => s.map(str::to_owned),
         Err(err) => return err.into_response(),
     };
+    if let Err(err) = upstream.check(st.config()) {
+        return ApiError::from(err).into_response();
+    }
     let carried = carry_headers(&headers);
     let masked = match guarded_mask(&st, &body, session.as_deref(), &headers, policy) {
         Ok(m) => m,
@@ -793,6 +803,23 @@ fn client_threshold(headers: &HeaderMap, cfg: &Config) -> Option<f64> {
         .filter(|v| v.is_finite() && (0.0..=1.0).contains(v) && *v >= cfg.thresholds.tau_low)
 }
 
+/// Редирект upstream — отказ, а не ответ.
+///
+/// Без этой ветки 3xx ушёл бы клиенту транзитом: статус транслируется, а
+/// `Location` вырезается нашим фильтром заголовков, то есть клиент получил бы
+/// перенаправление без цели. Сопровождать запрещено дважды: адрес может не быть
+/// в allowlist, и второй адрес уже не проверяется masking-ом запроса.
+///
+/// Ожидать ошибки `ureq` на этот случай нельзя: при `max_redirects = 0`
+/// превышение не считается превышением (промер
+/// `ureq-3.4.2/src/config.rs:257-259`), крейт возвращает 3xx как обычный ответ.
+fn refuse_redirect(status: StatusCode) -> Result<(), ProxyError> {
+    if status.is_redirection() {
+        return Err(ProxyError::Redirect);
+    }
+    Ok(())
+}
+
 /// Буферизованный ответ: читаем целиком, разворачиваем, отдаём целиком.
 async fn buffer_through(
     st: &AppState,
@@ -807,6 +834,7 @@ async fn buffer_through(
             .await
             .map_err(|_| ProxyError::Aborted)??;
     let status = resp.status();
+    refuse_redirect(status)?;
     let content_type = resp.headers().get("content-type").cloned();
     let body = read_capped(resp, st.config().max_body_bytes)?;
     let (bytes, restored) = deanonymize_json_body(st, session.as_deref(), &body)?;
@@ -846,6 +874,7 @@ async fn stream_through(
             .await
             .map_err(|_| ProxyError::Aborted)??;
     let status = resp.status();
+    refuse_redirect(status)?;
     let content_type = resp.headers().get("content-type").cloned();
     let streamed = content_type
         .as_ref()
@@ -1036,6 +1065,15 @@ fn deanonymize_json_body(
                 continue;
             };
             for field in sse::SPEECH_FIELDS {
+                // Тот же договор, что в `sse::Relay`: нестроковое и не-нулевое
+                // речевое поле — структура вне зоны нашей видимости, поэтому
+                // `malformed`, а не тишина. байты уходят как есть.
+                if !matches!(
+                    message.get(field),
+                    None | Some(serde_json::Value::Null | serde_json::Value::String(_))
+                ) {
+                    restored.malformed = true;
+                }
                 let Some(text) = message.get(field).and_then(serde_json::Value::as_str) else {
                     continue;
                 };
@@ -1092,7 +1130,7 @@ impl futures_core::Stream for Incoming {
         match this.rx.poll_recv(cx) {
             Poll::Ready(Some(Ok(bytes))) => Poll::Ready(Some(Ok(bytes))),
             Poll::Ready(Some(Err((code, message)))) => {
-                // Ошибка — это КАДР, а не молчаливый aboрт тела: `io::Error`
+                // Ошибка — это КАДР, а не молчаливый аборт тела: `io::Error`
                 // здесь означал бы «клиент сам виноват, не дочитал», и ни
                 // один SDK не узнал бы причину. Фрейм `event: error` читается
                 // клиентом как отказ с кодом.
@@ -1313,6 +1351,29 @@ mod tests {
             "y",
         );
         assert_eq!(n["messages"][0]["content"], 5);
+    }
+
+    /// Редирект любого вида — отказ, а не транзит. `is_redirection()` у
+    /// `http::StatusCode` — это весь класс `3xx`, включая `304`: прокси `POST`а
+    /// кэшем не торгует, и транзит `304` без `Location` был бы тем же враньём.
+    /// Контраст — статусы вне класса.
+    #[test]
+    fn every_redirect_status_is_refused() {
+        for code in [300, 301, 302, 303, 304, 305, 307, 308] {
+            let status = StatusCode::from_u16(code).expect("статус существующий");
+            assert_eq!(
+                refuse_redirect(status).err().map(|e| e.code()),
+                Some("upstream_redirect"),
+                "{code} ушёл бы клиенту транзитом"
+            );
+        }
+        for code in [200, 204, 402] {
+            let status = StatusCode::from_u16(code).expect("статус существующий");
+            assert!(
+                refuse_redirect(status).is_ok(),
+                "{code} не редирект: отказывать не на чем"
+            );
+        }
     }
 
     #[test]
