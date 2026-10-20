@@ -703,16 +703,39 @@ impl VaultEngine {
 
     /// Сбрасывает всё, что накоплено сессией (конец диалога, выход из запроса).
     pub fn invalidate_session(&self, session: &str) -> u64 {
-        let removed = self.store.invalidate_session(session);
+        // Замок берётся ДО снятия записей стора, а не после. Иначе выдача,
+        // вклинившаяся между `store.invalidate_session` и чисткой индекса,
+        // застаёт строку индекса живой, записи мёртвой — и возвращает в стор
+        // оригинал для сессии, индекс которой уже вычищен: оригинал переживает
+        // удаление сессии без свидетеля, а разворот потом молча его находит
+        // (промер барьерного теста: 1 нарушение инварианта из 2000 раундов).
+        // Цена — teardown сериализован с выдачей; для стора в десятки записей
+        // это микросекунды.
         let mut gi = self
             .integrity
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        let removed = self.store.invalidate_session(session);
         gi.issued.retain(|(s, _), _| s != session);
         if let Some(n) = gi.mismatches.remove(session) {
             gi.retired += n;
         }
         removed
+    }
+
+    /// Тестовый наблюдатель: есть ли у формы строка в индексе целостности.
+    ///
+    /// `#[cfg(test)]`: индекс — внутреннее состояние, продуктовый код не имеет
+    /// права на него опираться, а тесту нужно отличать «записи нет» от «запись
+    /// есть, а свидетеля уже сняли».
+    #[cfg(test)]
+    #[must_use]
+    pub fn issued_witness(&self, session: &str, form: &str) -> bool {
+        self.integrity
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .issued
+            .contains_key(&(session.to_owned(), form.to_owned()))
     }
 }
 
@@ -1048,6 +1071,98 @@ mod tests {
     /// оба потока видят пустой индекс, форма уходит двоим, индекс молча
     /// перезаписывается вторым владельцем, а `restoration_mismatches` остаётся
     /// нулевым — метрика лжёт ровно там, где обязана кричать.
+    /// Самопроверка R1: teardown обязан быть сериализован с выдачей.
+    ///
+    /// `invalidate_session` снимал записи стора ДО того, как брал замок индекса.
+    /// Выдача, вклинившаяся в это окно, видела строку индекса (её ещё не сняли),
+    /// не видела записи стора (их уже сняли) и возвращала запись в стор — итог:
+    /// оригинал сессии пережил её удаление, а свидетеля у него нет. Инвариант,
+    /// который это ловит: запись в сторе и строка в индексе живут ровно вместе.
+    ///
+    /// Мощность промера измерена, зелёный прогон — сетка, а не доказательство:
+    /// на довоенном порядке (стор снимается вне замка) из трёх прогонов красятся
+    /// два — 5 и 1 нарушение из 2000 раундов при четырёх выдавщиках на один
+    /// teardown. Окно в десятки инструкций, детерминировать его без тестовой щели
+    /// в продуктовом коде нельзя; гарантия — порядок захвата замка, а не этот
+    /// тест.
+    #[test]
+    fn teardown_and_issue_never_leave_record_without_witness() {
+        const ROUNDS: usize = 2_000;
+        let e = VaultEngine::new(
+            SessionKey::new([7_u8; KEY_LEN]),
+            Limits::for_test(
+                std::time::Duration::from_secs(600),
+                std::time::Duration::from_secs(600),
+            ),
+        );
+        // Четыре выдавщика на один teardown: окно между снятием стора и чисткой
+        // индекса узкое, одним выдавщиком ловилось 1 нарушение из 2000 раундов и
+        // промахивалось в трёх прогонах подряд.
+        let issuers = 4_usize;
+        let word = "Ушакова";
+        let one = ["Тенина"];
+        let mut bad = 0_usize;
+        let mut first_bad = String::new();
+        for r in 0..ROUNDS {
+            let sess = format!("td{r}");
+            let form = e
+                .surrogat_for_gender_in(
+                    &sess,
+                    word,
+                    Case::Nom,
+                    Gender::Fem,
+                    NameType::Surname,
+                    &one,
+                )
+                .expect("первая выдача не валится")
+                .expect("первая выдача даёт форму")
+                .form;
+            let bar = std::sync::Barrier::new(1 + issuers);
+            std::thread::scope(|s| {
+                let t1 = s.spawn(|| {
+                    bar.wait();
+                    e.invalidate_session(&sess);
+                });
+                let issuers: Vec<_> = (0..issuers)
+                    .map(|_| {
+                        s.spawn(|| {
+                            bar.wait();
+                            e.surrogat_for_gender_in(
+                                &sess,
+                                word,
+                                Case::Nom,
+                                Gender::Fem,
+                                NameType::Surname,
+                                &one,
+                            )
+                        })
+                    })
+                    .collect();
+                t1.join().expect("teardown не паникует");
+                for h in issuers {
+                    let _second = h.join().expect("выдача не паникует");
+                }
+            });
+            let store_has = e
+                .store()
+                .get(&StoreKey::new(&sess, &format!("{SRG_PREFIX}{form}")))
+                .is_some();
+            let index_has = e.issued_witness(&sess, &form);
+            if store_has != index_has {
+                bad += 1;
+                if first_bad.is_empty() {
+                    first_bad = format!(
+                        "раунд {r}: форма {form}: запись в сторе = {store_has},                          свидетель в индексе = {index_has}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            bad, 0,
+            "запись без свидетеля переживает teardown {bad} раз(а) из {ROUNDS}; {first_bad}"
+        );
+    }
+
     #[test]
     fn concurrent_issue_never_hands_one_form_to_two_owners() {
         use std::sync::{Arc, Barrier};
