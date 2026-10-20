@@ -255,8 +255,8 @@ impl std::fmt::Display for VaultApiError {
             Self::SessionGone => write!(f, "сессия вытеснена во время запроса"),
             Self::ReanonymizeSurrogate { class } => write!(
                 f,
-                "спан класса {class:?} — уже замазанный текст этой сессии (метка или суррогат); \
-                 повторная анонимизация запрещена"
+                "спан класса {class:?} — уже замазанный нашим же механизмом текст \
+                 (метка или суррогат); повторная анонимизация запрещена"
             ),
         }
     }
@@ -482,14 +482,18 @@ impl Vault {
         // и `deanonymize` вернёт смесь чужой фамилии с настоящими именем и
         // отчеством как настоящие данные. Проверка по любому классу, не только
         // по `person_name`: класс дефекта — ключ хранилища, а не тип ПДн.
-        if self.mode == VaultMode::Session {
-            let sid = session.unwrap_or_default();
-            for s in &spans {
-                if self.is_current_surrogate(sid, &text[s.byte_start..s.byte_end]) {
-                    return Err(VaultApiError::ReanonymizeSurrogate {
-                        class: s.entity_type.clone(),
-                    });
-                }
+        for s in &spans {
+            let piece = &text[s.byte_start..s.byte_end];
+            // Грамматику проверяем в обоих режимах: `[[F0#…]]` из режима 3 —
+            // тот же класс порчи, что и метка режима 2, только без сессии, за
+            // которую можно зацепиться.
+            if Self::has_marker(piece)
+                || (self.mode == VaultMode::Session
+                    && self.is_current_surrogate(session.unwrap_or_default(), piece))
+            {
+                return Err(VaultApiError::ReanonymizeSurrogate {
+                    class: s.entity_type.clone(),
+                });
             }
         }
 
@@ -670,9 +674,8 @@ impl Vault {
     /// суррогатом из этой же сессии. Отказ здесь дороже точности, чем тихая
     /// подмена данных, — см. комментарий в `anonymize`.
     fn is_current_surrogate(&self, session: &str, piece: &str) -> bool {
-        if Self::has_marker(piece) {
-            return true;
-        }
+        // Маркер здесь уже проверен вызывающим (`has_marker`), остаются слова,
+        // которые хранилище знает как подмену.
         // Ключ реверс-индекса — словоформа, а не ФИО целиком: «Тенина Агафья
         // Афанасьевна» целиком формой не является, но её первое слово является,
         // и перезатирание начинается именно с него.
@@ -684,18 +687,22 @@ impl Vault {
             .any(|w| self.engine.original_of_surrogat(session, w).is_some())
     }
 
-    /// Содержит ли спан метку режима 2 (`[КЛАСС_СЧЁТЧИК_NONCE]`, алфавит
-    /// `Grammar::LABEL` = `A-Z0-9_`).
+    /// Содержит ли спан нашу же подмену маркерной грамматики: метку режима 2
+    /// (`[КЛАСС_СЧЁТЧИК_NONCE]`, алфавит `Grammar::LABEL` = `A-Z0-9_`) или
+    /// токен режима 3 (`[[F0#base64url]]`).
     ///
     /// Именно «содержит», а не «равна»: запрос замазать `ИНН [INN_1_X]` — это
     /// метка-в-метке, тот же класс порчи, что и суррогат-в-суррогате, и приходит
-    /// он целиком как один спан.
+    /// он целиком как один спан. Для режима 3 промер той же пары раундов даёт
+    /// `deanonymize` с `substituted: 1` и живым `[[F0#…]]` внутри «восстановленного»
+    /// текста — тихий partial-restore, который мы не отдаём ни при какой ошибке.
     fn has_marker(piece: &str) -> bool {
-        piece.split('[').skip(1).any(|rest| {
-            rest.split(']')
-                .next()
-                .is_some_and(|inner| !inner.is_empty() && inner.chars().all(Self::is_label_char))
-        })
+        piece.contains("[[F0#")
+            || piece.split('[').skip(1).any(|rest| {
+                rest.split(']').next().is_some_and(|inner| {
+                    !inner.is_empty() && inner.chars().all(Self::is_label_char)
+                })
+            })
     }
 
     fn is_label_char(c: char) -> bool {

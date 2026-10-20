@@ -573,3 +573,40 @@ fn marker_in_input_is_refused_not_double_masked() {
     );
     assert_eq!(r2.json()["error"]["code"], "reanonymize_surrogate");
 }
+
+/// Тот же класс в режиме 3, где сессии нет и зацепиться можно только за
+/// грамматику: маркер `[[F0#…]]` внутрь спана — отказ, а не метка-в-метке.
+/// Промер до правки: второй раунд давал `200`, а `deanonymize` возвращал
+/// «восстановленный» текст с живым маркером внутри и `substituted: 1` —
+/// тихий partial-restore.
+#[test]
+fn stateless_marker_in_input_is_refused_not_double_masked() {
+    let d = Daemon::start(&[("FASAD_VAULT_MODE", "stateless")]);
+    let hdr = [("content-type", "application/json")];
+    let text = "ИНН 2482014338";
+    let r1 = call(
+        &d.addr,
+        "POST",
+        "/v1/anonymize",
+        &hdr,
+        &anonymize_body(text, &[("inn".to_owned(), 4, text.len())]),
+    );
+    assert_eq!(r1.status, 200, "раунд 1: {}", r1.text());
+    let masked = r1.json()["text"].as_str().expect("текст").to_owned();
+    assert!(masked.contains("[[F0#"), "токена режима 3 нет: {masked}");
+
+    let r2 = call(
+        &d.addr,
+        "POST",
+        "/v1/anonymize",
+        &hdr,
+        &anonymize_body(&masked, &[("inn".to_owned(), 0, masked.len())]),
+    );
+    assert_eq!(
+        r2.status,
+        422,
+        "токен приняли повторно как ПДн: {}",
+        r2.text()
+    );
+    assert_eq!(r2.json()["error"]["code"], "reanonymize_surrogate");
+}
