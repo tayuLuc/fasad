@@ -32,11 +32,20 @@
 5. Метрики нецитируемы: strict 87.1 / baseline 0.974513 — гейт-датасет приватный xlsx
    реальных ПДн (tests/quality/README L34-38), N=3857 — из baseline_result.json provenance.dataset,
    sha256 — top-level ключ dataset_sha256 того же файла. Публичный
-   `redmadrobot-rnd/pii_benchmark` — промерен 20.10 (uvx huggingface_hub, HfApi+CSV):
-   2841 строка, MIT (не Apache, в отличие от модели), 40 non-O BIO-токенов = 20 типов;
-   пересечение с нашим ядром 8/11 (person_name, inn, snils, card_pan, phone, email,
-   address, passport; нет ogrn/ogrnip/iban). Кандидат кросс-референса границ спанов
-   (MIT позволяет), НЕ замены data/golden (AGENTS §4).
+   `redmadrobot-rnd/pii_benchmark` — промерен первичкой 20.10 (uvx huggingface_hub,
+   HfApi+CSV, snapshot `f77ea83`): 2841 строка (cols text/tokens/ner_tags), license=mit
+   во frontmatter (отдельного LICENSE-файла в репо датасета нет; модель
+   `rubert-base-pii-ner` — apache-2.0), last_mod 2026-06-09. **Типов 21, не 20:**
+   40 non-O BIO-токенов = 21 `B-` + 19 `I-` (FIRST_NAME и MIDDLE_NAME однословны, `I-`
+   у них нет нигде в файле) — «40 = 20» было арифметикой от вывода, не замером;
+   путаница с 43: 43 метки — в `config.json` модели (21×2 + O, там `I-` есть у всех),
+   в test.csv не-O ровно 40. `[claim]` закрыт **подтверждением**: README-таблица
+   конкурента (21 тип, 5614 спанов) сошлась с нашим счётчиком тип-в-тип. Пересечение
+   с нашим ядром 8/11, два из них coarse↔fine: person_name ↔ их FIRST_NAME, LAST_NAME,
+   MIDDLE_NAME (3 токена), address ↔ их COUNTRY, REGION, DISTRICT, CITY, STREET, HOUSE
+   (6 токенов, у них coarse LOCATION); прямые — inn, snils, card_pan, phone, email,
+   passport; нет ogrn, ogrnip, iban. Кандидат кросс-референса границ спанов (MIT
+   позволяет), НЕ замены data/golden (AGENTS §4 = Дисциплина фактов, п.4).
 6. Статус: 3 коммита / 1 автор (git-name a.ivanov, почта an.ivanov@redmadrobot.com —
    18-commits-full.tsv) / 0 releases/tags/PR, последний push 2026-09-09; README L12-13
    бейджи на redmadrobot.ai/articles/pii-guard + habr.com/ru/articles/1080440 (статьи не
