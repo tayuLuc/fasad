@@ -132,6 +132,11 @@ report_point() {
     pid="$3"
     mib="$(rss_mib "$pid")"
     printf 'RSS|%s|%s|%s|ps -o rss (KB->MiB, resident)\n' "$contour" "$point" "$mib"
+    # В вердикт бюджета идёт чтение `ps` (оно есть на обеих реализованных ОС);
+    # вторая строка (VmRSS на Linux / footprint на macOS) — перекрёстная
+    # сверка метода, в peak не свёрнута намеренно: смешивать в одном peak'е
+    # две несравнимые метрики (resident против phys_footprint) = фальшивый
+    # максимум.
     PEAK_MIB="$mib"
     if [ "$OS" = "Darwin" ]; then
         fp="$(footprint_mib "$pid" || true)"
@@ -149,7 +154,7 @@ report_point() {
 }
 
 track_peak() {
-    # peak = max по всем точкам.contour — консервативный вердикт (§5.6 п.5).
+    # peak = max по всем точкам контура — консервативный вердикт (§5.6 п.5).
     value="$1"
     if [ -z "${PEAK:-}" ] || awk -v a="$value" -v b="$PEAK" 'BEGIN { exit !(a > b) }'; then
         PEAK="$value"
