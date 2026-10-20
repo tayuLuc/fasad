@@ -725,6 +725,7 @@ dependencies = [
  "guard-types",
  "ndarray",
  "ort",
+ "serde_json",
  "tokenizers",
 ]
 

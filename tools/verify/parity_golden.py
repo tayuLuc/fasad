@@ -54,6 +54,11 @@ ROOT = Path(__file__).resolve().parents[2]
 CACHE = Path(os.environ.get("FASAD_MODELS_DIR", Path.home() / ".cache/fasad-models"))
 GOLDEN = ROOT / "data" / "golden" / "golden-v1.jsonl"
 THRESHOLDS = [0.20, 0.25, 0.50, 0.70]
+# Вердикт PARITY|verdict = AND только по РАБОЧИМ порогам конвейера (≤ τ_раб
+# 0.25, SPEC §5 п.6 / quant-policy §3.2); пороги выше рабочей точки —
+# informational (рулинг 4b-3, тикет родителя): репортятся метрикой, не в
+# агрегат. Деградация кванта выше τ — известная Characteristics (см. §5.7).
+WORKING_THRESHOLDS = [0.20, 0.25]
 RECALL_GATE_PP = 0.5
 CLASS_GATE_PP = 1.0
 LOCKR_PAD = 256
@@ -478,7 +483,10 @@ def main() -> None:
         print(f"METRIC|parity|lockr|maxabs_logit_delta_f32|{d:.4f}|rows|{len(res['fp32'])}")
     # all() короткозамкнула бы протокол на первом fail (рецидив 4b-3B:
     # 0.7-строки терялись) — печатаем ВСЕ пороги, вердикт = AND по списку.
-    oks = [report(args.model, res, t) for t in THRESHOLDS]
+    oks = [report(args.model, res, t) for t in WORKING_THRESHOLDS]
+    for t in THRESHOLDS:
+        if t not in WORKING_THRESHOLDS:
+            report(args.model, res, t)  # informational: печать без вердикта
     all_ok = all(oks)
     print(f"PARITY|verdict|{'pass' if all_ok else 'fail'}|model|{args.model}"
           f"|gates=pad_le_{RECALL_GATE_PP}pp_class_le_{CLASS_GATE_PP}pp")

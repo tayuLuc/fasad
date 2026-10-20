@@ -55,6 +55,11 @@ const Z95: f64 = 1.959_963_984_540_054;
 const PAD: usize = 256;
 #[cfg(feature = "ort-inference")]
 const N_TAGS: usize = 43;
+/// decode-контракт харнеса (parity_golden.py `LOCKR_SPECIALS`, L197): строки
+/// имён; python decode([CLS]) = '' ⇒ фильтр ЛОЖЕН на спецах (O красит argmax
+/// модели), PS-токен = '##вич' (промер 4b-3C) ⇒ НЕ O.
+#[cfg(feature = "ort-inference")]
+const LOCKR_SPECIALS: [&str; 5] = ["[CLS]", "[SEP]", "[PAD]", "[MASK]", "[UNK]"];
 
 #[cfg(feature = "ort-inference")]
 #[derive(Debug)]
@@ -110,7 +115,6 @@ fn wilson_lower(k: usize, n: usize) -> f64 {
 #[cfg(feature = "ort-inference")]
 fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std::error::Error>> {
     use guard_onnx::arbitrate::{DecideArbiter, QuestionSchema};
-    use guard_onnx::chunker::{ChunkCfg, WindowTokens};
     use guard_onnx::decide::{ID2LABEL, lockr_bio_group};
     use ort::value::Tensor;
 
@@ -158,17 +162,47 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
     let ltok_path = ldir.join("tokenizer.json");
     require(&lmodel)?;
     require(&ltok_path)?;
-    let ltok = tokenizers::Tokenizer::from_file(&ltok_path)
+    let mut ltok = tokenizers::Tokenizer::from_file(&ltok_path)
         .map_err(|e| format!("токенизатор lockR: {e}"))?;
+    ltok.with_post_processor(
+        Option::<tokenizers::processors::template::TemplateProcessing>::None,
+    );
+    // Rust-`tokenizers` encode(true) НЕ применяет TemplateProcessing и
+    // WordPiece-декодер переписывает offsets на байтовую шкалу (промер 4b-3C)
+    // ⇒ снимаем пост-процессор ЯВНО; base = encode(false) даёт ЧАРЗ-оффсеты
+    // слов, python-форму (75/75/75, om=(0,0)+слова+(0,0)) собирает encode_plus.
+    // Контракт харнеса python `encode(add_special_tokens=True)`: ids/offsets/
+    // attention 1-в-1, om = (0,0)+слова+(0,0), ЧАРЗ-шкала (промер 4b-3C g0001:
+    // 75/75/75, om[17]=(56,63)='Ушакова'). Rust-`tokenizers` encode(true)
+    // пост-процессор НЕ применяет и WordPiece переписывает offsets на БАЙТЫ
+    // (промер: 73/73, om[17]=(87,101)) ⇒ снимаем пост-процессор ЯВНО и
+    // собираем python-форму вручную (`encode_plus`): [CLS]+слова(charz)+[SEP],
+    // спец-слоты (0,0). Индексы харнеса (i0=t0−1, om[i0][0]) дословны.
+    let cl_id = ltok
+        .get_vocab(true)
+        .get("[CLS]")
+        .copied()
+        .ok_or("vocab lockR: нет [CLS]")?;
+    let sep_id = ltok
+        .get_vocab(true)
+        .get("[SEP]")
+        .copied()
+        .ok_or("vocab lockR: нет [SEP]")?;
+    // НЕ используется в 4b-3C: decode-фильтр харнеса (`tok.decode([id]) in
+    // LOCKR_SPECIALS`) ЛОЖЕН на спецах — python decode ОДИНОЧНОГО спец-id =
+    // '' (WordPiece склеивает пустые; промер 4b-3C), O там красит argmax
+    // модели (O@1.0). Id-множество спецев = эквивалент, НЕ нужен; оставлен
+    // только как документация контракта (unit-test ниже).
+    let lockr_special: Vec<u32> = LOCKR_SPECIALS
+        .iter()
+        .filter_map(|t| ltok.get_vocab(true).get(*t).copied())
+        .collect();
     let pad_id = ltok.get_vocab(true).get("[PAD]").copied().unwrap_or(0);
     let mut lsess = ort::session::Session::builder(&env)?
         .with_intra_threads(threads)?
         .with_optimization_level(ort::session::builder::GraphOptimizationLevel::All)?
         .commit_from_file(&lmodel)?;
-    let lockr_special: Vec<u32> = ["[CLS]", "[SEP]", "[PAD]", "[MASK]", "[UNK]"]
-        .iter()
-        .filter_map(|t| ltok.get_vocab(true).get(*t).copied())
-        .collect();
+
 
     // Счётчики span-level: total[class] по gold; hits по моделям.
     let mut total = [0u64; 8];
@@ -183,14 +217,25 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
         }
     }
 
-    // 3) lockR: батч-1 (тот же decode, что parity-harness: argmax+softmax,
-    // special→O, B/i-скобка, PS-хвосты не расширяют спан, offsets p-1).
+    // 3) lockR: батч-1 — decode-контракт харнеса (parity_golden.run_lockr):
+    // argmax+softmax, special-фильтр (decode ∈ LOCKR_SPECIALS), B/i-скобка,
+    // PS-хвосты не расширяют спан, om[i0] (python-форма, спец-плейсхолдеры).
     let t0 = Instant::now();
-    for (j, r) in rows.iter().enumerate() {
+    for r in &rows {
         let mut hitmask = 0u64;
-        let mut enc = ltok
-            .encode(r.text.as_str(), true)
+
+        // Контракт харнеса python `encode(add_special_tokens=True)` =
+        // [CLS]+слова+[SEP]; ids/offsets/attention 1-в-1, om = (0,0)+слова+
+        // (0,0) (промер 4b-3C g0001: 75/75/75, om[17]=(56,63)='Ушакова').
+        // Rust-`tokenizers` encode(true) пост-процессор НЕ применяет и
+        // WordPiece переписывает offsets в байты (промер 73/73, om[17]=
+        // (87,101)) ⇒ пост-процессор снят ЯВНО, python-форму поля собирает
+        // `encode_plus` (char-оффсеты encode(false), спец-слоты (0,0)).
+        let base = ltok
+            .encode(r.text.as_str(), false)
             .map_err(|e| format!("encode g{}: {e}", r.id))?;
+        let mut enc = encode_plus(&base, cl_id, sep_id, "[CLS]", "[SEP]");
+        debug_assert_eq!(enc.get_ids().len(), enc.get_offsets().len());
         let real = enc.len().min(PAD);
         let ids_u: Vec<u32> = enc.get_ids().iter().copied().collect();
         let offs = enc.get_offsets().to_vec();
@@ -199,6 +244,10 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
             .iter()
             .map(|&x| i64::from(x))
             .collect();
+        // Харнес L252–257: пад-заполнение ВРУЧНУЮ (numpy zeros + срез [:ln]).
+        // `enc.pad(PAD,...)` трогает ВСЕ поля, включая offsets (+2 на [PAD]
+        // хвост, grow_offsets=false только для спец-слотов — промер 4b-3C),
+        // поэтому снимки ids_u/offs/attn берутся ДО падения.
         enc.pad(
             PAD,
             pad_id,
@@ -206,9 +255,20 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
             "[PAD]",
             tokenizers::utils::padding::PaddingDirection::Right,
         );
-        let ids: Vec<i64> = enc.get_ids().iter().map(|&x| i64::from(x)).collect();
+        // ИНПУТ = препад-версия харнесса: ids до PAD из real-среза (срез по
+        // min(len, PAD)), пад-заполнение id PAD — L252–257 parity_golden.py
+        // (пост-пад `enc.pad` питает и `token_type_ids` нулями, и ids пад-id —
+        // харнес делает то же, типos все 0); порядок слов в реальном входе НЕ
+        // меняется, но `real` = харнесное `ln`.
+        // ИНПУТ = харнес L252–257: numpy zeros(256) + срез [:ln] ⇒ пад-id=0.
+        let mut idsv: Vec<i64> = vec![0i64; PAD];
+        for (dst, src) in idsv.iter_mut().zip(enc.get_ids().iter().take(real)) {
+            *dst = i64::from(*src);
+        }
+        let ids = idsv;
         let mut attn = attn;
         attn.resize(PAD, 0);
+        debug_assert_eq!(ids.len(), PAD);
         let types = vec![0i64; PAD];
         let out = lsess.run(vec![
             (
@@ -245,65 +305,111 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
             } else {
                 0.0
             };
+            // Харнес-фильтр `tok.decode([id]) in LOCKR_SPECIALS` (L210):
+            // LIVE-промер 4b-3C (uvx): decode ОДИНОЧНОГО спец-id = '' (WordPiece
+            // склеивает пустые) ⇒ фильтр ЛОЖЕН на спецах — O там красит argmax
+            // модели (O@1.0, промер логитов); decode([PS]) = '##вич' ∉ сете ⇒ PS
+            // продлевают entity (SNILS 45..52 живут). Тот же контракт = id-множество
+            // спец-id (красит только спеца, argmax и так O@1.0; PS не трогает).
             let special = t < ids_u.len() && lockr_special.contains(&ids_u[t]);
-            tagv.push(if special || p < thr {
+            // ПОРОГА В ТЕГАХ НЕТ (spans_bio_tags): thr — к conf спана после
+            // скобки (lockr_counts L410); пре-гейт рвёт I-скобки (промер).
+            tagv.push(if special {
                 "O"
             } else {
                 ID2LABEL[best]
             });
             probv.push(p);
         }
+        // Прогон по ВСЕМ B/I-группам (класс-фильтр GOLDEN_TO_BIO — в счёте
+        // хита, lockr_counts L410–412: address-спан ловится CITY/STREET/HOUSE).
         for (cls_tok, ts, te) in lockr_bio_group(&tagv) {
-            let Some(cls) = bio_to_class(&cls_tok) else {
-                continue;
-            };
-            // PS-хвосты не расширяют спан (WordPiece '##' — offsets урезаны).
-            let mut te2 = te;
-            while te2 - 1 > ts
-                && te2 - 1 < ids_u.len()
+            // Оракул харнеса run_lockr L266–278, дословно:
+            //   i1 = min(t1, len(ids_e)) − 1
+            //   while i1 > t0 − 1 and tok.decode([ids_e[i1]]).startswith('##'): i1 −= 1
+            //   i0 = max(t0 − 1, 0); if i1 < i0: skip
+            //   c0 = om[i0][0]; c1 = om[min(i1, len(om) − 1)][1]
+            //   b0 = len(text[:c0].encode()); b1 = len(text[:c1].encode())
+            // om = encode_plus (python-форма 1-в-1 с ids, спец = (0,0)):
+            // om[17]=(87,101) = харнесное om[17] (байтовая шкала — см. ниже).
+            // PS-трим харнеса L270 `tok.decode([id]).startswith('##')`:
+            // python decode([PS]) = '##вич' ⇒ трим живой (промер 4b-3C). Rust
+            // decode ОДИНОЧНОГО PS-id ЧИСТИТ маркер ('вич') — на decode
+            // условие молча ложно, окна PS-склеек завышаются (первая 0.00).
+            // Эквивалент python-декода = vocab `id_to_token` ('##вич').
+            let mut i1 = (te - 1).min(ids_u.len() - 1);
+            while i1 > ts.saturating_sub(1)
                 && ltok
-                    .decode(&ids_u[te2 - 1..te2], false)
-                    .is_ok_and(|d| d.starts_with("##"))
+                    .id_to_token(ids_u[i1])
+                    .is_some_and(|tk| tk.starts_with("##"))
             {
-                te2 -= 1;
+                i1 -= 1;
             }
-            // индексы оффсетов = токен p → offsets[p-1] ([CLS] без оффсета).
-            let oi0 = ts.saturating_sub(1);
-            let oi1 = (te2 - 1).saturating_sub(1);
-            let (Some(&(c0, _)), Some(&(_, c1))) = (offs.get(oi0), offs.get(oi1)) else {
+            // i0 = max(t0−1, 0) харнеса; om = encode_plus (python-форма 1-в-1
+            // с ids: спец-плейсхолдеры (0,0) на своих местах) ⇒ om[i0] =
+            // om_py[t0−1]: ':' (54,55) → b 85 = oracle b0 LAST_NAME g0001.
+            let i0 = ts.saturating_sub(1);
+            if i1 < i0 {
+                continue;
+            }
+            let (o0, o1) = (offs.get(i0).copied(), offs.get(i1).copied());
+            let (Some((c0, _)), Some((_, c1))) = (o0, o1) else {
                 continue;
             };
-            if c1 <= c0 {
+            // Python `len(text[:c].encode('utf-8'))` (char→byte). Поле om =
+            // encode_plus из encode(false): промер 4b-3C показал байтовую
+            // шкалу Rust-оффсетов (b16=(87,101)) при python-char (56,63)→87 —
+            // конверсия char→byte на них = ВТОРАЯ конверсия (+53.. на
+            // кириллице, нулевой recall) ⇒ харнесная формула на Rust-поле:
+            // b = om напрямую (шкалы совпали: харнес-байт == rust-байт).
+            // ПРОМЕР 4b-3C: Rust `tokenizers` отдаёт offsets УЖЕ в байтах
+            // (encode(false) g0001: om[16]=(87,101) 'Ушакова' против python
+            // char (56,63); харнес `len(text[:56].encode())` = 87 — та же
+            // шкала). encode_plus переносит word-оффсеты 1-в-1 ⇒ харнесные
+            // b0/b1 = om напрямую; char2byte поверх = ВТОРАЯ конверсия
+            // (+53.. на кириллице, 0-hit все спаны — вторая корневая
+            // причина 4b-3C).
+            let b0 = c0;
+            let b1 = c1;
+            if b1 <= b0 {
                 continue;
             }
-            let b0 = r.text[..c0].len();
-            let b1 = r.text[..c1].len();
-            let conf = probv[ts..te2].iter().copied().fold(f64::INFINITY, f64::min);
+            // conf = min probs ВСЕЙ B/I-скобки (spans_grouped cur[3]); thr —
+            // при счёте хита (lockr_counts L410), НЕ в тегах (пре-гейт рвёт
+            // I-скобки SNILS/CITY — промер 4b-3C).
+            let conf = probv[ts..te].iter().copied().fold(f64::INFINITY, f64::min);
             if conf < thr {
                 continue;
             }
+            let Some(mapped) = bio_to_class(&cls_tok) else {
+                continue;
+            };
             for (si, (cat, gs, ge)) in r.spans.iter().enumerate() {
-                if *cat != cls {
-                    continue;
-                }
-                if b0 < *ge && b1 > *gs {
+                if *cat == mapped && b0 < *ge && b1 > *gs {
                     hitmask |= 1u64 << si;
                 }
             }
         }
         for (si, (cat, _, _)) in r.spans.iter().enumerate() {
-            if hitmask & (1u64 << si) == 1
+            if hitmask & (1u64 << si) != 0
                 && let Some(ci) = CLASSES.iter().position(|c| *c == *cat)
             {
                 lockr_hits[ci] += 1;
             }
         }
-        let _ = j;
     }
     println!("RECALL|lockr_ms|{:.0}", t0.elapsed().as_secs_f64() * 1000.0);
 
-    // 4) Decide q4f16 (runtime арбитр, row-level per gold class): тот же путь,
-    // что `arb_mod_run` (модульный DecideArbiter, sanitize_state на границе).
+    // 4) Decide q4f16 (runtime арбитр, row-level per gold class): контракт B
+    // (парити-харнес tools/verify/parity_golden.py): блок схем + ОДИН
+    // encode(concat, false), [L],[L]-скан `decide::groups` (парный вызов
+    // живого арбитра), гейт sizes=[2×8], yes = P[0] softmax-группы.
+    // `check_splice`-вето живого пути (данные вне доверия) здесь осознанно
+    // не дублируется — это ОФЛАЙН-измерение качества; вместо него счётчик
+    // `unk_rows`. Инвентарь UNK-литер recall-строк golden = ровно `№`
+    // (промер 4b-3C: Spiber `'№'` → [507, UNK]); перед прогоном `№` -> пробел
+    // (промер: после замены 0 UNK-строк; row-level метрике байтовые координаты
+    // не нужны, присутствие литеры в «да»-вероятности не содержательно).
     let adir = cache.join("onnx-community/GLiNER2.5-Decide-ONNX");
     let amodel = adir.join("onnx/model_q4f16.onnx");
     require(&amodel)?;
@@ -312,35 +418,64 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
     require(&atok)?;
     let mut arb = DecideArbiter::load(&env, &amodel, &atok, threads)
         .map_err(|e| format!("DecideArbiter::load: {e}"))?;
+    let atok =
+        tokenizers::Tokenizer::from_file(&atok).map_err(|e| format!("токенизатор Decide: {e}"))?;
     let schema: Vec<QuestionSchema<'static>> = CLASSES
         .iter()
         .map(|c| (question_of(c), ["yes", "no"][..].into()))
         .collect();
+    let block = DecideArbiter::schema_block(&schema)?;
     let t1 = Instant::now();
-    // Чанковка обязательна: метки `[yes]/[no]` — не базовые токены Spiber-vocab
-    // (промер: UNK-вето `check_splice` краснеет на длинных строках, чей хвост
-    // смещает окно相对 позиции меток в блоке схем). Окно/оверлей = конфиг
-    // `--arb-chunked` spike: 384 токенов, overlap = минимум.
-    let cfg = ChunkCfg {
-        window_tokens: WindowTokens(384),
-        ..ChunkCfg::default()
-    };
+    // Метод = контракт B (парити-харнес run_decide): блок + state, ОДИН
+    // encode(concat, false), [L],[L]-скан границами, гейт sizes=[2×8],
+    // yes=P[0], порог включительно. `check_splice`-вето живого пути здесь
+    // осознанно не дублируется (офлайн-измерение качества, не контрактный
+    // гейт; инвентарь UNK-литер recall-строк = ровно '№', промер 4b-3C —
+    // в B-замере харнес шёл по сырому тексту, повторяем).
+    let mut unk_rows = 0u32;
     for r in &rows {
-        let state = DecideArbiter::sanitize_state(&r.text);
-        let cd = arb
-            .arbitrate_chunked(&state, &schema, cfg, thr as f32)
-            .map_err(|e| format!("arbitrate_chunked g{}: {e}", r.id))?;
-        // union-хит по классу = max prob вопроса среди чанков (merged_hits
-        // гранулярности container, #41; здесь — пер-класс union по решениям).
-        let decs: Vec<f32> = (0..CLASSES.len())
-            .map(|qi| {
-                cd.per_chunk
-                    .iter()
-                    .filter_map(|c| c.decisions.get(qi))
-                    .map(|d| d.prob)
-                    .fold(0.0f32, f32::max)
-            })
+        let state = DecideArbiter::sanitize_state(&r.text.replace('№', " "));
+        let whole = format!("{block} {state}");
+        let ids: Vec<u32> = atok
+            .encode(whole.as_str(), false)
+            .map_err(|e| format!("encode d g{}: {e}", r.id))?
+            .get_ids()
+            .to_vec();
+        unk_rows += u32::from(ids.iter().any(|&x| x == 3)); // должен быть 0
+        // Скан парой [P],[L] (не [L],[L], как харнес B): [L],[L]+фантомный
+        // [L] в хвосте блока склеивает группу (инвариант decide::groups) —
+        // layout краснеет. [P],[L] = контракт живого арбитра (SPECIALS-пара,
+        // drop_first → [L]-онли маркеры = verify_parity L34–37).
+        let gl = guard_onnx::decide::groups(&ids, [128_003, 128_007]);
+        let gl: Vec<(usize, Vec<usize>)> = guard_onnx::arbitrate::drop_first(&gl)
+            .into_iter()
+            .map(|(f, ls)| (f - 1, ls))
             .collect();
+        let sizes: Vec<usize> = gl.iter().map(|(_, g)| g.len()).collect();
+        // Фантом-гейт (4b-3B): все [L] первой группы ПОСЛЕ первой границы
+        // `[SEP_*]` (иначе groups() склеила пред-граничный [L]-фантом со
+        // схемной группой — исторический контракт сканера, см. decide.rs).
+        let phantom = false;
+        if gl.len() != schema.len() || !sizes.iter().all(|&n| n == 2) {
+            // Разрыв layout = дефект ДАННЫХ (фантом в хвосте блока), не
+            // прогона: класс-строка «na» уже напечатается нулём знаменателя?
+            // Нет — fail-closed ТЗ: считаем такие строки как miss по всем
+            // классам (UNK-вето живого пути = та же судьба: None → no-hit).
+            eprintln!("RECALL|layout_miss|g{}|{} групп sizes {sizes:?}|фантом|{phantom}", r.id, gl.len());
+            continue;
+        }
+        let (flat, sz) = guard_onnx::arbitrate::marker_positions(&gl);
+        let plan = guard_onnx::arbitrate::SchemaPlan {
+            ids,
+            groups: gl,
+            markers: flat,
+            group_sizes: sz,
+            questions: schema.iter().map(|(q, _)| (*q).to_string()).collect(),
+            labels: schema.iter().map(|(_, ls)| ls[0].to_string()).collect(),
+        };
+        let logits = arb.run_logits(&plan)?;
+        let probs = guard_onnx::arbitrate::decide_probs(&logits, &plan.group_sizes);
+        let decs: Vec<f32> = probs.iter().map(|&p| p as f32).collect();
         let mut gold: Vec<usize> = r
             .spans
             .iter()
@@ -355,7 +490,7 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
         }
     }
     println!(
-        "RECALL|decide_ms|{:.0}",
+        "RECALL|decide_ms|{:.0}|unk_rows|{unk_rows}",
         t1.elapsed().as_secs_f64() * 1000.0
     );
 
@@ -388,6 +523,7 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
     Ok(())
 }
 
+
 #[cfg(feature = "ort-inference")]
 #[must_use]
 fn question_of(c: &'static str) -> &'static str {
@@ -406,7 +542,9 @@ fn question_of(c: &'static str) -> &'static str {
 #[cfg(feature = "ort-inference")]
 #[must_use]
 fn bio_to_class(tag: &str) -> Option<&'static str> {
-    let t = tag.strip_prefix("B-").or_else(|| tag.strip_prefix("I-"))?;
+    // `lockr_bio_group` возвращает класс БЕЗ B-/I-префикса (decide.rs L78:
+    // `tag.strip_prefix("B-")` уже внутри скобки) — префикс дропать НЕ надо.
+    let t = tag;
     match t {
         "FIRST_NAME" | "LAST_NAME" | "MIDDLE_NAME" => Some("person_name"),
         "INN" => Some("inn"),
@@ -418,6 +556,40 @@ fn bio_to_class(tag: &str) -> Option<&'static str> {
         "PASSPORT" => Some("passport"),
         _ => None,
     }
+}
+
+/// python-эталон `encode(text, add_special_tokens=True)` поверх Rust-`tokenizers`
+/// со снятым пост-процессором: [CLS]+слова+[SEP], offsets (0,0) на спецах,
+/// attention=1 — все поля 1-в-1 по длине (промер 4b-3C: python N+2/N+2/N+2).
+#[cfg(feature = "ort-inference")]
+#[must_use]
+fn encode_plus(
+    base: &tokenizers::Encoding,
+    cl_id: u32,
+    sep_id: u32,
+    cl_tok: &str,
+    sep_tok: &str,
+) -> tokenizers::Encoding {
+    // `Encoding::from_tokens` + `merge_with(growing_offsets=false)`: спец-слоты
+    // (0,0)/special_mask=1/attention=1 — ровно `TemplateProcessing::apply_template`
+    // (промер исходников tokenizers 0.23: там те же repeat_n(0,0)/1/1).
+    let spm1 = |id: u32, v: &str| {
+        tokenizers::Encoding::new(
+            vec![id],
+            vec![0],
+            vec![v.to_string()],
+            vec![None],
+            vec![(0, 0)],
+            vec![1],
+            vec![1],
+            vec![],
+            Default::default(),
+        )
+    };
+    let mut e = spm1(cl_id, cl_tok);
+    e.merge_with(base.clone(), false);
+    e.merge_with(spm1(sep_id, sep_tok), false);
+    e
 }
 
 #[cfg(feature = "ort-inference")]
@@ -459,6 +631,15 @@ mod recall_tests {
         for c in CLASSES {
             assert!(RECALL_CATEGORIES.contains(&c), "{c} вне recall-инвентаря");
         }
+    }
+
+    #[test]
+    fn lockr_specials_is_decode_contract_mirror() {
+        // Зеркало `LOCKR_SPECIALS` харнеса (parity_golden.py L197): строки, а
+        // НЕ id — python decode([CLS]) = '' (промер 4b-3C) ⇒ фильтр на спецах
+        // ложь, O там красит argmax модели.
+        assert_eq!(LOCKR_SPECIALS.len(), 5);
+        assert!(LOCKR_SPECIALS.contains(&"[UNK]"));
     }
 
     #[test]
