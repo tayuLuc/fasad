@@ -58,6 +58,44 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 факт о сборке. Целевые triple в матрицы не передаются (`--target` не used) —
 иначе `just dist` упаковал бы `target/release/fasad`, а не кросс-артефакт.
 
+## Запуск (что читает пользователь бандла)
+
+1. `bin/fasad` слушает `http://127.0.0.1:8765/health`; бинд строго loopback
+   (`DEFAULT_BIND = 127.0.0.1`, `crates/guard-daemon/src/config.rs:28`),
+   непроксируемый адрес наружу = отказ старта с именованием переменной
+   (промер тестом `config.rs:728`: `FASAD_BIND=8.8.8.8` → диагностика «loopback»).
+2. `FASAD_PORT=0` = «дай свободный порт», баннер печатает фактический адрес
+   (`main.rs`, `local_addr`) — на этом трюке ездят `scripts/verify-bundle.sh` и
+   `scripts/measure-rss.sh`.
+3. Мусор в числовой переменной оставляет дефолт (`config.rs:15`), а откровенно
+   битое значение (`FASAD_THREADS=0`, `-1`, `abc`) — отказ старта с именем
+   переменной в тексте ошибки (`config.rs:692-727`).
+4. Переменные (первичка — `crates/guard-daemon/src/config.rs`, строки рядом):
+
+| Переменная | Дефолт | Первичка |
+| --- | --- | --- |
+| `FASAD_PORT` | 8765 | config.rs:24 |
+| `FASAD_BIND` | 127.0.0.1 (только loopback) | config.rs:28 |
+| `FASAD_MAX_BODY_BYTES` | 1048576 | config.rs:33 |
+| `FASAD_THREADS` | 8 | config.rs:67 |
+| `FASAD_TIMEOUT_MS` (исходящие) | 3000 | config.rs:72 |
+| `FASAD_READ_TIMEOUT_MS` (входящее тело) | 30000 | config.rs:84 |
+| `FASAD_GRAY_LO` / `FASAD_GRAY_HI` | 0.22 / 0.80 | config.rs:59, :62 |
+| `FASAD_TAU_LOW` / `FASAD_TAU_HIGH` | 0.20 / 0.80 | guard-onnx/src/routing.rs:70, :74 |
+| `FASAD_VAULT_MODE` | stateless-контур; значения `2\|3\|session\|stateless` | config.rs:326 |
+| `FASAD_MLOCK` | `strict` (`strict\|best_effort`) | config.rs:119-133 |
+| `FASAD_SCHEMA` | встроенный канон (`schema.default.json` в бандле) | config.rs:244, :405 |
+| `FASAD_MODEL_DIR` | нет = стадия `cascade-0-only` | config.rs:404 |
+| `FASAD_UPSTREAM_ALLOWLIST` | пусто = наружу ходить некуда | config.rs:252, :411 |
+| `FASAD_PROXY_LOOPBACK_HTTP` | false | config.rs:258, :412 |
+
+5. Ответы: `/health` (версия, стадия контура, режим залочкивания),
+   `/v1/analyze` (массив спанов, поле `entity_type` — промер живого ответа
+   21.10), `/v1/anonymize` (`{text, spans}`, спаны берутся из `/v1/analyze`;
+   голый `{"text":…}` = 400, `vault.rs::AnonymizeRequest`).
+6. Никакой телеметрии: сетевой вызов наружу только по явному
+   `FASAD_UPSTREAM_ALLOWLIST` (AGENTS, инварианты).
+
 ## Как выпустить
 
 1. Поднять версию в `[workspace.package] version` (единый источник,
