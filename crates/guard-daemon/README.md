@@ -22,7 +22,7 @@ FASAD_VAULT_MODE=session FASAD_VAULT_KEY=$(openssl rand -hex 32) ./target/releas
 (`FASAD_PORT=0` → репорт занятого порта, на нём держится `tests/wire_e2e.rs`):
 
 ```
-fasad 0.1.0 cascade-0-only, listening on http://127.0.0.1:8765/health (классов схемы: 8, vault: session/env, ключ: env)
+fasad 0.1.0 cascade-0-only, listening on http://127.0.0.1:8765/health (классов схемы: 8, vault: session/strict, ключ: env)
 ```
 
 Ключ — 32 байта из любого CSPRNG; `openssl rand -hex 32` в примере только как
@@ -69,8 +69,9 @@ fasad 0.1.0 cascade-0-only, listening on http://127.0.0.1:8765/health (клас�
    "verdict": "mask_surrogate", "validator": "inn10" }]
 ```
 
-1. `entities` — фильтр классов; `score_threshold` может только **поднять**
-   планку ниже `FASAD_TAU_LOW`, ослабить политику сервера клиентом нельзя.
+1. `entities` — фильтр классов; `score_threshold` применяется как
+   `max(client, FASAD_TAU_LOW)`: поднять планку клиенту можно, опустить её ниже
+   политики сервера — нет.
 2. `role` всегда `null` (SPEC §14 — шаг 8).
 3. `verdict` ∈ `mask_surrogate | block | audit_only`; политика из
    `X-Guard-Policy`, дефолт `mask`.
@@ -101,8 +102,9 @@ fasad 0.1.0 cascade-0-only, listening on http://127.0.0.1:8765/health (клас�
    Символьные поля — входные координаты ответа, а не координаты в переписанном
    тексте: после подмены сдвиги правятся, и клиент, читающий `items[].start` как
    позицию в `text`, получил бы неверную якорь-точку. Различающий тест —
-   `offsets_are_input_coordinates_not_output_ones` (второй спан уходит на ~100
-   символов, если отдать координаты вывода).
+   `offsets_are_input_coordinates_not_output_ones`: при двух спанах второй
+   обязан остаться на `start = 35`, тогда как координата в переписанном тексте
+   уехала бы на ~100 символов вперёд (длина маркера).
 2. `spans[].byte_start`/`byte_end` обязаны быть границами символов и не
    пересекаться; ошибка — `422 bad_span` / `spans пересекаются`, до первой
    подмены (полуподменённый текст наружу не уходит никогда).
