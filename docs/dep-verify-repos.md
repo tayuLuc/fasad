@@ -3,9 +3,7 @@
 Дата промера: **2026-10-18** (UTC-интервал 14:31–15:0x, `date -u`).
 Объект верификации: сущности, на которые ссылается [docs/SPEC.md](SPEC.md) (§1, §7, §8, §9, §11).
 Правило: SPEC — вторичный источник (LLM-транскрипт); здесь только **первичные промеры**.
-Вердикт: `[CONFIRMED]` / `[REFUTED]` / `[PARTIAL]` / `[CORRECTED]` / `[LIVE]` / `[DEAD]` / `[PHANTOM]`.
-Семья файлов: [`dep-verify-competitors.md`](dep-verify-competitors.md) (вне-SPEC
-треккинг, вынесен по reference-порогу 300 строк) + crates/models/algorithms.
+Вердикт: `[CONFIRMED]` / `[REFUTED]` / `[PARTIAL]` / `[CORRECTED]` / `[LIVE]` / `[DEAD]` / `[PHANTOM]`. Семья: [`dep-verify-competitors.md`](dep-verify-competitors.md) + crates/models/algorithms.
 
 ## Транспорт и оговорки метода
 
@@ -233,9 +231,7 @@
 
 ### п.12 redmadrobot-rnd/pii-guard — ВЫНЕСЕН
 
-Конкурент-реестр (вне SPEC-претензий), 44 строки факта: вынесен в
-`docs/dep-verify-competitors.md` §1 (сплит по reference-порогу 300 строк,
-AGENTS §Memory rotation). Триаж-выход: issue #51 (препроцессинг-обходы каскада-0, enhancement, создана 20.10).
+Факт-блок вынесен в [`dep-verify-competitors.md`](dep-verify-competitors.md) §1 по reference-порогу 300 строк (AGENTS §Memory rotation). Триаж-выход: issue #51.
 
 ## 3. Итог
 
