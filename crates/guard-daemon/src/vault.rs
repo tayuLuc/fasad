@@ -1636,7 +1636,7 @@ mod tests {
     /// Состояние «кэш говорит одно, индекс — другое» строится напрямую через
     /// `store()`: так выглядит перенятый слот (запись истекла, форма досталась
     /// другому), и штатным путём его не получить — выдача на перенятую форму
-    /// отказывает (`guard-vault::slot_retaken_after_ttl_is_refused_not_swallowed`).
+    /// отказывает (`guard-vault::slot_retaken_after_record_died_is_refused_not_swallowed`).
     #[test]
     fn divergent_form_refuses_restore_and_shows_in_counter() {
         let v = vault(VaultMode::Session);

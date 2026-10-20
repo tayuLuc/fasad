@@ -116,7 +116,7 @@ MASK/KEEP, обратимо подменяет секретные спаны, п
   сверх кэша живёт реверс-индекс `(сессия, форма)` → ключёвый отпечаток
   подставленного оригинала. Он держит целостность разворота: форму, под которую
   подсунули другое имя, демон не разворачивает, а считает
-  (`Vault::unrestored_mismatch()`, тесты `slot_retaken_after_ttl_is_refused_not_swallowed`
+  (`Vault::unrestored_mismatch()`, тесты `slot_retaken_after_record_died_is_refused_not_swallowed`
   и `divergent_form_refuses_restore_and_shows_in_counter`). Дедуп по лемме вместо
   ключа-формы — открытая задача #65.
 - **Суффиксные капсулы** для кастомных терминов: основа отделена от флексии, в
