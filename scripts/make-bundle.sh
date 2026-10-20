@@ -165,8 +165,14 @@ if [ -n "$ext" ]; then
     rm -f "$arch"
     win_stage="$(cygpath -w "$stage" 2>/dev/null || printf '%s' "$stage")"
     win_arch="$(cygpath -w "$arch" 2>/dev/null || printf '%s' "$arch")"
+    # Катаргом кладём САМ каталог стейджа, а не `$win_stage\*`: с `\*`
+    # Compress-Archive раскладывает файлы в корень архива, и layout
+    # расходится с tar.gz-веткой (там верхний каталог `fasad-<ver>-<triple>-<label>/`
+    # есть) — scripts/verify-bundle.sh именовал бы это «в архиве нет каталога
+    # бандла». Самопроверка 21.10 на macOS это не ловит (там tar-ветка),
+    # ловит только windows-2022.
     powershell.exe -NoProfile -Command \
-        "Compress-Archive -Path '$win_stage\\*' -DestinationPath '$win_arch'" >/dev/null
+        "Compress-Archive -Path '$win_stage' -DestinationPath '$win_arch'" >/dev/null
 else
     arch="$OUT/fasad-$version-$triple-$LABEL.tar.gz"
     tar -czf "$arch" -C "$OUT" "fasad-$version-$triple-$LABEL"

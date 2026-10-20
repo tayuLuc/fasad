@@ -89,11 +89,35 @@ case "$arch" in
         ;;
 esac
 
-stage="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -1)"
-[ -n "$stage" ] || {
-    printf 'verify-bundle: ОШИБКА: в архиве нет каталога бандла\n' >&2
+# Стад = каталог, в котором лежит bin/. Порядок поиска (промер 21.10 на
+# синтетическом «плоском» архиве: `tar -czf … .` из стейджа даёт `./bin/…`, и
+# наивный «первый каталог верхнего уровня» натыкается на $tmp/bin и теряет
+# бинарь → FILE|missing):
+#   1) названный каталог fasad-* верхнего уровня = штатный tar.gz layout;
+#   2) корень распаковки = плоский layout (Compress-Archive без верхнего каталога);
+#   3) любой каталог глубже, где есть bin/;
+#   4) иначе — битый архив, красным.
+stage="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d -name 'fasad-*' | head -1)"
+if [ -n "$stage" ] && [ ! -d "$stage/bin" ]; then
+    stage=""
+fi
+if [ -z "$stage" ] && [ -d "$tmp/bin" ]; then
+    printf 'WARN|stage=archive-root (верхнего каталога нет, содержимое в корне)\n'
+    stage="$tmp"
+fi
+if [ -z "$stage" ]; then
+    for cand in $(find "$tmp" -mindepth 2 -maxdepth 3 -type d | sort); do
+        if [ -d "$cand/bin" ]; then
+            printf 'WARN|stage=%s (найден по наличию bin/)\n' "$cand"
+            stage="$cand"
+            break
+        fi
+    done
+fi
+if [ -z "$stage" ]; then
+    printf 'verify-bundle: ОШИБКА: в архиве нет каталога с bin/ (битый состав)\n' >&2
     exit 1
-}
+fi
 
 # 1. Состав бандла.
 for f in bin/fasad bin/fasad.exe LICENSE README.md schema.default.json \
