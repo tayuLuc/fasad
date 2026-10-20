@@ -45,16 +45,50 @@ use guard_vault::{Grammar, SessionKey, VaultEngine, VaultError, VaultToken};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::config::{Mlock, VaultMode};
+use crate::config::{MAX_FORMS_PER_SESSION, Mlock, VaultMode};
 use crate::schema::Schema;
+
+/// Формы суррогатов, отложенные до конца запроса.
+///
+/// Счётчик ведётся на ходу (`push` до вставки), чтобы запрос, который заведомо
+/// не влезает, не выделял бесконечный `Vec`: отказ наступает на первом лишнем
+/// слове, а не после buffers на мегабайт тела. Дедупликация внутри запроса —
+/// бесплатная и точная; относительно уже сохранённых форм она делается в
+/// [`Vault::commit_forms`], поэтому оценка в `push` консервативна (может
+/// отказать на строку раньше, чем кончится место, — в сторону отказа).
+struct PendingForms {
+    /// Уже сохранённые формы сессии на момент начала запроса.
+    base: usize,
+    /// Новые формы запроса, дедуплицированные внутри запроса.
+    items: Vec<String>,
+}
+
+impl PendingForms {
+    fn new(base: usize) -> Self {
+        Self {
+            base,
+            items: Vec::new(),
+        }
+    }
+
+    /// Зарезервировать место под форму и положить её в пачку.
+    fn push(&mut self, form: String) -> Result<(), VaultApiError> {
+        if self.items.contains(&form) {
+            return Ok(());
+        }
+        if self.base + self.items.len() >= MAX_FORMS_PER_SESSION {
+            return Err(VaultApiError::TooManyForms {
+                max: MAX_FORMS_PER_SESSION,
+            });
+        }
+        self.items.push(form);
+        Ok(())
+    }
+}
 
 /// Потолок живых сессий в реестре: сверх — вытесняется старейшая вместе с её
 /// кэшем (иначе `/v1/anonymize` был бы бесплатным способом раздвигать RSS).
 const MAX_SESSIONS: usize = 256;
-
-/// Потолок форм суррогатов на сессию: при 4 формы/ФИО это ~250 ФИО, больше
-/// одному диалогу не нужно.
-const MAX_FORMS_PER_SESSION: usize = 1024;
 
 /// Длина случайной приставки метки, байт.
 const NONCE_BYTES: usize = 4;
@@ -171,6 +205,14 @@ pub enum VaultApiError {
     /// Оригинал спана пуст: подмена на пустую строку позже выдала бы «спан есть,
     /// текста нет».
     EmptyOriginal,
+    /// Форм суррогатов больше `MAX_FORMS_PER_SESSION`: отказ до первой подмены.
+    TooManyForms {
+        /// Потолок.
+        max: usize,
+    },
+    /// Сессию вытеснили (FIFO по `MAX_SESSIONS`) между созданием слота и
+    /// коммитом форм — гонка двух запросов, а не ошибка клиента в данных.
+    SessionGone,
     /// Хранилище отказало по причине, зависящей от сервера: `mlock` при
     /// `FASAD_MLOCK=strict`, отказ CSPRNG, переполнение пула буферов.
     Vault(VaultError),
@@ -199,6 +241,11 @@ impl std::fmt::Display for VaultApiError {
                 write!(f, "оригинал спана {len} Б не влезает в лимит {max} Б")
             }
             Self::EmptyOriginal => write!(f, "пустой оригинал не маскируется"),
+            Self::TooManyForms { max } => write!(
+                f,
+                "форм суррогатов больше {max}: отказ до первой подмены, а не partial-restore"
+            ),
+            Self::SessionGone => write!(f, "сессия вытеснена во время запроса"),
         }
     }
 }
@@ -213,6 +260,8 @@ impl VaultApiError {
             Self::Unresolved { .. } => "unresolved_token",
             Self::TooLong { .. } => "span_too_long",
             Self::EmptyOriginal => "empty_span",
+            Self::TooManyForms { .. } => "too_many_forms",
+            Self::SessionGone => "session_gone",
             Self::IncompleteMarker => "incomplete_marker",
             Self::Vault(_) => "vault_error",
         }
@@ -222,7 +271,9 @@ impl VaultApiError {
     #[must_use]
     pub fn status(&self) -> StatusCode {
         match self {
-            Self::BadSessionId(_) | Self::SessionRequired => StatusCode::BAD_REQUEST,
+            Self::BadSessionId(_) | Self::SessionRequired | Self::SessionGone => {
+                StatusCode::BAD_REQUEST
+            }
             Self::Vault(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::UnknownClass(_)
             | Self::BadSpan { .. }
@@ -230,6 +281,7 @@ impl VaultApiError {
             | Self::Unresolved { .. }
             | Self::IncompleteMarker
             | Self::TooLong { .. }
+            | Self::TooManyForms { .. }
             | Self::EmptyOriginal => StatusCode::UNPROCESSABLE_ENTITY,
         }
     }
@@ -407,12 +459,17 @@ impl Vault {
             }
         }
 
+        // Формы коммитятся пачкой после успешного прохода: до первой подмены
+        // мутаций нет, значит `TooManyForms` — отказ всего запроса, а не
+        // «одни имена запомнили, другие нет».
+        let mut pending = PendingForms::new(self.forms_len(session));
         let mut out = String::with_capacity(text.len());
         let mut items: Vec<MaskItem> = Vec::with_capacity(spans.len());
         let mut cursor = 0_usize;
         for s in &spans {
             let original = &text[s.byte_start..s.byte_end];
-            let (replacement, operator) = self.substitute(session, original, &s.entity_type)?;
+            let (replacement, operator) =
+                self.substitute(session, original, &s.entity_type, &mut pending)?;
             items.push(MaskItem {
                 entity_type: s.entity_type.clone(),
                 // Символьные координаты исходного спана — те же semantics, что
@@ -430,6 +487,7 @@ impl Vault {
             cursor = s.byte_end;
         }
         out.push_str(&text[cursor..]);
+        self.commit_forms(session, &pending)?;
         Ok(Anonymized { text: out, items })
     }
 
@@ -571,13 +629,47 @@ impl Vault {
         Ok(label)
     }
 
-    fn remember_form(&self, session: &str, form: &str) {
-        let mut guard = self.locked();
-        if let Some(s) = guard.sessions.get_mut(session) {
-            if !s.forms.iter().any(|f| f == form) && s.forms.len() < MAX_FORMS_PER_SESSION {
-                s.forms.push(form.to_owned());
-            }
+    /// Сколько форм уже лежит в сессии (0 вне режима 2).
+    fn forms_len(&self, session: Option<&str>) -> usize {
+        if self.mode != VaultMode::Session {
+            return 0;
         }
+        let guard = self.locked();
+        guard
+            .sessions
+            .get(session.unwrap_or_default())
+            .map_or(0, |s| s.forms.len())
+    }
+
+    /// Коммит форм одной критической секцией: либо все, либо ни одной.
+    ///
+    /// Проверка потолка здесь, а не только в [`PendingForms::push`], потому что
+    /// между проходом по спанам и коммитом другой запрос мог вырастить сессию:
+    /// молча выкинуть лишнее = тот самый fail-open, от которого мы ушли.
+    fn commit_forms(
+        &self,
+        session: Option<&str>,
+        pending: &PendingForms,
+    ) -> Result<(), VaultApiError> {
+        if pending.items.is_empty() {
+            return Ok(());
+        }
+        let mut guard = self.locked();
+        let Some(s) = guard.sessions.get_mut(session.unwrap_or_default()) else {
+            return Err(VaultApiError::SessionGone);
+        };
+        let fresh: Vec<&String> = pending
+            .items
+            .iter()
+            .filter(|f| !s.forms.iter().any(|e| e == *f))
+            .collect();
+        if s.forms.len() + fresh.len() > MAX_FORMS_PER_SESSION {
+            return Err(VaultApiError::TooManyForms {
+                max: MAX_FORMS_PER_SESSION,
+            });
+        }
+        s.forms.extend(fresh.into_iter().cloned());
+        Ok(())
     }
 
     /// Одна подмена: маркер, метка или суррогат — по режиму и классу.
@@ -586,9 +678,12 @@ impl Vault {
         session: Option<&str>,
         original: &str,
         class: &str,
+        pending: &mut PendingForms,
     ) -> Result<(String, &'static str), VaultApiError> {
         if class == "person_name" && self.mode == VaultMode::Session {
-            if let Some(srg) = self.surrogate_span(session.unwrap_or_default(), original) {
+            if let Some(srg) =
+                self.surrogate_span(session.unwrap_or_default(), original, pending)?
+            {
                 return Ok((srg, OP_REPLACE));
             }
         }
@@ -625,7 +720,24 @@ impl Vault {
     /// `None` — и вызывающий откатывается на метку — в трёх случаях: разбор
     /// неоднозначен или не найден, род пришлось бы угадывать, чисел токенов не
     /// совпало с числом лемм.
-    fn surrogate_span(&self, session: &str, original: &str) -> Option<String> {
+    fn surrogate_span(
+        &self,
+        session: &str,
+        original: &str,
+        pending: &mut PendingForms,
+    ) -> Result<Option<String>, VaultApiError> {
+        let Some((out, forms)) = self.surrogate_forms(session, original) else {
+            return Ok(None);
+        };
+        for f in forms {
+            pending.push(f)?;
+        }
+        Ok(Some(out))
+    }
+
+    /// Суррогат по оригиналу, **без записи в реестр**: формы возвращаются вместе
+    /// с текстом, а решатель о capacities живёт снаружи (`PendingForms`).
+    fn surrogate_forms(&self, session: &str, original: &str) -> Option<(String, Vec<String>)> {
         let table = MorphTable::shipped()?;
         let (lemmas, case, gender) = match table.parse_span(original) {
             SpanParse::Unique {
@@ -694,10 +806,7 @@ impl Vault {
         if forms.len() != tokens.len() {
             return None;
         }
-        for f in forms {
-            self.remember_form(session, &f);
-        }
-        Some(out)
+        Some((out, forms))
     }
 
     /// Обратный ход суррогатов: подставляем оригиналы по зарегистрированным
@@ -1078,5 +1187,135 @@ mod tests {
             .expect("пусто");
         assert_eq!(anon.text, "ничего secrets");
         assert!(anon.items.is_empty());
+    }
+
+    /// Имена, которые наша морф-таблица принимает как ФИО (промер живым
+    /// демоном: `Ушакова Кира Саввична` → суррогат, `Ветрова Прасковья
+    /// Афанасьевна` — суррогат этого суррогата, тоже валидное ФИО).
+    const NAME_A: &str = "Ушакова Кира Саввична";
+    const NAME_B: &str = "Ветрова Прасковья Афанасьевна";
+
+    fn seed_forms(v: &Vault, session: &str, n: usize) {
+        let mut guard = v.locked();
+        let s = guard.sessions.get_mut(session).expect("слот создан");
+        s.forms = (0..n).map(|i| format!("Форма {i} Иванов")).collect();
+    }
+
+    #[test]
+    fn forms_cap_refuses_request_before_first_substitution() {
+        // Порог из `config::MAX_FORMS_PER_SESSION` должен быть отказом, а не
+        // тихой потерей формы: потерянная форма = partial-restore на
+        // `/v1/deanonymize` без ошибки, то есть fail-open на данных.
+        let v = vault(VaultMode::Session);
+        let inn = "ИНН 2482014338";
+        v.anonymize(
+            Some("cap"),
+            inn,
+            &[span("inn", inn, "2482014338")],
+            &schema(),
+        )
+        .expect("слот создаётся первой же меткой");
+        assert_eq!(v.forms_len(Some("cap")), 0, "метка формы не плодит");
+
+        // 1. Добиваем сессию до ровно `max - 3` выдуманными формами и просим
+        //    одно ФИО: трёх новых форм как раз хватает до потолка.
+        let max = MAX_FORMS_PER_SESSION;
+        seed_forms(&v, "cap", max - 3);
+        let anon = v
+            .anonymize(
+                Some("cap"),
+                NAME_A,
+                &[span("person_name", NAME_A, NAME_A)],
+                &schema(),
+            )
+            .expect("3 формы в остаток влезают");
+        assert!(!anon.text.contains(NAME_A), "имя должно быть заменено");
+        assert_eq!(v.forms_len(Some("cap")), max, "потолок достигнут точно");
+
+        // 2. Следующий запрос обязан быть отвергнут ЦЕЛИКОМ.
+        let err = v
+            .anonymize(
+                Some("cap"),
+                NAME_B,
+                &[span("person_name", NAME_B, NAME_B)],
+                &schema(),
+            )
+            .expect_err("места нет");
+        assert!(
+            matches!(err, VaultApiError::TooManyForms { max: m } if m == max),
+            "{err:?}"
+        );
+        assert_eq!(err.code(), "too_many_forms");
+        assert_eq!(
+            err.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "переполнение лимита — отказ клиента, а не 5xx"
+        );
+        // 3. И ничего не изменено: ни число форм, ни то, что сессия уже знала.
+        assert_eq!(v.forms_len(Some("cap")), max, "отказ не мутирует реестр");
+    }
+
+    #[test]
+    fn duplicate_forms_within_request_do_not_reserve_twice() {
+        // 400 вхождений одного имени — это 3 формы, а не 1200: дедупликация
+        // внутри запроса обязана быть, иначе лимит превратился бы в отказ на
+        // безобидном тексте.
+        let v = vault(VaultMode::Session);
+        let inn = "ИНН 2482014338";
+        v.anonymize(
+            Some("dup"),
+            inn,
+            &[span("inn", inn, "2482014338")],
+            &schema(),
+        )
+        .expect("слот");
+        let text = format!("{NAME_A}, ");
+        let unit = text.repeat(400);
+        let needle_len = NAME_A.len();
+        let spans: Vec<SpanIn> = (0..400)
+            .map(|i| {
+                let start = i * (needle_len + 2);
+                SpanIn {
+                    entity_type: "person_name".to_owned(),
+                    byte_start: start,
+                    byte_end: start + needle_len,
+                }
+            })
+            .collect();
+        v.anonymize(Some("dup"), &unit, &spans, &schema())
+            .expect("400 одинаковых имён — три формы");
+        assert_eq!(v.forms_len(Some("dup")), 3);
+    }
+
+    #[test]
+    fn registry_evicts_oldest_session_and_forgets_its_labels() {
+        // `MAX_SESSIONS` без теста = мёртвая константа: проверка, что FIFO
+        // действительно вытесняет старейшую и вычищает за ней кэш оригиналов.
+        let v = vault(VaultMode::Session);
+        let inn = "ИНН 2482014338";
+        let mut first_text = String::new();
+        for i in 0..=MAX_SESSIONS {
+            let id = format!("fifo{i}");
+            let anon = v
+                .anonymize(Some(&id), inn, &[span("inn", inn, "2482014338")], &schema())
+                .expect("метка");
+            if i == 0 {
+                first_text = anon.text;
+            }
+        }
+        {
+            let guard = v.locked();
+            assert_eq!(guard.sessions.len(), MAX_SESSIONS, "реестр не раздут");
+            assert_eq!(guard.order.len(), MAX_SESSIONS);
+            assert!(!guard.sessions.contains_key("fifo0"), "старейшая вытеснена");
+            assert!(guard.sessions.contains_key("fifo256"), "новейшая жива");
+        }
+        let err = v
+            .deanonymize(Some("fifo0"), &first_text)
+            .expect_err("вытесненная сессия не разворачивается");
+        assert!(
+            matches!(err, VaultApiError::Unresolved { count: 1 }),
+            "{err:?}"
+        );
     }
 }

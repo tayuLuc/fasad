@@ -182,17 +182,46 @@ fn guard_headers(
 /// переполнении тела слепнет. Поэтому тело читается здесь, а лимит берётся из
 /// конфига; `Content-Length` при этом не доверен — считается фактически
 /// прочитанное (заголовок можно соврать).
+///
+/// Свой счётчик нужен и по второй причине: `axum_core::Error` — прозрачная
+/// обёртка над `BoxError`, `is_length_limit()` в 0.5.6 нет (промер исходника
+/// crate), т.е. через `to_bytes` «слишком длинно» неотличимо от «поток
+/// оборвался посередине». Врать о причине — тот же fail-open, только в
+/// диагностике, поэтому перелив лимита даёт 413 `body_too_large`, а битый
+/// фрейм — 400 `bad_body`. Остаток тела не дочитываем: hyper закроет соединение
+/// после ответа, а клиенту наше решение о его теле не сообщаем.
 async fn read_body(st: AppState, req: Request) -> Result<(HeaderMap, axum::body::Bytes), ApiError> {
+    use http_body_util::BodyExt as _;
     let limit = st.config().max_body_bytes;
-    let (parts, body) = req.into_parts();
-    let read = axum::body::to_bytes(body, limit).await.map_err(|_| {
-        ApiError::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "body_too_large",
-            "тело больше FASAD_MAX_BODY_BYTES",
-        )
-    })?;
-    Ok((parts.headers, read))
+    let (parts, mut body) = req.into_parts();
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        match body.frame().await {
+            None => break,
+            Some(Err(_)) => {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "bad_body",
+                    "тело пришло битым фреймом или оборвалось",
+                ));
+            }
+            Some(Ok(frame)) => {
+                // Трейлеры контракту тела не нужны: `into_data` ошибается именно
+                // на них, и это единственный ожидаемый ошибочный ход.
+                if let Ok(data) = frame.into_data() {
+                    if buf.len() + data.len() > limit {
+                        return Err(ApiError::new(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            "body_too_large",
+                            "тело больше FASAD_MAX_BODY_BYTES",
+                        ));
+                    }
+                    buf.extend_from_slice(&data);
+                }
+            }
+        }
+    }
+    Ok((parts.headers, buf.into()))
 }
 
 /// Разбор JSON-тела руками (не экстрактором `Json`): rejection-сообщения axum
@@ -230,9 +259,10 @@ async fn anonymize_handler(State(st): State<AppState>, req: Request) -> Response
     let started = Instant::now();
     guarded(move || {
         let req: AnonymizeRequest = json_body(&body)?;
+        let session = session_of(&headers)?;
         let anon = st
             .vault()
-            .anonymize(session_of(&headers), &req.text, &req.spans, st.schema())
+            .anonymize(session, &req.text, &req.spans, st.schema())
             .map_err(|ref err| ApiError::from_vault(err))?;
         let count = anon.items.len();
         let stage = st.health().stage;
@@ -247,10 +277,17 @@ async fn anonymize_handler(State(st): State<AppState>, req: Request) -> Response
     })
 }
 
-/// `POST /v1/deanonymize`: обратный ход. Счётчик разворотов едет в теле
-/// (`substituted`), а не в `X-Guard-Redacted-Count`: тот заголовок по §8 означает
-/// «сколько `ПДн` замазано», и переворачивать его смысл на одном роуте — способ
-/// научить потребителей не доверять заголовкам.
+/// `POST /v1/deanonymize`: обратный ход.
+///
+/// `X-Guard-Redacted-Count` на этом роуте равен `substituted` из тела — число
+/// развёрнутых токенов. Смысл заголовка по §8 («сколько `ПДн` замазано») тут не
+/// переворачивается: он просто не про подмену, а единая сетка `X-Guard-*` на
+/// четырёх маршрутах того стоит (клиент читает заголовок на любом 2xx, не
+/// разбирая маршрут). Убрать заголовок здесь было бы хуже: отсутствие клиенты
+/// приравнивают к нулю, а ноль на deanonymize означал бы «не развернулось
+/// ничего». Точные значения по роутам — README, §«Заголовки SPEC §8».
+/// Промер живым сокетом этой сессии: `x-guard-redacted-count: 2` при
+/// `substituted: 2`.
 async fn deanonymize_handler(State(st): State<AppState>, req: Request) -> Response {
     let (headers, body) = match read_body(st.clone(), req).await {
         Ok(pair) => pair,
@@ -259,9 +296,10 @@ async fn deanonymize_handler(State(st): State<AppState>, req: Request) -> Respon
     let started = Instant::now();
     guarded(move || {
         let req: DeanonymizeRequest = json_body(&body)?;
+        let session = session_of(&headers)?;
         let done = st
             .vault()
-            .deanonymize(session_of(&headers), &req.text)
+            .deanonymize(session, &req.text)
             .map_err(|ref err| ApiError::from_vault(err))?;
         let count = done.substituted;
         let stage = st.health().stage;
@@ -300,13 +338,26 @@ async fn invalidate_handler(
     })
 }
 
-/// `X-Session-ID` из заголовков: отсутствие = `None`, непечатаемое = `None`
-/// (печатать или разбирать мусор из заголовка нельзя).
-fn session_of(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(HEADER_SESSION)
-        .and_then(|v| v.to_str().ok())
-        .filter(|v| !v.is_empty())
+/// `X-Session-ID` из заголовков: отсутствие (или пустое значение) = `None`,
+/// а непечатаемое значение = `Err`.
+///
+/// Различать обязаны: отвечать «заголовка нет» клиенту, который его прислал,
+/// значит соврать о причине отказа. Само значение наружу не цитируется —
+/// непечатаемые байты в сообщении были бы каналом в логи потребителя.
+fn session_of(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
+    match headers.get(HEADER_SESSION) {
+        None => Ok(None),
+        Some(raw) => raw
+            .to_str()
+            .map(|v| (!v.is_empty()).then_some(v))
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    "X-Session-ID содержит байты вне ASCII",
+                )
+            }),
+    }
 }
 
 /// Разбор `X-Guard-Policy`: отсутствие = `mask` (дефолт SPEC §8), неизвестное

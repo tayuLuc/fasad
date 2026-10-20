@@ -18,6 +18,9 @@ guard-onnx      = { path = "../guard-onnx" }
 guard-vault     = { path = "../guard-vault" }
 tokio      = { workspace = true }
 axum       = { workspace = true }
+# `BodyExt::frame` — собственный счётчик байт тела: перелив лимита (413)
+# отличаем от битого потока (400). Crate уже в дереве axum, lock не двигается.
+http-body-util = { workspace = true }
 tower-http = { workspace = true }
 # HTTP-клиент из скелета (commit c2cbffd) убран атомом D: демон шага 6 не имеет
 # права линковать клиент вообще (#56 п.5 «не тащи сети», `X-Upstream-URL` — шаг

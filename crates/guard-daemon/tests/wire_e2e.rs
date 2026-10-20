@@ -145,9 +145,6 @@ impl Reply {
 /// Один запрос на один сокет: `Connection: close` даёт конец тела без разбора
 /// чанков и keep-alive, т.е. клиент остаётся ~30 строк.
 fn call(addr: &str, method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]) -> Reply {
-    let mut sock = TcpStream::connect(addr).expect("сокет поднимается");
-    sock.set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("таймаут ставится");
     let mut req = format!(
         "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\nConnection: close\r\n",
         body.len()
@@ -157,8 +154,18 @@ fn call(addr: &str, method: &str, path: &str, headers: &[(&str, &str)], body: &[
         writeln!(req, "{k}: {v}").expect("в String не бывает ошибки записи");
     }
     req.push_str("\r\n");
-    sock.write_all(req.as_bytes()).expect("запрос уходит");
-    sock.write_all(body).expect("тело уходит");
+    let mut bytes = req.into_bytes();
+    bytes.extend_from_slice(body);
+    call_raw(addr, &bytes)
+}
+
+/// То же, но сырыми байтами: нужно там, где `&str`-заголовок не выражает
+/// намерение (битый chunked, значение заголовка вне UTF-8).
+fn call_raw(addr: &str, bytes: &[u8]) -> Reply {
+    let mut sock = TcpStream::connect(addr).expect("сокет поднимается");
+    sock.set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("таймаут ставится");
+    sock.write_all(bytes).expect("запрос уходит");
     sock.flush().expect("флуш");
     let mut raw = Vec::new();
     sock.read_to_end(&mut raw).expect("ответ читается до конца");
@@ -414,4 +421,67 @@ fn non_loopback_bind_panics_the_test_instead_of_hanging_it() {
     // `recv_timeout`, так что до «демон не поднялся» дело доходит за секунды,
     // а не навечно (первая версия файла висела именно на вечном `read_line`).
     Daemon::start(&[("FASAD_BIND", "0.0.0.0")]);
+}
+
+/// Потоковое тело с битым chunked-заголовком обязано дать 400 `bad_body`, а не
+/// 413 `body_too_large`. Различение — смысл собственной счётной петли в
+/// `http::read_body`: до неё любая ошибка `to_bytes` трактовалась как перелив
+/// лимита, то есть демон врал о причине отказа.
+#[test]
+fn broken_chunked_body_is_400_bad_body_not_413() {
+    let d = Daemon::start(&[]);
+    let req = b"POST /v1/analyze HTTP/1.1\r\n\
+                Host: x\r\n\
+                Content-Type: application/json\r\n\
+                Transfer-Encoding: chunked\r\n\
+                Connection: close\r\n\r\nZZ\r\n";
+    let r = call_raw(&d.addr, req);
+    assert_eq!(r.status, 400, "битый поток — не «слишком длинно»");
+    let body = String::from_utf8_lossy(&r.body).into_owned();
+    assert!(
+        body.contains("bad_body"),
+        "ожидали наш конверт с кодом bad_body, получили: {body}"
+    );
+    assert!(
+        !body.contains("body_too_large"),
+        "в 400 просочился код перелива: {body}"
+    );
+}
+
+/// `X-Session-ID` с байтами вне UTF-8 — это «заголовок невалиден», а не «заголовка
+/// нет»: клиент, который его прислал, должен получать правду. До правки
+/// `session_of` проглатывал нечитаемое значение в `None`, и в режиме 2 отвечал
+/// `режим 2 требует заголовок X-Session-ID`.
+#[test]
+fn non_ascii_session_id_is_refused_as_invalid_not_missing() {
+    let d = Daemon::start(&[
+        ("FASAD_VAULT_MODE", "session"),
+        (
+            "FASAD_VAULT_KEY",
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        ),
+    ]);
+    // Тело — валидный запрос: иначе `bad_json` маску под проверкой заголовка, и
+    // тест проверял бы не то.
+    let body = br#"{"text":"x","spans":[]}"#;
+    let mut req = Vec::new();
+    req.extend_from_slice(
+        b"POST /v1/anonymize HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ",
+    );
+    req.extend_from_slice(body.len().to_string().as_bytes());
+    req.extend_from_slice(b"\r\nConnection: close\r\nX-Session-ID: ");
+    req.extend_from_slice(b"\xff\xfe");
+    req.extend_from_slice(b"\r\n\r\n");
+    req.extend_from_slice(body);
+    let r = call_raw(&d.addr, &req);
+    assert_eq!(r.status, 400);
+    let body = String::from_utf8_lossy(&r.body).into_owned();
+    assert!(
+        body.contains("вне ASCII"),
+        "причина обязана называть заголовок: {body}"
+    );
+    assert!(
+        !body.contains("требует"),
+        "клиент заголовок прислал — «требует» было бы ложью: {body}"
+    );
 }
