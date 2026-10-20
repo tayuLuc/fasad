@@ -91,7 +91,12 @@ GOLDEN_TO_BIO = {
     "address": {"CITY", "STREET", "HOUSE", "REGION", "COUNTRY"},
     "passport": {"PASSPORT"},
 }
-CLASS_LIST = sorted(GOLDEN_TO_BIO)
+# Порядок = ПРОДОВЫЙ контракт блока схем (recall_golden.rs CLASSES, шаг 5+
+# заморозит его в schema.default.json), НЕ алфавит: u-вероятность Decide
+# зависит от порядка вопросов (ревью PR#49: snils 62.07→37.93 при перестановке,
+# репромер r2_pyB_rustorder). sorted() здесь = рассинхрон B↔C на 2.81 pp.
+CLASS_LIST = ("person_name", "inn", "snils", "card_pan", "phone",
+              "email", "address", "passport")
 QUESTIONS = {
     "address": "Is there a postal address ?",
     # card_pan: spike-эталонная формулировка 4b-2a «a bank card number» (не
@@ -310,7 +315,8 @@ def schema_block_text(schema) -> str:
 # ── зеркало arbitrate.rs::DecideArbiter::sanitize_state / clean_state ────────
 # (4b-3B: литералы спец-токенов в данных вне доверия вырезаются из состояния,
 # переводы строк → пробел; блок схем до terminator'а не трогаем).
-SP_LITERALS = ("[SEP_STRUCT]", "[SEP_TEXT]", "[P]", "[L]")
+SP_LITERALS = ("[SEP_STRUCT]", "[SEP_TEXT]", "[P]", "[C]", "[E]", "[R]",
+               "[L]", "[EXAMPLE]", "[OUTPUT]", "[DESCRIPTION]")  # все 10 SPECIALS
 
 
 def sanitize_state(state: str) -> str:
