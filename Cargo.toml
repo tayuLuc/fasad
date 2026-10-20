@@ -62,6 +62,12 @@ region = { version = "4.0.1" }
 moka              = { version = "0.12.16", default-features = false, features = ["future", "sync", "atomic64", "quanta"] }
 chacha20poly1305  = { version = "0.11.0", features = ["zeroize", "getrandom", "rand_core"] }
 lz4_flex          = { version = "0.14.0", default-features = false, features = ["std", "checked-decode"] }
+# Упаковка vault-токена (SPEC §3 режим 3, шаг 5 атом A). Выбрана НЕ base64ct:
+# `base64` 0.23.1 уже сидит в Cargo.lock (промер `cargo tree -e normal`, окт. 2026)
+# и добавляется как прямой dep без новых узлов графа; `default-features=false`
+# + `alloc` отключает `simd-unsafe` (в vault-пути не нужен, докер-проверка
+# каноничности — своя, см. `token::decode_strict`).
+base64            = { version = "0.23.1", default-features = false, features = ["alloc"] }
 
 # --- инференс (только через feature `ort-inference` в guard-onnx, см. ниже) ---
 # ort по default тянет download-binaries + copy-dylibs → ~несколько сотен МБ

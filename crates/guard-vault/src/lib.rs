@@ -48,18 +48,11 @@ pub mod session_store {
     }
 }
 
-/// Stateless-токен для `/v1/anonymize`: словарь → LZ4 → ChaCha20-Poly1305.
+/// Stateless-токен для `/v1/anonymize`: оригинал → LZ4 → XChaCha20-Poly1305.
 ///
-/// TODO(шаг 5): мастер-ключ 32 байта в mlock-памяти, сервер в покое хранит
-/// 0 байт пользовательских данных; расшифровка идёт в mlock+zeroize-буфер.
-pub mod stateless_token {
-    /// Заглушка заголовка контейнера.
-    #[derive(Debug, Clone, Copy)]
-    pub struct TokenHeader {
-        /// Версия формата контейнера.
-        pub version: u8,
-    }
-}
+/// Реализация шага 5 (атом A): SPEC §3 режим 3 — сервер в покое хранит 0 байт
+/// пользовательских данных, расшифровка идёт в mlock+zeroize-буфер.
+pub mod token;
 
 /// SSE look-ahead FSM: обратная подмена на потоке ответа.
 ///
@@ -85,7 +78,6 @@ mod tests {
             idle_secs: 900,
             live_secs: 7200,
         };
-        let _ = super::stateless_token::TokenHeader { version: 0 };
         let _ = super::stream_rewriter::LookAhead { max_bytes: 32 };
     }
 }
