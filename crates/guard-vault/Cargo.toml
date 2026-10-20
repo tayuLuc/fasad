@@ -14,6 +14,27 @@ chacha20poly1305  = { workspace = true }
 lz4_flex          = { workspace = true }
 region            = { workspace = true }
 zeroize           = { workspace = true }
+base64            = { workspace = true }
+thiserror         = { workspace = true }
+
+[features]
+default = []
+# Склонатор-резерв для суррогаты (SPEC §4, решение #46 — ветка (а) «таблица +
+# petrovich как decliner»). В дефолт НЕ входит: petrovich-core — git-пин с
+# build-deps, оффлайн-сборка не должна зависеть от его доступности; морф-таблица
+# атома D работает и без фичи.
+decliner = ["dep:petrovich-core"]
+
+# Пин по docs/dep-verify-crates.md §12: git+rev + явная `version` (без неё
+# `cargo deny` валит wildcard-бан — промер §12 п.3).
+[dependencies.petrovich-core]
+version = "0.2.0"
+git = "https://github.com/rodem/petrovich-rs"
+rev = "019e06dd01c590ff4dd82c762b55465bea5c8d2b"
+optional = true
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

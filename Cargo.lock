@@ -742,11 +742,15 @@ dependencies = [
 name = "guard-vault"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "chacha20poly1305",
  "guard-types",
  "lz4_flex",
  "moka",
+ "petrovich-core",
  "region",
+ "serde_json",
+ "thiserror",
  "zeroize",
 ]
 
@@ -1526,6 +1530,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
+name = "petrovich-core"
+version = "0.2.0"
+source = "git+https://github.com/rodem/petrovich-rs?rev=019e06dd01c590ff4dd82c762b55465bea5c8d2b#019e06dd01c590ff4dd82c762b55465bea5c8d2b"
+dependencies = [
+ "serde",
+ "serde_yaml_ng",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2177,6 +2190,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_yaml_ng"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
+]
+
+[[package]]
 name = "sha2"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2596,6 +2622,12 @@ dependencies = [
  "crypto-common",
  "ctutils",
 ]
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

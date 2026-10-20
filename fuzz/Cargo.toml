@@ -1,0 +1,29 @@
+# Фазз-таргеты (`cargo fuzz`), шаг 5, issue #50, закрытие замечания Н4 ревью #54.
+#
+# КРЕЙТ СОЗНАТЕЛЬНО ВНЕ WORKSPACE: корневой `Cargo.toml` перечисляет `exclude =
+# ["fuzz"]`. Причина прозаическая — линкуется `libfuzzer-sys` (и через него
+# `cc`/`arbitrary`), а `cargo test --workspace`, `just lint` и `cargo deny`
+# обязаны оставаться чистыми на раннере, где `cargo-fuzz` не стоит. Отсюда
+# следствия, зафиксированные в README этого каталога: граф зависимостей фазза
+# не попадает в root `Cargo.lock` и в `cargo deny`, таргет не собирается CI,
+# его инварианты продублированы тестом в `crates/guard-vault/src/rewriter.rs`.
+[package]
+name = "fasad-fuzz"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+guard-vault = { path = "../crates/guard-vault" }
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "f0_rewrite"
+path = "fuzz_targets/f0_rewrite.rs"
+test = false
+doc = false
+bench = false
