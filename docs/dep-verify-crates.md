@@ -345,8 +345,7 @@ reqwest/ureq/hyper/rustls/tonic, `http-body-util` не клиент и в зап
 `X-Upstream-URL`, поэтому бамп не откладываем. Шапки `.crate`: rustls-webpki
 0.103.16 = `4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281`,
 webpki-roots 1.0.10 = `1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9`
-(промер `shasum -a 256` по кэшу реестра, обе `yanked = false`). Транзитивы
-`ureq 3.4.2` (версия
-самой `ureq` не двигалась), дельта `Cargo.lock` — 4 строки: две `version` и две
+(промер `shasum -a 256` по кэшу реестра, обе `yanked = false`). Транзитив обоих —
+`ureq 3.4.2`, сам он не двигался; дельта `Cargo.lock` — 4 строки: две `version` и две
 `checksum`. Whitelist в `deny.toml` не тронута: закрываем патчами, не замятием.
 
