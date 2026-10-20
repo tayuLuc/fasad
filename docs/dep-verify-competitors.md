@@ -32,9 +32,11 @@
 5. Метрики нецитируемы: strict 87.1 / baseline 0.974513 — гейт-датасет приватный xlsx
    реальных ПДн (tests/quality/README L34-38), N=3857 — из baseline_result.json provenance.dataset,
    sha256 — top-level ключ dataset_sha256 того же файла. Публичный
-   `redmadrobot-rnd/pii_benchmark` (2841 текст, 21 тип) — кандидат кросс-референса границ
-   спанов, НЕ замены data/golden (пересечение типов 10/13 `[claim]` — список 21 типа
-   benchmark'а не скачан, число производное от замерщика).
+   `redmadrobot-rnd/pii_benchmark` — промерен 20.10 (uvx huggingface_hub, HfApi+CSV):
+   2841 строка, MIT (не Apache, в отличие от модели), 40 non-O BIO-токенов = 20 типов;
+   пересечение с нашим ядром 8/11 (person_name, inn, snils, card_pan, phone, email,
+   address, passport; нет ogrn/ogrnip/iban). Кандидат кросс-референса границ спанов
+   (MIT позволяет), НЕ замены data/golden (AGENTS §4).
 6. Статус: 3 коммита / 1 автор (git-name a.ivanov, почта an.ivanov@redmadrobot.com —
    18-commits-full.tsv) / 0 releases/tags/PR, последний push 2026-09-09; README L12-13
    бейджи на redmadrobot.ai/articles/pii-guard + habr.com/ru/articles/1080440 (статьи не
