@@ -1,0 +1,218 @@
+name: release
+
+# SPEC §10 п.9 (шаг 9): релиз по тегу `v*`.
+#
+# Матрица: ubuntu-24.04, windows-2022, macos-14 (#31 третья платформа).
+# Контур бандла — каскад-0: `guard-daemon` не имеет фичи `ort-inference`
+# (crates/guard-daemon/Cargo.toml), модельного пути спанов в демоне нет
+# (crates/guard-daemon/src/pipeline.rs, заголовок модуля), поэтому артефакт
+# метится `-cascade-0` честно, а орт-контур проверяется отдельной job'ой
+# `ort-dylib` (сборка харнеса каскадов 1–2 на официальном dylib ORT).
+#
+# Пины action'ов — SHA + комментарий с живым промером (первичка: `gh api
+# repos/<owner>/<repo>/releases/latest`, промер 21.10.2026):
+#   actions/checkout       v7.0.1   (SPEC §9 пинил v4 — просрочен на 3 мажора,
+#                                    dep-verify-repos §1 `[PARTIAL]`; latest=v7.0.1)
+#   softprops/action-gh-release v3.0.3 (SPEC §9 пинил v2 — просрочен; latest=v3.0.3)
+#   actions/upload-artifact v7.0.2, actions/download-artifact v8.0.2
+#   Swatinem/rust-cache    v2.9.3   (в ci.yml пин v2.8.7 через ANNOTATED tag object
+#                                    — здесь plain commit, снятие zizmor unpinned-uses
+#                                    класса F3 из ci.yml)
+#   dtolnay/rust-toolchain commit-pin (мажорных тегов нет, dep-verify-repos §1)
+# Аннотированные теги (action-gh-release v3.0.3, rust-cache v2.9.3) дереференцены
+# в commit через `gh api repos/<r>/git/ref/tags/<t>` → `git/tags/<sha>` — пинить
+# sha tag-объекта нельзя, он не resolvable как `uses:`.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+# Workflow-level пусто: каждый job поднимает ровно своё (класс F2 known-red,
+# снят PR #10 — тот же профиль, что в ci.yml).
+permissions: {}
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  dist:
+    name: dist (${{ matrix.os }})
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bundle: tar.gz
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            bundle: zip
+          - os: macos-14
+            target: aarch64-apple-darwin
+            bundle: tar.gz
+    defaults:
+      run:
+        # На windows-2022 без явного shell `just` гоняет shebang-рецепты через
+        # cmd, где нет ни `set -euo`, ни tar, ни find (тот же класс дефекта, что
+        # описан в комментарии к `net-audit` в justfile).
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Только чтение кэша. Публикующий воркфлоу не имеет права писать в
+          # общий кэш (zizmor cache-poisoning, High: «runtime artifacts potentially
+          # vulnerable to a cache poisoning attack»; фикс предложен самим zizmor,
+          # input `lookup-only` первичен — action.yml pinned-коммита d1527c8,
+          # описание «Check if a cache entry exists without downloading the cache»).
+          lookup-only: "true"
+      - name: Install just + cargo-about
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: just, cargo-about
+      - name: "Релизный бинарь (каскад-0, профиль release: lto=fat, strip)"
+        run: just release-build
+      - name: RAM-гейт каскада-0 (SPEC §10 п.9, метод в выводе)
+        # Windows-ветки метода замера (PowerShell Get-Process) не реализовано:
+        # scripts/measure-rss.sh на неизмеренной ОС падает с exit 2 и явной
+        # причиной, а не рисует ноль.
+        if: matrix.os != 'windows-2022'
+        run: just measure-rss --skip-build
+      - name: "Бандл: бинарь + LICENSE + README + схема + лицензии + SHA256SUMS"
+        run: just dist
+      - name: "Проверка бандла: распаковка, запуск, /health, сверка хэшей"
+        run: bash scripts/verify-bundle.sh
+      - name: Upload bundle
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fasad-${{ github.ref_name }}-${{ matrix.target }}-cascade-0
+          path: |
+            dist/fasad-*.tar.gz
+            dist/fasad-*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  ort-dylib:
+    # Сборка каскадов 1–2 (харнес spike) релизным профилем на официальном dylib
+    # ONNX Runtime. Причина job'ы: на macOS статика pyke в release-профиле
+    # SIGSEGV'ит (docs/model-audit.md §5 п.1, промер ×5), рабочий путь — официальный
+    # dylib 1.31.0 + `ORT_PREFER_DYNAMIC_LINK=1` (per первичка ort:
+    # https://ort.pyke.io/setup/linking — compile-time dynamic linking =
+    # ORT_LIB_PATH + ORT_PREFER_DYNAMIC_LINK=1; доставка рантайма на macOS/Linux —
+    # rpath `@loader_path`/`$ORIGIN` или каталог рядом с бинарём, там же).
+    # Хэши архивов — первичка docs/model-audit.md §8 п.3 (промер 19.10), не SPEC.
+    name: ort-dylib (${{ matrix.os }})
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            ort_archive: onnxruntime-osx-arm64-1.31.0.tgz
+            ort_sha256: 1031b36dd3bdaa8d976a6130d9cf2a05e9be320b93ae804f8427b91dc3432afc
+            ort_dir: onnxruntime-osx-arm64-1.31.0
+          - os: ubuntu-24.04
+            ort_archive: onnxruntime-linux-x64-1.31.0.tgz
+            ort_sha256: cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57
+            ort_dir: onnxruntime-linux-x64-1.31.0
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Только чтение кэша. Публикующий воркфлоу не имеет права писать в
+          # общий кэш (zizmor cache-poisoning, High: «runtime artifacts potentially
+          # vulnerable to a cache poisoning attack»; фикс предложен самим zizmor,
+          # input `lookup-only` первичен — action.yml pinned-коммита d1527c8,
+          # описание «Check if a cache entry exists without downloading the cache»).
+          lookup-only: "true"
+      - name: Install just
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: just
+      - name: "Официальный dylib ORT 1.31.0 и сверка sha256"
+        run: |
+          set -euo pipefail
+          url="https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/${{ matrix.ort_archive }}"
+          curl -sSfL --retry 3 -A "fasad-release-ci/1.0" -o "$RUNNER_TEMP/ort.tgz" "$url"
+          printf '%s  %s\n' "${{ matrix.ort_sha256 }}  " "$RUNNER_TEMP/ort.tgz" > "$RUNNER_TEMP/ort.sum"
+          # sed убирает хвостовые пробелы, чтобы форма совпала с `-c` форматом
+          sed -i 's/[[:space:]]*$//' "$RUNNER_TEMP/ort.sum"
+          ( cd "$RUNNER_TEMP" && sha256sum -c ort.sum )
+          mkdir -p "$RUNNER_TEMP/ort"
+          tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP/ort"
+          ls -1 "$RUNNER_TEMP/ort"
+      - name: Сборка spike с ort-inference (release, dylib)
+        env:
+          ORT_DIR: ${{ runner.temp }}/ort/onnxruntime-1.31.0
+        run: just build-ort
+      - name: "Проверка линковки: dylib прописан в load commands"
+        env:
+          ORT_DIR: ${{ runner.temp }}/ort/onnxruntime-1.31.0
+        run: |
+          set -euo pipefail
+          bin=target/release/examples/spike
+          case "$(uname -s)" in
+            Darwin) otool -L "$bin" | grep -i onnxruntime ;;
+            Linux) ldd "$bin" | grep -i onnxruntime ;;
+          esac
+          echo "ort-dylib ok: spike линкуется на официальный dylib 1.31.0 (не на pyke-статику)"
+
+  release:
+    name: GitHub Release
+    needs: dist
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      # Единственный job с записью: публикация релиза. `contents: write` узок по
+      # объёму (релиз + ассеты) и не даёт ни PR, ни пакетов (zizmor
+      # excessive-permissions profile: job-level явный минимум).
+      contents: write
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Скачать бандлы матрицы
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: fasad-*
+          path: artifacts
+          merge-multiple: true
+      - name: "Что публикуется: сверка имён и хэшей"
+        run: |
+          set -euo pipefail
+          ls -la artifacts
+          ( cd artifacts && for f in *.sha256; do sha256sum -c "$f"; done )
+      - name: Опубликовать релиз
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: artifacts/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          body: |
+            Контур бандлов: **каскад-0** (детерминированные детекторы + vault).
+            Модельный путь (каскады 1–2, ONNX) в демоне ещё не сведён — см.
+            `docs/release.md` §«Что в бандле» и `docs/model-audit.md` §Release RSS
+            (замеры RAM с методом). Сборки: `x86_64-unknown-linux-gnu`
+            (ubuntu-24.04), `x86_64-pc-windows-msvc` (windows-2022),
+            `aarch64-apple-darwin` (macos-14). Каждый бандл несёт
+            `THIRD-PARTY-LICENSES.txt` (cargo-about) и `SHA256SUMS.txt`.
