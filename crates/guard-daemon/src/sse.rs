@@ -539,6 +539,64 @@ fn synthetic(template: Option<&Value>, index: u32, text: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Хвостовые кадры обязан определять вход, а не обход `HashMap`.
+    ///
+    /// Отказ ловится так: строим 64 релая с одной последовательностью вставок.
+    /// Каждый новый `HashMap` в процессе получает свой сид хеширования, поэтому
+    /// без сортировки хотя бы один прогон выдаёт хвосты не по возрастанию
+    /// `index`. Детерминированность проверяем как равенство всех 64 порядков
+    /// между собой и ожидаемому — иначе тест был бы flaky-зелёным.
+    #[test]
+    fn tail_frames_are_flushed_in_index_order() {
+        const IDX: [u32; 3] = [7, 3, 1];
+        let cfg = Config::from_lookup(|_| None).expect("дефолты sane");
+        let vault = Vault::startup(VaultMode::Session, crate::config::Mlock::BestEffort)
+            .expect("хранилище в режиме 2 поднимается");
+        let mut orders: Vec<Vec<u32>> = Vec::new();
+        for n in 0..64_u32 {
+            let session = format!("tail-{n}");
+            let mut relay =
+                Relay::new(&vault, Some(&session), &cfg).expect("релай в режиме 2 поднимается");
+            let mut held_out = Vec::new();
+            for i in IDX {
+                let frame = format!(
+                    "data: {{\"choices\":[{{\"index\":{i},\"delta\":{{\"content\":\"хвост{i}\"}}}}]}}\n\n"
+                );
+                relay
+                    .push(frame.as_bytes(), &mut held_out)
+                    .expect("кадр целый");
+            }
+            let echoed = String::from_utf8(held_out).expect("ASCII-оболочка");
+            assert!(
+                echoed.contains("\"content\":\"\""),
+                "удержанное слово должно было оставить пустую дельту: {echoed}"
+            );
+            let mut out = Vec::new();
+            relay.finish(&mut out);
+            let text = String::from_utf8(out).expect("хвостовые кадры — UTF-8");
+            let seen: Vec<u32> = text
+                .lines()
+                .filter_map(|l| l.strip_prefix("data: "))
+                .filter_map(|rest| serde_json::from_str::<Value>(rest).ok())
+                .filter_map(|v| v["choices"][0]["index"].as_u64())
+                .map(|i| u32::try_from(i).expect("индекс дельты маленький"))
+                .collect();
+            assert_eq!(
+                seen.len(),
+                IDX.len(),
+                "по одному хвостовому кадру на индекс"
+            );
+            orders.push(seen);
+        }
+        let mut want = IDX;
+        want.sort_unstable();
+        let want = want.to_vec();
+        assert!(
+            orders.iter().all(|o| *o == want),
+            "порядок хвостовых кадров не определён входом: {orders:?}"
+        );
+    }
+
     #[test]
     fn find_delim_handles_both_ending_styles() {
         assert_eq!(find_delim(b"a\n\nb"), Some((1, 2)));
