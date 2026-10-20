@@ -23,7 +23,6 @@ models/*
 transcript.md
 paste.md
 docs/competitors/snapshots/
-docs/competitors/snapshots/
 
 # дубликат-страховка: онто-бинарь из build-кэша никогда в гит
 libonnxruntime*
