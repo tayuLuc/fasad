@@ -126,8 +126,13 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    net-audit, deny).
 4. `git tag -s v<version> && git push origin v<version>` → workflow `release`
    (триггер `push: tags: v*`) собирает матрицу, прогоняет гейты и публикует
-   GitHub Release (`softprops/action-gh-release`, job `release`, единственная
-   с `contents: write`).
+   GitHub Release шагом `gh release create` в job `release` (единственной с
+   `contents: write`). Экшен `softprops/action-gh-release` на это место **не**
+   взят: zizmor даёт на него `superfluous-actions` (confidence High — «функциональность
+   уже есть в раннере»), а MegaLinter краснит гейт находкой любой severity (промер
+   CI 21.10: run 39514678570, «11 findings (10 suppressed): 1 informational»,
+   zizmor rc=11). Плюс из workflow с правами на запись уходит сторонний экшен —
+   меньше поверхность supply-chain.
 5. Логи RAM-гейта остаются в job-логах (`RSS|…`, `BUDGET|…`), числа с методом
    переносятся в docs/model-audit.md §9.
 
@@ -224,12 +229,16 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 | action | пин в release.yml | живой latest на момент промера |
 | --- | --- | --- |
 | actions/checkout | `3d3c42e5…` # v7.0.1 | v7.0.1 |
-| softprops/action-gh-release | `efb35369…` # v3.0.3 | v3.0.3 |
 | actions/upload-artifact | `cf430e03…` # v7.0.2 | v7.0.2 |
 | actions/download-artifact | `9000827c…` # v8.0.2 | v8.0.2 |
 | Swatinem/rust-cache | `d1527c8f…` # v2.9.3 | v2.9.3 |
 | taiki-e/install-action | `8cca0918…` # v2.87.29 | v2.87.29 (совпадает с ci.yml) |
 | dtolnay/rust-toolchain | `b725eda5…` (мажорных тегов нет) | — |
+
+Публикация релиза — `gh release create` (CLI раннера), пинить нечего: сторонний
+экшен снят по zizmor `superfluous-actions`, см. §«Как выпустить», п.4. Промер
+`gh api` живой мажор v3.0.3 остаётся в docs/dep-verify-repos.md:45 как факт про
+репозиторий экшена.
 
 Аннотированные теги (`v3.0.3`, `v2.9.3`) дереференцены в commit
 (`gh api repos/<r>/git/ref/tags/<t>` → `git/tags/<sha>` → commit): пинить
