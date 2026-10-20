@@ -10,7 +10,7 @@
 
 /// Морфология RU: лемматизация + синтетические суррогаты во всех падежах.
 ///
-/// TODO(шаг 5): спан → лемма (`rsmorphy`) → дедup падежных форм → пул имени того
+/// TODO(шаг 5): спан → лемма (`rsmorphy`) → дедуп падежных форм → пул имени того
 /// же рода → склонение (`petrovich`) в 6 падежей → регистрация форм в обратном
 /// aho-corasick с привязкой `(EntityId, Case)`. Оба крейтов мертвы (2018/2020,
 /// `docs/dep-verify-crates.md`) — лицензия/MSRV/замена решаются на шаге 5.
@@ -48,12 +48,14 @@ pub mod session_store {
     }
 }
 
+pub mod cache;
+pub mod morph;
+pub mod rewriter;
+
 /// Stateless-токен для `/v1/anonymize`: оригинал → LZ4 → XChaCha20-Poly1305.
 ///
 /// Реализация шага 5 (атом A): SPEC §3 режим 3 — сервер в покое хранит 0 байт
 /// пользовательских данных, расшифровка идёт в mlock+zeroize-буфер.
-pub mod cache;
-pub mod rewriter;
 pub mod token;
 
 /// SSE look-ahead FSM: обратная подмена на потоке ответа.
