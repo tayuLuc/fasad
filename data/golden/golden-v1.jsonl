@@ -198,3 +198,7 @@
 {"id":"g0198","text":"Дозвониться в поддержку не удалось: 56 минут в очереди.","spans":[],"split":"negative","source":"synthetic-no-pii"}
 {"id":"g0199","text":"Релиз 0.5.13 выкатываем в пятницу, фича-фриз со вторника.","spans":[],"split":"negative","source":"synthetic-no-pii"}
 {"id":"g0200","text":"Обновите подписку на сервис: истекает через 3 дней.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0201","text":"Запрос выписки по контрагенту ИНН 5065049620796 (ЕГРЮЛ, active).","spans":[{"start_byte":63,"end_byte":76,"category":"ogrn","value_source":"5065049620796"}],"split":"recall","source":"primary-valid-vector"}
+{"id":"g0202","text":"СНИЛС заёмщика из анкеты 38405134670 — сверка ПФР пройдена.","spans":[{"start_byte":46,"end_byte":57,"category":"snils","value_source":"38405134670"}],"split":"recall","source":"primary-valid-vector"}
+{"id":"g0203","text":"Возврат по реквизитам: FR14 2004 1010 0505 0001 3M02 606.","spans":[{"start_byte":42,"end_byte":75,"category":"iban","value_source":"FR1420041010050500013M02606"}],"split":"recall","source":"primary-valid-vector"}
+{"id":"g0204","text":"ОГРНИП ИП Громова 302500000000001 внесён в реестр.","spans":[{"start_byte":33,"end_byte":48,"category":"ogrnip","value_source":"302500000000001"}],"split":"recall","source":"primary-valid-vector"}

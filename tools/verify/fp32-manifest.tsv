@@ -1,0 +1,8 @@
+# fp32-первичка для parity-гейта (quant-policy §3/§17, атом 4b-3B).
+# Формат: role<TAB>repo<TAB>revision<TAB>file<TAB>sha256<TAB>size_bytes<TAB>source
+# sha256/lfs — GET /api/models (HfApi, authorized CLI huggingface_hub, 20.10);
+# скачивание — fetch_manifest_weights.sh (curl --http1.1, паттерн
+# scripts/fetch-models.sh), сверка sha256 ДО использования (Fail-Closed).
+fp32-extractor1b	lockR/rubert-base-pii-ner-onnx	ea7610b22808c509c0c8b7c7b0f6639c19684d08	model.optimized.fp32.onnx	eebed6562883ca6c59204da661ddb3edb1b334e91737f35d79ac74c75d371315	711034332	hf
+fp32-arbiter	onnx-community/GLiNER2.5-Decide-ONNX	18271032588167fe9a3fbb8c5a4900b1231f8119	onnx/model.onnx	37af0b3a55a4199a798674cdf7786b88d4764df3e9575ebfcec3673cde0838be	285759	hf
+fp32-arbiter-weights	onnx-community/GLiNER2.5-Decide-ONNX	18271032588167fe9a3fbb8c5a4900b1231f8119	onnx/model.onnx_data	f5aef45f7892cf3acf277516e225d5e653d6b4946918d728b3c3ab0882ac8d58	1744089088	hf

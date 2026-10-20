@@ -43,7 +43,7 @@ deny:
 
 # Линт Python-скриптов проекта (генератор датасета + verify-скрипты).
 python-lint:
-    uv run --locked ruff check data/golden scripts
+    uv run --locked ruff check data/golden scripts tools/verify
 
 # Побайтовая воспроизводимость golden-датасета: реген + сверка с B2-константой
 # (тот же инвариант, что tests/golden_v1.rs::golden_file_sha256_matches_embedded_const).
