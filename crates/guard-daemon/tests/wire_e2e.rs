@@ -64,9 +64,11 @@ impl Daemon {
         });
         let started = Instant::now();
         let mut seen = String::new();
+        let mut exited = None;
         while started.elapsed() < Duration::from_secs(15) {
             let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) else {
-                if child.try_wait().expect("статус читается").is_some() {
+                if let Some(status) = child.try_wait().expect("статус читается") {
+                    exited = Some(status);
                     break;
                 }
                 continue;
@@ -88,8 +90,23 @@ impl Daemon {
         // процесс-зомби (клинч `zombie_processes` это и ловит).
         let _ = child.kill();
         let _ = child.wait();
+        // Причина отказа из stderr читается ТОЛЬКО если процесс сам завершился:
+        // на живом демоне трубке конца нет, и чтение вернуло бы нас к той же
+        // вешалке, из которой мы только что вышли. Это не косметика — на
+        // windows-раннере именно эта строка отличит «mlock отказал» от «тест
+        // не дождался баннера».
+        let reason = match exited {
+            Some(_) => {
+                let mut buf = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    let _ = std::io::Read::read_to_string(&mut e, &mut buf);
+                }
+                buf
+            }
+            None => String::new(),
+        };
         panic!(
-            "демон не напечатал баннер за {:?}; вывод: {seen:?}",
+            "демон не напечатал баннер за {:?}; stdout: {seen:?} stderr: {reason:?}",
             started.elapsed()
         );
     }
@@ -387,11 +404,13 @@ fn bad_vault_key_refuses_to_start_before_binding() {
 }
 
 #[test]
-#[should_panic(expected = "не напечатал баннер")]
+#[should_panic(expected = "не loopback")]
 fn non_loopback_bind_panics_the_test_instead_of_hanging_it() {
     // Двойной контракт. Стена loopback (SPEC §1 п.6) проверена на границе
     // процесса: `FASAD_BIND=0.0.0.0` = отказ со стартом, баннера нет. И
-    // проверено, что ожидание баннера ограничено: читатель в потоке с
+    // проверено, что паника на отказе старта объясняет причину (в тексте есть
+    // `не loopback` — она приходит из stderr демона, а не из нашей догадки) и
+    // что ожидание баннера ограничено: читатель в потоке с
     // `recv_timeout`, так что до «демон не поднялся» дело доходит за секунды,
     // а не навечно (первая версия файла висела именно на вечном `read_line`).
     Daemon::start(&[("FASAD_BIND", "0.0.0.0")]);
