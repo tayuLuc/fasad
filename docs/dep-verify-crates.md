@@ -349,3 +349,68 @@ webpki-roots 1.0.10 = `1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d28748
 `ureq 3.4.2`, сам он не двигался; дельта `Cargo.lock` — 4 строки: две `version` и две
 `checksum`. Whitelist в `deny.toml` не тронута: закрываем патчами, не замятием.
 
+## 15. Промер шага 8 (22.10, `rust-embed` и статика песочницы; rustc 1.99.1 по `rust-toolchain.toml`, aarch64-apple-darwin)
+
+**`rust-embed` в дереве был с шага 2** (строка SPEC §7, `features = ["compression"]`),
+и до этого шага не использовался: кода, который его зовёт, не было. Шаг 8 —
+момент, когда крейт становится поверхностью интеграции, поэтому промер первичкой
+здесь полнее строки таблицы §2.
+
+Первичка 1 — реестр (crates.io API, запрос этой сессии): `newest_version =
+max_stable_version = 8.13.0`, запись `8.13.0`: `yanked = false`,
+`license = "MIT"`, `crate_size = 903366`, `updated_at = 2026-10-07` ⇒ строка
+таблицы §2 («8.13.0 | 8.13.0 | 8.13.0 | совпадает») на сегодня верна.
+
+Первичка 2 — распакованный пакет в реестр-кэше
+(`~/.cargo/registry/src/*/rust-embed-8.13.0/`): `license = "MIT"` и файл
+`LICENSE` ✓; `rust-version = "1.80.0"` — ниже нашего пина 1.99.1, пол MSRV
+не поднимает ✓; `#![forbid(unsafe_code)]` первой строкой и в `rust-embed`, и в
+`rust-embed-utils` (по одному вхождению в каждом) ⇒ рантайм-поверхность — поиск по
+статической таблице байтов, без `unsafe` и без сети.
+
+**Фичи: `default-features = false, features = ["mime-guess"]` — это отступление от
+SPEC §7, где у строки `rust-embed` стоит «compression».**
+
+1. `compression` тянет `include-flate` → `libflate`/`zstd` (а `zstd` — это
+   `zstd-sys`, то есть C-компилятор в сборке продукта). Пример на нашем дереве:
+   `Cargo.lock` со `compression` = 250 узлов, без него = 232; из 18 выпавших узлов
+   добавленных нет ни одного — только вычеркнутые (`zstd`, `zstd-safe`,
+   `zstd-sys`, `include-flate*`, `libflate*`, `crc32fast`, `adler32`,
+   `rle-decode-fast`, `no_std_io2`, `proc-macro-error3`, `hashbrown`, `foldhash`,
+   `allocator-api2`, `jobserver`). Выгода сжатия — на 20 340 байтах статики
+   (померено `wc -c`); цена — C-тулчейн в сборке и путь распаковки внутри
+   границы, где крутятся ПДн. Меняемся неохотно: бюджет §1 п.4 (<2 ГБ) тесен не
+   для 20 КБ.
+2. `mime-guess` оставлен: `Metadata::mimetype()` существует только под этой
+   фичей (`rust-embed-utils-8.13.0/src/lib.rs:138`, `#[cfg(feature =
+   "mime-guess")]`), а content-type ассетов — часть контракта (тест
+   `assets_are_served_with_types_and_schema_is_the_shipped_file`). `mime_guess`
+   в дереве уже был (axum), нового узла не добавлен.
+3. `axum-ex` не взят, хотя название манит: кода в нём нет — интеграция с axum
+   лежит в `examples/axum.rs` (проверено в `Cargo.toml` пакета:
+   `[[example]] name = "axum" required-features = ["axum-ex"]`), а зависимости
+   `axum` + `tokio` крейт получил бы как прямые. Наш обработок — 40 строк в
+   `src/ui.rs`, они и так есть.
+
+`sha2`-ребро (`rust-embed-utils → sha2 0.11`) — то же, что зафиксировано в
+корневом `Cargo.toml` (комментарий к issue #14): версия уже была в `Cargo.lock`,
+новых узлов шаг 8 не внёс. `cargo deny` на итоговом дереве: rc=0,
+RUSTSEC-строк 0 (промер `just deny` в этом же заходе).
+
+**`debug-embed` включён — это не «для отладки», это гейт.** Без него отладочная
+сборка читает `ui/` с диска (`rust-embed/src/lib.rs`, doc на `RustEmbed::get`: «the
+information is read from the file system on each call»), и тесты песочницы
+оказываются проверкой соседних файлов, а не содержимого бинарника: промерено — с
+выключенным `debug-embed` тест `ui_payload_is_inside_the_binary` краснеет
+(«в бинаре нет куска статики „fasad — песочница“»), а тесты «демон отдаёт
+страницу/ассет» остаются зелёными. То есть без этой фичи утверждение «статика
+зашита в бинарник» в CI не проверялось бы ничем. Побочный эффект для разработки:
+правка `ui/**` пересобирает демон (`include_bytes!` регистрирует файл как
+compile-time зависимость, промерено), горячей перезагрузки статики нет.
+
+Белый список имён в `src/ui.rs` — не косметика: в debug-сборке `rust-embed`
+читает файлы с диска (`rust-embed/src/lib.rs`, doc на `RustEmbed::get`: «the
+information is read from the file system on each call»), и маршрут
+`/assets/{path}` с путём из запроса в отладочном бинаре читал бы что угодно
+вне каталога. Тест `asset_names_outside_the_allow_list_are_refused` держит это
+и на `%2e%2e%2f`-поднятии.

@@ -322,7 +322,7 @@ gline-rs только как референс алгоритма `[decided]`. П
 | POST `/v1/analyze` | Presidio Analyzer (репо `data-privacy-stack/presidio`, MIT — переехал из microsoft) | спаны+offsets+векторы классов+вердикты, текст не меняет |
 | POST `/v1/anonymize` / `/v1/deanonymize` | Presidio Anonymizer | двухшаговый, stateless `vault_token` |
 | DELETE `/v1/sessions/{id}`, PUT `/v1/schema` | REST | сброс сессии / горячая смена схемы категорий |
-| GET `/ui` | — | зашитая песочница (подсветка α=confidence) |
+| GET `/ui` (и `/` — то же) | — | зашитая песочница (подсветка α=confidence, редактор запроса, roundtrip); ассеты — `GET /assets/{app.css\|app.js\|schema.json}`, отдаётся ровно белый список из четырёх имён |
 
 Заголовки: вход `X-Upstream-URL`, `X-Session-ID`, `X-Guard-Policy: mask|block|audit_only`.
 Выход — полная сетка того, что демон действительно отправляет (имена констант в
