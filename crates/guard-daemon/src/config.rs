@@ -32,11 +32,22 @@ pub const DEFAULT_BIND: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 /// Правится `FASAD_MAX_BODY_BYTES`.
 pub const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576;
 
-/// Порог `τ_low` экстрактора (SPEC §2 каскад 1: 0.20–0.25, FN фатален).
-/// Дефолт — верхняя граница диапазона; рабочий набор {0.20, 0.25} задан
-/// amendment'ом `docs/quant-policy.md` §3 (п.2a) как партия допустимых значений,
-/// а не указание держимого по умолчанию.
-pub const DEFAULT_TAU_LOW: f64 = 0.25;
+/// Порог `τ_low` экстрактора: **0.20**, нижняя граница диапазона SPEC §2
+/// (0.20–0.25, «FN фатален, FP дёшев»).
+///
+/// Это «дефолт по замеру шага 6» (#56 п.2), а не выбор по вкусу. Промер
+/// `recall_golden` на golden-v1.1 (N=150 recall-строк, `--threads 8`,
+/// замороженный порядок блока, HEAD 08c35c3, 20.10):
+///
+/// | τ | Decide overall | Wilson lower 95 % | Decide `snils` |
+/// |---|----------------|---------------------|----------------|
+/// | 0.20 | 94.74 | 91.50 | 51.72 |
+/// | 0.25 | 92.98 | 89.41 | 37.93 |
+///
+/// Разница +1.76 п.п. overall и +13.79 п.п. на `snils` в пользу 0.20; обе τ
+/// проходят HARD-гейт amendment'а (`docs/quant-policy.md` §3 п.2a), значит
+/// выбор делает нижняя граница, а SPEC §2 прямо велит держать порог низко.
+pub const DEFAULT_TAU_LOW: f64 = 0.20;
 
 /// Порог `τ_high`: выше — без арбитра (SPEC §2 каскад 1).
 pub const DEFAULT_TAU_HIGH: f64 = 0.80;
@@ -167,6 +178,11 @@ pub struct Config {
     /// Каталог весов; `None` = каскады 1–2 не поднимаются, работает только
     /// детерминированный каскад 0 (деградация явная, см. `/health`).
     pub model_dir: Option<std::path::PathBuf>,
+    /// Путь к файлу схемы классов (`FASAD_SCHEMA`); `None` = встроенный канон
+    /// [`crate::schema::DEFAULT_SCHEMA_JSON`]. Override читается на старте и
+    /// отказывает в старте, если испорчен — молча откатиться на дефолт значит
+    /// игнорировать волю оператора.
+    pub schema_path: Option<std::path::PathBuf>,
 }
 
 /// Причина, по которой конфигурация не собрана. Стартовый отказ — правильное
@@ -274,6 +290,7 @@ impl Config {
             vault_mode,
             threads: usize_or(&mut lookup, "FASAD_THREADS", DEFAULT_THREADS)?,
             model_dir: lookup("FASAD_MODEL_DIR").map(std::path::PathBuf::from),
+            schema_path: lookup("FASAD_SCHEMA").map(std::path::PathBuf::from),
         })
     }
 
@@ -374,6 +391,7 @@ mod tests {
         assert_eq!(cfg.max_body_bytes, DEFAULT_MAX_BODY_BYTES);
         assert!(cfg.thresholds.is_sane());
         assert_eq!(cfg.model_dir, None);
+        assert_eq!(cfg.schema_path, None);
         assert_eq!(cfg.stage(), "cascade-0-only");
     }
 
@@ -463,6 +481,16 @@ mod tests {
                 "{var}={val} → {err:?}"
             );
         }
+    }
+
+    #[test]
+    fn schema_override_is_a_path_not_a_fallback() {
+        let cfg =
+            cfg_from(&[("FASAD_SCHEMA", "/etc/fasad/schema.json")]).expect("путь принимается");
+        assert_eq!(
+            cfg.schema_path.unwrap().to_string_lossy(),
+            "/etc/fasad/schema.json"
+        );
     }
 
     #[test]

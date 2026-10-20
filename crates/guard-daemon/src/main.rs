@@ -8,7 +8,8 @@
 #![warn(clippy::unwrap_used)]
 
 use guard_daemon::Health;
-use guard_daemon::config::{Config, ConfigError};
+use guard_daemon::config::Config;
+use guard_daemon::schema::Schema;
 
 /// Код выхода при отклонённой конфигурации: отдельный от сетевых ошибок, чтобы
 /// systemd/докер видели «неверный конфиг» как неверный конфиг, а не как порт
@@ -19,7 +20,15 @@ const EXIT_BAD_CONFIG: i32 = 2;
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cfg = match Config::from_env() {
         Ok(cfg) => cfg,
-        Err(e) => fail_closed_config(&e),
+        Err(e) => refuse_startup(&e),
+    };
+
+    // Схема проверяется до подъёма сокета: частично применимая схема хуже
+    // отсутствующей, а `/health` с 200 на испорченном каноне ввёл бы оператора
+    // в заблуждение (fail-closed, AGENTS §Инженерные инварианты).
+    let schema = match Schema::from_config(cfg.schema_path.as_deref()) {
+        Ok(schema) => schema,
+        Err(e) => refuse_startup(&e),
     };
 
     // Loopback обязателен и проверен на разборе: гард не сетевой сервис
@@ -32,20 +41,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
     println!(
-        "fasad {} {}, listening on http://{}/health",
+        "fasad {} {}, listening on http://{}/health (классов схемы: {})",
         env!("CARGO_PKG_VERSION"),
         cfg.stage(),
-        cfg.addr
+        cfg.addr,
+        schema.classes.len()
     );
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-/// Отказ по конфигу: напечатать причину и выйти, не поднимая сокет.
+/// Отказ на старте (конфиг или схема): причина в stderr, сокет не поднимается.
 ///
 /// Вынесено в `-> !`, чтобы поток управления был явен для компилятора, а не
 /// через `unwrap_or_else(|e| todo!())`.
-fn fail_closed_config(err: &ConfigError) -> ! {
-    eprintln!("fasad: конфигурация отклонена, сокет не поднимается: {err}");
+fn refuse_startup(err: &dyn std::fmt::Display) -> ! {
+    eprintln!("fasad: старт невозможен: {err}");
     std::process::exit(EXIT_BAD_CONFIG);
 }

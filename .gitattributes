@@ -15,3 +15,11 @@ data/golden/** -text
 data/morph/** -text
 *.onnx binary
 *.safetensors binary
+# Схема классов шага 6 — единственный байтовый эталон среди конфигов: тест
+# `schema::tests::embedded_matches_the_file_on_disk` сверяет include_str! с файлом
+# на диске, а артефакт SPEC §9 («бинарь + dylib + schema.default.json») обязан
+# совпадать с вкомпилированным и на Windows-раннере. Урок Б2 (issue #54):
+# actions/checkout выставляет core.autocrlf=true, и `text` молча перемолол бы
+# LF→CRLF в рабочем дереве — здесь это ещё и меняло бы байты промптов Decide,
+# т.е. измеренный контракт порядка (#53). -text = побайтовая копия blob'а.
+config/schema.default.json -text
