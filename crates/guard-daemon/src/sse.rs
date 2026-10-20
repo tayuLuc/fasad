@@ -355,7 +355,10 @@ impl<'a> Relay<'a> {
 
     /// Флеш всех индексов.
     fn flush_all(&mut self, out: &mut Vec<u8>) {
-        let idxs: Vec<u32> = self.states.keys().copied().collect();
+        let mut idxs: Vec<u32> = self.states.keys().copied().collect();
+        // Порядок обхода `HashMap` не определён, а хвостовые кадры — часть
+        // ответа клиента: два одинаковых запроса не должны различаться порядком.
+        idxs.sort_unstable();
         for i in idxs {
             self.flush_state(i, out);
         }
