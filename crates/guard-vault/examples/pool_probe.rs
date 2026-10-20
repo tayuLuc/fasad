@@ -15,6 +15,11 @@
 //! `422` в демоне. Считается вызовом `VaultEngine::pick_surrogat_from`, т.е. тем
 //! же кодом, что выбирает форму на запросе, а не моделью «посчитаем хэши».
 //!
+//! `integrity` — метрика `restoration-integrity` (#60 п.3): доля byte-exact
+//! разворотов на мультиымянном документе, рядом с recall (#14), который её не
+//! ловит вовсе. Два прогона (чистый и со снятием записей из кэша), главное в
+//! выводе — ноль в колонке «подменено».
+//!
 //! Отбор имён: те, что демон вообще пустит на суррогатный путь, — разбор
 //! `Unique`/`LemmaUnique` с родом по окончанию первого токена и 2..=3 токена.
 //! Остальные на суррогатный путь не попадают в принципе (`NoMatch`/`Ambiguous`
@@ -36,9 +41,10 @@
     reason = "промерный харнес, не prod: счётчики пар ≤ 2^53 (351 шт.), байтовые оффсеты из собственного golden-файла; список = ровно сработавшие классы clippy 1.97 и 1.99"
 )]
 
-use guard_vault::VaultEngine;
+use guard_vault::cache::{Limits, StoreKey};
 use guard_vault::morph::{Case, Gender, MorphTable, NameType, SpanParse, suffix_gender};
 use guard_vault::pool::{self, SURROGATES_TSV};
+use guard_vault::{SRG_PREFIX, SessionKey, SurrogatError, VaultEngine};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Исторический пул до #60: `const SURROGATES` из `lib.rs` на коммите `832d7b4`.
@@ -254,6 +260,97 @@ fn names(table: &MorphTable<'_>) -> (Vec<Name>, usize, usize, usize) {
     (out, unparsed, not_three, unresolved)
 }
 
+/// Метрика `restoration-integrity` (#60 п.3): доля byte-exact разворотов на
+/// мультиымянном документе — то, чего recall (#14) не ловит вовсе.
+///
+/// Два прогона на одном и том же корпусе (все годные ФИО golden-v1 в одной
+/// сессии, пул — shipped-артефакт). Чистый: выдали — развернули, записи живы.
+/// Со снятием: после каждого имени его строки удаляются из кэша `invalidate`-ом,
+/// ровно так, как их снял бы `idle`-лимит 15 мин или evict по байтовому бюджету.
+/// Второй прогон — и есть сцена тихой подмены до шага 7d: свободный слот
+/// доставался следующему имени, а разворот отдавал не то, что подставлялось.
+///
+/// Главное в выводе — не доля, а ноль: `подменено` обязано быть нулевым в обоих
+/// прогонов. Доля в чистом прогоне 100 % по конструкции (отказ вместо подмены),
+/// а в прогоне со снятием смотрят, сколько имён заплатило отказом за этот ноль.
+fn integrity() -> i32 {
+    let Some(table) = MorphTable::shipped() else {
+        eprintln!("морф-таблица не разбрана");
+        return 1;
+    };
+    let (names, unparsed, not_three, unresolved) = names(table);
+    println!(
+        "golden-v1: имён годно {}, не разбирается {unparsed}, не три токена {not_three}, род не решён {unresolved}",
+        names.len()
+    );
+    for (evict, label) in [(false, "чистый"), (true, "со снятием записей")] {
+        let e = VaultEngine::new(
+            SessionKey::new([9_u8; 32]),
+            Limits::for_test(
+                std::time::Duration::from_secs(3600),
+                std::time::Duration::from_secs(7200),
+            ),
+        );
+        // «без свидетельства» — отказ на уже пустом слоте: до шага 7d это была
+        // не отказная пара, а тихая подмена.
+        let (mut issued, mut exact, mut refused, mut blind) = (0_usize, 0_usize, 0_usize, 0_usize);
+        let (mut noform, mut wrong) = (0_usize, 0_usize);
+        for nm in &names {
+            let mut mine: Vec<(String, String)> = Vec::new();
+            for (w, ty, g, case, _) in &nm.tokens {
+                match e.surrogat_for_gender("probe", w, *case, *g, *ty) {
+                    Ok(Some(s)) => {
+                        issued += 1;
+                        mine.push((s.form.clone(), w.clone()));
+                    }
+                    Ok(None) => noform += 1,
+                    Err(SurrogatError::Collision { form }) => {
+                        refused += 1;
+                        // Отказ на ПОЛОКЕ, где кэш ничего не помнит, — это и есть
+                        // довоенная тихая подмена: без индекса слот считался
+                        // свободным, и форма уезжала второму владельцу.
+                        if !e
+                            .store()
+                            .contains(&StoreKey::new("probe", &format!("{SRG_PREFIX}{form}")))
+                        {
+                            blind += 1;
+                        }
+                    }
+                    Err(SurrogatError::Store(_)) => refused += 1,
+                }
+            }
+            for (form, word) in &mine {
+                match e.original_of_surrogat("probe", form) {
+                    Some(v) if v.as_str() == word => exact += 1,
+                    Some(v) => {
+                        wrong += 1;
+                        println!(
+                            "ПОДМЕНА: форма {form} развёрнута в «{got}», подставлялось «{word}»",
+                            got = v.as_str()
+                        );
+                    }
+                    None => println!("ПОТЕРЯ: форма {form} не развернулась вообще"),
+                }
+            }
+            if evict {
+                for (form, _) in &mine {
+                    e.store()
+                        .invalidate(&StoreKey::new("probe", &format!("{SRG_PREFIX}{form}")));
+                }
+            }
+        }
+        let pct = exact
+            .checked_mul(100)
+            .and_then(|v| v.checked_div(issued))
+            .unwrap_or(0);
+        println!(
+            "{label}: выдано форм {issued}, byte-exact развёрнуто {exact} ({pct} %), отказов на выдаче {refused} (из них на пустом слоте — тихих подмен до шага 7d — {blind}), форм без решения {noform}, подменено {wrong}, расхождений индекса {}",
+            e.restoration_mismatches()
+        );
+    }
+    0
+}
+
 fn probe() -> i32 {
     let Some(table) = MorphTable::shipped() else {
         eprintln!("морф-таблица не разбрана");
@@ -444,8 +541,9 @@ fn main() {
         "probe" => probe(),
         "forms" => forms(&args[1..]),
         "collide" => collide(&args[1..]),
+        "integrity" => integrity(),
         other => {
-            eprintln!("неизвестный режим {other} (check|probe|forms|collide)");
+            eprintln!("неизвестный режим {other} (check|probe|forms|collide|integrity)");
             2
         }
     };

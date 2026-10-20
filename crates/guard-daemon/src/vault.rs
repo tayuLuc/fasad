@@ -52,7 +52,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use axum::http::StatusCode;
 use guard_types::SecretString;
 use guard_vault::cache::{Limits, StoreKey};
-use guard_vault::{Case, Gender, MorphTable, NameType, SpanParse, Surrogat};
+use guard_vault::{Case, Gender, MorphTable, NameType, Restore, SpanParse, Surrogat};
 use guard_vault::{Grammar, SessionKey, VaultEngine, VaultError, VaultStream, VaultToken};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -191,6 +191,10 @@ pub struct Deanonymized {
     pub text: Zeroizing<String>,
     /// Сколько подмен развернуто.
     pub substituted: usize,
+    /// Сколько суррогатных форм отвернуто при развороте (запись расходится со
+    /// свидетельством выдачи, #60 п.3): в тексте остаются суррогаты, и клиент
+    /// обязан видеть это числом (R7 ревью #70).
+    pub restore_refused: usize,
 }
 
 /// Текст ответа, развёрнутый «мягко» (прокси, шаг 7c).
@@ -208,6 +212,10 @@ pub struct Restored {
     pub unresolved: usize,
     /// На хвосте остался незакрытый маркер (поток оборван на середине метки).
     pub incomplete: bool,
+    /// Сколько суррогатных форм отвернуто при развороте: их запись расходится со
+    /// свидетельством выдачи (#60 п.3). Наружу — тем же числом, что и маркеры
+    /// (заголовок `X-Guard-Unresolved`), молчать об этом нельзя (R7 ревью #70).
+    pub restore_refused: usize,
 }
 
 /// Отказ конвейера маскирования с готовым HTTP-отображением.
@@ -600,6 +608,7 @@ impl Vault {
         let mut restored = String::from_utf8(outcome.bytes.clone())
             .map_err(|_| VaultApiError::Vault(VaultError::NotUtf8))?;
         let mut substituted = outcome.substituted;
+        let mut restore_refused = 0_usize;
         if self.mode == VaultMode::Session {
             let forms = {
                 let guard = self.locked();
@@ -608,12 +617,15 @@ impl Vault {
                     .get(session.unwrap_or_default())
                     .map_or_else(Vec::new, |s| s.forms.clone())
             };
-            substituted +=
+            let (n, refused) =
                 self.restore_surrogates(session.unwrap_or_default(), &mut restored, &forms);
+            substituted += n;
+            restore_refused = refused;
         }
         Ok(Deanonymized {
             text: Zeroizing::new(restored),
             substituted,
+            restore_refused,
         })
     }
 
@@ -659,16 +671,20 @@ impl Vault {
         let mut restored = String::from_utf8(outcome.bytes.clone())
             .map_err(|_| VaultApiError::Vault(VaultError::NotUtf8))?;
         let mut substituted = outcome.substituted;
+        let mut restore_refused = 0_usize;
         if self.mode == VaultMode::Session {
             let forms = self.session_forms(session.unwrap_or_default());
-            substituted +=
+            let (n, refused) =
                 self.restore_surrogates(session.unwrap_or_default(), &mut restored, &forms);
+            substituted += n;
+            restore_refused = refused;
         }
         Ok(Restored {
             text: Zeroizing::new(restored),
             substituted,
             unresolved: outcome.unresolved,
             incomplete: outcome.incomplete,
+            restore_refused,
         })
     }
 
@@ -713,7 +729,7 @@ impl Vault {
     /// начинается и кончается границей слова: форма — один токен, и разрезанная
     /// посередине форма не восстановится никогда (см. `sse::Relay`, удержание
     /// хвоста слова).
-    pub fn restore_surrogates_soft(&self, session: &str, text: &mut String) -> usize {
+    pub fn restore_surrogates_soft(&self, session: &str, text: &mut String) -> (usize, usize) {
         let forms = self.session_forms(session);
         self.restore_surrogates(session, text, &forms)
     }
@@ -745,6 +761,27 @@ impl Vault {
     #[must_use]
     pub fn surrogate_fallbacks(&self) -> u64 {
         self.surrogate_fallbacks.load(Ordering::Relaxed)
+    }
+
+    /// Сколько разворотов суррогата отказало, потому что форма в кэше указывает
+    /// не на тот оригинал, что мы в неё подставляли (#60 п.3, метрика
+    /// restoration-integrity).
+    ///
+    /// Растёт ровно в двух случаях: (1) в кэш под этим ключом написала запись не
+    /// наш движок (ручная правка хранилища, регресс, будущий второй писатель), и
+    /// (2) отказ на выдаче перестал работать, и чужая форма заняла занятый слот.
+    /// Само по себе снятие записи (`idle`, evict, teardown) счётчика НЕ двигает:
+    /// перенятый слот ловится на выдаче, и до разворота не доходит.
+    ///
+    /// Считает ПОПЫТКИ разворота, а не инциденты: два `deanonymize` одного и того
+    /// же текста с расходящейся формой дадут +2. Ноль обязателен на любой чистой
+    /// работе; ненулевой — сигнал, что писатель в кэше не один.
+    ///
+    /// В режиме 3 (`stateless`) счётчик нулевой по конструкции: там оригинал
+    /// зашифрован внутри самого маркера, перенять нечего.
+    #[must_use]
+    pub fn unrestored_mismatch(&self) -> u64 {
+        self.engine.restoration_mismatches()
     }
 
     fn locked(&self) -> MutexGuard<'_, Registry> {
@@ -1096,20 +1133,34 @@ impl Vault {
 
     /// Обратный ход суррогатов: подставляем оригиналы по зарегистрированным
     /// формам, длинные имена раньше коротких (`Ветрова` ⊂ `Ветровой` не мешает).
-    fn restore_surrogates(&self, session: &str, text: &mut String, forms: &[String]) -> usize {
-        let mut n = 0_usize;
+    ///
+    /// Возвращает пару (развёрнуто, отвернуто). «Отвернуто» — только формы, чья
+    /// запись расходится со свидетельством выдачи (#60 п.3): их мы не разворачиваем,
+    /// и наружу это обязано выйти числом, а не тишиной (R7 ревью #70).
+    fn restore_surrogates(
+        &self,
+        session: &str,
+        text: &mut String,
+        forms: &[String],
+    ) -> (usize, usize) {
+        let (mut n, mut refused) = (0_usize, 0_usize);
         let mut sorted: Vec<&String> = forms.iter().collect();
         sorted.sort_by_key(|f| std::cmp::Reverse(f.len()));
         for form in sorted {
-            let Some(orig) = self.engine.original_of_surrogat(session, form) else {
-                continue;
-            };
-            if text.contains(form.as_str()) {
-                *text = text.replace(form.as_str(), orig.as_str());
-                n += 1;
+            match self.engine.try_restore(session, form) {
+                // Формы без записи — косметика истёкшей сессии: не событие
+                // целостности, в счётчик не идут.
+                Restore::Absent => {}
+                Restore::Diverged => refused += 1,
+                Restore::Found(orig) => {
+                    if text.contains(form.as_str()) {
+                        *text = text.replace(form.as_str(), orig.as_str());
+                        n += 1;
+                    }
+                }
             }
         }
-        n
+        (n, refused)
     }
 }
 
@@ -1616,6 +1667,84 @@ mod tests {
             )
             .expect("свежее имя в свежей сессии — не наш суррогат");
         assert!(!other.text.contains(NAME_B));
+    }
+
+    /// Метрика `restoration-integrity` (#60 п.3) видна наружу без отладочного
+    /// режима, а отказ разворота не отдаёт чужое имя.
+    ///
+    /// Состояние «кэш говорит одно, индекс — другое» строится напрямую через
+    /// `store()`: так выглядит перенятый слот (запись истекла, форма досталась
+    /// другому), и штатным путём его не получить — выдача на перенятую форму
+    /// отказывает (`guard-vault::slot_retaken_after_record_died_is_refused_not_swallowed`).
+    #[test]
+    fn divergent_form_refuses_restore_and_shows_in_counter() {
+        let v = vault(VaultMode::Session);
+        let name = "Ушакова Кира Саввична";
+        let n = v
+            .anonymize(
+                Some("p16"),
+                name,
+                &[span("person_name", name, name)],
+                &schema(),
+            )
+            .expect("мазание");
+        let forms = v.session_forms("p16");
+        assert!(
+            !forms.is_empty(),
+            "тесту нужна гладкая подмена, а не метка: текст {text}",
+            text = n.text
+        );
+        for f in &forms {
+            v.engine
+                .store()
+                .insert(
+                    &StoreKey::new("p16", &format!("SRG#{f}")),
+                    SecretString::new("Ветрова Марселина Афанасьевна".to_owned()),
+                )
+                .expect("запись вручную");
+        }
+        let back = v
+            .deanonymize(Some("p16"), &n.text)
+            .expect("разворот не обязан валиться из-за расхождения");
+        assert!(
+            !back.text.contains("Ветрова"),
+            "чужое имя на месте своего — это утечка, а не деградация: {out}",
+            out = back.text.as_str()
+        );
+        assert!(
+            back.text.contains(&forms[0]),
+            "отказ обязан оставить неразвёрнутую форму, а не съесть её: {out}",
+            out = back.text.as_str()
+        );
+        assert_eq!(
+            v.unrestored_mismatch(),
+            u64::try_from(forms.len()).expect("формы влезают в u64"),
+            "сколько форм отвернулось — столько и в счётчике"
+        );
+        // R7 ревью #70: у события обязан быть след в самом запросе, а не только в
+        // процессном счётчике, иначе молчание ответа выдаёт отказ разворота за
+        // успешный разворот.
+        assert_eq!(
+            back.restore_refused,
+            forms.len(),
+            "число отвергнутых форм обязано приехать в ответе /v1/deanonymize"
+        );
+        let soft = v
+            .deanonymize_soft(Some("p16"), n.text.as_str())
+            .expect("мягкий путь не валится из-за расхождения");
+        assert_eq!(
+            soft.restore_refused,
+            forms.len(),
+            "мягкий путь (прокси) считает те же отвергнутые формы"
+        );
+        assert!(
+            !soft.text.contains("Ветрова"),
+            "мягкий путь тоже не имеет права подставить чужое имя"
+        );
+        assert_eq!(
+            soft.unresolved, 0,
+            "суррогатная форма — не маркер, в unresolved её нет"
+        );
     }
 
     /// R1 ревью #62: коллизия на **втором** токене пачки. На golden-v1 при пуле
