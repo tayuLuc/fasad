@@ -41,3 +41,5 @@ workspace = true
 # forbid промерены и мертвы (E0453 / cannot-override / [patch.lints]-не-ключ /
 # RUSTFLAGS проигрывает -F) — см. git-историю этого файла, коммит be2bf9a.
 
+[dev-dependencies]
+serde_json = { workspace = true }
