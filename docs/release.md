@@ -138,6 +138,12 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    --doc-rows` печатает готовый markdown-блок и `BUDGET`-строку из артефакта
    прогона (флаг добавлен по рюлингу kernel 21.10 «цифры документа генерируются
    из артефакта»); в CI гейт идёт без флага, вывод тот же по формату.
+6. Повторный прогон job `release` по тому же тегу = красный с HTTP 422
+   («Release already exists»): `gh release create` не идемпотентен (первичка —
+   `gh release create --help`, gh 2.102.0: «By default, the release is created
+   even if there are no new commits… duplicate release»). Перевыложить ассеты =
+   `gh release delete <tag> --yes` и заново запустить workflow по тегу;
+   update-in-place не реализован (п.7 списка «Что не сделано»).
 
 Гейт `workflow_dispatch` есть (ручной прогон матрицы без публикации): job
 `release` защищена `if: startsWith(github.ref, 'refs/tags/v')`, поэтому ручной
@@ -260,3 +266,5 @@ sha tag-объекта нельзя, он не resolvable в `uses:`.
    бандл остаётся `-cascade-0`.
 5. Windows-метод RAM-гейта — не реализован (см. §RAM п.3).
 6. Подпись артефактов (cosign/sigstore, attestation) — не делалась.
+7. Идемпотентность публикации: повторный прогон по существующему релизу
+   краснеет (HTTP 422) вместо обновления ассетов — см. §«Как выпустить», п.6.
