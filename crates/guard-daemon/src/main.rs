@@ -12,6 +12,7 @@ use guard_daemon::Health;
 use guard_daemon::config::Config;
 use guard_daemon::http::AppState;
 use guard_daemon::schema::Schema;
+use guard_daemon::vault::Vault;
 
 /// Код выхода при отклонённой конфигурации: отдельный от сетевых ошибок, чтобы
 /// systemd/докер видели «неверный конфиг» как неверный конфиг, а не как порт
@@ -40,16 +41,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         stage: cfg.stage(),
         mode: cfg.vault_mode.as_str(),
     };
+    // Хранилище поднимается до сокета по той же причине, что и схема: режим 2/3
+    // без ключа и без залочкированной памяти обслуживать нельзя, а отказ после
+    // bind выглядит как «демон живой, но ничего не работает».
+    let vault = match Vault::startup(cfg.vault_mode, cfg.mlock) {
+        Ok(vault) => vault,
+        Err(e) => refuse_startup(&e),
+    };
+    let vault_key_source = vault.key_source().as_str();
     let classes = schema.classes.len();
-    let app = guard_daemon::http::router(AppState::new(cfg.clone(), schema, health));
+    let app = guard_daemon::http::router(AppState::new(cfg.clone(), schema, health, vault));
 
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
     println!(
-        "fasad {} {}, listening on http://{}/health (классов схемы: {})",
+        "fasad {} {}, listening on http://{}/health (классов схемы: {}, vault: {}/{}, ключ: {})",
         env!("CARGO_PKG_VERSION"),
         cfg.stage(),
         cfg.addr,
-        classes
+        classes,
+        cfg.vault_mode.as_str(),
+        cfg.mlock.as_str(),
+        vault_key_source,
     );
     axum::serve(listener, app).await?;
     Ok(())

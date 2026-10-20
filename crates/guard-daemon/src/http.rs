@@ -21,15 +21,19 @@ use axum::Router;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 
 use crate::Health;
 use crate::config::Config;
 use crate::pipeline::{self, Analysis, AnalyzeError, AnalyzeRequest, Policy};
 use crate::schema::Schema;
+use crate::vault::{AnonymizeRequest, DeanonymizeRequest, Vault, VaultApiError};
 
 /// Имя входного заголовка политики (SPEC §8).
 pub const HEADER_POLICY: HeaderName = HeaderName::from_static("x-guard-policy");
+
+/// Идентификатор сессии (`X-Session-ID`, SPEC §8). Для режима 3 не требуется.
+pub const HEADER_SESSION: HeaderName = HeaderName::from_static("x-session-id");
 
 /// Выходные заголовки `X-Guard-*` (SPEC §8).
 mod h {
@@ -57,6 +61,7 @@ struct Inner {
     cfg: Config,
     schema: Schema,
     health: Health,
+    vault: Vault,
 }
 
 impl AppState {
@@ -65,12 +70,13 @@ impl AppState {
     /// Оба параметра пришли из `Config::from_env` / `Schema::from_config`, т.е.
     /// отказ старта уже случился бы раньше — здесь инвариант, а не валидация.
     #[must_use]
-    pub fn new(cfg: Config, schema: Schema, health: Health) -> Self {
+    pub fn new(cfg: Config, schema: Schema, health: Health, vault: Vault) -> Self {
         Self {
             inner: Arc::new(Inner {
                 cfg,
                 schema,
                 health,
+                vault,
             }),
         }
     }
@@ -92,6 +98,12 @@ impl AppState {
     pub fn health(&self) -> Health {
         self.inner.health.clone()
     }
+
+    /// Хранилище обратимых подмен.
+    #[must_use]
+    pub fn vault(&self) -> &Vault {
+        &self.inner.vault
+    }
 }
 
 /// Собирает корневой роутер демона.
@@ -100,6 +112,9 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/v1/analyze", post(analyze_handler))
+        .route("/v1/anonymize", post(anonymize_handler))
+        .route("/v1/deanonymize", post(deanonymize_handler))
+        .route("/v1/sessions/{id}", delete(invalidate_handler))
         .layer(DefaultBodyLimit::max(limit))
         .with_state(state)
 }
@@ -115,27 +130,97 @@ async fn analyze_handler(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    let req: AnalyzeRequest = match json_body(&body) {
+        Ok(req) => req,
+        Err(err) => return err.into_response(),
+    };
     let policy = match parse_policy(&headers) {
         Ok(policy) => policy,
         Err(err) => return err.into_response(),
-    };
-    // Разбор руками (не экстрактором `Json`): rejection-сообщения axum
-    // пересказывают вход, а вход — ПДн.
-    let req: AnalyzeRequest = match serde_json::from_slice(&body) {
-        Ok(req) => req,
-        Err(_) => {
-            return ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "bad_json",
-                "тело — не JSON вида {\"text\": \"…\"}",
-            )
-            .into_response();
-        }
     };
     match pipeline::analyze(&req, st.schema(), st.config(), policy) {
         Ok(res) => analysis_response(&res),
         Err(err) => ApiError::from_analysis(err).into_response(),
     }
+}
+
+/// Разбор JSON-тела руками (не экстрактором `Json`): rejection-сообщения axum
+/// и `serde_json` пересказывают вход, а вход — потенциальные `ПДн`.
+fn json_body<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, ApiError> {
+    serde_json::from_slice(body).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_json",
+            "тело не является ожидаемым JSON-объектом",
+        )
+    })
+}
+
+async fn anonymize_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let req: AnonymizeRequest = match json_body(&body) {
+        Ok(req) => req,
+        Err(err) => return err.into_response(),
+    };
+    match st
+        .vault()
+        .anonymize(session_of(&headers), &req.text, &req.spans, st.schema())
+    {
+        Ok(anon) => {
+            let count = anon.items.len();
+            let mut resp = axum::Json(anon).into_response();
+            insert(resp.headers_mut(), h::COUNT, count);
+            insert(resp.headers_mut(), h::STAGE, st.health().stage);
+            resp
+        }
+        Err(ref err) => ApiError::from_vault(err).into_response(),
+    }
+}
+
+async fn deanonymize_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let req: DeanonymizeRequest = match json_body(&body) {
+        Ok(req) => req,
+        Err(err) => return err.into_response(),
+    };
+    match st.vault().deanonymize(session_of(&headers), &req.text) {
+        Ok(done) => {
+            let mut resp = axum::Json(done).into_response();
+            insert(resp.headers_mut(), h::STAGE, st.health().stage);
+            resp
+        }
+        Err(ref err) => ApiError::from_vault(err).into_response(),
+    }
+}
+
+/// `DELETE /v1/sessions/{id}` — teardown: кэш оригиналов и реестр форм.
+async fn invalidate_handler(
+    State(st): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let dropped = st.vault().invalidate(&id);
+    let body = serde_json::json!({ "deleted": dropped });
+    (
+        StatusCode::OK,
+        [(h::COUNT, HeaderValue::from(dropped))],
+        axum::Json(body),
+    )
+        .into_response()
+}
+
+/// `X-Session-ID` из заголовков: отсутствие = `None`, непечатаемое = `None`
+/// (печатать или разбирать мусор из заголовка нельзя).
+fn session_of(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(HEADER_SESSION)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
 }
 
 /// Разбор `X-Guard-Policy`: отсутствие = `mask` (дефолт SPEC §8), неизвестное
@@ -233,6 +318,19 @@ impl ApiError {
     }
 }
 
+impl ApiError {
+    /// Отказ слоя маскирования: статус и код приходят вместе с ошибкой, чтобы
+    /// карта «что клиентская ошибка, что сбой сервера» жила в одном месте
+    /// (`VaultApiError::status`), а не расползалась по обработчикам.
+    fn from_vault(e: &VaultApiError) -> Self {
+        Self {
+            status: e.status(),
+            code: e.code(),
+            message: e.message(),
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = serde_json::json!({
@@ -261,7 +359,13 @@ mod tests {
             stage,
             mode: cfg.vault_mode.as_str(),
         };
-        AppState::new(cfg, Schema::embedded().expect("канон валиден"), health)
+        let vault = Vault::startup(cfg.vault_mode, cfg.mlock).expect("хранилище поднимается");
+        AppState::new(
+            cfg,
+            Schema::embedded().expect("канон валиден"),
+            health,
+            vault,
+        )
     }
 
     fn analyze_req(body: &str, policy: Option<&str>) -> Request<Body> {
@@ -440,6 +544,206 @@ mod tests {
         assert_eq!(resp.headers().get(h::COUNT).expect("счётчик"), "0");
         let v = json_of(resp).await;
         assert_eq!(v.as_array().expect("массив").len(), 0);
+    }
+
+    fn cfg_with(pairs: &[(&'static str, &'static str)]) -> Config {
+        let owned: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        Config::from_lookup(|k| owned.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()))
+            .expect("конфиг из тестовых пар")
+    }
+
+    fn post_req(uri: &str, body: &str, session: Option<&str>) -> Request<Body> {
+        let mut b = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json");
+        if let Some(s) = session {
+            b = b.header(HEADER_SESSION.as_str(), s);
+        }
+        b.body(Body::from(body.to_owned()))
+            .expect("запрос строится")
+    }
+
+    /// Тело `anonymize` с координатами, снятыми с подстрок, а не «на глаз»:
+    /// байтовый оффсет в кириллице угадать нельзя, и тест на угаданном оффсете
+    /// проверял бы арифметику теста, а не демон.
+    fn anon_body(text: &str, needles: &[(&str, &str)]) -> String {
+        let spans: Vec<String> = needles
+            .iter()
+            .map(|(class, needle)| {
+                let start = text
+                    .find(needle)
+                    .unwrap_or_else(|| panic!("нет {needle:?} в тексте"));
+                format!(
+                    r#"{{"entity_type":"{class}","byte_start":{},"byte_end":{}}}"#,
+                    start,
+                    start + needle.len()
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"text":{},"spans":[{}]}}"#,
+            serde_json::to_string(text).expect("текст сериализуется"),
+            spans.join(",")
+        )
+    }
+
+    #[tokio::test]
+    async fn anonymize_then_deanonymize_roundtrip_over_http() {
+        let st = state();
+        let app = router(st.clone());
+        let body = anon_body(
+            "Иванов Пётр Сергеевич, ИНН 2482014338",
+            &[
+                ("person_name", "Иванов Пётр Сергеевич"),
+                ("inn", "2482014338"),
+            ],
+        );
+        let resp = app
+            .oneshot(post_req("/v1/anonymize", &body, None))
+            .await
+            .expect("обработчик не падает");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get(h::COUNT).expect("счётчик"), "2");
+        let v = json_of(resp).await;
+        let masked = v["text"].as_str().expect("текст маскирования").to_owned();
+        assert!(
+            !masked.contains("Иванов"),
+            "оригинал протёк в ответ: {masked}"
+        );
+        assert!(!masked.contains("2482014338"), "оригинал протёк: {masked}");
+        assert_eq!(v["items"][0]["operator"], "mask", "режим 3 = маркеры");
+
+        // Второй `router` поверх того же `AppState`: `Arc<Inner>` общий, поэтому
+        // ключ и кэш те же — ровно как у живого демона на одном процессе.
+        let app = router(st.clone());
+        let req_body = format!(r#"{{"text":"{masked}"}}"#);
+        let resp = app
+            .oneshot(post_req("/v1/deanonymize", &req_body, None))
+            .await
+            .expect("обработчик не падает");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let back = json_of(resp).await;
+        assert_eq!(back["text"], "Иванов Пётр Сергеевич, ИНН 2482014338");
+        assert_eq!(back["substituted"], 2);
+    }
+
+    #[tokio::test]
+    async fn session_mode_roundtrips_surrogates_and_labels() {
+        let st = state_with(cfg_with(&[("FASAD_VAULT_MODE", "session")]));
+        let app = router(st.clone());
+        let body = anon_body(
+            "Ушакова Кира Саввична, ИНН 2482014338",
+            &[
+                ("person_name", "Ушакова Кира Саввична"),
+                ("inn", "2482014338"),
+            ],
+        );
+        let resp = app
+            .oneshot(post_req("/v1/anonymize", &body, Some("http-s1")))
+            .await
+            .expect("обработчик не падает");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_of(resp).await;
+        let masked = v["text"].as_str().expect("текст").to_owned();
+        assert!(masked.contains("[INN_"), "нет метки класса: {masked}");
+        assert_eq!(
+            v["items"][0]["operator"], "replace",
+            "ФИО в режиме 2 = гладкий суррогат: {masked}"
+        );
+        assert!(!masked.contains("Ушакова"), "протёк: {masked}");
+
+        let app = router(st.clone());
+        let req_body = format!(r#"{{"text":"{masked}"}}"#);
+        let resp = app
+            .oneshot(post_req("/v1/deanonymize", &req_body, Some("http-s1")))
+            .await
+            .expect("обработчик не падает");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let back = json_of(resp).await;
+        assert_eq!(back["text"], "Ушакова Кира Саввична, ИНН 2482014338");
+    }
+
+    #[tokio::test]
+    async fn session_mode_without_session_header_is_400() {
+        let app = router(state_with(cfg_with(&[("FASAD_VAULT_MODE", "session")])));
+        let resp = app
+            .oneshot(post_req(
+                "/v1/anonymize",
+                &anon_body("ИНН 2482014338", &[("inn", "2482014338")]),
+                None,
+            ))
+            .await
+            .expect("обработчик не падает");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_of(resp).await["error"]["code"], "bad_request");
+    }
+
+    #[tokio::test]
+    async fn anonymize_rejects_unknown_class_with_422() {
+        let app = router(state());
+        let resp = app
+            .oneshot(post_req(
+                "/v1/anonymize",
+                r#"{"text":"ИНН 2482014338","spans":[{"entity_type":"snisl","byte_start":4,"byte_end":14}]}"#,
+                None,
+            ))
+            .await
+            .expect("не падает");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(json_of(resp).await["error"]["code"], "bad_request");
+    }
+
+    #[tokio::test]
+    async fn deanonymize_of_forged_marker_is_422_without_partial_text() {
+        let app = router(state());
+        let resp = app
+            .oneshot(post_req(
+                "/v1/deanonymize",
+                r#"{"text":"данные [[F0#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA]] тут"}"#,
+                None,
+            ))
+            .await
+            .expect("не падает");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let v = json_of(resp).await;
+        assert_eq!(v["error"]["code"], "unresolved_token");
+        // Частичный возврат = «текст похож на расшифрованный, но им не является».
+        assert!(v.get("text").is_none(), "ответ содержит тело: {v}");
+    }
+
+    #[tokio::test]
+    async fn delete_session_reports_dropped_labels() {
+        let st = state_with(cfg_with(&[("FASAD_VAULT_MODE", "session")]));
+        let app = router(st.clone());
+        let resp = app
+            .oneshot(post_req(
+                "/v1/anonymize",
+                &anon_body("ИНН 2482014338", &[("inn", "2482014338")]),
+                Some("http-s2"),
+            ))
+            .await
+            .expect("не падает");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let _ = json_of(resp).await;
+
+        let app = router(st.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/v1/sessions/http-s2")
+                    .body(Body::empty())
+                    .expect("запрос строится"),
+            )
+            .await
+            .expect("не падает");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get(h::COUNT).expect("счётчик"), "1");
+        assert_eq!(json_of(resp).await["deleted"], 1);
     }
 
     #[tokio::test]

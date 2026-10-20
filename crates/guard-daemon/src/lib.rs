@@ -14,6 +14,7 @@ pub mod config;
 pub mod http;
 pub mod pipeline;
 pub mod schema;
+pub mod vault;
 
 /// Ответ `/health`: чем крутится демон и что в нём реально включено.
 #[derive(Debug, Clone, serde::Serialize)]

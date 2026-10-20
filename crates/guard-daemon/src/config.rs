@@ -102,6 +102,53 @@ impl VaultMode {
     }
 }
 
+/// Политика залочкивания буферов с оригиналами (`FASAD_MLOCK`).
+///
+/// Дефолт — [`Self::Strict`] по AGENTS («все буферы с `ПДн`: `ZeroizeOnDrop` +
+/// mlock/`VirtualLock`»). `BestEffort` — явный выбор оператора для окружений,
+/// где залочить нечем: `RLIMIT_MEMLOCK` на CI-раннерах и Windows без
+/// `SeLockMemoryPrivilege` (issue #55 пока не подписан, т.е. работоспособность
+/// mlock на двух ОС документально не закрыта — см. README демона). Буфер при
+/// этом всё равно обнуляется на drop, снимается только гарантия «не свопнётся».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mlock {
+    /// Не залоченный буфер = отказ запроса (fail-closed).
+    Strict,
+    /// Незалоченный, но обнуляемый буфер допустим по явному решению оператора.
+    BestEffort,
+}
+
+impl Mlock {
+    /// Разбор значения env: `strict|1` → [`Self::Strict`],
+    /// `best_effort|off` → [`Self::BestEffort`].
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "strict" | "1" | "on" => Some(Self::Strict),
+            "best_effort" | "off" | "0" => Some(Self::BestEffort),
+            _ => None,
+        }
+    }
+
+    /// Каноническое имя для `/health` и логов.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::BestEffort => "best_effort",
+        }
+    }
+
+    /// Политический выбор для [`guard_vault::MlockPolicy`].
+    #[must_use]
+    pub const fn policy(self) -> guard_vault::MlockPolicy {
+        match self {
+            Self::Strict => guard_vault::MlockPolicy::Strict,
+            Self::BestEffort => guard_vault::MlockPolicy::BestEffort,
+        }
+    }
+}
+
 /// Пороги конвейера одним блоком: их совместная согласованность важнее отдельных
 /// значений (`low ≤ gray_lo < gray_hi ≤ high`), поэтому валидируются вместе.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -178,6 +225,8 @@ pub struct Config {
     /// Каталог весов; `None` = каскады 1–2 не поднимаются, работает только
     /// детерминированный каскад 0 (деградация явная, см. `/health`).
     pub model_dir: Option<std::path::PathBuf>,
+    /// Политика залочкивания (`FASAD_MLOCK`), см. [`Mlock`].
+    pub mlock: Mlock,
     /// Путь к файлу схемы классов (`FASAD_SCHEMA`); `None` = встроенный канон
     /// [`crate::schema::DEFAULT_SCHEMA_JSON`]. Override читается на старте и
     /// отказывает в старте, если испорчен — молча откатиться на дефолт значит
@@ -198,6 +247,9 @@ pub enum ConfigError {
     ThresholdsInsane(Thresholds),
     /// `FASAD_VAULT_MODE` не `2|3|session|stateless`.
     VaultModeUnknown(String),
+    /// `FASAD_MLOCK` не `strict|best_effort` (в том числе `relaxed`: мягкого
+    /// mlock не бывает, есть явный отказ от гарантии).
+    MlockUnknown(String),
     /// Числовое поле не парсится или нулевое.
     BadNumber {
         /// Имя переменной.
@@ -222,6 +274,9 @@ impl fmt::Display for ConfigError {
                 "пороги рассогласованы: τ_low={} gray=[{}, {}] τ_high={} (нужно 0≤τ_low≤gray_lo<gray_hi≤τ_high≤1)",
                 t.tau_low, t.gray_lo, t.gray_hi, t.tau_high
             ),
+            Self::MlockUnknown(raw) => {
+                write!(f, "FASAD_MLOCK={raw:?}: ожидается strict|best_effort")
+            }
             Self::VaultModeUnknown(raw) => write!(
                 f,
                 "FASAD_VAULT_MODE {raw:?}: допустимо 2|3|session|stateless"
@@ -282,7 +337,14 @@ impl Config {
             Some(raw) => VaultMode::parse(raw)
                 .ok_or_else(|| ConfigError::VaultModeUnknown(raw.to_owned()))?,
         };
+        let mlock = match lookup("FASAD_MLOCK").as_deref() {
+            None => Mlock::Strict,
+            Some(raw) => {
+                Mlock::parse(raw).ok_or_else(|| ConfigError::MlockUnknown(raw.to_owned()))?
+            }
+        };
         Ok(Self {
+            mlock,
             addr,
             max_body_bytes: usize_or(&mut lookup, "FASAD_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)?,
             timeout_ms: u64_or(&mut lookup, "FASAD_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)?,
