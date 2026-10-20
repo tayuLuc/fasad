@@ -161,13 +161,17 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ort"
           tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP/ort"
           ls -1 "$RUNNER_TEMP/ort"
-      - name: Сборка spike с ort-inference (release, dylib)
+      - name: "Сборка spike с ort-inference (release, dylib)"
         env:
-          ORT_DIR: ${{ runner.temp }}/ort/onnxruntime-1.31.0
+          # Корень распакованного архива = имя самого архива без .tgz
+          # (промер локальной распаковки 21.10: onnxruntime-osx-arm64-1.31.0/,
+          # onnxruntime-linux-x64-1.31.0/); каталоги `ort_dir` заданы в матрице
+          # рядом с `ort_archive`, чтобы они не разъезжались.
+          ORT_DIR: ${{ runner.temp }}/ort/${{ matrix.ort_dir }}
         run: just build-ort
       - name: "Проверка линковки: dylib прописан в load commands"
         env:
-          ORT_DIR: ${{ runner.temp }}/ort/onnxruntime-1.31.0
+          ORT_DIR: ${{ runner.temp }}/ort/${{ matrix.ort_dir }}
         run: |
           set -euo pipefail
           bin=target/release/examples/spike
