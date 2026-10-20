@@ -8,7 +8,21 @@ _default:
     @just --list
 
 # Прогнать всё, что блокирует merge: линты + тесты + аудит зависимостей + python.
-check: lint python-lint golden-verify test deny
+check: lint python-lint golden-verify test net-audit deny
+
+# Гейт «демон не тащит сеть» (#56 п.5). Две проверки, обе живые:
+# 1) в исходниках и манифесте демона нет исходящего сокетного API: листенер
+#    loopback (`tokio::net::TcpListener::bind`) не считается — он принимает, а не
+#    ходит наружу; ищем пути к клиентным типам (`::connect(`, `TcpStream::`,
+#    `reqwest::`), а не голые слова: тест `daemon_manifest_has_no_http_client`
+#    держит запрещённые имена в строковых литералах, и паттерн без `::` вёл бы
+#    гейт в самоподжог;
+# 2) в дереве зависимостей нет HTTP-клиента: `cargo tree -i` на отсутствующий
+#    пакет завершается ошибкой, поэтому инвертируем rc.
+net-audit:
+    @! grep -rnE '::connect\(|TcpStream::|UdpSocket::|reqwest::|ureq::|hyper::client|rustls::|\breqwest\b *=|\bureq\b *=' crates/guard-daemon/src crates/guard-daemon/Cargo.toml
+    @! cargo tree -p guard-daemon -i reqwest --offline >/dev/null 2>&1
+    @echo "net-audit ok: guard-daemon не линкует HTTP-клиента и не открывает сокетов"
 
 # Авточинит всё, что чинится автоматически (fmt + clippy --fix).
 fix:

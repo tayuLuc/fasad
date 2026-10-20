@@ -21,6 +21,7 @@ use std::time::Instant;
 
 use guard_types::{AnnotatedSpan, DetectionSource, EntityRole, NewtypeId, ScoreError, Verdict};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::cascade0::{self, Hit};
 use crate::config::Config;
@@ -108,8 +109,11 @@ impl std::error::Error for AnalyzeError {}
 /// Тело запроса `/v1/analyze` (Президио-совместимое подмножество).
 #[derive(Debug, Clone, Deserialize)]
 pub struct AnalyzeRequest {
-    /// Текст для анализа.
-    pub text: String,
+    /// Текст для анализа. `Zeroizing`: вход запроса — это потенциальные `ПДн`,
+    /// и обнулять при освобождении он обязан так же, как буферы в хранилище
+    /// (AGENTS «все буферы с оригиналами `ПДн`»); заодно `Debug` печатает
+    /// `[REDACTED]`, поэтому текст не утекает в лог через отладочную печать.
+    pub text: Zeroizing<String>,
     /// Фильтр классов (Presidio `entities`); `None` = все классы схемы.
     #[serde(default)]
     pub entities: Option<Vec<String>>,
@@ -290,7 +294,7 @@ mod tests {
 
     fn req(text: &str) -> AnalyzeRequest {
         AnalyzeRequest {
-            text: text.to_owned(),
+            text: Zeroizing::new(text.to_owned()),
             entities: None,
             score_threshold: None,
         }
@@ -360,7 +364,7 @@ mod tests {
         let a = analyze(&req("ИНН 2482014338"), &schema(), &cfg, Policy::Mask).expect("ок");
         assert_eq!(a.threshold, floor, "без запроса = config τ_low");
         let low = AnalyzeRequest {
-            text: "ИНН 2482014338".to_owned(),
+            text: Zeroizing::new("ИНН 2482014338".to_owned()),
             entities: None,
             score_threshold: Some(0.0),
         };
@@ -368,7 +372,7 @@ mod tests {
         assert_eq!(a.threshold, floor, "клиент не спустил порог");
         assert_eq!(a.spans.len(), 1, "вето порогом не снимается");
         let high = AnalyzeRequest {
-            text: "ИНН 2482014338".to_owned(),
+            text: Zeroizing::new("ИНН 2482014338".to_owned()),
             entities: None,
             score_threshold: Some(1.0),
         };
@@ -384,7 +388,7 @@ mod tests {
     #[test]
     fn threshold_out_of_range_is_an_error_not_a_clamp() {
         let bad = AnalyzeRequest {
-            text: "x".to_owned(),
+            text: Zeroizing::new("x".to_owned()),
             entities: None,
             score_threshold: Some(1.5),
         };
@@ -398,7 +402,7 @@ mod tests {
     fn entity_filter_keeps_only_asked_classes_and_rejects_typos() {
         let text = "ИНН 2482014338, СНИЛС 65707715421";
         let only = AnalyzeRequest {
-            text: text.to_owned(),
+            text: Zeroizing::new(text.to_owned()),
             entities: Some(vec!["snils".to_owned()]),
             score_threshold: None,
         };
@@ -406,7 +410,7 @@ mod tests {
         let cl: Vec<&str> = a.spans.iter().map(|s| s.class.as_str()).collect();
         assert_eq!(cl, vec!["snils"], "фильтр не протёк");
         let typo = AnalyzeRequest {
-            text: text.to_owned(),
+            text: Zeroizing::new(text.to_owned()),
             entities: Some(vec!["snisl".to_owned()]),
             score_threshold: None,
         };
@@ -436,6 +440,21 @@ mod tests {
         assert!(a.spans.len() >= 2);
         assert!(a.spans.iter().all(|s| s.verdict == Verdict::BlockRequest));
         assert_eq!(a.max_risk, 1.0);
+    }
+
+    #[test]
+    fn debug_of_request_does_not_print_the_text() {
+        // AGENTS: `Debug`-вывод только `[REDACTED]`. Отладочная печать запроса —
+        // самый вероятный путь, по которому `ПДн` утекают в лог, поэтому
+        // проверяем именно строку `Debug`, а не тип поля.
+        let r = req("ИНН 2482014338 СНИЛС 65707715421");
+        let line = format!("{r:?}");
+        assert!(!line.contains("2482014338"), "Debug печати текст: {line}");
+        assert!(!line.contains("65707715421"), "Debug печати текст: {line}");
+        assert!(
+            line.contains("REDACTED") || line.contains("Zeroizing"),
+            "Debug должен явно пометить скрытое: {line}"
+        );
     }
 
     #[test]

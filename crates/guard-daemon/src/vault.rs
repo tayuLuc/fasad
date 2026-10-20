@@ -43,6 +43,7 @@ use guard_vault::cache::{Limits, StoreKey};
 use guard_vault::{Gender, MorphTable, NameType, SpanParse};
 use guard_vault::{Grammar, SessionKey, VaultEngine, VaultError, VaultToken};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::config::{Mlock, VaultMode};
 use crate::schema::Schema;
@@ -81,8 +82,10 @@ pub struct SpanIn {
 /// Запрос `anonymize`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AnonymizeRequest {
-    /// Исходный текст.
-    pub text: String,
+    /// Исходный текст — оригиналы `ПДн`, поэтому `Zeroizing`: обнуляется при
+    /// освобождении (в том числе при unwind обработчика) и не печатается в
+    /// `Debug`.
+    pub text: Zeroizing<String>,
     /// spans из предыдущего `/v1/analyze`.
     pub spans: Vec<SpanIn>,
 }
@@ -119,15 +122,16 @@ pub struct MaskItem {
 /// Запрос `deanonymize`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeanonymizeRequest {
-    /// Текст с маркерами/метками/суррогатами.
-    pub text: String,
+    /// Текст с маркерами/метками/суррогатами. Разворачивается в оригиналы, так
+    /// что и он под `Zeroizing`.
+    pub text: Zeroizing<String>,
 }
 
 /// Ответ `deanonymize`.
 #[derive(Debug, Clone, Serialize)]
 pub struct Deanonymized {
-    /// Текст с возвращёнными оригиналами.
-    pub text: String,
+    /// Текст с возвращёнными оригиналами — самый чувствительный буфер демона.
+    pub text: Zeroizing<String>,
     /// Сколько подмен развернуто.
     pub substituted: usize,
 }
@@ -474,7 +478,7 @@ impl Vault {
                 self.restore_surrogates(session.unwrap_or_default(), &mut restored, &forms);
         }
         Ok(Deanonymized {
-            text: restored,
+            text: Zeroizing::new(restored),
             substituted,
         })
     }
@@ -856,7 +860,7 @@ mod tests {
         assert_eq!(anon.items.len(), 2);
         assert!(anon.items.iter().all(|i| i.operator == OP_MASK));
         let back = v.deanonymize(None, &anon.text).expect("обратный ход");
-        assert_eq!(back.text, text);
+        assert_eq!(back.text.as_str(), text);
         assert_eq!(back.substituted, 2);
     }
 
@@ -894,7 +898,7 @@ mod tests {
             anon.text
         );
         let back = v.deanonymize(Some("s1"), &anon.text).expect("обратный ход");
-        assert_eq!(back.text, text, "суррогат + метка не развернулись");
+        assert_eq!(back.text.as_str(), text, "суррогат + метка не развернулись");
     }
 
     #[test]
@@ -1062,7 +1066,7 @@ mod tests {
             .deanonymize(Some("s2"), &anon.text)
             .expect("не ошибка: чужая форма не является сломанным маркером");
         assert_eq!(back.substituted, 0);
-        assert_eq!(back.text, anon.text);
+        assert_eq!(back.text.as_str(), anon.text);
         assert!(!back.text.contains("Ушакова"), "протекло после teardown");
     }
 

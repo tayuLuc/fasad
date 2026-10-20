@@ -16,9 +16,10 @@
 //!    допустим только на успешном пути (AGENTS: никогда fail-open).
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -108,14 +109,12 @@ impl AppState {
 
 /// Собирает корневой роутер демона.
 pub fn router(state: AppState) -> Router {
-    let limit = state.config().max_body_bytes;
     Router::new()
         .route("/health", get(health_handler))
         .route("/v1/analyze", post(analyze_handler))
         .route("/v1/anonymize", post(anonymize_handler))
         .route("/v1/deanonymize", post(deanonymize_handler))
         .route("/v1/sessions/{id}", delete(invalidate_handler))
-        .layer(DefaultBodyLimit::max(limit))
         .with_state(state)
 }
 
@@ -125,23 +124,75 @@ async fn health_handler(State(st): State<AppState>) -> axum::Json<Health> {
     axum::Json(st.health())
 }
 
-async fn analyze_handler(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    let req: AnalyzeRequest = match json_body(&body) {
-        Ok(req) => req,
+async fn analyze_handler(State(st): State<AppState>, req: Request) -> Response {
+    let (headers, body) = match read_body(st.clone(), req).await {
+        Ok(pair) => pair,
         Err(err) => return err.into_response(),
     };
-    let policy = match parse_policy(&headers) {
-        Ok(policy) => policy,
-        Err(err) => return err.into_response(),
-    };
-    match pipeline::analyze(&req, st.schema(), st.config(), policy) {
-        Ok(res) => analysis_response(&res),
-        Err(err) => ApiError::from_analysis(err).into_response(),
+    guarded(move || {
+        let req: AnalyzeRequest = json_body(&body)?;
+        let policy = parse_policy(&headers)?;
+        let res = pipeline::analyze(&req, st.schema(), st.config(), policy)
+            .map_err(ApiError::from_analysis)?;
+        Ok(analysis_response(&res))
+    })
+}
+
+/// Обёртка «паника обработчика = отказ, а не пропускаем запрос».
+///
+/// Инвариант SPEC: `panic = "unwind"` — паника одного запроса не валит демон.
+/// Без обёртки unwind означает «соединение разорвано», и клиент получает
+/// оборванный ответ вместо 5xx; обёртка превращает панику в `503
+/// internal_panic` с пустым телом: в паническом сообщении может быть фрагмент
+/// входа, а вход — `ПДн`.
+fn guarded(f: impl FnOnce() -> Result<Response, ApiError>) -> Response {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(err)) => err.into_response(),
+        Err(_) => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "internal_panic",
+            "обработчик паниковал; запрос отклонён (fail-closed)",
+        )
+        .into_response(),
     }
+}
+
+/// Заголовки SPEC §8 одним местом: счётчик, латентность, стадия каскада.
+///
+/// Значения пишутся только фактические: absent лучше фиктивного нуля, поэтому
+/// недостижимый `HeaderValue` (значение не влезает в 8 КБ заголовка) просто
+/// не добавляет заголовок, а не врёт.
+fn guard_headers(
+    map: &mut HeaderMap,
+    count: impl std::fmt::Display,
+    latency_ms: u128,
+    stage: &str,
+) {
+    insert(map, h::COUNT, count);
+    insert(map, h::LATENCY, latency_ms);
+    insert(map, h::STAGE, stage);
+}
+
+/// Чтение тела с нашим лимитом и нашим же ответом на переполнение.
+///
+/// Экстрактор `Bytes` + слой `DefaultBodyLimit` дают 413 с текстом axum
+/// («Failed to buffer the request body…»), т.е. вне нашего контрактного
+/// конверта `{"error":{…}}`: клиент, который различает 4xx по `code`, на
+/// переполнении тела слепнет. Поэтому тело читается здесь, а лимит берётся из
+/// конфига; `Content-Length` при этом не доверен — считается фактически
+/// прочитанное (заголовок можно соврать).
+async fn read_body(st: AppState, req: Request) -> Result<(HeaderMap, axum::body::Bytes), ApiError> {
+    let limit = st.config().max_body_bytes;
+    let (parts, body) = req.into_parts();
+    let read = axum::body::to_bytes(body, limit).await.map_err(|_| {
+        ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "body_too_large",
+            "тело больше FASAD_MAX_BODY_BYTES",
+        )
+    })?;
+    Ok((parts.headers, read))
 }
 
 /// Разбор JSON-тела руками (не экстрактором `Json`): rejection-сообщения axum
@@ -156,47 +207,73 @@ fn json_body<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, ApiError>
     })
 }
 
-async fn anonymize_handler(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    let req: AnonymizeRequest = match json_body(&body) {
-        Ok(req) => req,
-        Err(err) => return err.into_response(),
-    };
-    match st
-        .vault()
-        .anonymize(session_of(&headers), &req.text, &req.spans, st.schema())
-    {
-        Ok(anon) => {
-            let count = anon.items.len();
-            let mut resp = axum::Json(anon).into_response();
-            insert(resp.headers_mut(), h::COUNT, count);
-            insert(resp.headers_mut(), h::STAGE, st.health().stage);
-            resp
-        }
-        Err(ref err) => ApiError::from_vault(err).into_response(),
-    }
+/// Роутер с тестовым зондом: `/__probe_panic` паникует внутри того же
+/// `guarded`, через который завёрнуты все четыре рабочих обработчика. Отдельная
+/// функция, а не правка `router`, чтобы продакшн-роутер не знал про тесты.
+#[cfg(test)]
+pub fn router_with_panic_probe(state: AppState) -> Router {
+    router(state).route("/__probe_panic", get(probe_panic))
 }
 
-async fn deanonymize_handler(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    let req: DeanonymizeRequest = match json_body(&body) {
-        Ok(req) => req,
+#[cfg(test)]
+async fn probe_panic() -> Response {
+    guarded(|| panic!("СЕКРЕТ-ПДН-МАРКЕР из обработчика"))
+}
+
+/// `POST /v1/anonymize`: принимает опись спанов от `/v1/analyze` (или свою) и
+/// возвращает переписанный текст. Счётчик подмен = `X-Guard-Redacted-Count`.
+async fn anonymize_handler(State(st): State<AppState>, req: Request) -> Response {
+    let (headers, body) = match read_body(st.clone(), req).await {
+        Ok(pair) => pair,
         Err(err) => return err.into_response(),
     };
-    match st.vault().deanonymize(session_of(&headers), &req.text) {
-        Ok(done) => {
-            let mut resp = axum::Json(done).into_response();
-            insert(resp.headers_mut(), h::STAGE, st.health().stage);
-            resp
-        }
-        Err(ref err) => ApiError::from_vault(err).into_response(),
-    }
+    let started = Instant::now();
+    guarded(move || {
+        let req: AnonymizeRequest = json_body(&body)?;
+        let anon = st
+            .vault()
+            .anonymize(session_of(&headers), &req.text, &req.spans, st.schema())
+            .map_err(|ref err| ApiError::from_vault(err))?;
+        let count = anon.items.len();
+        let stage = st.health().stage;
+        let mut resp = axum::Json(anon).into_response();
+        guard_headers(
+            resp.headers_mut(),
+            count,
+            started.elapsed().as_millis(),
+            stage,
+        );
+        Ok(resp)
+    })
+}
+
+/// `POST /v1/deanonymize`: обратный ход. Счётчик разворотов едет в теле
+/// (`substituted`), а не в `X-Guard-Redacted-Count`: тот заголовок по §8 означает
+/// «сколько `ПДн` замазано», и переворачивать его смысл на одном роуте — способ
+/// научить потребителей не доверять заголовкам.
+async fn deanonymize_handler(State(st): State<AppState>, req: Request) -> Response {
+    let (headers, body) = match read_body(st.clone(), req).await {
+        Ok(pair) => pair,
+        Err(err) => return err.into_response(),
+    };
+    let started = Instant::now();
+    guarded(move || {
+        let req: DeanonymizeRequest = json_body(&body)?;
+        let done = st
+            .vault()
+            .deanonymize(session_of(&headers), &req.text)
+            .map_err(|ref err| ApiError::from_vault(err))?;
+        let count = done.substituted;
+        let stage = st.health().stage;
+        let mut resp = axum::Json(done).into_response();
+        guard_headers(
+            resp.headers_mut(),
+            count,
+            started.elapsed().as_millis(),
+            stage,
+        );
+        Ok(resp)
+    })
 }
 
 /// `DELETE /v1/sessions/{id}` — teardown: кэш оригиналов и реестр форм.
@@ -204,14 +281,23 @@ async fn invalidate_handler(
     State(st): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    let dropped = st.vault().invalidate(&id);
-    let body = serde_json::json!({ "deleted": dropped });
-    (
-        StatusCode::OK,
-        [(h::COUNT, HeaderValue::from(dropped))],
-        axum::Json(body),
-    )
-        .into_response()
+    let started = Instant::now();
+    guarded(move || {
+        let dropped = st.vault().invalidate(&id);
+        let stage = st.health().stage;
+        let mut resp = (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "deleted": dropped })),
+        )
+            .into_response();
+        guard_headers(
+            resp.headers_mut(),
+            dropped,
+            started.elapsed().as_millis(),
+            stage,
+        );
+        Ok(resp)
+    })
 }
 
 /// `X-Session-ID` из заголовков: отсутствие = `None`, непечатаемое = `None`
@@ -519,7 +605,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oversized_body_is_413_before_parsing() {
+    async fn oversized_body_is_413_in_our_envelope() {
         let mut cfg =
             Config::from_lookup(|k| (k == "FASAD_MAX_BODY_BYTES").then(|| "64".to_owned()))
                 .expect("64 байта принимаются");
@@ -531,6 +617,16 @@ mod tests {
             .await
             .expect("не падает");
         assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        // Конверт обязателен: текст axum про «Failed to buffer» не разбирается
+        // машиной, а клиент различает 4xx по полю `code`.
+        let v = json_of(resp).await;
+        assert_eq!(v["error"]["code"], "body_too_large");
+        assert!(
+            !v["error"]["message"]
+                .as_str()
+                .expect("сообщение")
+                .contains("ИНН 2482014338")
+        );
     }
 
     #[tokio::test]
@@ -544,6 +640,118 @@ mod tests {
         assert_eq!(resp.headers().get(h::COUNT).expect("счётчик"), "0");
         let v = json_of(resp).await;
         assert_eq!(v.as_array().expect("массив").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn panic_in_handler_becomes_503_and_does_not_echo_the_payload() {
+        // Паника с текстом, похожим на вход: хук по умолчанию печатает сообщение,
+        // обёртка обязана не отдавать его наружу.
+        let resp = guarded(|| panic!("СЕКРЕТ-ПДН-МАРКЕР в сообщении"));
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .expect("тело читается");
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            !body.contains("СЕКРЕТ-ПДН-МАРКЕР"),
+            "тело цитирует панику: {body}"
+        );
+        assert!(
+            body.contains("internal_panic"),
+            "нет машинного кода: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn panicking_handler_answers_503_through_the_router() {
+        // Доказательство, что обёртка стоит на маршруте, а не только юнит-тестом
+        // самой функции: запрос проходит через `router`, обработчик паникует.
+        let app = router_with_panic_probe(state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__probe_panic")
+                    .body(Body::empty())
+                    .expect("запрос строится"),
+            )
+            .await
+            .expect("роутер отвечает, а не рвёт соединение");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .expect("тело читается");
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(!body.contains("СЕКРЕТ"), "ответ цитирует панику: {body}");
+        assert!(body.contains("internal_panic"), "нет кода: {body}");
+    }
+
+    #[tokio::test]
+    async fn success_path_of_guarded_is_transparent() {
+        // Парная проверка: обёртка не проглатывает обычные `Err` и `Ok`.
+        let ok = guarded(|| Ok(StatusCode::OK.into_response()));
+        assert_eq!(ok.status(), StatusCode::OK);
+        let err = guarded(|| {
+            Err(ApiError::new(
+                StatusCode::IM_A_TEAPOT,
+                "bad_json",
+                "нет входа",
+            ))
+        });
+        assert_eq!(err.status(), StatusCode::IM_A_TEAPOT);
+    }
+
+    #[test]
+    fn vault_request_debug_redacts_the_text_too() {
+        let body = r#"{"text":"СНИЛС 65707715421","spans":[]}"#;
+        let req: AnonymizeRequest = serde_json::from_str(body).expect("тело разобрано");
+        let line = format!("{req:?}");
+        assert!(!line.contains("65707715421"), "Debug печати вход: {line}");
+    }
+
+    #[test]
+    fn daemon_manifest_has_no_http_client() {
+        // Двойник `just net-audit` на стороне сборки: гейт из `just check` не
+        // должен быть единственной стеной, иначе его обходят правкой justfile.
+        let dir = std::env::var("CARGO_MANIFEST_DIR").expect("cargo его ставит");
+        let manifest =
+            std::fs::read_to_string(format!("{dir}/Cargo.toml")).expect("манифест читается");
+        for forbidden in ["reqwest", "ureq", "hyper", "rustls", "TcpStream"] {
+            assert!(
+                !manifest.contains(forbidden),
+                "манифест демона упоминает {forbidden}: сеть шага 6 запрещена (#56 п.5)"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn vault_endpoints_carry_latency_and_stage_headers() {
+        let st = state();
+        let app = router(st.clone());
+        let resp = app
+            .oneshot(post_req(
+                "/v1/anonymize",
+                &anon_body("ИНН 2482014338", &[("inn", "2482014338")]),
+                None,
+            ))
+            .await
+            .expect("не падает");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "сначала статус, потом заголовки"
+        );
+        let hs = resp.headers();
+        let latency = hs
+            .get(h::LATENCY)
+            .expect("латентность есть на каждом ответе")
+            .to_str()
+            .expect("число в ASCII")
+            .parse::<u64>()
+            .expect("латентность — число миллисекунд");
+        assert!(latency < 1000, "подозрительная латентность: {latency}");
+        assert_eq!(hs.get(h::STAGE).expect("стадия"), "cascade-0-only");
+        assert_eq!(hs.get(h::COUNT).expect("счётчик"), "1");
+        let _ = json_of(resp).await;
     }
 
     fn cfg_with(pairs: &[(&'static str, &'static str)]) -> Config {

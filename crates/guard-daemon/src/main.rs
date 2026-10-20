@@ -1,9 +1,14 @@
 //! Точка входа демона `fasad`.
 //!
 //! Шаг 6: слушает 127.0.0.1 (SPEC §1 п.6: никаких сетевых вызовов, кроме явного
-//! `X-Upstream-URL`, и старт только на loopback), поднимает `/health` и
-//! `/v1/analyze`; конфиг из `FASAD_*`-переменных, схема из встроенного канона
-//! (или `FASAD_SCHEMA`). Tray и UI — шаги 8+.
+//! `X-Upstream-URL`, и старт только на loopback), поднимает `/health`,
+//! `/v1/analyze`, `/v1/anonymize`, `/v1/deanonymize`, `/v1/sessions/{id}`;
+//! конфиг из `FASAD_*`-переменных, схема из встроенного канона (или
+//! `FASAD_SCHEMA`). Tray и UI — шаги 8+.
+//!
+//! Хук паники ставится до первого сокета: дефолтный хук печатает сообщение
+//! паники, а сообщение сторонней библиотеки могут собирать из аргументов, т.е.
+//! из текста запроса (`ПДн`). Печатается только место в коде.
 
 #![forbid(unsafe_code)]
 #![warn(clippy::unwrap_used)]
@@ -14,6 +19,20 @@ use guard_daemon::http::AppState;
 use guard_daemon::schema::Schema;
 use guard_daemon::vault::Vault;
 
+/// Хук паники: место в коде без сообщения.
+///
+/// Обработчики завёрнуты в `http::guarded` и превращают панику в 503, но сообщение в stderr пишет хук, а не обёртка —
+/// поэтому хук ставится здесь, до бинда.
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let loc = info.location().map_or_else(
+            || "неизвестно".to_owned(),
+            |l| format!("{}:{}", l.file(), l.line()),
+        );
+        eprintln!("fasad: паника в {loc} (сообщение скрыто: в нём может быть вход запроса)");
+    }));
+}
+
 /// Код выхода при отклонённой конфигурации: отдельный от сетевых ошибок, чтобы
 /// systemd/докер видели «неверный конфиг» как неверный конфиг, а не как порт
 /// занят (перезапуск с backoff тут бессмыслен и маскирует опечатку).
@@ -21,6 +40,7 @@ const EXIT_BAD_CONFIG: i32 = 2;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    install_panic_hook();
     let cfg = match Config::from_env() {
         Ok(cfg) => cfg,
         Err(e) => refuse_startup(&e),

@@ -19,8 +19,12 @@ guard-vault     = { path = "../guard-vault" }
 tokio      = { workspace = true }
 axum       = { workspace = true }
 tower-http = { workspace = true }
-reqwest    = { workspace = true }
+# HTTP-клиент из скелета (commit c2cbffd) убран атомом D: демон шага 6 не имеет
+# права линковать клиент вообще (#56 п.5 «не тащи сети», `X-Upstream-URL` — шаг
+# 7). Отсутствие проверяется гейтом `just net-audit` и тестом
+# `http::tests::daemon_manifest_has_no_http_client`.
 rust-embed = { workspace = true }
+zeroize    = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 
