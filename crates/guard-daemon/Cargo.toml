@@ -22,14 +22,21 @@ axum       = { workspace = true }
 # отличаем от битого потока (400). Crate уже в дереве axum, lock не двигается.
 http-body-util = { workspace = true }
 tower-http = { workspace = true }
-# HTTP-клиент из скелета (commit c2cbffd) убран атомом D: демон шага 6 не имеет
-# права линковать клиент вообще (#56 п.5 «не тащи сети», `X-Upstream-URL` — шаг
-# 7). Отсутствие проверяется гейтом `just net-audit` (= интеграционный тест
-# `tests/net_audit.rs`, бежит и на ubuntu, и на windows).
 rust-embed = { workspace = true }
 zeroize    = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
+# Возвращён атомом 7c (SPEC §10 п.7): прокси `/v1/chat/completions`. До этого
+# с шага 6 (атом D, #56 п.5 «не тащи сети») демону не было права линковать клиент
+# вообще, и это проверялось гейтом `just net-audit`. Теперь гейт проверяет
+# обратное и более строгое: клиент ровно один, в одном файле (`src/proxy.rs`),
+# синхронный `ureq` с `default-features = false` (rustls + webpki-roots, без
+# gzip/cookies/brotli/charset/json — промер в docs/dep-verify-crates.md §14), и
+# ни одного второго сетевого пути в crate.
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+# Только `Stream` для `Body::from_stream` (прокси-стрим из блокирующей задачи).
+# `tokio-stream` не берём: этот крейт уже в дереве через axum, lock не двигается.
+futures-core = { version = "0.3", default-features = false }
 
 [dev-dependencies]
 # ServiceExt::oneshot для тестов роутера без поднятия сокета.

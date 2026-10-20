@@ -398,6 +398,46 @@ mod tests {
                 Route::Mask,
             ]
         );
+        // Порядок выхода = порядок входа, позиционно. Без этой строки таблица
+        // осталась бы зелёной при перестановке: классы в таблице разные, но
+        // проверялся только профиль маршрутов, а не то, к какому спану он
+        // относится. На этом утверждении держится зип `route_spans` с хитами в
+        // `guard-daemon::pipeline` (шаг 7c).
+        let classes: Vec<&str> = route_spans(&RoutingCfg::default(), &spans)
+            .iter()
+            .map(|r| r.class)
+            .collect();
+        assert_eq!(
+            classes,
+            vec!["email", "person_name", "card_pan", "inn", "snils"],
+            "route_spans переставил спаны"
+        );
+    }
+
+    /// Инвариант, на котором держится зип маршрутов с хитами в `pipeline`:
+    /// сколько на входе, столько на выходе, и i-й выход — i-й вход.
+    #[test]
+    fn route_spans_pairs_routes_with_input_order() {
+        let spans: Vec<ScoredSpan<u16>> = (0_u16..40)
+            .map(|i| ScoredSpan {
+                class: i,
+                // Скор чередуется через полосу, чтобы перестановка не могла
+                // спрятаться за одинаковыми маршрутами.
+                score: if i % 3 == 0 { 0.95 } else { 0.10 },
+                validator: false,
+            })
+            .collect();
+        let routed = route_spans(&RoutingCfg::default(), &spans);
+        assert_eq!(routed.len(), spans.len(), "route_spans теряет спаны");
+        for (i, r) in routed.iter().enumerate() {
+            assert_eq!(r.class, spans[i].class, "порядок классов сломан на {i}");
+            assert_eq!(r.score, spans[i].score, "скор уехал со своего спана");
+            assert_eq!(
+                r.route,
+                RoutingCfg::default().route(spans[i].score),
+                "маршрут спана {i} не совпадает с точечным route"
+            );
+        }
     }
 
     #[test]
