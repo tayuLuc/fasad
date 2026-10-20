@@ -75,14 +75,4 @@ ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="$HOME/onnxruntime-dylib/onnxruntime-osx-
 ./target/release/examples/recall_golden --threads 8 --thr 0.20
 ```
 
-**Версия компилятора гейтов.** `rust-toolchain.toml` в репозитории нет, CI
-ставит `stable` через `dtolnay/rust-toolchain` (`.github/workflows/ci.yml:30`),
-т.е. версия CI = актуальный stable и может опережать локальный дефолт: промер
-21.10 — CI clippy 1.99.0/1.99.1 против локального 1.97.1, и на этой разнице
-`just lint` покраснел в CI, оставаясь зелёным дома (новый линт
-`clippy::assert_is_empty`, 8 sites в тестах демона). Вывод, годный как
-инвариант: гейт, меряемый одной локальной версией, не гейт — перед пушем
-`just lint` прогоняется ещё и `rustup run <CI-версия> cargo clippy --workspace
---all-targets -- -D warnings -D clippy::unwrap_used` (промер: rc=0, плюс
-ort- и decliner-строки на 1.99.1 rc=0). Пин версии в `rust-toolchain.toml` —
-решение не этого шага, оно убирает саму категорию расхождения.
+**Версия компилятора гейтов.** `rust-toolchain.toml` запинен на 1.99.1 (после инцидента 21.10: CI-stable 1.99 принёс `clippy::assert_is_empty`, 8 red-мест в тестах демона, локально на 1.97 было зелено). CI (`dtolnay/rust-toolchain@stable`, `.github/workflows/ci.yml:30`) ставит stable, но rustup берёт override из файла — локально и в CI теперь одна версия; апгрейд пина = отдельный коммит с прогоном всех гейтов на обеих ОС. Инвариант остался: гейт, меренный одной локальной версией без сверки с CI-версией, не гейт (подкласс ложно-зелёной проверки).
