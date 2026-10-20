@@ -23,21 +23,12 @@ pub mod decide;
 pub mod merger;
 #[cfg(test)]
 mod proptests;
-
-/// Экстрактор (`GLiNER` 2.5 multi / ruBERT-pii-ner): спаны + вектор классов + confidence.
-///
-/// TODO(шаг 4b-2): свой декодер boundary-голов; `τ_low` 0.20–0.25 (FN фатален);
-/// кэш эмбеддингов схемы меток `E ∈ R^{C×D}` считается один раз на старте.
-pub mod extractor {
-    /// Заглушка порогов экстрактора (SPEC §2 каскад 1).
-    #[derive(Debug, Clone, Copy)]
-    pub struct Thresholds {
-        /// Нижний порог извлечения.
-        pub low: f64,
-        /// Верхний порог уверенности (выше — без арбитра).
-        pub high: f64,
-    }
-}
+/// Двухпороговая маршрутизация скоров (7b, #60): дефолты τ, полосы
+/// Pass/Mask/Block, AND по рабочим порогам (quant-policy §3 п.2a), вето
+/// валидатора. Единственный источник чисел `τ_low`/`τ_high` — демон
+/// реэкспортирует из `config.rs`; харнес `examples/recall_golden.rs` считает
+/// гейты этим же кодом (инвариант «меряем = гоняем»).
+pub mod routing;
 
 /// Арбитр серой зоны (`GLiNER` 2.5 Decide): yes/no/choice за 1 forward pass.
 ///
@@ -69,10 +60,10 @@ mod tests {
     #[test]
     fn skeleton_types_are_constructible() {
         let _ = super::chunker::ChunkCfg::default();
-        let _ = super::extractor::Thresholds {
-            low: 0.25,
-            high: 0.80,
-        };
+        // Стаб `extractor::Thresholds` (TODO 4b-2 по τ) закрыт атомом 7b:
+        // пороги живут в `routing` — конструкция дефолтов проверяется там же
+        // (`defaults_are_the_measured_constants`), здесь — constructible-контракт.
+        let _ = super::routing::RoutingCfg::default();
         let _ = super::arbitrator::GrayZone { lo: 0.22, hi: 0.80 };
         let _ = super::merger::Merger::new();
         let _ = super::graph::GraphRef;
