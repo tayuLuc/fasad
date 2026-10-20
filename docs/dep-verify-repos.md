@@ -254,8 +254,8 @@
    верифицирована первичкой»; ОМС-16 = Luhn (oms.py L29-33) — вопрос к Плану не снимает.
    **ОГРН/ОГРНИП/IBAN/Мир 22xxxx — отсутствуют полностью** (grep entities/ = 0).
 5. Метрики нецитируемы: strict 87.1 / baseline 0.974513 — гейт-датасет приватный xlsx
-   реальных ПДн (tests/quality/README L34-38), N=3857 и sha256 — из baseline_result.json
-   provenance.dataset. Публичный
+   реальных ПДн (tests/quality/README L34-38), N=3857 — из baseline_result.json provenance.dataset,
+   sha256 — top-level ключ dataset_sha256 того же файла. Публичный
    `redmadrobot-rnd/pii_benchmark` (2841 текст, 21 тип) — кандидат кросс-референса границ
    спанов, НЕ замены data/golden (пересечение типов 10/13 `[claim]` — список 21 типа
    benchmark'а не скачан, число производное от замерщика).
@@ -263,7 +263,7 @@
    18-commits-full.tsv) / 0 releases/tags/PR, последний push 2026-09-09; README L12-13
    бейджи на redmadrobot.ai/articles/pii-guard + habr.com/ru/articles/1080440 (статьи не
    читаны — вне gh-транспорта); после 09.09 коммитов нет; CI есть (lint+test), quality-гейт
-   сознательно вне CI (ci.yml L5-7: «needs the NER weights and takes minutes»).
+   сознательно вне CI (ci.yml L4-5: «needs the NER weights and takes minutes»).
    `[LIVE]` формально, фактически frozen (мотив публикации — предмет догадок, вне ядра).
 7. Берём идеями (backlog, не зависимости): препроцессинг-обходы транслит/числительными/
    base64 в каскад-0 (FN фатален); арбитраж контекста расстоянием до ключевого слова
