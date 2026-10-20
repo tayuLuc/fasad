@@ -541,12 +541,22 @@ mod tests {
         out
     }
 
-    /// KAT-источник: `chacha20poly1305-0.11.0/tests/lib.rs`, mod `xchacha20`
-    /// (вектор `draft-irtf-cfrg-xchacha` Appendix A.1). Первичка: `.crate`
-    /// sha256 `9b89e1c441e926b9c82a8d023f6e1b7ae0adcfaa7d621814e4d60789bac751cb`,
-    /// `tests/lib.rs` sha256
-    /// `02b398b55dd393d896e2f111f202e86c72779036527a2afbc662bd41e1a29006`.
-    /// URL: <https://docs.rs/crate/chacha20poly1305/0.11.0/source/tests/lib.rs>
+    /// KAT-первичка — IETF `draft-irtf-cfrg-xchacha-03`, Appendix A.1 «Example
+    /// and Test Vector for AEAD_XCHACHA20_POLY1305»
+    /// <https://www.ietf.org/archive/id/draft-irtf-cfrg-xchacha-03.txt>
+    /// (скачан 20.10, 36 930 Б ASCII, sha256
+    /// `fa796b50265eeee383d40e82fed880267c7835e1b3d64c50c4f06162adaa1cfd`,
+    /// блок — строки 487–546: KEY `80..9f`, IV `40..57`, AAD
+    /// `50 51 52 53 c0..c7`, CT `bd 6d 17 9d … b5 2e`, Tag
+    /// `c0:87:59:24:c1:c7:98:79:47:de:af:d8:78:0a:cf:49`).
+    ///
+    /// Вторичное подтверждение — что именно эта реализация вектор воспроизводит:
+    /// `chacha20poly1305-0.11.0/tests/lib.rs`, `mod xchacha20` (строки 151–190,
+    /// `.crate` sha256 `9b89e1c441e926b9c82a8d023f6e1b7ae0adcfaa7d621814e4d60789
+    /// bac751cb`, файла sha256 `02b398b55dd393d896e2f111f202e86c72779036527a2afb
+    /// c662bd41e1a29006`). Числа там записаны байтовыми литералами, а не
+    /// сплошной hex-строкой — отсюда ложное «векторов нет» при grep по
+    /// `bd6d179d`.
     ///
     /// RFC 8439 §2.4.2 для нашего пути неприменим: тот вектор —
     /// `ChaCha20Poly1305` с 12-байтовой нонсой, а контейнер идёт на `XChaCha` с
