@@ -23,8 +23,15 @@ while IFS=$'\t' read -r role repo rev file sha size source; do
         curl --fail --location --http1.1 --silent --show-error \
             --retry 3 --retry-delay 2 \
             "$HOST/$repo/resolve/$rev/$file" --output "$dest.part"
+        # sha ДО переименования (ревью PR#49 нит №9): битый файл не занимает
+        # место валидного кэша ни одной миллисекундой.
+        got=$(shasum -a 256 "$dest.part" | cut -d' ' -f1)
+        if [ "$got" != "$sha" ]; then
+            echo "FAIL sha256 $role:ожидается $sha, промер $got (.part удалён)"
+            rm -f "$dest.part"
+            exit 1
+        fi
         mv "$dest.part" "$dest"
-        got=$(shasum -a 256 "$dest" | cut -d' ' -f1)
     fi
     if [ "$got" != "$sha" ]; then
         echo "FAIL sha256 $role:ожидается $sha, промер $got"

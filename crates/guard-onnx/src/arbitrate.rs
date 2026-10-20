@@ -44,8 +44,6 @@ const SEP_STRUCT: usize = 0;
 const SEP_TEXT: usize = 1;
 /// Индекс `[L]` в таблице [`SPECIALS`] (маркер метки = позиция `marker_positions`).
 const L: usize = 6;
-/// Индекс `[P]` в таблице [`SPECIALS`] (маркер схемы; `sanitize_state`).
-const P_IDX: usize = 2;
 /// Id неизвестного токена vocab Decide (промер `tokenizer.json` рев. 18271032).
 const UNK_ID: u32 = 3;
 
@@ -354,33 +352,31 @@ impl DecideArbiter {
     }
 
     /// Клининг состояния перед токенизацией (4b-3B, контракт «данные вне
-    /// доверия»): литералы спец-токенов (`[SEP_STRUCT]`, `[SEP_TEXT]`, `[P]`,
-    /// `[L]`) **заменяются пробелом** — не вырезаются: байт-диапазоны
-    /// состояния сохраняются (длина та же), спец-токен из чужих данных НЕ
-    /// эмулируется. Фантомные группы (`schema_plan`: «групп ≠ схем») на этом
-    /// закрываются, `check_splice` не краснеет (пробел — не слово). Переводы
-    /// строк → пробел (`WordPiece` режет и так; live-чек ищет слова).
+    /// доверия»): ВСЕ 10 литералов спец-токенов из [`SPECIALS`] (`[SEP_STRUCT]`,
+    /// `[SEP_TEXT]`, `[P]`, `[C]`, `[E]`, `[R]`, `[L]`, `[EXAMPLE]`, `[OUTPUT]`,
+    /// `[DESCRIPTION]`) **заменяются одним пробелом** — не вырезаются: спец-токен
+    /// из чужих данных НЕ эмулируется; байт-диапазоны состояния при этом НЕ
+    /// сохраняются (литерал 5–13 Б → 1 Б, сдвиг вправо на разницу — потребитель,
+    /// которому нужен оригинал, держит оригинал отдельно; ревью PR#49 нит №10
+    /// закрывает дыру extraction-хэда: юнит `[E]`/`[R]` раньше выживал).
+    /// Фантомные группы (`schema_plan`: «групп ≠ схем») на этом закрываются,
+    /// `check_splice` не краснеет (пробел — не слово). Переводы строк → пробел
+    /// (`WordPiece` режет и так; live-чек ищет слова).
     #[must_use]
     pub fn sanitize_state(state: &str) -> String {
         let mut out = state.replace('\n', " ");
-        for sp in [
-            SPECIALS[SEP_STRUCT].0,
-            SPECIALS[SEP_TEXT].0,
-            SPECIALS[P_IDX].0,
-            SPECIALS[L].0,
-        ] {
-            out = out.replace(sp, " ");
+        for (lit, _) in &SPECIALS {
+            out = out.replace(lit, " ");
         }
         out
     }
 
-    /// Клининг хвоста конкатенации: сегменты [0..n−1] (блок схем — доверенный)
-    /// не трогаем; состояние = всё после последнего вхождения terminator-а
-    /// ` [SEP_TEXT] ` — вырезаем литералы спец-токенов из него (4b-3B).
-    /// Клининг хвоста конкатенации (зеркало парити-скрипта): блок схем до
-    /// terminator-а ` [SEP_TEXT] ` доверенный, не трогаем; состояние — после.
-    /// Вызывается НА ГРАНИЦЕ ДАННЫХ (даемон шаг 5+, парити `run_decide`), НЕ
-    /// внутри `plan_of_block`: `check_splice` сверяет слова с оригиналом.
+    /// Клининг хвоста конкатенации (зеркало парити-скрипта): сегменты [0..n−1]
+    /// (блок схем — доверенный) не трогаем; состояние = всё после последнего
+    /// вхождения terminator-а ` [SEP_TEXT] ` — `sanitize_state` вычищает из
+    /// хвоста литералы спец-токенов (4b-3B). Вызывается НА ГРАНИЦЕ ДАННЫХ
+    /// (даемон шаг 5+, парити `run_decide`), НЕ внутри `plan_of_block`:
+    /// `check_splice` сверяет слова с оригиналом.
     #[must_use]
     pub fn clean_state(whole: &str) -> String {
         let term = format!(" {} ", SPECIALS[SEP_TEXT].0);
@@ -1306,5 +1302,30 @@ mod tests {
                 "кусок = подстрока"
             );
         }
+    }
+
+    #[test]
+    fn sanitize_state_guts_all_ten_specials() {
+        // Рецидив ревью PR#49 нит №10: ранее резались 4 литерала из 10,
+        // `[E]`/`[R]` выживали → extraction-хэд видел фантомные маркеры.
+        let dirty = "а [SEP_STRUCT] б [SEP_TEXT] в [P] г [C] д [E] е [R] ж [L] з [EXAMPLE] и [OUTPUT] к [DESCRIPTION] л\nм";
+        let clean = DecideArbiter::sanitize_state(dirty);
+        for (lit, _) in &SPECIALS {
+            assert!(!clean.contains(lit), "литерал {lit} выжил");
+        }
+        assert!(!clean.contains('\n'), "перевод не свёрнут");
+        assert!(clean.contains('а') && clean.contains('м'), "слова целы");
+    }
+
+    #[test]
+    fn clean_state_preserves_trusted_schema_head() {
+        // Голова (блок схем до terminator-а) не трогается; клининг — только
+        // хвост после последнего ` [SEP_TEXT] `.
+        let head = "вопрос [SEP_STRUCT] [P] [L]";
+        let whole = format!(" {head} [SEP_TEXT] ответ [E] [R] хвост");
+        let cleaned = DecideArbiter::clean_state(&whole);
+        assert!(cleaned.contains("[P] [L]"), "доверенная голова цела");
+        assert!(!cleaned.contains("[E]"), "хвостовой [E] вычищен");
+        assert!(!cleaned.contains("[R]"), "хвостовой [R] вычищен");
     }
 }
