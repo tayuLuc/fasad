@@ -77,10 +77,19 @@ printf 'verify-bundle: архив %s\n' "$arch"
 case "$arch" in
     *.tar.gz) tar -xzf "$arch" -C "$tmp" ;;
     *.zip)
+        # Windows-раннер (git bash) обязан распаковать архив тем же семейством
+        # инструментов, что его собрал: Expand-Archive. Python — НЕТ: AGENTS п.6
+        # не пускает Python в контур сборки, а на windows-2022 `python3` в
+        # Git Bash не гарантирован. Порядок: unzip (есть на macOS/Linux-разработке)
+        # → powershell (Windows) → явный отказ.
         if command -v unzip >/dev/null 2>&1; then
             unzip -q "$arch" -d "$tmp"
+        elif command -v powershell.exe >/dev/null 2>&1; then
+            powershell.exe -NoProfile -Command \
+                "Expand-Archive -LiteralPath '$(cygpath -w "$arch" 2>/dev/null || printf '%s' "$arch")' -DestinationPath '$(cygpath -w "$tmp" 2>/dev/null || printf '%s' "$tmp")'"
         else
-            python3 -m zipfile -e "$arch" "$tmp"
+            printf 'verify-bundle: ОШИБКА: нет ни unzip, ни powershell.exe — архив %s нечем распаковать\n' "$arch" >&2
+            exit 1
         fi
         ;;
     *)
