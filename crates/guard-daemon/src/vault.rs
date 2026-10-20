@@ -1508,6 +1508,119 @@ mod tests {
         assert!(!other.text.contains(NAME_B));
     }
 
+    /// R1 ревью #62: коллизия на **втором** токене пачки. На golden-v1 при пуле
+    /// 128 коллизий НЕ на первом токене нет вообще (`pool_probe -- probe`:
+    /// Surname=6, Firstname=0, Midname=0 — все отказы на первом токене, и там
+    /// откатывать нечего), поэтому пара синтетическая, из `pool_probe -- collide
+    /// firstname f`: «Люнгина» и «Марселина» падают в слот «Рагиля», фамилии и
+    /// отчества — другие слоты. Этот тест держит «коллизия спана → весь спан
+    /// меткой», но НЕ дискриминирует `truncate`: движок отвечает отказом до
+    /// первой же пушки, и откатывать нечего. Дискриминирует соседний тест.
+    #[test]
+    fn collision_on_second_token_sends_whole_span_to_label() {
+        let v = vault(VaultMode::Session);
+        let first = "Ушакова Люнгина Саввична";
+        let second = "Ветрова Марселина Афанасьевна";
+        let a = v
+            .anonymize(
+                Some("r1"),
+                first,
+                &[span("person_name", first, first)],
+                &schema(),
+            )
+            .expect("первое имя");
+        assert!(
+            !a.text.contains(first),
+            "первое имя обязано быть суррогатом, а не меткой: {}",
+            a.text
+        );
+        assert_eq!(v.forms_len(Some("r1")), 3, "три формы первого имени");
+        let b = v
+            .anonymize(
+                Some("r1"),
+                second,
+                &[span("person_name", second, second)],
+                &schema(),
+            )
+            .expect("второе имя — метка, не отказ");
+        assert!(
+            b.text.starts_with("[PERSON_NAME_"),
+            "коллизия на втором токене: {}",
+            b.text
+        );
+        assert_eq!(
+            v.forms_len(Some("r1")),
+            3,
+            "откат пачки: ни одной формы второго имени в реестре не осталось"
+        );
+        assert_eq!(
+            v.surrogate_fallbacks(),
+            1,
+            "деградация посчитана ровно один раз"
+        );
+        assert_eq!(
+            v.deanonymize(Some("r1"), &a.text)
+                .expect("разворот")
+                .text
+                .as_str(),
+            first
+        );
+        assert_eq!(
+            v.deanonymize(Some("r1"), &b.text)
+                .expect("разворот")
+                .text
+                .as_str(),
+            second
+        );
+    }
+
+    /// Дискриминация `truncate` (R1 ревью #62): ветка живая, и ловит она
+    /// расхождение пред-проверки батча с движком. `PendingForms` помнит владельца
+    /// формы по **поверхности** токена, а движок — по **лемме**: один и тот же
+    /// человек, написанный в двух спанах одного запроса с разной регистровой
+    /// поверхностью имени («Кира» и «кира»), для движка один владелец (та же
+    /// лемма КИРА → та же форма «Гельфия»), а для батча — второй оригинал той же
+    /// формы. Отказ наступает на втором токене, первый («Шашкина») уже в пачке, и
+    /// без `truncate` он уехал бы в `commit_forms` формой с невыданным токеном.
+    ///
+    /// Промер возмущением: `truncate` закомментирован — этот тест краснеет на
+    /// `forms_len` (4 вместо 3), остальные 83 проходят. Литералы форм промерены
+    /// `pool_probe -- forms`, регистр внутри спана — то, что реально приходит из
+    /// OCR-потока, и спаны в запросе рисует клиент, а не наш сканер.
+    #[test]
+    fn batch_precheck_disagreement_rolls_the_partial_span_back() {
+        let v = vault(VaultMode::Session);
+        let one = "Ушакова Кира Саввична";
+        let two = "Ветрова кира Саввична";
+        let text = format!("{one} и {two}");
+        let a = v
+            .anonymize(
+                Some("r2"),
+                &text,
+                &[
+                    span("person_name", &text, one),
+                    span("person_name", &text, two),
+                ],
+                &schema(),
+            )
+            .expect("запрос не отказывается: второй спан уходит на метку");
+        assert_eq!(
+            a.items.iter().filter(|i| i.operator == "replace").count(),
+            1,
+            "суррогат ровно один, второй спан — метка"
+        );
+        assert_eq!(
+            v.forms_len(Some("r2")),
+            3,
+            "откат пачки: форма первого токена отвергнутого спана не влезла в реестр"
+        );
+        assert_eq!(v.surrogate_fallbacks(), 1, "деградация посчитана");
+        let back = v
+            .deanonymize(Some("r2"), &a.text)
+            .expect("разворот обоих спанов");
+        assert_eq!(back.text.as_str(), text, "byte-exact");
+    }
+
     /// P4: атомарность отказа держится для **реестра форм**, но не для счётчика
     /// меток. Отказ берём из переполнения реестра (`too_many_forms`): с шага 7а
     /// коллизия слота отказом не является, и это единственный оставшийся путь

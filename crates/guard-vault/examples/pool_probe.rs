@@ -39,7 +39,7 @@
 use guard_vault::VaultEngine;
 use guard_vault::morph::{Case, Gender, MorphTable, NameType, SpanParse, suffix_gender};
 use guard_vault::pool::{self, SURROGATES_TSV};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Исторический пул до #60: `const SURROGATES` из `lib.rs` на коммите `832d7b4`.
 const HISTORICAL: [(&str, Gender, NameType); 24] = [
@@ -294,23 +294,49 @@ fn probe() -> i32 {
             .collect();
         let mut shared = 0usize;
         let mut examples: Vec<String> = Vec::new();
+        // Разбивка отказов по позициям triple'а: она же отвечает на вопрос,
+        // «куда» падает коллизия, и из неё берётся пара для теста атомарности
+        // пачки (нужна коллизия НЕ на первом токене).
+        let mut by_pos = vec![0usize; NameType::ORDER.len()];
         for i in 0..names.len() {
             for j in i + 1..names.len() {
-                if picks[i]
+                let hit: Vec<usize> = picks[i]
                     .iter()
                     .zip(&picks[j])
-                    .any(|(x, y)| x.0 == y.0 && x.0 != "<нет формы>" && x.1 != y.1)
-                {
-                    shared += 1;
-                    if n == 128 && examples.len() < 4 {
-                        examples.push(format!("{} ↔ {}", names[i].value, names[j].value));
-                    }
+                    .enumerate()
+                    .filter(|(_, (x, y))| x.0 == y.0 && x.0 != "<нет формы>" && x.1 != y.1)
+                    .map(|(k, _)| k)
+                    .collect();
+                if hit.is_empty() {
+                    continue;
+                }
+                shared += 1;
+                for k in &hit {
+                    by_pos[*k] += 1;
+                }
+                if n == 128 && examples.len() < 6 {
+                    let where_ = hit
+                        .iter()
+                        .map(|k| format!("{:?}", NameType::ORDER[*k]))
+                        .collect::<Vec<_>>()
+                        .join("+");
+                    examples.push(format!(
+                        "{} ↔ [{}] на {}",
+                        names[i].value, names[j].value, where_
+                    ));
                 }
             }
         }
         for x in &examples {
             println!("  отказная пара: {x}");
         }
+        let where_ = NameType::ORDER
+            .iter()
+            .zip(&by_pos)
+            .map(|(ty, c)| format!("{ty:?}={c}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!("  отказы по позициям: {where_}");
         let lens: Vec<usize> = (0..6).map(|s| bucket(n, &full, s).len()).collect();
         let pct = 100.0 * shared as f64 / pairs.max(1) as f64;
         println!(
@@ -353,6 +379,63 @@ fn forms(args: &[String]) -> i32 {
     0
 }
 
+/// Пары лемм одной корзины, попадающие в один слот.
+///
+/// Нужны затем, что золотой корпус на пуле 128 не даёт ни одной коллизии НЕ на
+/// первом токене (промер `probe`: Surname=6, Firstname=0, Midname=0), а тест
+/// атомарности пачки форм требует коллизию на втором токене: только там
+/// предшествующие формы уже лежат в `PendingForms`, и только там их откат
+/// (`truncate`) что-то значит. Леммы пула годятся в поверхности: они по
+/// построению гнутся нашей таблицей во всех шести падежах (`check`-режим).
+fn collide(args: &[String]) -> i32 {
+    let [ty_s, g_s] = args else {
+        eprintln!("использование: collide <surname|firstname|midname> <f|m>");
+        return 2;
+    };
+    let Some(ty) = [
+        (NameType::Surname, "surname"),
+        (NameType::Firstname, "firstname"),
+        (NameType::Midname, "midname"),
+    ]
+    .iter()
+    .find(|(_, n)| *n == ty_s)
+    .map(|(t, _)| *t) else {
+        eprintln!("неизвестный тип {ty_s}");
+        return 2;
+    };
+    let Some(gender) = (match g_s.as_str() {
+        "f" | "fem" => Some(Gender::Fem),
+        "m" | "masc" => Some(Gender::Masc),
+        _ => None,
+    }) else {
+        eprintln!("неизвестный род {g_s}");
+        return 2;
+    };
+    let bucket = pool::lemmas(ty, gender);
+    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for w in bucket {
+        if let Some(s) = VaultEngine::pick_surrogat_from(w, Case::Nom, gender, ty, bucket) {
+            groups
+                .entry(s.lemma.to_string())
+                .or_default()
+                .push((*w).to_owned());
+        }
+    }
+    let mut pairs = 0usize;
+    for (slot, keys) in groups.iter().filter(|(_, k)| k.len() > 1) {
+        pairs += keys.len() * keys.len().saturating_sub(1) / 2;
+        println!("слот {slot}: {}", keys.join(" + "));
+    }
+    println!(
+        "{ty:?}/{gender:?}: лемм {}/{}, слотов с >1 ключом {}, пар {}",
+        groups.values().map(Vec::len).sum::<usize>(),
+        bucket.len(),
+        groups.values().filter(|k| k.len() > 1).count(),
+        pairs
+    );
+    0
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = args.first().cloned().unwrap_or_else(|| "probe".to_owned());
@@ -360,8 +443,9 @@ fn main() {
         "check" => check(),
         "probe" => probe(),
         "forms" => forms(&args[1..]),
+        "collide" => collide(&args[1..]),
         other => {
-            eprintln!("неизвестный режим {other} (check|probe|forms)");
+            eprintln!("неизвестный режим {other} (check|probe|forms|collide)");
             2
         }
     };

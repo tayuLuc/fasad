@@ -210,7 +210,9 @@ fasad 0.1.0 cascade-0-only, listening on http://127.0.0.1:8765/health (клас�
    а демон переводит его отказ в метку
    (`second_name_on_taken_slot_falls_back_to_label`,
    `two_colliding_names_in_one_request_send_the_second_to_a_label`,
-   `pending_forms_marks_second_owner_of_one_form`,
+   `collision_on_second_token_sends_whole_span_to_label`,
+   `batch_precheck_disagreement_rolls_the_partial_span_back`,
+   `pending_forms_marks_second_owner_of_one_form_taken`,
    `two_names_in_one_session_mask_and_restore` — экс-KNOWN-RED ревьюера #58).
    Деградация видна наружу: `Vault::surrogate_fallbacks()` считает имена,
    отданные метке вместо гладкой подмены; растёт — пул мал для профиля имён.
@@ -218,10 +220,16 @@ fasad 0.1.0 cascade-0-only, listening on http://127.0.0.1:8765/health (клас�
    записаться формы с невыданным токеном. Реестр форм демона о них не знает,
    `deanonymize` ходит по реестру — такая запись недостижима и снимается TTL или
    teardown; откатывать её нельзя, потому что откат трогал бы чужой слот.
-   Пачка форм одного спана при этом атомарна: `PendingForms` откатывается
-   `truncate` до начала спана, и половина имени в суррогат, половина в метку не
-   выходит.
->>>>>>> 618898e (feat(vault+daemon): #60 шаг 7а — пул 128 лемм на корзину + откат-к-метке вместо 422)
+   Пачка форм одного спана атомарна: при отказе на любом токене `PendingForms`
+   откатывается `truncate`-ом до начала спана, и половина имени в суррогат,
+   половина в метку не выходит. Ветка живая, а не страховочная: пред-проверка
+   батча помнит владельца формы по **поверхности** токена, движок — по **лемме**,
+   и один человек, написанный в двух спанах с разным регистром имени («Кира» и
+   «кира»), для батча — два владельца одной формы; отказ наступает на втором
+   токене, первый уже в пачке. Дискриминировано промером возмущением: с
+   закомментированным `truncate` краснеет ровно
+   `batch_precheck_disagreement_rolls_the_partial_span_back` (`forms_len` 4
+   вместо 3), остальные 83 теста зелёные.
 
 ## Девиация #55: `mlock` (задокументирована, а не замолчана)
 
