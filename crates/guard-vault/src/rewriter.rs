@@ -924,4 +924,80 @@ mod tests {
         assert_eq!(out, vec![b'a', 0xF0, 0x9F, 0x98, 0x80, b'b']);
         assert!(!inc);
     }
+
+    /// Инварианты фазз-таргета `fuzz/fuzz_targets/f0_rewrite.rs`, измеримые в CI:
+    /// на `Unknown`-резолвере произвольные байты (в том числе не-UTF-8 и приманки
+    /// обеих грамматик) проходят дословно, а произвольная нарезка выдачу не меняет.
+    /// Сам таргет CI не гоняет (`fuzz/README.md`), поэтому проверка живёт здесь.
+    #[test]
+    fn random_bytes_pass_verbatim_under_any_split() {
+        let mut rand = Lcg(0x9E37_79B9_7F4A_7C15);
+        for it in 0..4000 {
+            let mut input: Vec<u8> = Vec::new();
+            input.extend_from_slice(if it % 3 == 0 {
+                b"[[F0#"
+            } else if it % 3 == 1 {
+                b"[CLIENT_PERSON_1]"
+            } else {
+                b"\xf0\x28\x8c"
+            });
+            let extra = 1 + (rand.next() as usize) % 48;
+            for _ in 0..extra {
+                input.push(rand.next() as u8);
+            }
+            input.extend_from_slice(b"]]");
+            for g in [Grammar::LABEL, Grammar::F0_INLINE] {
+                let (one, _) =
+                    StreamRewriter::new(g, |_: &[u8]| Resolution::Unknown).run_to_end(&input);
+                assert_eq!(one, input, "итерация {it}: реврайтер съел байты");
+                let mut r = StreamRewriter::new(g, |_: &[u8]| Resolution::Unknown);
+                let mut out = Vec::new();
+                let mut rest = &input[..];
+                while !rest.is_empty() {
+                    let n = 1 + (rand.next() as usize) % rest.len();
+                    let (a, b) = rest.split_at(n);
+                    let _ = r.push(a, &mut out);
+                    rest = b;
+                }
+                let _ = r.finish(&mut out);
+                assert_eq!(out, one, "итерация {it}: нарезка изменила выдачу");
+            }
+        }
+    }
+
+    /// Второе свойство фазз-таргета: подмена тела его же байтами не раздувает
+    /// выдачу (маркер длиннее тела минимум на обрамление) и не роняет автомат.
+    #[test]
+    fn substitution_never_grows_output() {
+        let mut rand = Lcg(0xDEAD_BEEF_1234_5678);
+        for it in 0..2000 {
+            let mut input: Vec<u8> = Vec::new();
+            let extra = 1 + (rand.next() as usize) % 64;
+            for _ in 0..extra {
+                input.push(rand.next() as u8);
+            }
+            let baits: [&[u8]; 4] = [b"[[F0#", b"[CLIENT_PERSON_1]", b"[A]]", b"[[F0#AAAA]]"];
+            for (i, w) in baits.iter().enumerate() {
+                if it % 4 == i {
+                    input.extend_from_slice(w);
+                }
+            }
+            for g in [Grammar::LABEL, Grammar::F0_INLINE] {
+                let (out, _) = StreamRewriter::new(g, |b: &[u8]| {
+                    if b.is_empty() {
+                        Resolution::Unknown
+                    } else {
+                        Resolution::Substitute(b.to_vec())
+                    }
+                })
+                .run_to_end(&input);
+                assert!(
+                    out.len() <= input.len(),
+                    "итерация {it}: выдача {} длиннее входа {}",
+                    out.len(),
+                    input.len()
+                );
+            }
+        }
+    }
 }

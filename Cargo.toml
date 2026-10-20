@@ -1,5 +1,9 @@
 [workspace]
 resolver = "3"
+# `fuzz` вне графа намеренно: линкует libfuzzer-sys, CI его не собирает и не
+# гоняет, `cargo deny` его зависимости не видит. Границы и инструкция —
+# `fuzz/README.md`; инварианты таргета продублированы живыми тестами в rewriter.rs.
+exclude = ["fuzz"]
 members = [
     "crates/guard-types",
     "crates/guard-detectors",
