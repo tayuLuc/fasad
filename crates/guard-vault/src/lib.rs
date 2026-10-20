@@ -52,6 +52,7 @@ pub mod session_store {
 ///
 /// Реализация шага 5 (атом A): SPEC §3 режим 3 — сервер в покое хранит 0 байт
 /// пользовательских данных, расшифровка идёт в mlock+zeroize-буфер.
+pub mod rewriter;
 pub mod token;
 
 /// SSE look-ahead FSM: обратная подмена на потоке ответа.

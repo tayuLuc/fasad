@@ -1,7 +1,7 @@
 //! Stateless-токен обратимой маскировки (SPEC §3 режим 3, §10 шаг 5 атом A).
 //!
 //! Контейнер: `nonce(24) ‖ ciphertext ‖ tag(16)` поверх **LZ4-block** оригинала,
-//! упакованный в base64url без паддинга. AEAD — XChaCha20Poly1305 в детачном
+//! упакованный в base64url без паддинга. AEAD — `XChaCha20Poly1305` в детачном
 //! режиме (`AeadInOut::encrypt_inout_detached`): тег живёт отдельным полем
 //! контейнера, как требует форма упаковки.
 //!
@@ -16,7 +16,7 @@
 //!   (`VaultError::Bomb`).
 //! * Все буферы, содержащие оригинал (LZ4-блок до шифрования, plaintext после
 //!   расшифровки), проходят через [`LockedBuf`] = mlock + zeroize (инвариант
-//!   AGENTS «Все буферы с оригиналами ПДн: `ZeroizeOnDrop` + mlock/VirtualLock»,
+//!   AGENTS «Все буферы с оригиналами `ПДн`: `ZeroizeOnDrop` + mlock/VirtualLock»,
 //!   SPEC §3 «расшифровка идёт в mlock+zeroize-буфер»). `region::lock` — safe
 //!   функция, поэтому крейт по-прежнему живёт под `#![forbid(unsafe_code)]`.
 
