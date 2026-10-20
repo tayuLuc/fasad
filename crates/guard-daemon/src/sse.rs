@@ -84,6 +84,9 @@ pub struct Stats {
     pub malformed: usize,
     /// Был ли на хвосте незакрытый маркер.
     pub incomplete: bool,
+    /// Сколько суррогатных форм отвернуто при развороте слова-границы: запись
+    /// расходится со свидетельством выдачи (#60 п.3, R7 ревью #70).
+    pub restore_refused: usize,
 }
 
 /// Остановка релая с явной причиной: «поток битый» и «поток не влез» — разные
@@ -361,7 +364,9 @@ impl<'a> Relay<'a> {
             return text.to_owned();
         };
         if self.restore_names {
-            self.stats.substituted += self.vault.restore_surrogates_soft(&self.slot, &mut out);
+            let (n, refused) = self.vault.restore_surrogates_soft(&self.slot, &mut out);
+            self.stats.substituted += n;
+            self.stats.restore_refused += refused;
         }
         out
     }
@@ -391,7 +396,9 @@ impl<'a> Relay<'a> {
             String::from_utf8_lossy(e.as_bytes()).into_owned()
         });
         if self.restore_names {
-            self.stats.substituted += self.vault.restore_surrogates_soft(&self.slot, &mut text);
+            let (n, refused) = self.vault.restore_surrogates_soft(&self.slot, &mut text);
+            self.stats.substituted += n;
+            self.stats.restore_refused += refused;
         }
         if !text.is_empty() {
             let frame = synthetic(st.template.as_ref(), index, &text);
@@ -421,8 +428,14 @@ impl<'a> Relay<'a> {
 #[must_use]
 pub fn trailer(stats: Stats, unresolved: usize) -> Vec<u8> {
     format!(
-        ": guard substituted={} unresolved={} malformed={} incomplete={}\n\n",
-        stats.substituted, unresolved, stats.malformed, stats.incomplete
+        ": guard substituted={} unresolved={} unrestored={} malformed={} incomplete={}\n\n",
+        stats.substituted,
+        // Тот же договор, что у заголовка `X-Guard-Unresolved`: refusals
+        // разворота суммируются в `unresolved`, а их доля видна отдельно.
+        unresolved + stats.restore_refused,
+        stats.restore_refused,
+        stats.malformed,
+        stats.incomplete
     )
     .into_bytes()
 }
@@ -553,6 +566,28 @@ mod tests {
     use super::*;
     use crate::schema::Schema;
     use crate::vault::SpanIn;
+
+    /// Трейлер обязан нести компоненту отвергнутых разворотов и суммировать их в
+    /// `unresolved` — ровно то же число клиент видит в заголовке буферизованного
+    /// ответа (R7 ревью #70, #60 п.3).
+    #[test]
+    fn trailer_sums_refused_restores_and_shows_them_apart() {
+        let stats = Stats {
+            substituted: 2,
+            malformed: 0,
+            incomplete: false,
+            restore_refused: 3,
+        };
+        let line = String::from_utf8(trailer(stats, 1)).expect("трейлер — utf-8");
+        assert!(
+            line.contains("unresolved=4"),
+            "отказ разворота обязан суммироваться с маркерами: {line}"
+        );
+        assert!(
+            line.contains("unrestored=3"),
+            "компонента обязана быть видна отдельно: {line}"
+        );
+    }
 
     /// Хвостовые кадры обязан определять вход, а не обход `HashMap`.
     ///
