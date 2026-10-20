@@ -141,10 +141,39 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn health_handler(State(st): State<AppState>) -> axum::Json<Health> {
+/// Ответ `/health` с счётчиками деградации хранилища.
+///
+/// Статика [`Health`] лежит на верхнем уровне, как лежала: добавляется только
+/// объект `vault`. Счётчики здесь, а не в отладочном режиме, потому что обе
+/// метрики молчат по отдельности: `surrogate_fallbacks` растёт, когда пул мал,
+/// `unrestored_mismatch` — когда разворот отказал по расхождению с
+/// реверс-индексом. Оператор обязан видеть это до разбора логов.
+#[derive(Debug, serde::Serialize)]
+struct HealthReply {
+    #[serde(flatten)]
+    health: Health,
+    vault: VaultCounters,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct VaultCounters {
+    /// ФИО, ушедших на метку вместо суррогата из-за занятого слота.
+    surrogate_fallbacks: u64,
+    /// Разворотов, отказавших по расхождению формы с реверс-индексом.
+    unrestored_mismatch: u64,
+}
+
+async fn health_handler(State(st): State<AppState>) -> axum::Json<HealthReply> {
     // Ответ осознанно не содержит никаких пользовательских данных (§1 п.6:
     // весь разбор завершается на 127.0.0.1 до первой сокет-операции).
-    axum::Json(st.health())
+    let vault = st.vault();
+    axum::Json(HealthReply {
+        health: st.health(),
+        vault: VaultCounters {
+            surrogate_fallbacks: vault.surrogate_fallbacks(),
+            unrestored_mismatch: vault.unrestored_mismatch(),
+        },
+    })
 }
 
 async fn analyze_handler(State(st): State<AppState>, req: Request) -> Response {
@@ -641,6 +670,16 @@ mod tests {
         assert_eq!(v["stage"], "cascade-0-only");
         assert_eq!(v["mode"], "stateless");
         assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        // Счётчики деградации хранилища — часть контракта `/health` (#60 п.3):
+        // без них метрика живёт только в тестах, а это не «видно оператору».
+        assert_eq!(
+            v["vault"]["surrogate_fallbacks"], 0,
+            "свежее хранилище чисто"
+        );
+        assert_eq!(
+            v["vault"]["unrestored_mismatch"], 0,
+            "расхождений ещё не было"
+        );
     }
 
     #[tokio::test]

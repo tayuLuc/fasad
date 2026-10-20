@@ -395,6 +395,32 @@ fn session_mode_roundtrips_surrogates_and_teardown() {
     );
 }
 
+/// Метрики деградации хранилища обязаны быть видны извне без отладочного
+/// режима (#60 п.3): живой бинарь отдаёт их в `/health` объектом `vault`.
+/// Здесь проверяется наличие и тип — значение двигает юнит-тест
+/// `divergent_form_refuses_restore_and_shows_in_counter`, которому нужно
+/// полезное состояние хранилища, а его через HTTP не подделать.
+#[test]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // в тестах паника = красный CI, это канал ответа
+fn health_exposes_degradation_counters_on_the_wire() {
+    let d = Daemon::start(&[]);
+    let reply = call(&d.addr, "GET", "/health", &[], b"");
+    assert_eq!(reply.status, 200, "health: {}", reply.text());
+    let v = reply.json();
+    for name in ["surrogate_fallbacks", "unrestored_mismatch"] {
+        assert!(
+            v["vault"][name].is_number(),
+            "счётчик {name} обязан быть числом в /health, полученный ответ: {}",
+            reply.text()
+        );
+    }
+    assert_eq!(
+        v["vault"]["unrestored_mismatch"].as_u64().expect("число"),
+        0,
+        "свежий демон ещё не видел расхождений разворота"
+    );
+}
+
 #[test]
 fn oversized_body_comes_back_as_413_envelope_on_the_wire() {
     let d = Daemon::start(&[("FASAD_MAX_BODY_BYTES", "1024")]);

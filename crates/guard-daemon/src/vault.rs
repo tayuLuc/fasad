@@ -747,6 +747,18 @@ impl Vault {
         self.surrogate_fallbacks.load(Ordering::Relaxed)
     }
 
+    /// Сколько разворотов суррогата отказало, потому что форма в кэше указывает
+    /// не на тот оригинал, что мы в неё подставляли (#60 п.3, метрика
+    /// restoration-integrity). Растёт — значит сессия пережила снятие записи и
+    /// слот был перенят: вместо чужих `ПДн` клиент получил неразвёрнутую форму.
+    ///
+    /// В режиме 3 (`stateless`) счётчик нулевой по конструкции: там оригинал
+    /// зашифрован внутри самого маркера, перенять нечего.
+    #[must_use]
+    pub fn unrestored_mismatch(&self) -> u64 {
+        self.engine.restoration_mismatches()
+    }
+
     fn locked(&self) -> MutexGuard<'_, Registry> {
         self.registry.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -1616,6 +1628,60 @@ mod tests {
             )
             .expect("свежее имя в свежей сессии — не наш суррогат");
         assert!(!other.text.contains(NAME_B));
+    }
+
+    /// Метрика `restoration-integrity` (#60 п.3) видна наружу без отладочного
+    /// режима, а отказ разворота не отдаёт чужое имя.
+    ///
+    /// Состояние «кэш говорит одно, индекс — другое» строится напрямую через
+    /// `store()`: так выглядит перенятый слот (запись истекла, форма досталась
+    /// другому), и штатным путём его не получить — выдача на перенятую форму
+    /// отказывает (`guard-vault::slot_retaken_after_ttl_is_refused_not_swallowed`).
+    #[test]
+    fn divergent_form_refuses_restore_and_shows_in_counter() {
+        let v = vault(VaultMode::Session);
+        let name = "Ушакова Кира Саввична";
+        let n = v
+            .anonymize(
+                Some("p16"),
+                name,
+                &[span("person_name", name, name)],
+                &schema(),
+            )
+            .expect("мазание");
+        let forms = v.session_forms("p16");
+        assert!(
+            !forms.is_empty(),
+            "тесту нужна гладкая подмена, а не метка: текст {text}",
+            text = n.text
+        );
+        for f in &forms {
+            v.engine
+                .store()
+                .insert(
+                    &StoreKey::new("p16", &format!("SRG#{f}")),
+                    SecretString::new("Ветрова Марселина Афанасьевна".to_owned()),
+                )
+                .expect("запись вручную");
+        }
+        let back = v
+            .deanonymize(Some("p16"), &n.text)
+            .expect("разворот не обязан валиться из-за расхождения");
+        assert!(
+            !back.text.contains("Ветрова"),
+            "чужое имя на месте своего — это утечка, а не деградация: {out}",
+            out = back.text.as_str()
+        );
+        assert!(
+            back.text.contains(&forms[0]),
+            "отказ обязан оставить неразвёрнутую форму, а не съесть её: {out}",
+            out = back.text.as_str()
+        );
+        assert_eq!(
+            v.unrestored_mismatch(),
+            u64::try_from(forms.len()).expect("формы влезают в u64"),
+            "сколько форм отвернулось — столько и в счётчике"
+        );
     }
 
     /// R1 ревью #62: коллизия на **втором** токене пачки. На golden-v1 при пуле
