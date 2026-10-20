@@ -16,6 +16,11 @@
 //!     onnxruntime-osx-arm64-1.31.0/lib \
 //!   `cargo run --release --features ort-inference --example recall_golden`
 //! Опции: `--limit N` (первые N recall-строк), `--threads T`, `--thr F`.
+//!
+//! 7b (#60): пороговые гейты выполняются библиотечным кодом
+//! `guard_onnx::routing` (`RoutingCfg::single`), а не локальным сравнением:
+//! демоны шагов 7c/8 идут через тот же код, который мерит этот харнес
+//! (инвариант «меряем = гоняем»; #60 п.4: Δ-parity до/после выноса = 0.00).
 
 #![allow(
     clippy::cast_precision_loss,
@@ -173,7 +178,20 @@ fn wilson_lower(k: usize, n: usize) -> f64 {
 fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std::error::Error>> {
     use guard_onnx::arbitrate::{DecideArbiter, QuestionSchema};
     use guard_onnx::decide::{ID2LABEL, lockr_bio_group};
+    use guard_onnx::routing::RoutingCfg;
     use ort::value::Tensor;
+
+    // 7b (#60): гейты прогона через lib-маршрутизатор. `single(thr)` —
+    // вырожденная пара τ_low=τ_high=thr: полоса Mask пуста,
+    // `route(s).extracted()` == старый гейт `s >= thr` (включительно).
+    // lockR-скор — f64 (softmax над f32-логитами), порог тот же f64.
+    let lockr_cfg = RoutingCfg::single(thr);
+    // Decide-скор — f32, старый гейт сравнивал в f32 (`decs[ci] >= thr as
+    // f32`), поэтому τ берётся точным f32-образом порога: f32→f64 порядок
+    // хранит, сравнение 1-в-1 (иначе граничная точка 0.2f32 =
+    // 0.19999999552… уехала бы через 0.2f64 — тест
+    // `decide_gate_fidelity_uses_f32_image_of_threshold`).
+    let decide_cfg = RoutingCfg::single(f64::from(thr as f32));
 
     // 1) Датасет — из дерева (git = источник истины, не кэш).
     let ds = concat!(
@@ -429,7 +447,10 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
             // при счёте хита (lockr_counts L410), НЕ в тегах (пре-гейт рвёт
             // I-скобки SNILS/CITY — промер 4b-3C).
             let conf = probv[ts..te].iter().copied().fold(f64::INFINITY, f64::min);
-            if conf < thr {
+            // 7b: гейт = lib (см. `lockr_cfg` выше); эквивалент старого
+            // `if conf < thr { continue; }` включая NaN-случай (старый
+            // оставлял спан, fail-closed Block тоже «extracted»).
+            if !lockr_cfg.route(conf).extracted() {
                 continue;
             }
             let Some(mapped) = bio_to_class(&cls_tok) else {
@@ -538,7 +559,9 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
         gold.sort_unstable();
         gold.dedup();
         for ci in gold {
-            if decs[ci] >= thr as f32 {
+            // 7b: гейт = lib (`decide_cfg` — f32-образ порога, см. выше);
+            // эквивалент старого `decs[ci] >= thr as f32`.
+            if decide_cfg.route(f64::from(decs[ci])).extracted() {
                 decide_hits[ci] += 1;
             }
         }
@@ -765,6 +788,89 @@ mod verdict_format_tests {
         );
         assert!(!line.contains("NaN"), "{line}");
         assert!(line.contains("|den|0"), "{line}");
+    }
+}
+
+#[cfg(test)]
+mod lockr_routing_invariance_tests {
+    // 7b (#60): example и lib обязаны давать идентичный вердикт на фиксированном
+    // синтетическом входе — без модели, без ORT, значит тест живёт вне фичи
+    // `ort-inference` и исполняется гейтом `cargo test -p guard-onnx --examples`
+    // (`just test`) на обеих ОС без dylib.
+
+    use guard_onnx::routing::{Route, RoutingCfg};
+
+    /// Фиксированный f64-вектор lockR-скоров: границы включательного гейта,
+    /// соседние точки, ноль и единица.
+    const SCORES_F64: [f64; 10] = [
+        0.0,
+        1e-9,
+        0.199_999_999,
+        0.2,
+        0.200_000_001,
+        0.249_999_999,
+        0.25,
+        0.250_000_001,
+        0.9,
+        1.0,
+    ];
+
+    /// Фиксированный f32-вектор Decide-вероятностей: `0.2f32` — discriminating
+    /// точка: f32(0.2) = 0.19999999552… < f64(0.2), старый f32-гейт её
+    /// пропускал, «наивный» f64-порт порол бы хит на ней.
+    const PROBS_F32: [f32; 8] = [
+        0.0,
+        0.19_999_999,
+        0.2,
+        0.20_000_002,
+        0.24_999_997,
+        0.25,
+        0.5,
+        1.0,
+    ];
+
+    #[test]
+    fn lib_router_reproduces_harness_gate_exactly() {
+        // Старый гейт харнеса (до 7b): `if conf < thr { continue; }`,
+        // т.е. спан остаётся при `!(conf < thr)`.
+        for &thr in &[0.20_f64, 0.25] {
+            let cfg = RoutingCfg::single(thr);
+            for &s in &SCORES_F64 {
+                let old = !(s < thr);
+                assert_eq!(cfg.route(s).extracted(), old, "lockr s={s} thr={thr}");
+            }
+        }
+    }
+
+    #[test]
+    fn decide_gate_fidelity_uses_f32_image_of_threshold() {
+        // Старый гейт: `decs[ci] >= thr as f32` в f32. Порт обязан сохранять
+        // f32-точность: τ = f64::from(thr as f32), скор = f64::from(p).
+        for &thr in &[0.20_f64, 0.25] {
+            let cfg = RoutingCfg::single(f64::from(thr as f32));
+            for &p in &PROBS_F32 {
+                let old = p >= (thr as f32);
+                assert_eq!(
+                    cfg.route(f64::from(p)).extracted(),
+                    old,
+                    "decide p={p} thr={thr}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn single_pair_never_masks_nan_blocks_like_old_gate() {
+        // Вырожденная пара: Mask невозможен на конечных скорах…
+        let cfg = RoutingCfg::single(0.25);
+        for &s in &SCORES_F64 {
+            assert_ne!(cfg.route(s), Route::Mask, "single({s}) дал Mask");
+        }
+        // …а NaN — старое поведение харнеса («conf < thr» ложно ⇒ спан
+        // оставался в подсчёте) совпадает с fail-closed Block (extracted).
+        let old_kept = !(f64::NAN < 0.25);
+        assert!(old_kept && cfg.route(f64::NAN).extracted());
+        assert_eq!(cfg.route(f64::NAN), Route::Block);
     }
 }
 
