@@ -2,5 +2,16 @@
 # sha256-гейт B2 (issue #14, CI windows-2022 red 39209776769: файл с CRLF на
 # винде ≠ хэш LF-оригинала). -text = ни нормализации, ни конверсии.
 data/golden/** -text
+# Морфология шага 5 — то же заболевание, другой симптом: таблицы читает
+# `include_str!`, а тест сверяет побайтовую длину (morph.rs, assert «размер
+# таблицы уехал»). actions/checkout на windows-2022 выставляет core.autocrlf=true,
+# TSV без правила считается текстом → +1 байт на перевод строки: 131270 →
+# 131388 (промерено локально: `git -c core.autocrlf=true worktree add` даёт ровно
+# те же 131388 и 118 пар CR+LF; CI red 39370860180).
+# Именно -text, а не `text eol=lf`: при `text` git нормализует на коммите, и
+# CRLF-порча молча превратится в другой blob, тогда как эталоны (sha256 в
+# data/morph/README.md + байтовые assert) зафиксированы по LF-байтам. -text
+# = побайтовая копия blob'а в рабочем дереве в обе стороны, порча видна diff'ом.
+data/morph/** -text
 *.onnx binary
 *.safetensors binary
