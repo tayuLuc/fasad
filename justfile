@@ -27,6 +27,7 @@ lint-ci:
     rustup run 1.99.1 cargo fmt --all -- --check
     rustup run 1.99.1 cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used
     rustup run 1.99.1 cargo clippy -p guard-onnx --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
+    rustup run 1.99.1 cargo clippy -p guard-vault --all-targets --features decliner -- -D warnings -D clippy::unwrap_used
 
 # Тесты всего workspace.
 test:
