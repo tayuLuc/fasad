@@ -42,6 +42,7 @@ test:
 
 # Аудит дерева зависимостей (bans/advisories/licenses) — deny.toml.
 deny:
+    @command -v cargo-deny >/dev/null 2>&1 || { echo "cargo-deny не установлен (cargo install cargo-deny) — гейт НЕИСПОЛНЕН, не провален"; exit 2; }
     cargo deny check
 
 # ── Python-тулинг (gutter, рулинг 19.10: AGENTS п.6) ────────────────────────
