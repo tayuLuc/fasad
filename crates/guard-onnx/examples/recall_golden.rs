@@ -598,6 +598,7 @@ fn require(p: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(not(feature = "ort-inference"))]
+#[allow(clippy::unnecessary_wraps)] // сигнатура зеркальна ort-ветке — общий main
 fn run(
     _limit: Option<usize>,
     _threads: usize,
