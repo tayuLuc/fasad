@@ -803,6 +803,17 @@ fn toy_upstream() -> (String, std::sync::mpsc::Receiver<ToySeen>) {
                 std::thread::sleep(Duration::from_secs(30));
                 continue;
             }
+            if path == "/abort" {
+                // Обещаем тело в 400 байт и закрываем соединение на 63-м:
+                // заголовок ответа получен, поэтому отказ обязан называть обрыв,
+                // а не «upstream недоступен».
+                let _ = sock.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                      Content-Length: 400\r\n\r\n{\"choices\":[{\"content\":",
+                );
+                let _ = sock.shutdown(std::net::Shutdown::Both);
+                continue;
+            }
             // Что отправляем: `/sse/<k>` — эхо, нарезанное chunked-фреймами по
             // `k` байт; `/huge` — одна SSE-строка поверх потолка тела; всё
             // остальное (кроме `/hang`) — буферизованный JSON.
@@ -1238,6 +1249,35 @@ fn silent_upstream_is_504_upstream_timeout() {
         started.elapsed() < Duration::from_secs(10),
         "таймаут не сработал, ждали {:?}",
         started.elapsed()
+    );
+}
+
+/// Обрыв ответа посреди тела — это `upstream_aborted`, а не `upstream_unreachable`.
+/// Ложь о причине отправила бы оператора чинить DNS и адрес, когда upstream
+/// отдал заголовок и потерял соединение на теле.
+#[test]
+fn truncated_upstream_body_is_aborted_not_unreachable() {
+    let (toy, _seen) = toy_upstream();
+    let d = Daemon::start(&[
+        ("FASAD_PROXY_LOOPBACK_HTTP", "1"),
+        ("FASAD_UPSTREAM_ALLOWLIST", toy.as_str()),
+    ]);
+    let reply = call(
+        &d.addr,
+        "POST",
+        "/v1/chat/completions",
+        &[
+            ("content-type", "application/json"),
+            ("x-upstream-url", upstream_url(&toy, "/abort").as_str()),
+        ],
+        &chat_body("проверка"),
+    );
+    assert_eq!(reply.status, 502, "ответ прокси: {}", reply.text());
+    assert_eq!(reply.json()["error"]["code"], "upstream_aborted");
+    assert!(
+        !reply.text().contains("unreachable"),
+        "причина подменена: {}",
+        reply.text()
     );
 }
 

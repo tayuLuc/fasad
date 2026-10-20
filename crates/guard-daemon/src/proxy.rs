@@ -109,6 +109,9 @@ pub enum ProxyError {
     Redirect,
     /// Ответ нарушает протокол.
     Protocol,
+    /// Соединение с upstream оборвалось уже после заголовка ответа: «недоступен»
+    /// тут было бы ложью о причине — клиенту не чинить ни DNS, ни адрес.
+    StreamAborted,
     /// Таймаут с названной стадией.
     Timeout(&'static str),
     /// Тело ответа больше `max_body_bytes`.
@@ -137,9 +140,12 @@ impl ProxyError {
             Self::AllowlistEmpty | Self::Denied { .. } | Self::Insecure | Self::Blocked => {
                 StatusCode::FORBIDDEN
             }
-            Self::Unreachable | Self::Tls | Self::Redirect | Self::Protocol | Self::Aborted => {
-                StatusCode::BAD_GATEWAY
-            }
+            Self::Unreachable
+            | Self::Tls
+            | Self::Redirect
+            | Self::Protocol
+            | Self::StreamAborted
+            | Self::Aborted => StatusCode::BAD_GATEWAY,
             Self::Vault(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Self::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
             Self::TooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
@@ -161,6 +167,7 @@ impl ProxyError {
             Self::Tls => "upstream_tls",
             Self::Redirect => "upstream_redirect",
             Self::Protocol => "upstream_protocol",
+            Self::StreamAborted => "upstream_aborted",
             Self::Timeout(_) => "upstream_timeout",
             Self::TooLarge { .. } => "upstream_too_large",
             Self::NotChatRequest => "bad_json",
@@ -233,6 +240,7 @@ impl std::fmt::Display for ProxyError {
             Self::Tls => write!(f, "TLS-сессия с upstream не установлена"),
             Self::Redirect => write!(f, "upstream ответил редиректом, сопровождение запрещено"),
             Self::Protocol => write!(f, "upstream нарушил протокол"),
+            Self::StreamAborted => write!(f, "соединение с upstream оборвалось посреди ответа"),
             Self::Timeout(stage) => write!(f, "таймаут upstream на стадии {stage}"),
             Self::TooLarge { limit } => write!(f, "ответ upstream больше {limit} байт"),
             Self::NotChatRequest => write!(f, "тело запроса не содержит массива messages"),
@@ -887,7 +895,9 @@ fn read_capped(mut resp: UpstreamResponse, limit: usize) -> Result<Vec<u8>, Prox
         // сам, а сюда io доходит уже своим ходом — заворачиваем в тот же вариант.
         let n = reader
             .read(&mut buf)
-            .map_err(|e| ProxyError::from_ureq(ureq::Error::Io(e)))?;
+            // Заголовок ответа уже получен ⇒ «upstream недоступен» соврёт о
+            // причине: считаем это обрывом ответа, код `upstream_aborted`.
+            .map_err(|_| ProxyError::StreamAborted)?;
         if n == 0 {
             return Ok(body);
         }
@@ -943,12 +953,12 @@ fn pump_sse(
                 }
             }
             Err(err) => {
-                // Стадию называем прямо: это чтение тела, а не отказ коннекта,
-                // и «недоступен» был бы ложью о причине (код при этом общий).
+                // Заголовок ответа мы уже получили, значит «upstream недоступен»
+                // соврал бы о причине: это обрыв ответа, код `upstream_aborted`,
+                // а стадия названа в сообщении.
                 let shown = err.to_string();
-                let code = ProxyError::from_ureq(ureq::Error::Io(err)).code();
                 let _ = tx.blocking_send(Err((
-                    code.to_owned(),
+                    ProxyError::StreamAborted.code().to_owned(),
                     format!("чтение тела upstream: {shown}"),
                 )));
                 return;
@@ -1329,6 +1339,10 @@ mod tests {
             (
                 ProxyError::Unreachable,
                 (StatusCode::BAD_GATEWAY, "upstream_unreachable"),
+            ),
+            (
+                ProxyError::StreamAborted,
+                (StatusCode::BAD_GATEWAY, "upstream_aborted"),
             ),
             (
                 ProxyError::TooLarge { limit: 1 },
