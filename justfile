@@ -19,6 +19,10 @@ fix:
 lint:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used
+    # Опциональные фичи в `--workspace --all-targets` НЕ попадают (не включены по
+    # default) ⇒ их пути не компилируются ни на одной ОС, и гейт ложно-зелёный
+    # (ревью #54 Н3). Каждая фича — отдельной строкой здесь и в lint-ci.
+    cargo clippy -p guard-vault --all-targets --features decliner -- -D warnings -D clippy::unwrap_used
 
 # Линтер CI-тулчейном (issue #25: CI стабильно свежее локального stable —
 # assert_is_empty-класс drift'а ловится ТОЛЬКО прогоном версии CI).
@@ -29,9 +33,12 @@ lint-ci:
     rustup run 1.99.1 cargo clippy -p guard-onnx --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
     rustup run 1.99.1 cargo clippy -p guard-vault --all-targets --features decliner -- -D warnings -D clippy::unwrap_used
 
-# Тесты всего workspace.
+# Тесты всего workspace + пути опциональных фич (та же причина, что в `lint`:
+# `--workspace` их не включает, а матрица ci.yml обязана гонять их на Linux и
+# Windows, иначе гейт #50 не живой).
 test:
     cargo test --workspace
+    cargo test -p guard-vault --features decliner
 
 # Аудит дерева зависимостей (bans/advisories/licenses) — deny.toml.
 deny:
