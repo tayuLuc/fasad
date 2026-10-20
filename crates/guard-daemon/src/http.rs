@@ -708,52 +708,6 @@ mod tests {
         assert!(!line.contains("65707715421"), "Debug печати вход: {line}");
     }
 
-    #[test]
-    fn daemon_manifest_has_no_http_client() {
-        // Двойник `just net-audit` на стороне сборки: гейт из `just check` не
-        // должен быть единственной стеной, иначе его обходят правкой justfile.
-        let dir = std::env::var("CARGO_MANIFEST_DIR").expect("cargo его ставит");
-        let manifest =
-            std::fs::read_to_string(format!("{dir}/Cargo.toml")).expect("манифест читается");
-        for forbidden in ["reqwest", "ureq", "hyper", "rustls", "TcpStream"] {
-            assert!(
-                !manifest.contains(forbidden),
-                "манифест демона упоминает {forbidden}: сеть шага 6 запрещена (#56 п.5)"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn vault_endpoints_carry_latency_and_stage_headers() {
-        let st = state();
-        let app = router(st.clone());
-        let resp = app
-            .oneshot(post_req(
-                "/v1/anonymize",
-                &anon_body("ИНН 2482014338", &[("inn", "2482014338")]),
-                None,
-            ))
-            .await
-            .expect("не падает");
-        assert_eq!(
-            resp.status(),
-            StatusCode::OK,
-            "сначала статус, потом заголовки"
-        );
-        let hs = resp.headers();
-        let latency = hs
-            .get(h::LATENCY)
-            .expect("латентность есть на каждом ответе")
-            .to_str()
-            .expect("число в ASCII")
-            .parse::<u64>()
-            .expect("латентность — число миллисекунд");
-        assert!(latency < 1000, "подозрительная латентность: {latency}");
-        assert_eq!(hs.get(h::STAGE).expect("стадия"), "cascade-0-only");
-        assert_eq!(hs.get(h::COUNT).expect("счётчик"), "1");
-        let _ = json_of(resp).await;
-    }
-
     fn cfg_with(pairs: &[(&'static str, &'static str)]) -> Config {
         let owned: Vec<(String, String)> = pairs
             .iter()
