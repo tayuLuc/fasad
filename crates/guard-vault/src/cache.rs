@@ -13,7 +13,7 @@
 //!    на callback, терялось бы именно на пути `Drop` — самом частом в демоне.
 //! 2. mlock к значениям неприменим: `Cache` владеет размещением и перекладывает
 //!    значения между сегментами, адрес нестабилен. Отклонение от инварианта
-//!    AGENTS «все буферы с оригиналами ПДн: `ZeroizeOnDrop` + mlock» —
+//!    AGENTS «все буферы с оригиналами `ПДн`: `ZeroizeOnDrop` + mlock» —
 //!    зафиксировано здесь и в рапорте. Stateless-контур (SPEC §3 п.3), где
 //!    буфер короткоживущий, залочен целиком: [`crate::token::LockedBuf`].
 //! 3. `Cache::get` требует `V: Clone`, а клон `SecretString` — вторая копия
@@ -609,7 +609,7 @@ mod tests {
             store.weight_bytes()
         );
         assert!(
-            weak.upgrade().is_none(),
+            released(&weak, Some(&store)),
             "последняя ручка вытесненной записи жива ⇒ оригинал не затёрт"
         );
     }
@@ -693,6 +693,26 @@ mod tests {
         assert_eq!(store.rejected(), 1);
     }
 
+    /// Ждёт освобождения `Arc` ограниченным числом прогонов pending-задач.
+    ///
+    /// moka убирает запись из карты сразу, но значение отпускает не на том
+    /// вызове, который его вытеснил/заменил: оно лежит во внутренней очереди
+    /// removal-ов и drain-ится на `run_pending_tasks()` либо на следующей
+    /// операции над кэшем. Поэтому «старый оригинал стёр» проверяем с
+    /// ограниченным ожиданием (≤250 мс), а не одним assert-ом в ноль.
+    fn released(weak: &std::sync::Weak<SecretString>, store: Option<&SessionStore>) -> bool {
+        for _ in 0..50 {
+            if let Some(st) = store {
+                st.sync();
+            }
+            if weak.upgrade().is_none() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        weak.upgrade().is_none()
+    }
+
     /// Замена значения под тем же ключом отпускает старое (⇒ старое затёрто).
     #[test]
     fn replace_drops_old_value() {
@@ -707,7 +727,10 @@ mod tests {
         store.sync();
         assert_eq!(store.get(&k).expect("hit").as_str(), "НовыйОригинал");
         drop(store);
-        assert!(weak.upgrade().is_none(), "старое значение не отпущено");
+        assert!(
+            released(&weak, None),
+            "старое значение не отпущено после Drop кэша ⇒ оригинал мог остаться в RAM"
+        );
     }
 
     /// Кэш разделяем между потоками: демон многопоточный, `Send + Sync`.
