@@ -1072,7 +1072,9 @@ mod tests {
             // возможный способ подсмотреть состояние.
             pool_state().slots_free < POOL_SLOTS
         })
-        .expect("Strict на dev-хосте обязан пройти");
+        .expect(
+            "Strict обязан пройти, если процессу выдана квота; красный Windows-раннер = VirtualLock отбил диапазон, см. док VaultError::Mlock",
+        );
         assert!(inside, "слот не учтён как занятый");
         assert!(pool_state().locked, "страницы пула не залочены");
         let seen = with_locked_buf(POOL_SLOT_BYTES, MlockPolicy::Strict, |buf| {
