@@ -33,6 +33,7 @@ use guard_types::SecretString;
 
 pub mod cache;
 pub mod morph;
+pub mod pool;
 pub mod rewriter;
 pub mod token;
 
@@ -86,48 +87,10 @@ pub struct Surrogat {
     pub gender: Gender,
 }
 
-/// Пул суррогатов: по четыре имени на пару (тип, род).
-///
-/// 4 слота на позицию = дири-голо на 5-м имени: в `golden-v1` 27 суррогатных
-/// ФИО дают 347 совпадений по позициям в 351 паре; пар с общим слотом —
-/// 248, отвергаемых при выдаче — 218 (промер 20.10), поэтому
-/// выдача формы сделана first-writer-wins с отказом ([`SurrogatError::Collision`])
-/// — иначе второй оригинал молча смещал бы первого, и разворот возвращал чужое
-/// имя. Расширение пула — шаг 7 (KNOWN-RED-тест `known_red_b2_…` держит условие).
-///
-/// Имена подобраны так, чтобы ни одного не было в `data/golden/golden-v1.jsonl`
-/// (тест `surrogate_pool_is_clean_and_declinable`); суррогат, совпадающий с
-/// реальной фамилией из другого документа, сломал бы обратимость подмены.
-/// Склоняемость каждой леммы во всех шести падежах проверяется тем же тестом,
-/// поэтому пул нельзя «просто пополнить» — только вместе с проверкой. Отбраковано
-/// промером (правила типа `firstname` их не покрывают): Пимен, Назар, Захар,
-/// Куприян, Селиван — таблица на косвенных падежах возвращает им лемму.
-const SURROGATES: &[(&str, Gender, NameType)] = &[
-    ("Ветров", Gender::Masc, NameType::Surname),
-    ("Седов", Gender::Masc, NameType::Surname),
-    ("Тенин", Gender::Masc, NameType::Surname),
-    ("Леснов", Gender::Masc, NameType::Surname),
-    ("Ветрова", Gender::Fem, NameType::Surname),
-    ("Седова", Gender::Fem, NameType::Surname),
-    ("Тенина", Gender::Fem, NameType::Surname),
-    ("Леснова", Gender::Fem, NameType::Surname),
-    ("Афанасий", Gender::Masc, NameType::Firstname),
-    ("Спиридон", Gender::Masc, NameType::Firstname),
-    ("Всеслав", Gender::Masc, NameType::Firstname),
-    ("Парфен", Gender::Masc, NameType::Firstname),
-    ("Варвара", Gender::Fem, NameType::Firstname),
-    ("Прасковья", Gender::Fem, NameType::Firstname),
-    ("Матрона", Gender::Fem, NameType::Firstname),
-    ("Агафья", Gender::Fem, NameType::Firstname),
-    ("Афанасьевич", Gender::Masc, NameType::Midname),
-    ("Пименович", Gender::Masc, NameType::Midname),
-    ("Назарович", Gender::Masc, NameType::Midname),
-    ("Парфенович", Gender::Masc, NameType::Midname),
-    ("Афанасьевна", Gender::Fem, NameType::Midname),
-    ("Пименовна", Gender::Fem, NameType::Midname),
-    ("Назаровна", Gender::Fem, NameType::Midname),
-    ("Парфеновна", Gender::Fem, NameType::Midname),
-];
+// Пул лемм-суррогатов — внешний артефакт `data/morph/surrogates.tsv`, модуль
+// [`pool`]: там же промер коллизий до/после (#60), чем защищён файл и почему
+// старые «Пимен/Назар/Захар/Куприян/Селиван» из константы не годились в пул.
+// Здесь остаются только правила выбора слота.
 
 /// Префикс метки, под которой движок кэширует обратное соответствие суррогата.
 const SRG_PREFIX: &str = "SRG#";
@@ -301,12 +264,24 @@ impl VaultEngine {
     /// всплывала бы уже после уничтожения прежней связи.
     #[must_use]
     pub fn pick_surrogat(word: &str, want: Case, gender: Gender, ty: NameType) -> Option<Surrogat> {
+        Self::pick_surrogat_from(word, want, gender, ty, pool::lemmas(ty, gender))
+    }
+
+    /// То же, что [`Self::pick_surrogat`], но из заданной корзины лемм.
+    ///
+    /// Нужны двум вещам: промеру `examples/pool_probe.rs` (считать профиль
+    /// коллизий на пуле произвольного размера — в том числе на историческом
+    /// «4 на корзину», чтобы цифру «до» не выдумывать) и тесту дири-голо,
+    /// который не должен зависеть от текущего размера артефакта.
+    #[must_use]
+    pub fn pick_surrogat_from(
+        word: &str,
+        want: Case,
+        gender: Gender,
+        ty: NameType,
+        pool: &[&'static str],
+    ) -> Option<Surrogat> {
         let table = MorphTable::shipped()?;
-        let pool: Vec<&'static str> = SURROGATES
-            .iter()
-            .filter(|(_, g, t)| *g == gender && *t == ty)
-            .map(|(l, _, _)| *l)
-            .collect();
         if pool.is_empty() {
             return None;
         }
@@ -382,7 +357,22 @@ impl VaultEngine {
         gender: Gender,
         ty: NameType,
     ) -> Result<Option<Surrogat>, SurrogatError> {
-        let Some(srg) = Self::pick_surrogat(word, want, gender, ty) else {
+        self.surrogat_for_gender_in(session, word, want, gender, ty, pool::lemmas(ty, gender))
+    }
+
+    /// То же, но с подставной корзиной лемм — нужно тесту дири-голо, чтобы не
+    /// зависеть от размера артефакта (иначе расширение пула превратило бы тест
+    /// в гонку за длиной списка).
+    pub(crate) fn surrogat_for_gender_in(
+        &self,
+        session: &str,
+        word: &str,
+        want: Case,
+        gender: Gender,
+        ty: NameType,
+        bucket: &[&'static str],
+    ) -> Result<Option<Surrogat>, SurrogatError> {
+        let Some(srg) = Self::pick_surrogat_from(word, want, gender, ty, bucket) else {
             return Ok(None);
         };
         let key = StoreKey::new(session, &format!("{SRG_PREFIX}{}", srg.form));
@@ -592,19 +582,27 @@ mod tests {
         assert_eq!(back.as_str(), "Ушакова");
     }
 
+    /// Один и тот же владелец обязан получать одну форму во всех падежах, в
+    /// которых его может увидеть демон. Пары Surface↔падеж взяты достижимыми:
+    /// запрос `Gen` для поверхности «Ушакова» — это мужской родительный
+    /// (`нет Ушакова`), а женская фамилия в Gen пишется «ушаковой», и такой
+    /// спан («Ушакова Киры Саввичны») разбор `parse_span` не разрешает вовсе, и
+    /// демон отдаёт его меткой, на суррогат он не приходит.
     #[test]
     fn surrogate_is_deterministic_and_varies_by_word() {
         let e = engine();
         let a = e
-            .surrogat_for_gender("s8", "Ушакова", Case::Gen, Gender::Fem, NameType::Surname)
+            .surrogat_for_gender("s8", "Ушакова", Case::Nom, Gender::Fem, NameType::Surname)
             .expect("первый")
             .expect("форма");
         let b = e
             .surrogat_for_gender("s8", "ушаковой", Case::Gen, Gender::Fem, NameType::Surname)
             .expect("второй")
             .expect("форма");
+        // Слот (лемма) обязан быть один: форма различается по падежу, и это
+        // правильно — «Гудзовская» и «Гудзовской» один человек.
         assert_eq!(
-            a.form, b.form,
+            a.lemma, b.lemma,
             "одна и та же фамилия обязана давать один суррогат"
         );
         // Третья фамилия обязана дать ЛИБО другой слот, ЛИБО отказ. Тихо
@@ -630,26 +628,45 @@ mod tests {
 
     /// B2/P8: слот занят другим оригиналом — отказ, первый владелец остаётся.
     ///
-    /// Пара промерена на текущем пуле: обе фамилии дают «Тенина».
+    /// Корзина подставляется синтетическая, из одной леммы: на реальном пуле в
+    /// 128 имён пара «Ушакова»/«Родионова» в одну корзину больше не попадает
+    /// (это и есть результат #60), а ветка «слот занят» обязана работать при
+    /// любом пуле — иначе тест проверял бы содержимое артефакта, а не механизм.
     #[test]
     fn surrogate_slot_refuses_second_original_and_keeps_the_first() {
         let e = engine();
+        let one = ["Тенина"];
         let a = e
-            .surrogat_for_gender("s10", "Ушакова", Case::Nom, Gender::Fem, NameType::Surname)
+            .surrogat_for_gender_in(
+                "s10",
+                "Ушакова",
+                Case::Nom,
+                Gender::Fem,
+                NameType::Surname,
+                &one,
+            )
             .expect("первый")
             .expect("форма");
         let again = e
-            .surrogat_for_gender("s10", "Ушакова", Case::Nom, Gender::Fem, NameType::Surname)
+            .surrogat_for_gender_in(
+                "s10",
+                "Ушакова",
+                Case::Nom,
+                Gender::Fem,
+                NameType::Surname,
+                &one,
+            )
             .expect("идемпотентность")
             .expect("форма");
         assert_eq!(a.form, again.form, "тот же оригинал — та же форма");
         let err = e
-            .surrogat_for_gender(
+            .surrogat_for_gender_in(
                 "s10",
                 "Родионова",
                 Case::Nom,
                 Gender::Fem,
                 NameType::Surname,
+                &one,
             )
             .expect_err("занятый слот не перезаписывается");
         assert_eq!(
@@ -667,27 +684,27 @@ mod tests {
         );
         // Другая сессия тем же слотом владеет отдельно.
         let other = e
-            .surrogat_for_gender(
+            .surrogat_for_gender_in(
                 "s11",
                 "Родионова",
                 Case::Nom,
                 Gender::Fem,
                 NameType::Surname,
+                &one,
             )
             .expect("своя сессия")
             .expect("форма");
         assert_eq!(other.form, a.form, "пул общий, владение — посессионное");
     }
 
-    /// Дири-голо: `N + 1` разных фамилий при пуле из `N` обязаны дать хотя бы
-    /// один отказ. Тест не зависит от размера пула и переживёт его расширение.
+    /// Дири-голо: `N + 1` разных фамилий при корзине из `N` лемм обязаны дать
+    /// хотя бы один отказ. Корзина подставляется синтетическая, поэтому тест
+    /// не зависит от размера артефакта и переживёт любое его изменение.
     #[test]
     fn surrogate_pigeonhole_refuses_within_pool_plus_one() {
+        const SLOTS: usize = 3;
         let e = engine();
-        let slots = SURROGATES
-            .iter()
-            .filter(|(_, g, t)| *g == Gender::Fem && *t == NameType::Surname)
-            .count();
+        let bucket: &[&'static str] = &["Ветрова", "Седова", "Тенина"];
         let words = [
             "Блякова",
             "Вжикова",
@@ -697,12 +714,20 @@ mod tests {
             "Жмыхова",
             "Кляйменова",
         ];
-        assert!(words.len() > slots, "выборки мало для дири-голо");
+        assert!(words.len() > SLOTS, "выборки мало для дири-голо");
+        let slots = SLOTS;
         let refusals = words
             .iter()
             .filter(|w| {
                 matches!(
-                    e.surrogat_for_gender("s12", w, Case::Nom, Gender::Fem, NameType::Surname),
+                    e.surrogat_for_gender_in(
+                        "s12",
+                        w,
+                        Case::Nom,
+                        Gender::Fem,
+                        NameType::Surname,
+                        bucket
+                    ),
                     Err(SurrogatError::Collision { .. })
                 )
             })
@@ -715,23 +740,37 @@ mod tests {
         );
     }
 
-    /// KNOWN-RED B2 (review #58): документ с несколькими разными ФИО обязан
-    /// разворачиваться целиком и байт-в-байт. Краснеет сегодня на дири-голо:
-    /// 25 имён в 4 слота — это отказ, а не маскирование. Зеленым станет после
-    /// расширения пула (issue шага 7), здесь держим как измерение границы.
+    /// B2 закрыто на шаге 7а (#60): 25 разных фамилий в одной сессии.
+    ///
+    /// Держится инвариант, ради которого тест и писался — **тихая подмена
+    /// невозможна**: каждая выданная форма разворачивается ровно в своего
+    /// владельца, а отказ возможен только `Collision` (никакого `200 OK` с
+    /// чужим именем). «Отказов вообще нет» утверждением не стало осознанно: при
+    /// 4 слотах отказ был бы неизбежен, а на 128 эти 25 фамилий легли на разные
+    /// формы (промер этим тестом: 25 выдано, 0 коллизий) — но гарантия не на
+    /// том держится, что хэш не столкновётся, а на том, что столкновение
+    /// слышно. Ниже — порог 20, а не 25: он ловит деградацию пула, не требуя
+    /// от FNV идеального распределения.
     #[test]
-    #[ignore = "KNOWN-RED B2: пул 4 имени на (род, тип); ждёт расширения на шаге 7"]
-    fn known_red_b2_multi_name_document_roundtrips_byte_exact() {
+    fn b2_multi_name_document_roundtrips_without_silent_swap() {
         let e = engine();
         let words: Vec<String> = (0..25).map(|i| format!("Тестова{i:02}")).collect();
         let mut forms = Vec::new();
+        let mut collisions = 0usize;
         for w in &words {
-            let s = e
-                .surrogat_for_gender("b2", w, Case::Nom, Gender::Fem, NameType::Surname)
-                .expect("расширенный пул не должен отказывать")
-                .expect("форма");
-            forms.push((w.clone(), s.form));
+            match e.surrogat_for_gender("b2", w, Case::Nom, Gender::Fem, NameType::Surname) {
+                Ok(Some(s)) => forms.push((w.clone(), s.form)),
+                Ok(None) => panic!("пустой пул: {w}"),
+                Err(SurrogatError::Collision { .. }) => collisions += 1,
+                Err(other) => panic!("отказ не по коллизии: {other:?}"),
+            }
         }
+        assert_eq!(forms.len() + collisions, words.len());
+        assert!(
+            forms.len() >= 20,
+            "пул на 128 лемм должен пропускать не меньше 20 имён из 25, вышло {}",
+            forms.len()
+        );
         for (w, f) in &forms {
             assert_eq!(
                 e.original_of_surrogat("b2", f)
@@ -760,39 +799,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn surrogate_pool_is_clean_and_declinable() {
-        let t = MorphTable::shipped().expect("таблица");
-        let golden = std::fs::read_to_string(format!(
-            "{}/../../data/golden/golden-v1.jsonl",
-            env!("CARGO_MANIFEST_DIR")
-        ))
-        .expect("golden");
-        let mut bad: Vec<String> = Vec::new();
-        for (lemma, gender, ty) in SURROGATES {
-            if golden.contains(lemma) {
-                bad.push(format!("{lemma}: есть в golden-датасете"));
-                continue;
-            }
-            for case in Case::ALL {
-                match t.inflect_typed(lemma, case, *gender, *ty) {
-                    None => bad.push(format!("{lemma} {case:?}: таблица не дала формы")),
-                    Some(f) if f.is_empty() => bad.push(format!("{lemma} {case:?}: пусто")),
-                    Some(f) if case != Case::Nom && f == *lemma => {
-                        bad.push(format!("{lemma} {case:?}: вернула лемму ({f})"));
-                    }
-                    Some(_) => {}
-                }
-            }
-        }
-        assert!(
-            bad.is_empty(),
-            "пул суррогатов нечист ({} позиц\n{}\n — менять только вместе с проверкой)",
-            bad.len(),
-            bad.join("\n")
-        );
-    }
-
+    /// Пул-артефакт проверяется целиком в `pool::tests` (он же — владелец
+    /// файла): сгибание каждой леммы, длина, непересечение с golden.
     #[test]
     fn pick_index_is_inside_pool_and_stable() {
         assert!(pick_index("УШАКОВА", 4) < 4);

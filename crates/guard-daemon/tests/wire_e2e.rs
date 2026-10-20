@@ -611,11 +611,15 @@ fn stateless_marker_in_input_is_refused_not_double_masked() {
     assert_eq!(r2.json()["error"]["code"], "reanonymize_surrogate");
 }
 
-/// B2/P8 проводной промер цепочки ревьюера: два разных ФИО в свежей сессии.
-/// До правки второй запрос давал `200`, а `deanonymize` первого возвращал чужое
-/// имя. Теперь второй — `422 surrogate_collision`, а разворот первого цел.
+/// B2/P8 проводной промер цепочки ревьюера: два разных ФИО, влезших в один слот
+/// пула, в одной сессии («Родионова Аграфена Гордеевна» и «Мельникова Ульяна
+/// Тихоновна» дают одну «Деденеву» — промер `pool_probe -- forms`). До правки #58
+/// второй запрос давал `200`, а разворот первого возвращал чужое имя; на шаге 6
+/// второй стал `422 surrogate_collision`, и документ с двумя такими именами было
+/// не анонимизировать вовсе; с шага 7а (#60) второй уходит на типизированную
+/// метку, и оба разворачиваются byte-exact.
 #[test]
-fn second_full_name_in_one_session_is_refused_not_overwritten() {
+fn second_full_name_in_one_session_becomes_a_label_not_a_refusal() {
     let key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
     let d = Daemon::start(&[("FASAD_VAULT_MODE", "session"), ("FASAD_VAULT_KEY", key)]);
     let hdr = [("content-type", "application/json"), ("x-session-id", "b2")];
@@ -628,25 +632,38 @@ fn second_full_name_in_one_session_is_refused_not_overwritten() {
             &anonymize_body(name, &[("person_name".to_owned(), 0, name.len())]),
         )
     };
-    let a = anonymize("Ушакова Кира Саввична");
+    let a = anonymize("Родионова Аграфена Гордеевна");
     assert_eq!(a.status, 200, "первое имя: {}", a.text());
     let masked = a.json()["text"].as_str().expect("текст").to_owned();
-
-    let b = anonymize("Родионова Милана Саввична");
-    assert_eq!(b.status, 422, "слот не перезаписывается: {}", b.text());
-    assert_eq!(b.json()["error"]["code"], "surrogate_collision");
-
-    let back = call(
-        &d.addr,
-        "POST",
-        "/v1/deanonymize",
-        &hdr,
-        format!(r#"{{"text":"{}"}}"#, masked.replace('"', "\\\"")).as_bytes(),
+    assert_ne!(
+        masked, "Родионова Аграфена Гордеевна",
+        "имя обязано быть заменено"
     );
-    assert_eq!(back.status, 200, "разворот: {}", back.text());
-    assert_eq!(
-        back.json()["text"].as_str().expect("текст"),
-        "Ушакова Кира Саввична",
-        "имя первого владельца обязано остаться его"
+
+    let b = anonymize("Мельникова Ульяна Тихоновна");
+    assert_eq!(b.status, 200, "слот занят — не отказ: {}", b.text());
+    let second = b.json()["text"].as_str().expect("текст").to_owned();
+    assert!(
+        second.starts_with("[PERSON_NAME_"),
+        "второе имя обязано стать меткой: {second}"
     );
+
+    for (text, original) in [
+        (masked.as_str(), "Родионова Аграфена Гордеевна"),
+        (second.as_str(), "Мельникова Ульяна Тихоновна"),
+    ] {
+        let back = call(
+            &d.addr,
+            "POST",
+            "/v1/deanonymize",
+            &hdr,
+            format!(r#"{{"text":"{}"}}"#, text.replace('"', "\\\"")).as_bytes(),
+        );
+        assert_eq!(back.status, 200, "разворот: {}", back.text());
+        assert_eq!(
+            back.json()["text"].as_str().expect("текст"),
+            original,
+            "первый владелец не смещён, метка обратима"
+        );
+    }
 }
