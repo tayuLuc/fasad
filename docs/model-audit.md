@@ -243,13 +243,25 @@ Addendum 20.10 (4b-2a, issue #23, живой прогон `spike --arb` с жи�
 8. DUAL не прорегрессирован финальным билдом: `DUAL|maxdiff|2.577e-8` exit 0;
    `--arb-budget` BUDGET|decide_probs|3 (модульный путь живой).
 
-### 5.7 Аддендум 20.10 ночь (4b-3B/C, issue #20): парити fp32↔квант + recall каскада-2 на golden-v1.1
+### 5.7 Аддендум 20.10 (4b-3B/C, issue #20): парити fp32↔квант + recall каскада-2 на golden-v1.1
+
+> **Пост-ревью перезамер (PR#49 блокер №1).** Первая редакция раздела страдала
+> off-by-one в оракуле пересечения: `i0 = t0−1` при доказанном 1-в-1 `e.ids` ↔
+> `e.offsets` (промер 20.10 twice: `len(ids)==len(offsets)==75` на g0001,
+> `om[17]=(56,63)='Ушакова'` → байт 87 = gold `start_byte`; сдвиг брал `om[16]`
+> = `':'` → b0=85). Смещение влево при критерии пересечения только **добавляло**
+> хиты ⇒ абсолютные recall были завышены; Δ-паритет почти не тронут (смещение
+> одинаково у fp32 и кванта). Оба харнеса исправлены (d6a9f45), все числа ниже —
+> **перепрогон после фикса**; первичка: `/tmp/parityB_{lockr,decide}_fixed.txt`,
+> `/tmp/recall_fixed2.txt` (debug, profile-контракт §5.1 — release-SIGSEGV
+> воспроизвёлся на 06:07, crash-report `.ips`).
 
 Профиль: **debug** (release-SIGSEGV §5.1), threads=8 (recall) / 4 (парити), macOS
 arm64, ORT 1.31.0 dylib. Датасет: golden-v1.1 (204 ряда, split=recall 150, sha
 `546d8c35…`), знаменатель 285 = span-level gold-вхождений 8 покрываемых классов
-(ogrn/ogrnip/iban — вне ONNX-инвентаря моделей, исключены из метрики). Оракул —
-`tools/verify/parity_golden.py` (python-харнес, коммит 0ccf223); Rust-пути
+(ogrn/ogrnip/iban — вне ONNX-инвентаря моделей, исключены из метрики; 285 из 358
+recall-спанов — rest на 3 вырезанных классах, см. README golden). Оракул —
+`tools/verify/parity_golden.py` (python-харнес); Rust-пути
 (`examples/parity_onnx`, `examples/recall_golden`) воспроизводят его контракт.
 
 **B. Парити fp32 ↔ квант (4 порога × 2 модели; протокол = правка тикета
@@ -260,9 +272,11 @@ lockR fp16 (`model.optimized.fp16.onnx` vs fp32):
 - `maxabs_logit_delta_f32 = 0.0262` (150 рядов, Δ logits — не квантовый шум fp16
   weight-only, а переэкзаменация graph-оптимизации; достаточна: argmax-теги не
   меняются)
-- пороги 0.20/0.25/0.50: recall fp32=fp16=**88.77** (Δ=0.00, tp 253/285, per-class
-  Δ=0.00 все 8); 0.70: 86.67 = 86.67 (Δ=0.00) — **`PARITY|verdict|pass|model|lockr`**
-- BUDGET rss 1166.3 MiB (fp32+fp16 вместе, харнес-pipeline)
+- пороги 0.20/0.25/0.50: recall fp32=fp16=**86.32** (Δ=0.00, tp 246/285, per-class
+  Δ=0.00 все 8; классы: address/email/phone/person_name 100.00, card_pan 81.25,
+  inn 58.33, snils 58.62, passport 62.50); 0.70: 84.21 = 84.21 (Δ=0.00, tp 240) —
+  **`PARITY|verdict|pass|model|lockr`**
+- BUDGET rss (офлайн-гейт, не runtime-контракт)
 
 Decide q4f16 (`model_q4f16.onnx` vs fp32, row-level «есть класс?»):
 - 0.20: fp32 95.44 → q4f16 **96.84** (Δ −1.40 = квант ЛУЧШЕ; snils +10.34 в
@@ -283,59 +297,60 @@ GrayZone{lo:0.22, hi:0.80}), деградирует выше τ=0.5 на кла�
 quant-policy §17/§3.2 — гейт по рабочей точке, informational выше; (2) re-export
 Decide с собственным квант-эмитентом — backlog за #20.
 
-**C. Recall каскада-2 (runtime lockR-fp16 + Decide-q4f16) на golden-v1.1, τ=0.25:**
+**C. Recall каскада-2 (runtime lockR-fp16 + Decide-q4f16) на golden-v1.1, τ=0.25
+(перепрогон после off-by-one фикса):**
 
 ```
 RECALL|dataset|golden-v1.1|rows|150|thr|0.25
 RECALL|per_class|person_name|n|56|lockr|100.00|decide|96.43
-RECALL|per_class|inn|n|36|lockr|69.44|decide|100.00
+RECALL|per_class|inn|n|36|lockr|58.33|decide|100.00
 RECALL|per_class|snils|n|29|lockr|58.62|decide|37.93
-RECALL|per_class|card_pan|n|32|lockr|87.50|decide|100.00
+RECALL|per_class|card_pan|n|32|lockr|84.38|decide|100.00
 RECALL|per_class|phone|n|36|lockr|100.00|decide|100.00
 RECALL|per_class|email|n|40|lockr|100.00|decide|100.00
 RECALL|per_class|address|n|40|lockr|100.00|decide|100.00
-RECALL|per_class|passport|n|16|lockr|75.00|decide|100.00
-RECALL|overall|lockr_fp16|89.12|wilson95_lower|84.97|k|254|n|285
+RECALL|per_class|passport|n|16|lockr|62.50|decide|100.00
+RECALL|overall|lockr_fp16|86.67|wilson95_lower|82.23|k|247|n|285
 RECALL|overall|decide_q4f16|92.98|wilson95_lower|89.41|k|265|n|285
 ```
 
 Метод lockR-части: span-level, decode-контракт харнеса (см. токенизатор-блок
-ниже); smoke 6 рядов = **100.00, 16/16 — побайтовая парити-эквивалентность
-оракулу** (пер-класс 4/2/1/1/2/2/3/1, все gold-хиты; spans+bytes g0001–g0003
-совпали с живым харнесом 12/12 окон, incl. SNILS 203..220, CITY 265..293).
-Full: **89.12 (k=254) против python-оракула fp16 88.77 (k=253, B-матрица)** —
-+1 tp на card_pan (28 vs 27, класс 87.50 vs 84.38): один CREDIT_CARD-спан
-(PS-хвост `##` у конца окна — трим-контракт id_to_token vs decode даёт
-разницу ровно на этом хвосте, промер g0001–g0003 совпал весь). Δ=1 span при
-Wilson-lower 84.97 на вердикт гейта не влияет. Детерминизм: два полных прогона
-бинарём с одним контрактом — идентичные RECALL-строки.
+ниже). Парити Rust↔python-оракул после фикса: per-класс побайтово во всё,
+кроме card_pan (84.38 vs fp32-оракул 81.25 = +1 tp: один CREDIT_CARD-спан на
+PS-хвосте `##`, трим-контракт `id_to_token` vs python-`decode` расходится ровно
+на нём — известный, задокументированный кейс); overall 247 vs 246 tp. Smoke
+6 рядов post-fix: lockR 87.50 (k=14/16; inn 50.00, passport 0.00 — малые
+знаменатели, informational), decide 100.00 (k=16/16) — старый «16/16
+побайтовый» smoke был артефактом pre-fix смещения, отозван. Детерминизм: прогон
+2× идентичные строки.
 
-Метод decide-части: row-level union (decide_counts), блок схем 8 вопросов +
+Метод decide-часть: row-level union (decide_counts), блок схем 8 вопросов +
 sanitize_state, **raw text (№ НЕ заменён)** — UNK-инвентарь 19/150 строк (литера
 `№` → [507,UNK] Spiber; харнес B-прогона кормил raw, q4f16 B-числа получены
 так же — согласовано); гейт layout [P],[L] sizes=[2×8] не сработал ни разу
 (0 layout_miss); hit = p ≥ τ включительно (контракт arbitrate). Decide overall
-92.98 < lockR? НЕТ: Decide 92.98 > lockR 89.12 (row-level union ловит classes
-без span-попадания lockR: inn 100 vs 69.44); snils = известная слабость обеих
-(37.93/58.62) — FN добирается каскадом-1 (чексуммы валидатора, issue #26 хвост).
+92.98 > lockR 86.67 (row-level union ловит классы без span-попадания lockR:
+inn 100 vs 58.33); snils = известная слабость обеих (37.93/58.62) — FN
+добирается каскадом-1 (чексуммы валидатора §4, issue #26 хвост).
 `GOLDEN|verdict` печатается из фактических чисел: при Wilson-lower 89.41 < 98 —
 `known-below-98-wilson;gate=#14-deferred-to-cascade-union` (гейт #14 — каскад
 lockR ∨ чексуммы, не один Decide; SPEC §5 п.7).
 
-Токенизатор-контракт Rust↔python (корневые находки 4b-3C, всё в комментариях
-`recall_golden.rs`): (1) `tokenizers` 0.23 encode(true) НЕ применяет
-пост-процессор → `with_post_processor(None)` + ручной `encode_plus`
-(merge_with, спец-слоты (0,0), python-форма 1-в-1 с ids); (2) Rust-оффсеты =
-БАЙТОВАЯ шкала (decode-постпроцессинг WordPiece переписывает char→utf8:
-g0001 'Ушакова' char (56,63) = rust (87,101) = python-byte) ⇒ харнесная
-`len(text[:c].encode())` = прямой читок, char2byte поверх = двойная конверсия;
-(3) `decode([CLS]) = ''` (не '[CLS]') ⇒ special-фильтр харнеса ЛОЖЕН на
-спецах — O красит argmax модели (O@1.0), id-множество спец-id = эквивалент;
+Токенизатор-контракт Rust↔python (корневые находки 4b-3C + пост-ревью
+перезамер, всё в комментариях `recall_golden.rs`): (1) `tokenizers` encode(true)
+ПРИМЕНЯЕТ пост-процессор в обеих реализациях → ids/offsets 1-в-1 со спец-слотами
+(0,0) (промер 75/75 g0001; ранний тезис «не применяет» опровергнут); (2)
+Rust-оффсеты = БАЙТОВАЯ шкала (decode-постпроцессинг WordPiece переписывает
+char→utf8: g0001 'Ушакова' char (56,63) = rust (87,101) = python-byte) ⇒
+харнесная `len(text[:c].encode())` = прямой читок, char2byte поверх = двойная
+конверсия; (3) `decode([CLS]) = ''` (не '[CLS]') ⇒ special-фильтр харнеса ЛОЖЕН
+на спецах — O красит argmax модели (O@1.0), id-множество спец-id = эквивалент;
 (4) `decode([PS]) = '##вич'` python, Rust decode ОДИНОЧНОГО id маркер ЧИСТИТ
-('вич') ⇒ PS-трим по `id_to_token` (vocab) = python-эквивалент; (5) `i0 =
-t0−1` в python-поле om ≡ `om1[t0−1]` encode_plus-поля (спец-плейсхолдеры
-1-в-1, без сдвига); (6) `lockr_bio_group` возвращает ГОЛЫЙ класс — двойной
-strip префикса обнулял карту классов (первая 0.00).
+('вич') ⇒ PS-трим по `id_to_token` (vocab) = python-эквивалент; (5) `i0 = t0`
+без сдвига: om 1-в-1 с ids, `om[t0]` = старт гольд-окна (g0001: om[17]=
+'Ушакова'→87=gold start_byte; сдвиг −1 = отозванная ошибка обеих первичек,
+ревью PR#49); (6) `lockr_bio_group` возвращает ГОЛЫЙ класс — двойной strip
+префикса обнулял карту классов (первая 0.00).
 
 ## 6. CI-контракт
 
