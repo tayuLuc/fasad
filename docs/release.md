@@ -133,8 +133,11 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    CI 21.10: run 39514678570, «11 findings (10 suppressed): 1 informational»,
    zizmor rc=11). Плюс из workflow с правами на запись уходит сторонний экшен —
    меньше поверхность supply-chain.
-5. Логи RAM-гейта остаются в job-логах (`RSS|…`, `BUDGET|…`), числа с методом
-   переносятся в docs/model-audit.md §9.
+5. Логи RAM-гейта остаются в job-логах (`RSS|…`, `BUDGET|…`). Числа в
+   docs/model-audit.md §9 не перепечатываются: `just measure-rss --cascade0
+   --doc-rows` печатает готовый markdown-блок и `BUDGET`-строку из артефакта
+   прогона (флаг добавлен по рюлингу kernel 21.10 «цифры документа генерируются
+   из артефакта»); в CI гейт идёт без флага, вывод тот же по формату.
 
 Гейт `workflow_dispatch` есть (ручной прогон матрицы без публикации): job
 `release` защищена `if: startsWith(github.ref, 'refs/tags/v')`, поэтому ручной

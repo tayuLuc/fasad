@@ -443,6 +443,12 @@ C-острова) — второй источник метрик с CI-матр�
    `RSS|cascade0|after_warm|3.4|ps -o rss (KB->MiB, resident)`,
    `RSS|cascade0|after_warm|1.6|footprint phys_footprint (macOS, …)`,
    вердикт `BUDGET|cascade0|ok|peak_mib=3.4|budget_mib=1843.2`.
+   Числа не перепечатаны от руки: их печатает `just measure-rss --cascade0
+   --doc-rows` — флаг генерирует markdown-блок и `BUDGET`-строку из артефакта
+   того же прогона (рюлинг kernel 21.10: «число, вписанное в документ от руки,
+   — claim; цифры документа генерируются из артефакта»). Повторный прогон тем же
+   флагом 20.10 воспроизвёл блок дословно: idle 2.7/1.4, after_warm 3.4/1.6,
+   `peak_mib=3.4`.
    Прогон на демоне с дефолтом `FASAD_THREADS=8`: idle 2.2/1.4,
    after_warm 2.8/1.6, `peak_mib=2.8`.
    Разброс `ps` против `footprint` ≈ 1.2 MiB — это разные метрики (resident

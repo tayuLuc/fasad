@@ -48,10 +48,27 @@ SPIKE_THREADS="${FASAD_SPIKE_THREADS:-2}" # SPEC §1 п.1: «<2 ГБ», бюдж
 RUN_CASCADE0=0
 RUN_FULL=0
 SKIP_BUILD=0
+DOC_ROWS=0
+# Рюлинг kernel 21.10: «число, вписанное в документ от руки, — claim; цифры
+# документа генерируются из артефакта прогона». `--doc-rows` печатает готовый
+# markdown-блок для docs/model-audit.md §9 из тех же строк, что ушли в stdout:
+# цифры в документ попадают копипастом из артефакта, а не из головы.
+ROWS_FILE="$(mktemp)"
 
 die() {
     printf 'measure-rss: ОШИБКА: %s\n' "$*" >&2
     exit 1
+}
+
+# emit_line <строка> — строка и в stdout, и в артефакт прогона ($ROWS_FILE),
+# из которого генерируется --doc-rows. Строку собирает вызывающий код, а не
+# printf с форматом из переменной (SC2059; MegaLinter вызывает shellcheck без
+# `-S` и краснеет от info-класса). Строка, начинающаяся с `# shellcheck `, —
+# это директива линтера, в прозе её быть не должно (SC1072/SC1073, промер
+# 21.10: собственный комментарий об этом и уронил парсер).
+emit_line() {
+    printf '%s\n' "$1"
+    printf '%s\n' "$1" >>"$ROWS_FILE"
 }
 
 usage() {
@@ -61,6 +78,8 @@ usage() {
   --cascade0   контур каскада-0: релизный бинарь демона (default, если не указано ничего)
   --full       контур полного каскада: харнес spike --arb --lockr (нужны веса + dylib ORT)
   --skip-build не собирать, брать готовые артефакты в target/release
+  --doc-rows   в конце напечатать markdown-строки для docs/model-audit.md §9
+               (генерируются из артефакта прогона, не перепечатываются от руки)
   -h, --help   эта справка
 EOF
 }
@@ -70,6 +89,7 @@ while [ "$#" -gt 0 ]; do
         --cascade0) RUN_CASCADE0=1 ;;
         --full) RUN_FULL=1 ;;
         --skip-build) SKIP_BUILD=1 ;;
+        --doc-rows) DOC_ROWS=1 ;;
         -h | --help)
             usage
             exit 0
@@ -131,7 +151,7 @@ report_point() {
     point="$2"
     pid="$3"
     mib="$(rss_mib "$pid")"
-    printf 'RSS|%s|%s|%s|ps -o rss (KB->MiB, resident)\n' "$contour" "$point" "$mib"
+    emit_line "RSS|$contour|$point|$mib|ps -o rss (KB->MiB, resident)"
     # В вердикт бюджета идёт чтение `ps` (оно есть на обеих реализованных ОС);
     # вторая строка (VmRSS на Linux / footprint на macOS) — перекрёстная
     # сверка метода, в peak не свёрнута намеренно: смешивать в одном peak'е
@@ -141,15 +161,15 @@ report_point() {
     if [ "$OS" = "Darwin" ]; then
         fp="$(footprint_mib "$pid" || true)"
         if [ -n "$fp" ]; then
-            printf 'RSS|%s|%s|%s|footprint phys_footprint (macOS, «Память» Activity Monitor)\n' \
-                "$contour" "$point" "$fp"
+            emit_line \
+                "RSS|$contour|$point|$fp|footprint phys_footprint (macOS, «Память» Activity Monitor)"
         fi
     fi
     if [ "$OS" = "Linux" ] && [ -r "/proc/$pid/status" ]; then
         vm="$(awk '/^VmRSS:/{print $2}' "/proc/$pid/status")"
         [ -n "$vm" ] || vm=0
-        printf 'RSS|%s|%s|%s|/proc/pid/status VmRSS (KB->MiB)\n' "$contour" "$point" \
-            "$(awk -v kb="$vm" 'BEGIN { printf "%.1f", kb / 1024 }')"
+        vm_mib="$(awk -v kb="$vm" 'BEGIN { printf "%.1f", kb / 1024 }')"
+        emit_line "RSS|$contour|$point|$vm_mib|/proc/pid/status VmRSS (KB->MiB)"
     fi
 }
 
@@ -233,9 +253,8 @@ run_cascade0() {
 
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
-    printf 'BUDGET|cascade0|%s|peak_mib=%s|budget_mib=%s|tool=%s\n' \
-        "$(awk -v p="$PEAK" -v b="$BUDGET_MIB" 'BEGIN { print (p <= b) ? "ok" : "OVER" }')" \
-        "$PEAK" "$BUDGET_MIB" "$RSS_TOOL"
+    verdict="$(awk -v p="$PEAK" -v b="$BUDGET_MIB" 'BEGIN { print (p <= b) ? "ok" : "OVER" }')"
+    emit_line "BUDGET|cascade0|$verdict|peak_mib=$PEAK|budget_mib=$BUDGET_MIB|tool=$RSS_TOOL"
     PEAK=""
 }
 
@@ -268,10 +287,9 @@ run_full() {
     [ "$rc" -eq 0 ] || die "харнес.full exited rc=$rc (см. docs/model-audit.md §5: SIGSEGV 139 = нарушен dylib-контракт)"
     peak="$(grep -oE 'METRIC\|rss_peak_mib_both_models\|[0-9.]+' "$out" | tail -1 | cut -d'|' -f3)"
     [ -n "$peak" ] || die "харнес не напечатал rss_peak_mib_both_models (контракт METRIC нарушен)"
-    printf 'RSS|full|peak_both_models|%s|spike task_info TASK_VM_INFO.internal (macOS) / VmRSS (Linux)\n' "$peak"
-    printf 'BUDGET|full|%s|peak_mib=%s|budget_mib=%s|tool=%s\n' \
-        "$(awk -v p="$peak" -v b="$BUDGET_MIB" 'BEGIN { print (p <= b) ? "ok" : "OVER" }')" \
-        "$peak" "$BUDGET_MIB" "spike METRIC (in-process)"
+    emit_line "RSS|full|peak_both_models|$peak|spike task_info TASK_VM_INFO.internal (macOS) / VmRSS (Linux)"
+    verdict="$(awk -v p="$peak" -v b="$BUDGET_MIB" 'BEGIN { print (p <= b) ? "ok" : "OVER" }')"
+    emit_line "BUDGET|full|$verdict|peak_mib=$peak|budget_mib=$BUDGET_MIB|tool=spike METRIC (in-process)"
     rm -f "$out"
 }
 
@@ -281,4 +299,16 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
 fi
 [ "$RUN_CASCADE0" -eq 1 ] && run_cascade0
 [ "$RUN_FULL" -eq 1 ] && run_full
+if [ "$DOC_ROWS" -eq 1 ]; then
+    printf '\n=== markdown для docs/model-audit.md §9 (сгенерировано прогоном) ===\n\n'
+    printf '| контур | точка | MiB | метод |\n| --- | --- | --- | --- |\n'
+    awk -F"|" '$1 == "RSS" { printf "| `%s` | `%s` | %s | %s |\n", $2, $3, $4, $5 }' "$ROWS_FILE"
+    printf '\n'
+    awk -F"|" '$1 == "BUDGET" { printf "`BUDGET|%s|%s|%s|%s|%s`\n", $2, $3, $4, $5, $6 }' "$ROWS_FILE"
+    printf '\nпромер: %s, ОС %s/%s, метод: %s; потоки: демон FASAD_THREADS=%s, харнес FASAD_SPIKE_THREADS=%s\n' \
+        "$(date -u +%F)" "$OS" "$(uname -m)" "$RSS_TOOL" "${FASAD_THREADS:-2}" "$SPIKE_THREADS"
+    printf 'профиль сборки: [profile.release] (lto=fat, codegen-units=1) — docs/model-audit.md §9 п.3\n'
+fi
+rm -f "$ROWS_FILE"
+
 echo "OK|measure-rss завершён|method=$RSS_TOOL"
