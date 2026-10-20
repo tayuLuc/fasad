@@ -77,6 +77,16 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 `release` защищена `if: startsWith(github.ref, 'refs/tags/v')`, поэтому ручной
 прогон артефакты собирает, а релиз не трогает.
 
+Прогнать матрицу до слияния нельзя: `gh workflow run release.yml --ref <ветка>`
+отвечает HTTP 404 «workflow release.yml not found on the default branch»
+(промер 21.10 на PR #76) — GitHub ищет воркфлоу в дефолтной ветке. Значит
+`windows-2022` (zip через `powershell Compress-Archive`), linux-бандл и job
+`ort-dylib` получают первый живой промер сразу после слияния (первый тег либо
+`workflow_dispatch`). До слияния локально промерен только macOS-путь: бандл
+`fasad-0.1.0-aarch64-apple-darwin-cascade-0.tar.gz` (1 728 002 Б),
+`shasum -a 256 -c SHA256SUMS.txt` = OK, `scripts/verify-bundle.sh` = rc 0,
+позитивный контроль (подменённый байт в `bin/fasad`) = rc 1.
+
 ## Лицензии (THIRD-PARTY)
 
 1. Генератор — `cargo-about` 0.9.x: `cargo install --locked --features cli cargo-about`
