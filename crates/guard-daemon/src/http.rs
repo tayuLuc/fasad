@@ -354,7 +354,7 @@ fn session_of(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
                 ApiError::new(
                     StatusCode::BAD_REQUEST,
                     "bad_request",
-                    "X-Session-ID содержит байты вне ASCII",
+                    "X-Session-ID не является печатаемым ASCII",
                 )
             }),
     }

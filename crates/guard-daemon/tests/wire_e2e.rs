@@ -477,7 +477,7 @@ fn non_ascii_session_id_is_refused_as_invalid_not_missing() {
     assert_eq!(r.status, 400);
     let body = String::from_utf8_lossy(&r.body).into_owned();
     assert!(
-        body.contains("вне ASCII"),
+        body.contains("печатаемым ASCII"),
         "причина обязана называть заголовок: {body}"
     );
     assert!(
