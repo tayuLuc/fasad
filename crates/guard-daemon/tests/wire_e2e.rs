@@ -938,6 +938,7 @@ fn proxy_roundtrip_masks_request_and_restores_response() {
             ("x-upstream-url", upstream_url(&toy, "/buffered").as_str()),
             ("x-api-key", "toy-ключ"),
             ("user-agent", "fasad-e2e"),
+            ("accept-encoding", "gzip"),
         ],
         &body,
     );
@@ -963,6 +964,13 @@ fn proxy_roundtrip_masks_request_and_restores_response() {
     assert!(
         !gone.head.to_lowercase().contains("user-agent: fasad-e2e"),
         "заголовок клиента просочился наружу: {}",
+        gone.head
+    );
+    // Инвариант, а не фича: `accept-encoding` наружу означал бы, что upstream
+    // вправе прислать gzip, а релей разобрать его не сможет — молча.
+    assert!(
+        !gone.head.to_lowercase().contains("accept-encoding"),
+        "сжатие было разрешено прокси: {}",
         gone.head
     );
     assert!(
