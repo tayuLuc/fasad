@@ -17,6 +17,24 @@
 //!   `cargo run --release --features ort-inference --example recall_golden`
 //! Опции: `--limit N` (первые N recall-строк), `--threads T`, `--thr F`.
 
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::too_many_lines,
+    clippy::default_trait_access,
+    clippy::items_after_statements,
+    clippy::useless_conversion,
+    clippy::redundant_clone,
+    clippy::doc_markdown,
+    clippy::needless_range_loop,
+    clippy::manual_contains,
+    clippy::cast_lossless,
+    clippy::iter_cloned_collect,
+    reason = "measurement-харнес: счётчики ≤ 2^53 (n=285), один прогонный main, форматирование метрик; prod-кодом не является (example)"
+)]
+
 #[cfg(feature = "ort-inference")]
 use std::path::{Path, PathBuf};
 #[cfg(feature = "ort-inference")]
