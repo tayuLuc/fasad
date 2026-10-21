@@ -115,7 +115,87 @@ def overall_table(d: dict, thr: str) -> list[str]:
     return out
 
 
+LEAK_TOKENS = ("k_for_bar_98", "k_for_bar", "deficit_at_full", "deficit_spans", "wilson95_lo",
+               "wilson95_hi", "union_wilson_lo", "strict_wilson_lo", "union_k", "union_n",
+               "rows_any_fired", "spans_c0", "spans_lockr", "spans_union", "bait_c0",
+               "bait_lockr")
+
+
+def strip_code(lines: list[str]) -> list[str]:
+    """Убрать fenced-блоки и inline-code: словарь артефакта в `backticks` — легальный
+    текст прозы, голое имя поля вне их — уже нет."""
+    out: list[str] = []
+    fence = False
+    for ln in lines:
+        if ln.startswith("```"):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        out.append(_strip_inline_code(ln))
+    return out
+
+
+def _strip_inline_code(ln: str) -> str:
+    res: list[str] = []
+    i = 0
+    while i < len(ln):
+        if ln[i] == "`":
+            j = ln.find("`", i + 1)
+            if j < 0:
+                break
+            i = j + 1
+            continue
+        res.append(ln[i])
+        i += 1
+    return "".join(res)
+
+
+def selfcheck(lines: list[str]) -> list[str]:
+    """Fail-closed проверка сгенерированного документа.
+
+    Класс дефекта, который он закрывает (пойман ревью #80 дважды): генератор читает
+    не тот индекс pipe-формата и печатает ИМЯ поля вместо значения («n = n: нужно k ≥
+    k_for_bar_98», колонка τ = «sweep»), либо подставляет плейсхолдер «?» вместо
+    цифры. Такой документ зелёный и выглядит правдоподобно — проверка обязана быть
+    машиной, а не внимательностью ревьюера.
+    """
+    bad: list[str] = []
+    for i, ln in enumerate(strip_code(lines), 1):
+        for tok in LEAK_TOKENS:
+            if tok in ln:
+                bad.append(f"строка {i}: имя поля артефакта в прозе: {tok} :: {ln.strip()[:90]}")
+        if "? %" in ln:
+            bad.append(f"строка {i}: плейсхолдер «? %» (нет первички) :: {ln.strip()[:90]}")
+        if "= n:" in ln or "k ≥ k" in ln:
+            bad.append(f"строка {i}: значение = имя поля :: {ln.strip()[:90]}")
+    return bad
+
+
+def run_self_test() -> int:
+    """Positive control гейта: подсаживаем три известных утечки — гейт обязан поймать
+    все три. Мёртвый контроль = rc=2 (зелёный сканер без контроля = ничто)."""
+    planted = [
+        "- n = n: нужно k ≥ k_for_bar_98 по каждому знаменателю",
+        "| union | 92.46 % | ? % | lo |",
+        "Дефицит deficit_spans span'ов.",
+    ]
+    got = selfcheck(planted)
+    hits = sum(1 for pat in ("имя поля артефакта", "плейсхолдер", "значение = имя поля")
+               if any(pat in x for x in got))
+    print(f"CONTROL|planted|3|caught|{hits}|verdict|{'live' if hits == 3 else 'DEAD'}")
+    for x in got:
+        print(f"  leak: {x}")
+    if hits != 3:
+        print("FAIL: контроль мёртв — selfcheck не ловит подсаженные утечки")
+        return 2
+    print("OK: контроль жив (три утечки пойманы)")
+    return 0
+
+
 def main() -> int:  # noqa: C901, PLR0912 — линейная сборка markdown, ветвлений ради читаемости много
+    if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
+        return run_self_test()
     if len(sys.argv) not in (3, 4):
         sys.exit(__doc__)
     raw = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
@@ -327,8 +407,8 @@ def main() -> int:  # noqa: C901, PLR0912 — линейная сборка mark
     A(f"  (lo {g(agg(d, thr0, 'exact', 'strict_span'), 'wilson95_lo')} %). Overlap-диагностика")
     A(f"  той же сетки: union {g(v, 'union')} % (lo {g(v, 'union_wilson_lo')} %).")
     A("- Статус гейта #14B: **не закрыт** (`known-below-bar` печатается из фактических")
-    A("  чисел харнесом, не из шаблона; `deficit_spans` — расстояние до k_for_bar,")
-    A("  который посчитан для overlap-знаменателя харнесом).")
+    A("  чисел харнесом, не из шаблона; `deficit_spans` — расстояние до `k_for_bar`,")
+    A("  который харнес считает для overlap-знаменателя).")
     A("- Сравнение с базлайнами §5.7 C (τ = 0.25, знаменатель 285 = только 8 модельных")
     A("  классов, span-level): lockR fp16 86.67 (lo 82.23, k 247), Decide q4f16 92.98")
     A("  (lo 89.41, k 265). Union на полном знаменателе 358 добавляет валидаторные классы")
@@ -477,6 +557,13 @@ def main() -> int:  # noqa: C901, PLR0912 — линейная сборка mark
             A("|".join(row))
         A("```")
         A("")
+    leaks = selfcheck(lines)
+    if leaks:
+        for x in leaks:
+            print(f"LEAK|{x}", file=sys.stderr)
+        sys.exit(f"FAIL: в сгенерированном документе {len(leaks)} утечек словаря артефакта "
+                 "(список выше). Класс: генератор читает не тот индекс pipe-формата. "
+                 "Правь индексы полей, не вывод.")
     Path(sys.argv[2]).write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"WROTE|{sys.argv[2]}|lines|{len(lines)}")
     return 0

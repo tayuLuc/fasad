@@ -98,6 +98,12 @@ union-recall *ARGS:
 union-report RAW OUT PROBE="":
     uv run --locked python tools/metrics/render_report.py {{RAW}} {{OUT}} {{PROBE}}
 
+# Positive control генератора отчёта: подсаженные утечки (имя поля вместо значения,
+# плейсхолдер "? %") обязаны ловиться. Мёртвый контроль = rc=2, тот же контракт,
+# что у lang-scan: зелёная проверка без живого контроля = ничто.
+report-selftest:
+    uv run --locked python tools/metrics/render_report.py --self-test
+
 # Язык-гейт текста: CJK-утечки и склейка кириллицы с латиницей. Positive control
 # (--self-test) обязателен: зелёный сканер без контроля = ложно-зелёная проверка
 # (первый же контроль поймал мёртвый CJK-класс из начал диапазонов). BSD grep для
