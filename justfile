@@ -203,6 +203,8 @@ spike-dylib:
 
 # Версия workspace: единый источник — `[workspace.package] version` в Cargo.toml
 # (RELEASES.md п.1). Python в build-контур не пускаем (AGENTS п.6).
+
+# Версия workspace из `[workspace.package] version` в Cargo.toml (sed, без Python).
 _version:
     @sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml | sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
 
