@@ -206,6 +206,21 @@ printf 'ANALYZE|spans=%s\n' "$spans"
     kill "$pid" 2>/dev/null || true
     exit 1
 }
+# Счётчик спанов сам по себе слаб (ревью #76, F5): зелёным остаётся любой
+# мусорный спан, а регресс ИНН-валидатора — главного цифрового класса нашей
+# схемы — прошёл бы незамеченным. Требуем конкретный спан на заведомо валидном
+# номере: класс inn И источник checksum_rf через валидатор inn10.
+printf '%s' "$analyze" | grep -q '"entity_type":"inn"' || {
+    printf 'verify-bundle: ОШИБКА: ИНН 7707083893 (валидный inn10) не найден бандлом: %s\n' "$analyze" >&2
+    kill "$pid" 2>/dev/null || true
+    exit 1
+}
+printf '%s' "$analyze" | grep -q '"validator":"inn10"' || {
+    printf 'verify-bundle: ОШИБКА: inn-спан найден не чексумма-валидатором inn10: %s\n' "$analyze" >&2
+    kill "$pid" 2>/dev/null || true
+    exit 1
+}
+printf 'ANALYZE|inn10=ok\n'
 
 kill "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true
