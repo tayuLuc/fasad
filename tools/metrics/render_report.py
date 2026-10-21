@@ -119,7 +119,7 @@ def main() -> int:  # noqa: C901, PLR0912 — линейная сборка mark
     if len(sys.argv) not in (3, 4):
         sys.exit(__doc__)
     raw = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
-    if len(sys.argv) == 4:
+    if len(sys.argv) == 4 and sys.argv[3]:
         raw += [x for x in Path(sys.argv[3]).read_text(encoding="utf-8").splitlines()
                 if x.startswith("COORD|")]
     d = parse(raw)

@@ -92,9 +92,11 @@ union-recall *ARGS:
 
 # docs/golden-report.md из сырого артефакта прогона: числа в документацию попадают
 # генерацией, а не переписыванием руками (правило факта «отформатированное число —
-# не факт»). Прогон меняешь — документ перегенерируется целиком.
-union-report RAW OUT:
-    uv run --locked python tools/metrics/render_report.py {{RAW}} {{OUT}}
+# не факт»). Прогон меняешь — документ перегенерируется целиком. PROBE — артефакт
+# `tools/metrics/probe_coords.py` (COORD-строки, §6.4/§8.1): без него раздел о
+# направлении смещения печатает «?» и остаётся прозой без первички.
+union-report RAW OUT PROBE="":
+    uv run --locked python tools/metrics/render_report.py {{RAW}} {{OUT}} {{PROBE}}
 
 # Язык-гейт текста: CJK-утечки и склейка кириллицы с латиницей. Positive control
 # (--self-test) обязателен: зелёный сканер без контроля = ложно-зелёная проверка
