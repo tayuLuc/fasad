@@ -2,7 +2,7 @@
 
 Прогон: 2026-10-19, macOS (arm64), rustc 1.97.1, ort 2.0.0-rc.14 (download-binaries,
 статик libonnxruntime.a, CPU EP), spike = `crates/guard-onnx/examples/spike.rs`.
-Профиль: **debug** — release-прогон проводился ×5 и падал SIGSEGV 139 в обеих конфигурациях (plain, env 26.0), [model-audit-weights.md §W2.1](model-audit-weights.md); гейт бюджета закрыт dev-числами с оговоркой профиля.
+Профиль: **debug** — release-прогон проводился ×5 и падал SIGSEGV 139 в обеих конфигурациях (plain, env 26.0), [model-audit-weights.md §W2 п.1](model-audit-weights.md); гейт бюджета закрыт dev-числами с оговоркой профиля.
 Веса: `~/.cache/fasad-models`, манифест `models/manifest.tsv`.
 
 > **Разделение 22.10 (ротация >300 строк, vault-правило «split at ~300», репо-обычай
@@ -19,8 +19,10 @@
 >
 > **Карта шва.** Голые §-ссылки секций §8–§10 этого файла на §5.N/§5 п.N/§6 —
 > промеры, уехавшие в [model-audit-weights.md](model-audit-weights.md)
-> (§5.N → §W2.N, §5 п.N → §W2 п.N, §5.6 → §W2.6, §5.7 → §W2.7, §6 → §W3;
-> §Graph = §W2 п.2 — маркер секции HF-карточки Decide). Внутренние ссылки
+> (§5.6 → §W2.6, §5.7 → §W2.7, §6 → §W3; §5 п.N → §W2 п.N. §5.1–§5.5 и
+> §5.N.M п.K НЕ существовали: §5 нумеровал только п.1–п.4 + аддендумы §5.6/§5.7,
+> «§5.1» в коде до #133 был опиской — владелец §W2 п.1, см. #136; §5.7 п.K →
+> §W2.7 п.K. §Graph = §W2 п.2 — маркер секции HF-карточки Decide). Внутренние ссылки
 > спутников на секции друг друга помечены файлом-владельцем.
 
 ## Оглавление (компас)
@@ -73,7 +75,7 @@ IO|out|arbiter|logits|Tensor<f32>(batch, markers)
 
 ## 8. Релизный путь ORT: официальный dylib 1.31.0 (issue #11, шаг 4a)
 
-1. Причина (промеры §W2.1): статик-pyke на macOS release = SIGSEGV (chained fixups ×
+1. Причина (промеры §W2 п.1): статик-pyke на macOS release = SIGSEGV (chained fixups ×
    deployment target 11.0, unresolved `___isPlatformVersionAtLeast` → jmp 0x0); орт-дока и
    §9 SPEC: релиз поставляет dylib — статик-режим остаётся только CI-линтовкой.
 2. Версия: api-31 (орт rc.14) ⇒ минимум ORT **1.31.0**; graceful-эскалация
@@ -92,7 +94,7 @@ IO|out|arbiter|logits|Tensor<f32>(batch, markers)
 4. Сборка: `ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=<dir>/lib cargo build --release
    --features ort-inference` — build.rs дописал rpath-ветку (macos|linux), just-рецепты
    `ort-dylib`/`spike-dylib`. Релизный прогон 19.10 (сырой /tmp/mg48-49.out):
-   exit=1 (GatherElements-заглушка §W2.3 — до живых marker_positions шага 4b), env_init
+   exit=1 (GatherElements-заглушка §W2 п.3 — до живых marker_positions шага 4b), env_init
    37.8–40.3 ms, rss_after_load_arbiter 379.4–387.4 MiB — бюджет-гейт release закрыт.
 
 ## 9. Release RSS (шаг 9, релизный контур, SPEC §10 п.9)
@@ -277,7 +279,7 @@ IO|out|arbiter|logits|Tensor<f32>(batch, markers)
 
 ### 10.8 Покрытие продукта на полном golden (тот же бинарь, тот же метод)
 
-Мера харнеса (§W2.1 `docs/golden-report.md`) считает стадии по отдельности и на
+Мера харнеса (`docs/model-audit-weights.md` §W2.7, `docs/golden-report.md`) считает стадии по отдельности и на
 всём датасете; продукту доступен только выход конвейера — набор спанов, который
 уйдёт в маскирование. Прогон `product_coverage_on_the_whole_golden`
 (`tests/cascade_parity.rs`, под `#[ignore]`: 98.4 с на threads=1, нужны веса):

@@ -492,7 +492,7 @@ fn arbiter_probe(
     }
 
     // (2) IO-контракт: open_session = external data + Disable-оптимизации
-    // (контракт audit §5.1); load-метрики для бюджета q4f16.
+    // (контракт `docs/model-audit-weights.md` §W1 п.1); load-метрики для бюджета q4f16.
     let base = rss("before_load_probe");
     let t = Instant::now();
     let mut session = open_session(env, &path, threads)?;

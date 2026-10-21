@@ -2,7 +2,7 @@
 //!
 //! Констрэкт SPAN-разметки + инференция + softmax-по-группам в одном типе:
 //! [`DecideArbiter::load`] поднимает сессию `model_q4f16.onnx` (external data
-//! лежит рядом — `model_q4f16.onnx_data`, контракт audit §5.1) и
+//! лежит рядом — `model_q4f16.onnx_data`, контракт `docs/model-audit-weights.md` §W1 п.2) и
 //! `tokenizer.json` из кэша `scripts/fetch-models.sh`; [`DecideArbiter::prompts`]
 //! строит план разметки; [`DecideArbiter::arbitrate_text`] гоняет ОДИН прогон на
 //! весь текст и отдаёт вердикты по вопросам.
