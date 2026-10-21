@@ -29,17 +29,63 @@
 # Вердикт считается по КОНСЕРВАТИВНОМУ пику (max по точкам), не по медиане —
 # бэджет safety-critical, см. docs/model-audit.md §5.6 п.5.
 #
+# Код возврата — часть контракта (класс false-green «print-only landing test»,
+# реестр 15/18): вердикт OVER обязан валить скрипт, а не только печататься.
+#   0 = все прогнанные контуры дали ok;
+#   1 = хотя бы один контур дал OVER (строка `BUDGET|…|OVER|…` + причина в stderr)
+#       ЛИБО отказ прогона (die);
+#   2 = метод замера не реализован на этой ОС (см. docs/release.md §RAM п.5).
+#       Ветка печатает причину в stderr и выходит двойкой НАПРЯМУЮ, минуя die:
+#       die = exit 1, через неё обещание «2» было бы ложным (ревью #98 R1:
+#       промер шимом `uname` = FreeBSD давал rc=1 при трёх местах,
+#       утверждавших rc=2 — шапка, release.yml:111, docs §RAM п.5).
+# Прежняя версия печатала OVER и выходила rc=0: шаг «RAM-гейт» в
+# .github/workflows/release.yml зеленел при превышении бюджета (первичка: die()
+# была единственным выходом с кодом, а verdict-строки в run_cascade0/run_full
+# уходили только через emit_line).
+#
+# Полнота вывода при провале (ревью #98 п.2): хвост `OK|measure-rss
+# завершён|gate=ok|…` (успех) / `FAIL|measure-rss завершён|gate=OVER|…`
+# (провал) печатается на ОБОИХ ветках ПЕРЕД выходом: stdout проваленного
+# прогона = stdout успешного с точностью до вердикт-строк (`BUDGET|…` + сам
+# хвост), а не обрезан. `rc=1` вместо хвоста = нечем разбирать.
+#
+# rc не зависит от пути вызова (ревью #98 п.3): `just measure-rss` (рецепт
+# зовёт `bash scripts/measure-rss.sh $@` под `set -euo pipefail`) и прямой
+# запуск скрипта дают одинаковый rc — промер 21.10, обе ветки rc=1 при
+# BUDGET_MIB=0.001. Флаг GATE_FAIL доходит до конца файла, потому что
+# run_cascade0/run_full вызываются НАПРЯМУЮ (:419-420, переснято grep'ом
+# 21.10), а не из командной подстановки; на случай refactor-в-подстановку
+# добавлен бэкстоп — вердикт перечитывается из файл-артефакта (блок в конце).
+# МЕРИТЬ rc надо от самой проверяющей команды (`cmd; echo $?`), а не от хвоста
+# пайпа: `cmd | tail -1`/`| tee` отдаёт rc последнего звена = 0 при rc=1
+# скрипта (промер 21.10: та же строка OVER, `$?` = 0) — ложно-красный диагноз
+# «зуба нет» из способа замера, а не из кода.
+#
 # use: scripts/measure-rss.sh [--cascade0] [--full] [--skip-build]
 # env: FASAD_RSS_TARGET (default target/release), ORT_DIR (default
 #      $HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0), FASAD_RSS_WARMUP
-#      (число прогревающих /v1/analyze, default 3)
+#      (число прогревающих /v1/analyze, default 3), BUDGET_MIB (default 1843.2;
+#      рычаг бюджета — нужен, чтобы зуб гейта промерялся живым прогоном:
+#      `BUDGET_MIB=0.001 … → rc=1` без изменения кода). Значение валидируется
+#      по `^[0-9]+([.][0-9]+)?$`; мусор = rc=1 с именем переменной (fail-open
+#      закрыт ревью #98 R2: awk-сравнение «abc» = 0 = зелёный гейт)
 
 set -euo pipefail
 
 TARGET_DIR="${FASAD_RSS_TARGET:-target/release}"
 ORT_DIR="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0}"
 WARMUP="${FASAD_RSS_WARMUP:-3}"
-BUDGET_MIB=1843.2
+# Бюджет SPEC §1: ≤1.8 ГБ = 1843.2 MiB. Рычаг из окружения оставлен не ради
+# игры цифрами, а ради промера зуба: гейт, который нельзя посадить без правки
+# кода, неотличим от гейта, у которого зуба нет (класс false-green «print-only
+# landing test», реестр 15/18). Значение по умолчанию = контракт SPEC; CI его
+# не переопределяет.
+BUDGET_MIB="${BUDGET_MIB:-1843.2}"
+# OVER ЛЮБОГО прогнанного контура = провал гейта. Флаг ставится в месте
+# вердикта, а выходит скрипт в конце: вывод всех контуров обязан остаться
+# целым (он артефакт прогона, из него генерируются --doc-rows).
+GATE_FAIL=0
 # Пул потоков орт-харнеса (рюлинг оператора 21.10: не грузить CPU ноута; spike
 # по умолчанию берёт 4, spike.rs:158). Это собственный рычаг харнеса:
 # OMP_NUM_THREADS на вендорном libonnxruntime osx-arm64 инертен (первичка
@@ -60,6 +106,22 @@ die() {
     exit 1
 }
 
+# Валидация BUDGET_MIB (ревью #98 R2). Без неё рычаг бюджета был FAIL-OPEN:
+# вердикт считает awk (`p <= b`); «abc» — не strnum, сравнение становится
+# лексикографическим: «3.4» <= «abc» истинно ('3' < 'a'), т.е.
+# BUDGET_MIB=abc давало `BUDGET|cascade0|ok|budget_mib=abc` при rc=0 —
+# опечатка в env (разделитель в «1,843.2») зелёнила релизный контур. Политика
+# проекта: мусор в числовом env = отказ, а не молчаливый ноль (docs/release.md
+# §RAM п.10). Отказ = rc=1 через die: причина — сломанный env, а не превышение
+# бюджета, путать их с OVER (rc=1 + слово OVER в stderr) нельзя.
+# Формат = строка цифр с одной опциональной десятичной точкой: отрицательное,
+# пустое, «1.», «.5», «1.2.3», «1e3» — отказ.
+case "$BUDGET_MIB" in
+    '' | *[!0-9.]* | .* | *. | *.*.*)
+        die "BUDGET_MIB=$BUDGET_MIB: не число (ожидается вид 1843.2 — целое или десятичное, без разделителей и знака)"
+        ;;
+esac
+
 # emit_line <строка> — строка и в stdout, и в артефакт прогона ($ROWS_FILE),
 # из которого генерируется --doc-rows. Строку собирает вызывающий код, а не
 # printf с форматом из переменной (SC2059; MegaLinter вызывает shellcheck без
@@ -69,6 +131,22 @@ die() {
 emit_line() {
     printf '%s\n' "$1"
     printf '%s\n' "$1" >>"$ROWS_FILE"
+}
+
+# gate_fail_if_over <verdict> <контур> <peak> — ЗУБ гейта: вердикт OVER
+# поднимает GATE_FAIL, а скрипт в конце выходит rc=1 (до этой правки OVER
+# только печатался, и шаг release.yml «RAM-гейт каскада-0» зеленел при
+# превышении бюджета — класс false-green «print-only landing test», реестр
+# 15/18). Вызывается ПОСЛЕ emit_line: при провале вывод обязан быть полным
+# (строки RSS + BUDGET = артефакт прогона), rc=1 без них бесполезен для
+# разбора. Причина пишется в stderr словом OVER + числами — её нельзя спутать
+# с die-путём (там текст про бинарь/демона/прогрев, слова OVER нет).
+gate_fail_if_over() {
+    if [ "$1" = "OVER" ]; then
+        GATE_FAIL=1
+        printf 'measure-rss: ОШИБКА: RAM-гейт: контур %s OVER: peak=%s MiB > budget=%s MiB (SPEC §1 ≤1.8 ГБ)\n' \
+            "$2" "$3" "$BUDGET_MIB" >&2
+    fi
 }
 
 usage() {
@@ -113,7 +191,11 @@ case "$OS" in
         # Windows: ps/footprint нет; method = PowerShell (Get-Process
         # WorkingSet64/PrivateMemorySize64) — НЕ реализован здесь, промер на
         # Windows-раннере = открытый хвост (docs/release.md §RAM).
-        die "OS=$OS: метод замера не реализован (реализованы Darwin/Linux)"
+        # rc=2 = контракт шапки и docs/release.md §RAM п.5: «метод не реализован»
+        # отделён от «прогон не удался» (die = exit 1). Через die эта ветка
+        # выдавала rc=1, т.е. все три места, обещавшие «2», врали (ревью #98 R1).
+        printf 'measure-rss: ОШИБКА: OS=%s: метод замера не реализован (реализованы Darwin/Linux)\n' "$OS" >&2
+        exit 2
         ;;
 esac
 
@@ -291,6 +373,7 @@ run_cascade0() {
     wait "$pid" 2>/dev/null || true
     verdict="$(awk -v p="$PEAK" -v b="$BUDGET_MIB" 'BEGIN { print (p <= b) ? "ok" : "OVER" }')"
     emit_line "BUDGET|cascade0|$verdict|peak_mib=$PEAK|budget_mib=$BUDGET_MIB|tool=$RSS_TOOL"
+    gate_fail_if_over "$verdict" cascade0 "$PEAK"
     PEAK=""
 }
 
@@ -326,6 +409,7 @@ run_full() {
     emit_line "RSS|full|peak_both_models|$peak|spike task_info TASK_VM_INFO.internal (macOS) / VmRSS (Linux)"
     verdict="$(awk -v p="$peak" -v b="$BUDGET_MIB" 'BEGIN { print (p <= b) ? "ok" : "OVER" }')"
     emit_line "BUDGET|full|$verdict|peak_mib=$peak|budget_mib=$BUDGET_MIB|tool=spike METRIC (in-process)"
+    gate_fail_if_over "$verdict" full "$peak"
     rm -f "$out"
 }
 
@@ -345,6 +429,37 @@ if [ "$DOC_ROWS" -eq 1 ]; then
         "$(date -u +%F)" "$OS" "$(uname -m)" "$RSS_TOOL" "${FASAD_THREADS:-2}" "$SPIKE_THREADS"
     printf 'профиль сборки: [profile.release] (lto=fat, codegen-units=1) — docs/model-audit.md §9 п.3\n'
 fi
+# Бэкстоп против пути вызова (ревью #98): GATE_FAIL живёт в оболочке и доходит
+# до сюда только потому, что run_cascade0/run_full вызываются НАПРЯМУЮ
+# (:419-420 — `[ "$RUN_CASCADE0" -eq 1 ] && run_cascade0`), а не из командной
+# подстановки. Refactor вида `VAR=$(run_cascade0 …)` убил бы флаг вместе с
+# подоболочкой, и гейт снова стал бы зелёным при OVER — ровно тот класс
+# (print-only landing test, реестр 15/18), который закрывает этот PR. Зуб не
+# должен зависеть от способа вызова функций: $ROWS_FILE — файл-артефакт, его
+# пишет emit_line из ЛЮБОЙ оболочки (файл, не переменная подоболочки), поэтому
+# вердикт перечитывается оттуда, а не из магического числа. Первичный механизм
+# — флаг (он же несёт причину в stderr), бэкстоп — сверка с собственным
+# артефактом прогона: два независимых пути к одному rc.
+if [ "$GATE_FAIL" -eq 0 ] &&
+    awk -F"|" '$1 == "BUDGET" && $3 == "OVER" { found = 1 } END { exit !found }' "$ROWS_FILE"; then
+    GATE_FAIL=1
+    printf 'measure-rss: ОШИБКА: RAM-гейт: вердикт OVER есть в артефакте прогона при сброшенном GATE_FAIL (функции уехали в командную подстановку?)\n' >&2
+fi
+
+if [ "$GATE_FAIL" -ne 0 ]; then
+    # Зуб гейта: OVER = ненулевой код возврата САМОГО скрипта (шаг CI падает,
+    # а не зеленеет). Строки RSS/BUDGET уже напечатаны — провал прогона должен
+    # быть чем разбирать, в отличие от rc=1 без вывода.
+    printf 'FAIL|RAM-гейт: вердикт OVER (строка BUDGET|…|OVER|… выше, числа — в stderr)\n' >&2
+    # Хвост печатается ДО exit 1 (ревью #98 п.2): stdout проваленного прогона
+    # обязан быть не короче stdout успешного — «rc=1 ПОСЛЕ полной печати», а не
+    # «rc=1 вместо хвоста». Токен хвоста несёт вердикт: напечатать `OK|…` при
+    # OVER означало бы завести новую ложно-зелёную поверхность (grep `^OK` по
+    # stdout даёт OK при rc=1). Форма строки та же, поле `gate=` = OVER.
+    printf 'FAIL|measure-rss завершён|gate=OVER|method=%s\n' "$RSS_TOOL"
+    rm -f "$ROWS_FILE"
+    exit 1
+fi
 rm -f "$ROWS_FILE"
 
-echo "OK|measure-rss завершён|method=$RSS_TOOL"
+printf 'OK|measure-rss завершён|gate=ok|method=%s\n' "$RSS_TOOL"

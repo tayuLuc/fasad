@@ -22,10 +22,42 @@
 # Запуск (нужны веса и dylib):
 #   ORT_LIB_PATH=... DYLD_LIBRARY_PATH=... scripts/measure-daemon-rss.sh [N]
 # Вывод — METRIC-строки; из них собирается §10 docs/model-audit.md.
+#
+# Код возврата (контракт, тот же класс гейта, что scripts/measure-rss.sh):
+#   0 = вердикт ok ЛИБО пропуск замера («нет весов» = skip, а не зелёный);
+#   1 = вердикт over (бюджет превышен) ЛИБО демон не поднялся ЛИБО мусор в
+#       числовом env (`BUDGET_MIB` не число — отказ до замера, ревью #98 R2);
+#   2 = нет бинаря.
+# До этой правки вердикт over только печатался, а скрипт выходил rc=0 — тот же
+# класс false-green «print-only landing test» (реестр 15/18), что в
+# measure-rss.sh. Скрипт НЕ вызывается из CI-контура: упоминается только в
+# docs как метод промера — три файла, пять строк (grep `measure-daemon-rss`
+# по дереву, переснято 21.10): crates/guard-daemon/README.md:110 (раздел про
+# монтаж каскадов 1–2), docs/model-audit.md:533 (§10, метод) и
+# docs/release.md:274/308/313 (§RAM п.7, зуб, п.10) — прежняя формулировка
+# «только в README» была ложью о покрытии (ревью #98, нит 3; «мест три» —
+# неточно по строкам: файлов три, строк пять, ревью #98 D6).
+# Но живой гейт обязан быть единым: у двух скриптов с одним вердиктом
+# должен быть один код возврата, иначе первый же вызов из CI получит зелёный
+# провал.
 
 set -euo pipefail
 
 THREADS="${FASAD_THREADS:-2}"
+# Бюджет SPEC §1 ≤1.8 ГБ = 1843.2 MiB; тот же рычаг из окружения, что в
+# measure-rss.sh, — ради промера зуба (`BUDGET_MIB=0.001 → rc=1`) без правки
+# кода. Значение по умолчанию = контракт, промеры его не меняют.
+BUDGET_MIB="${BUDGET_MIB:-1843.2}"
+# Валидация BUDGET_MIB (ревью #98 R2, тот же fail-open, что в measure-rss.sh):
+# вердикт считает awk: не-числовой b переводит сравнение `p <= b` в
+# лексикографику — «48.3» <= «abc» истинно ('4' < 'a') → при BUDGET_MIB=abc
+# печаталось `METRIC|budget|abc|verdict|ok` и rc=0. Мусор в числовом env =
+# отказ с именем переменной и значением (rc=1; docs/release.md §RAM п.10).
+# Идём ДО проверки бинаря: сломанный env — диагноз про запуск, а не про среду.
+if [[ ! "$BUDGET_MIB" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "measure-daemon-rss: ОШИБКА: BUDGET_MIB=$BUDGET_MIB: не число (ожидается вид 1843.2 — целое или десятичное, без разделителей и знака)" >&2
+  exit 1
+fi
 REQS="${1:-5}"
 BIN="${DSH_FASAD_BIN:-target/release/fasad}"
 MODEL_DIR="${FASAD_MODEL_DIR:-$HOME/.cache/fasad-models}"
@@ -121,6 +153,17 @@ steady_median=$(tail -n "$steady_n" "$RSS_LOG" | sort -n | awk -v k="$steady_n" 
 steady_mib=$(awk -v k="$steady_median" 'BEGIN{printf "%.1f", k/1024}')
 echo "METRIC|samples|$samples|rss_peak_mib|$peak_mib"
 echo "METRIC|steady_samples|$steady_n|rss_steady_median_mib|$steady_mib|tail_fraction|$TAIL_FRACTION"
-echo "METRIC|budget|1843.2|verdict|$(awk -v p="$peak_mib" 'BEGIN{print (p<1843.2)?"ok":"over"}')"
+# Вердикт = max по всем сэмплам (консервативный пик, та же семантика, что
+# track_peak в measure-rss.sh: ok при peak <= budget, не строго «<» — 1843.2
+# есть «≤1.8 ГБ» по SPEC §1, равенство бюджету не превышение).
+verdict="$(awk -v p="$peak_mib" -v b="$BUDGET_MIB" 'BEGIN{print (p<=b)?"ok":"over"}')"
+echo "METRIC|budget|$BUDGET_MIB|verdict|$verdict"
 echo "METRIC|stage_header|${stage:-none}|cascade2_header|${c2:-none}"
 cp "$RSS_LOG" "/tmp/fasad-rss-samples.$(date +%s).txt" 2>/dev/null || true
+# Зуб: вердикт over обязан валить код возврата, а не только печататься
+# (реестр false-green 15/18). Причину пишем в stderr — METRIC-строки выше
+# остаются целым артефактом прогона.
+if [[ "$verdict" == "over" ]]; then
+  echo "measure-daemon-rss: ОШИБКА: RAM-гейт: вердикт over (peak=${peak_mib} MiB, budget=${BUDGET_MIB} MiB)" >&2
+  exit 1
+fi

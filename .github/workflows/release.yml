@@ -109,12 +109,31 @@ jobs:
       - name: RAM-гейт каскада-0 (SPEC §10 п.9, метод в выводе)
         # Windows-ветки метода замера (PowerShell Get-Process) не реализовано:
         # scripts/measure-rss.sh на неизмеренной ОС падает с exit 2 и явной
-        # причиной, а не рисует ноль.
+        # причиной, а не рисует ноль (rc=2 промерен шимом `uname` = FreeBSD,
+        # ревью #98 R1: до правки ветка звала die = rc=1, т.е. «2» обещали три
+        # места, а в скрипте его не было).
+        # Мусор в env BUDGET_MIB (разделитель в «1,843.2», буквы) = rc=1 до
+        # замера (ревью #98 R2): без валидации awk читал «abc» как 0, и шаг
+        # зелёнил гейт при любом пике.
+        # Зуб шага = код возврата скрипта: при вердикте OVER measure-rss.sh
+        # выходит rc=1 (плюс причина в stderr), и step падает. До правки OVER
+        # только печатался, rc был 0 и шаг зеленел при превышении бюджета —
+        # класс false-green «print-only landing test» (реестр 15/18).
         if: matrix.os != 'windows-2022'
         run: just measure-rss --skip-build
       - name: "Бандл: бинарь + LICENSE + README + схема + лицензии + SHA256SUMS"
         run: just dist
-      - name: "Проверка бандла: распаковка, запуск, /health, сверка хэшей"
+      - name: "Проверка бандла: распаковка, запуск, /health, сверка хэшей + тег↔версия"
+        env:
+          # Зуб «тег == [workspace.package] version»: на тег-триггере в скрипт
+          # уходит github.ref_name, на workflow_dispatch — пустая строка, и
+          # скрипт сам печатает `VERSION|SKIPPED` (проверка не запрашивалась), а
+          # не молчит. Без этого зуба контур публиковал зелёный релиз под тегом
+          # v9.9.9 над ассетами fasad-0.1.0-*: `gh release create --verify-tag`
+          # сверяет тег с КОММИТОМ, версию тега никто не смотрел.
+          # Выражение `начало && ref_name || ''` на false даёт '' (строка), т.е.
+          # на пуше в ветку env пустой — ровно то, что нужно dispatch-прогону.
+          FASAD_EXPECT_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
         run: bash scripts/verify-bundle.sh
       - name: Upload bundle
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
