@@ -22,6 +22,11 @@ MASK/KEEP, обратимо подменяет секретные спаны, п
    reload стоит 300–1500 мс на запрос `[claim]`
 4. UI: минимальная веб-песочница, зашитая в бинарник (`rust-embed`), фронт
    Svelte/Preact ~50 КБ; закрытая вкладка = 0 байт ОЗУ `[claim]`
+   — **девиация, реализовано на шаге 8 (PR #75)**: фронт на vanilla
+   HTML/CSS/JS, 20 340 байт (`wc -c` по трём файлам `crates/guard-daemon/ui/`),
+   node-тулчейна в сборке продукта нет ни в dev, ни в release. Рамка SPEC —
+   «зашита в бинарник, офлайн, без внешнего хостинга»; фреймворк был средством
+   уложиться в 50 КБ, а не требованием. `[decided]`
 5. Fail-Closed: таймаут/паника/нехватка памяти → запрос наружу НЕ уходит `[decided]`
 6. Никакой телеметрии; весь разбор завершается на 127.0.0.1 до первой сокет-операции `[decided]`
 
@@ -280,7 +285,7 @@ fasad/
 | region | 4.0 | mlock / VirtualLock | |
 | chacha20poly1305 | 0.10 | AEAD vault_token | |
 | lz4_flex | 0.13 | сжатие словаря | |
-| rust-embed | 8.x | compression; UI в бинарнике | |
+| rust-embed | 8.x | UI в бинарнике; compression снят (первичка — dep-verify-crates §15) | §15 |
 | xxhash-rust / ahash | latest | мемоизация абзацев | |
 
 Версии в таблице — **снапшот из транскрипта**, не сверялись в момент написания §7.
@@ -322,7 +327,7 @@ gline-rs только как референс алгоритма `[decided]`. П
 | POST `/v1/analyze` | Presidio Analyzer (репо `data-privacy-stack/presidio`, MIT — переехал из microsoft) | спаны+offsets+векторы классов+вердикты, текст не меняет |
 | POST `/v1/anonymize` / `/v1/deanonymize` | Presidio Anonymizer | двухшаговый, stateless `vault_token` |
 | DELETE `/v1/sessions/{id}`, PUT `/v1/schema` | REST | сброс сессии / горячая смена схемы категорий |
-| GET `/ui` | — | зашитая песочница (подсветка α=confidence) |
+| GET `/ui` (и `/` — то же) | — | зашитая песочница (подсветка α=confidence, редактор запроса, roundtrip); ассеты — `GET /assets/{app.css\|app.js\|schema.json}`, отдаётся ровно белый список из четырёх имён |
 
 Заголовки: вход `X-Upstream-URL`, `X-Session-ID`, `X-Guard-Policy: mask|block|audit_only`.
 Выход — полная сетка того, что демон действительно отправляет (имена констант в
@@ -517,6 +522,6 @@ cleardoc.ru, aisearch.ru/obezlichivanie. Правило: **любой конку
    copyosity-форке): релизы fasad собирает GitHub Actions, локалок — нет.
 6. **Их дефекты как наши гейты**: README про notarization не подтвердился артефактом
    (1.0.3 без тикета) → наш релизный гейт показывает факт (`spctl`/staple verify в CI,
-   а не прозу в README); канал self-update врал MIME → latest.json вfasad отдаёт
+   а не прозу в README); канал self-update врал MIME → latest.json в fasad отдаёт
    строго JSON, контент-тайп-тест в CI; MIT в package.json без файла LICENSE → LICENSE
    в корне с первого коммита, cargo-deny следит.
