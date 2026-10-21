@@ -43,6 +43,20 @@ nice, 2 треда, один прогон за раз, сетка τ — пос�
 Опции: `--limit N`, `--thr 0.20,0.25`, `--sweep 0.10,0.15,…` (поиск оптимума),
 `--daemon PATH`, `--no-daemon` (каскад 0 пустой = меряем только модели).
 
+Режим α (issue #85, калибровка смесителя серой зоны): `--alpha 0,0.25,…,1.0`
+добавляет сетку α ПРОИЗВОДСТВЕННОЙ семантики поверх той же инференс-выборки
+(один прогон каскадов, счёты per-α в том же процессе — детерминизм и эконом).
+Семантика — зеркало прод-кода, не переизобретение: гейт τ по p1 (cascades.rs
+`gate_spans`), перескор `S = α·p1 + (1−α)·p2` (cascades.rs `blend`/`apply_arbiter`)
+для спанов серой зоны `gray_lo ≤ p1 < gray_hi` (`in_grey_zone`) КОНТЕКСТНО-
+ЗАВИСИМЫХ классов (схема: model ∧ пустые validators — `CascadeCtx::of`),
+финальный гейт `S ≥ τ` (`RoutingCfg::single`, pipeline.rs). Границы серой зоны
+`--gray LO,HI` (дефолт 0.22,0.80 = DEFAULT_GRAY_LO/HI из config.rs). p2 —
+row-level вердикт Decide того же класса (дефолтный контракт apply_arbiter).
+α=1.0 = тождество (перескор = p1) — инвариант: строки ALPHA|a|1.00 обязаны
+совпасть с UNION|baseline тех же thr/oracle. Инвариант проверяет `alpha_selftest`
+(строки PRECHECK|alpha|…) — селф-тест режима, гоняется до загрузки весов.
+
 Детерминированность: RNG в пайплайне нет (seed: n/a); фиксированы sha256 датасета
 (гейт B2), sha256 весов (models/manifest.tsv), порядок онтологии (схема), `--threads`
 (ORT intra-op: docs/model-audit §5.7 — на decide потоки двигают счёт на 1 tp).
@@ -116,6 +130,89 @@ def wilson_anchors() -> None:
         if abs(a - lo) > 0.01 or abs(b - hi) > 0.01:
             sys.exit(f"FAIL wilson {k}/{n}: {a:.3f},{b:.3f} != {lo},{hi}")
     print("PRECHECK|wilson|anchors|48/50+49/50+50/50|ok")
+
+
+def context_classes() -> set[str]:
+    """Контекстно-зависимые классы СХЕМЫ (= арбитр имеет право голоса).
+
+    Тот же критерий, что `CascadeCtx::of` (cascades.rs): model ∧ пустые
+    validators. Берём из config/schema.default.json, а не списком в коде:
+    вторая реализация онтологии = рассинхрон при первой правке схемы.
+    """
+    schema = json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
+    return {c["id"] for c in schema["classes"] if c.get("model") and not c.get("validators")}
+
+
+def blend_lock(lock: dict, dec: dict, alpha: float,
+               gray: tuple[float, float], ctx: set[str]) -> dict:
+    """Спанам каскада 1 проставлен ФИНАЛЬНЫЙ скор прод-контура (режим α, #85).
+
+    Зеркало `apply_arbiter` (cascades.rs): перескор только в серой зоне
+    `gray_lo ≤ p1 < gray_hi` для контекстно-зависимого класса при наличии
+    p2; вне зоны/класса/вердикта скор = p1 без изменений. Дальнейший отсев
+    `conf ≥ thr` в `stage_hits`/`count_negative` = финальный гейт
+    `RoutingCfg::single(τ)` (pipeline.rs) по смешанному скору: гейт ПОСЛЕ
+    перескора — как в проде (cascades.rs test `arbiter_lowers_grey_span_…`:
+    «после отказа арбитра спан уходит ниже τ — это и есть FP-подавление»).
+    p2 row-level: все спаны класса в строке получают один вердикт — контракт
+    Decide, не наша выдумка. α=1.0: `1.0*p1 + 0.0*p2 == p1` — тождество.
+    """
+    lo, hi = gray
+    out: dict[str, list[dict]] = {}
+    for rid, spans in lock.items():
+        probs = dec.get(rid, {})
+        blended = []
+        for s in spans:
+            cls = BIO_TO_GOLDEN.get(s["cls"])
+            conf = s["conf"]
+            if cls in ctx and lo <= conf < hi and cls in probs:
+                t = dict(s)
+                t["conf"] = alpha * conf + (1.0 - alpha) * probs[cls]
+                blended.append(t)
+            else:
+                blended.append(s)
+        out[rid] = blended
+    return out
+
+
+def alpha_selftest(gray: tuple[float, float]) -> None:
+    """Селф-тест режима α на синтетике (без весов, до загрузки сессий).
+
+    Ожидаемые числа — из прод-тестов cascades.rs (первичка семантики):
+    `arbiter_raises_grey_span…`: 0.5·0.3+0.5·1.0 = 0.65;
+    `arbiter_lowers_grey_span…`: 0.5·0.3+0.5·0.0 = 0.15 < 0.20;
+    `arbiter_does_not_touch_confident_span`: p1=0.9 ≥ gray_hi не трогается;
+    `missing_p2_leaves_span_at_p1`: нет вердикта — скор = p1.
+    """
+    lo, hi = gray
+    ctx = {"person_name", "address"}
+    dec = {"r": {"person_name": 1.0, "address": 0.0}}
+    lock = {"r": [
+        {"cls": "LAST_NAME", "b0": 0, "b1": 1, "conf": 0.3},     # серая зона, p2=1.0
+        {"cls": "LAST_NAME", "b0": 2, "b1": 3, "conf": 0.9},     # над зоной
+        {"cls": "LAST_NAME", "b0": 4, "b1": 5, "conf": 0.1},     # под зоной
+        {"cls": "INN", "b0": 6, "b1": 7, "conf": 0.3},        # не ctx-класс
+        {"cls": "PASSPORT", "b0": 8, "b1": 9, "conf": 0.3},   # ctx, но p2 нет
+    ]}
+    b1 = blend_lock(lock, dec, 1.0, gray, ctx)
+    if [s["conf"] for s in b1["r"]] != [s["conf"] for s in lock["r"]]:
+        sys.exit("FAIL alpha selftest: α=1.0 не тождество")
+    b = blend_lock(lock, dec, 0.5, gray, ctx)
+    c = [s["conf"] for s in b["r"]]
+    if abs(c[0] - 0.65) > 1e-12:
+        sys.exit(f"FAIL alpha selftest: raise {c[0]} != 0.65")
+    if not c[0] >= 0.20:
+        sys.exit("FAIL alpha selftest: поднятый спан не проходит τ")
+    b2 = blend_lock({"r": [dict(lock["r"][0], conf=0.3)]},
+                    {"r": {"person_name": 0.0}}, 0.5, gray, ctx)
+    if abs(b2["r"][0]["conf"] - 0.15) > 1e-12 or b2["r"][0]["conf"] >= 0.20:
+        sys.exit("FAIL alpha selftest: отказ арбитра не ушёл ниже τ (0.15)")
+    if not (c[1] == 0.9 and c[2] == 0.1 and c[3] == 0.3 and c[4] == 0.3):
+        sys.exit(f"FAIL alpha selftest: инертность зоны/класса/вердикта {c[1:]}")
+    b0 = blend_lock(lock, dec, 0.0, gray, ctx)
+    if abs(b0["r"][0]["conf"] - 1.0) > 1e-12:
+        sys.exit("FAIL alpha selftest: α=0 не = p2")
+    print(f"PRECHECK|alpha|identity_a1+raise0.65+lower0.15+zone+ctx+nop2+alpha0|ok|gray|{lo}|{hi}")
 
 
 def k_for_bar(n: int) -> int:
@@ -415,6 +512,23 @@ def count_negative(neg: list[dict], c0: dict, lock: dict, thr: float) -> dict:
                 union=f_c0 + f_lk, bait_c0=bait_c0, bait_lockr=bait_lk)
 
 
+def negative_fp_per_class(neg: list[dict], lock: dict, thr: float) -> dict[str, int]:
+    """FP каскада-1 по классам на negative-сплите (мера count_negative, per-class).
+
+    Для режима α: `lock` передаётся уже смешанным (`blend_lock`), тогда счёт
+    идёт по финальному скору ≥ τ = FP, выпущенные продуктом после арбитра.
+    """
+    per: dict[str, int] = {}
+    for r in neg:
+        for s in lock.get(r["id"], []):
+            if s["conf"] < thr:
+                continue
+            cls = BIO_TO_GOLDEN.get(s["cls"])
+            if cls in GOLDEN_CLASSES:
+                per[cls] = per.get(cls, 0) + 1
+    return per
+
+
 def emit_table(per: dict, agg: dict, thr: float, oracle: str) -> None:
     print(f"UNION|table|thr|{thr:.2f}|oracle|{oracle}|cols|class|n|c0|lockr|decide|union|strict|wilson_lo|wilson_hi")
     for c in GOLDEN_CLASSES:
@@ -462,6 +576,10 @@ def main() -> None:
                     help="intra/inter_op потоков ORT (рюлинг 21.10: 2; часть воспроизводимости)")
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--thr", default="0.20,0.25")
+    ap.add_argument("--alpha", default="",
+                    help="сетка α режима #85 ('0,0.25,0.5,0.75,1.0'); пусто = базовый режим")
+    ap.add_argument("--gray", default="0.22,0.80",
+                    help="границы серой зоны gray_lo,gray_hi (дефолт = DEFAULT_GRAY_LO/HI config.rs)")
     ap.add_argument("--sweep", default="")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--daemon", default=str(ROOT / "target" / "debug" / "fasad"))
@@ -474,6 +592,13 @@ def main() -> None:
         sys.stdout = Tee(out_fh)
     t_start = time.time()
     wilson_anchors()
+    alphas = [float(x) for x in args.alpha.split(",") if x.strip()]
+    gray_vals = [float(x) for x in args.gray.split(",") if x.strip()]
+    if len(gray_vals) != 2:
+        sys.exit(f"FAIL --gray needs lo,hi: {args.gray!r}")
+    if alphas:
+        # Селф-тест режима α — ДО загрузки весов: падать до дорогих сессий.
+        alpha_selftest((gray_vals[0], gray_vals[1]))
     shas = verify_inputs()
     rec, neg = load_rows()
     if args.limit:
@@ -516,6 +641,65 @@ def main() -> None:
         print(f"UNION|negative|thr|{thr:.2f}|rows|{ng['rows']}|rows_any_fired|{ng['rows_any']}"
               f"|spans_c0|{ng['c0']}|spans_lockr|{ng['lockr']}|spans_union|{ng['union']}"
               f"|bait_c0|{ng['bait_c0']}|bait_lockr|{ng['bait_lockr']}")
+
+    if alphas:
+        # Режим α (#85): перескор каскада-1 вердиктами каскада-2 по прод-семантике
+        # (blend_lock) — счёты per-α на ТОЙ ЖЕ инференс-выборке: один прогон
+        # моделей, N α в одном процессе, детерминизм как у базового режима.
+        # alphas/gray_vals распарсены и selftest прогнан вверху (до загрузки весов).
+        g_lo, g_hi = gray_vals
+        ctx = context_classes()
+        print(f"ALPHA|mode|alphas|{','.join(f'{a:.2f}' for a in alphas)}|gray|{g_lo}|{g_hi}"
+              f"|ctx|" + ",".join(sorted(ctx)))
+        dec_neg, _unkn = run_decide(neg, args.threads)
+        # Диагностика зоны: население серой зоны по классам (арбитражно-
+        # значимые спаны) — без неё «α инертен» и «в зоне ноль спанов»
+        # неразличимы. below = conf < gray_lo (гейт τ считает отдельно).
+        for split, lk in (("rec", lock), ("neg", lock_neg)):
+            zc: dict[str, dict[str, int]] = {}
+            for spans in lk.values():
+                for s in spans:
+                    cls = BIO_TO_GOLDEN.get(s["cls"])
+                    if cls not in GOLDEN_CLASSES:
+                        continue
+                    d = zc.setdefault(cls, {"below": 0, "grey": 0, "above": 0})
+                    d["below" if s["conf"] < g_lo else ("grey" if s["conf"] < g_hi else "above")] += 1
+            for c in GOLDEN_CLASSES:
+                if c in zc:
+                    z = zc[c]
+                    print(f"ALPHA|zone|split|{split}|class|{c}|below|{z['below']}"
+                          f"|grey|{z['grey']}|above|{z['above']}|ctx|{int(c in ctx)}")
+        for thr in grid:
+            for a in alphas:
+                lb = blend_lock(lock, dec, a, (g_lo, g_hi), ctx)
+                lbn = blend_lock(lock_neg, dec_neg, a, (g_lo, g_hi), ctx)
+                for oracle in ("overlap", "exact"):
+                    per, agg = count(rec, c0, lb, dec, thr, oracle)
+                    lo_u = 100 * wilson(agg["span_u"], agg["span_n"])[0]
+                    lo_s = 100 * wilson(agg["span_s"], agg["span_n"])[0]
+                    k_need = k_for_bar(agg["span_n"])
+                    print(f"ALPHA|a|{a:.2f}|thr|{thr:.2f}|oracle|{oracle}"
+                          f"|union_k|{agg['span_u']}|n|{agg['span_n']}"
+                          f"|union|{100.0 * agg['span_u'] / agg['span_n']:.2f}"
+                          f"|wilson_lo|{lo_u:.2f}"
+                          f"|strict_k|{agg['span_s']}|strict|{100.0 * agg['span_s'] / agg['span_n']:.2f}"
+                          f"|strict_lo|{lo_s:.2f}|fn|{agg['span_n'] - agg['span_u']}"
+                          f"|k_for_bar|{k_need}|deficit|{max(0, k_need - agg['span_u'])}"
+                          f"|row_k|{agg['row_h']}")
+                    if oracle == "overlap":
+                        for c in GOLDEN_CLASSES:
+                            d = per[c]
+                            if d["n"] == 0:
+                                continue
+                            print(f"ALPHA|pc|a|{a:.2f}|thr|{thr:.2f}|class|{c}|n|{d['n']}"
+                                  f"|union|{d['union']}|fn|{d['n'] - d['union']}|lockr|{d['lockr']}"
+                                  f"|dec|{d['dec']}|strict|{d['strict']}")
+                        ng = count_negative(neg, c0_neg, lbn, thr)
+                        fpc = negative_fp_per_class(neg, lbn, thr)
+                        print(f"ALPHA|neg|a|{a:.2f}|thr|{thr:.2f}|fp_lockr|{ng['lockr']}"
+                              f"|fp_union|{ng['union']}|rows_any|{ng['rows_any']}"
+                              f"|bait_lockr|{ng['bait_lockr']}|fp_pc|"
+                              + ",".join(f"{c}:{fpc.get(c, 0)}" for c in GOLDEN_CLASSES))
 
     sweep = [float(x) for x in args.sweep.split(",") if x.strip()]
     best = None
