@@ -149,12 +149,12 @@ seed: n/a-no-RNG (RNG в пайплайне нет).
 |---|---|---|---|---|---|---|---|
 | `person_name` | 56 | 0 | 0 | 55 | 55 | 0 | 90.55 – 99.68 % |
 | `inn` | 36 | 36 | 0 | 36 | 36 | 36 | 90.36 – 100.00 % |
-| `snils` | 29 | 1 | 11 | 16 | 20 | 12 | 50.77 – 82.72 % |
+| `snils` | 29 | 29 | 11 | 16 | 29 | 29 | 88.30 – 100.00 % |
 | `ogrn` | 25 | 25 | 0 | 0 | 25 | 25 | 86.68 – 100.00 % |
 | `ogrnip` | 21 | 21 | 0 | 0 | 21 | 21 | 84.54 – 100.00 % |
-| `iban` | 27 | 6 | 0 | 0 | 6 | 6 | 10.61 – 40.76 % |
+| `iban` | 27 | 27 | 0 | 0 | 27 | 27 | 87.54 – 100.00 % |
 | `address` | 40 | 0 | 0 | 40 | 40 | 0 | 91.24 – 100.00 % |
-| `card_pan` | 32 | 17 | 0 | 32 | 32 | 17 | 89.28 – 100.00 % |
+| `card_pan` | 32 | 32 | 0 | 32 | 32 | 32 | 89.28 – 100.00 % |
 | `phone` | 36 | 0 | 27 | 36 | 36 | 27 | 90.36 – 100.00 % |
 | `email` | 40 | 0 | 0 | 40 | 40 | 0 | 91.24 – 100.00 % |
 | `passport` | 16 | 0 | 0 | 16 | 16 | 0 | 80.64 – 100.00 % |
@@ -165,24 +165,24 @@ seed: n/a-no-RNG (RNG в пайплайне нет).
 |---|---|---|---|---|---|---|---|
 | `person_name` | 56 | 0 | 56 | 55 | 56 | 56 | 93.58 – 100.00 % |
 | `inn` | 36 | 36 | 21 | 36 | 36 | 36 | 90.36 – 100.00 % |
-| `snils` | 29 | 1 | 17 | 16 | 23 | 17 | 61.61 – 90.15 % |
+| `snils` | 29 | 29 | 17 | 16 | 29 | 29 | 88.30 – 100.00 % |
 | `ogrn` | 25 | 25 | 0 | 0 | 25 | 25 | 86.68 – 100.00 % |
 | `ogrnip` | 21 | 21 | 0 | 0 | 21 | 21 | 84.54 – 100.00 % |
-| `iban` | 27 | 6 | 0 | 0 | 6 | 6 | 10.61 – 40.76 % |
+| `iban` | 27 | 27 | 0 | 0 | 27 | 27 | 87.54 – 100.00 % |
 | `address` | 40 | 0 | 40 | 40 | 40 | 40 | 91.24 – 100.00 % |
-| `card_pan` | 32 | 17 | 26 | 32 | 32 | 32 | 89.28 – 100.00 % |
+| `card_pan` | 32 | 32 | 26 | 32 | 32 | 32 | 89.28 – 100.00 % |
 | `phone` | 36 | 0 | 36 | 36 | 36 | 36 | 90.36 – 100.00 % |
 | `email` | 40 | 0 | 40 | 40 | 40 | 40 | 91.24 – 100.00 % |
 | `passport` | 16 | 0 | 10 | 16 | 16 | 10 | 80.64 – 100.00 % |
 
 | оракул | агрегат | k | n | recall | Wilson 95 % lo | hi |
 |---|---|---|---|---|---|---|
-| overlap | `union_span` | 331 | 358 | 92.46 % | 89.25 % | 94.77 % |
-| overlap | `strict_span` | 319 | 358 | 89.11 % | 85.45 % | 91.93 % |
-| overlap | `union_row` | 123 | 150 | 82.00 % | 75.08 % | 87.32 % |
-| exact | `union_span` | 327 | 358 | **91.34 %** | **87.97 %** | 93.83 % |
-| exact | `strict_span` | 144 | 358 | 40.22 % | 35.27 % | 45.38 % |
-| exact | `union_row` | 119 | 150 | 79.33 % | 72.16 % | 85.04 % |
+| overlap | `union_span` | 358 | 358 | 100.00 % | 98.94 % | 100.00 % |
+| overlap | `strict_span` | 352 | 358 | 98.32 % | 96.39 % | 99.23 % |
+| overlap | `union_row` | 150 | 150 | 100.00 % | 97.50 % | 100.00 % |
+| exact | `union_span` | 357 | 358 | **99.72 %** | **98.43 %** | 99.95 % |
+| exact | `strict_span` | 197 | 358 | 55.03 % | 49.85 % | 60.10 % |
+| exact | `union_row` | 149 | 150 | 99.33 % | 96.32 % | 99.88 % |
 
 ### 5.2 Per-class, τ = 0.25
 
@@ -192,12 +192,12 @@ seed: n/a-no-RNG (RNG в пайплайне нет).
 |---|---|---|---|---|---|---|---|
 | `person_name` | 56 | 0 | 0 | 54 | 54 | 0 | 87.88 – 99.02 % |
 | `inn` | 36 | 36 | 0 | 36 | 36 | 36 | 90.36 – 100.00 % |
-| `snils` | 29 | 1 | 11 | 11 | 17 | 12 | 40.74 – 74.49 % |
+| `snils` | 29 | 29 | 11 | 11 | 29 | 29 | 88.30 – 100.00 % |
 | `ogrn` | 25 | 25 | 0 | 0 | 25 | 25 | 86.68 – 100.00 % |
 | `ogrnip` | 21 | 21 | 0 | 0 | 21 | 21 | 84.54 – 100.00 % |
-| `iban` | 27 | 6 | 0 | 0 | 6 | 6 | 10.61 – 40.76 % |
+| `iban` | 27 | 27 | 0 | 0 | 27 | 27 | 87.54 – 100.00 % |
 | `address` | 40 | 0 | 0 | 40 | 40 | 0 | 91.24 – 100.00 % |
-| `card_pan` | 32 | 17 | 0 | 32 | 32 | 17 | 89.28 – 100.00 % |
+| `card_pan` | 32 | 32 | 0 | 32 | 32 | 32 | 89.28 – 100.00 % |
 | `phone` | 36 | 0 | 27 | 36 | 36 | 27 | 90.36 – 100.00 % |
 | `email` | 40 | 0 | 0 | 40 | 40 | 0 | 91.24 – 100.00 % |
 | `passport` | 16 | 0 | 0 | 16 | 16 | 0 | 80.64 – 100.00 % |
@@ -208,24 +208,24 @@ seed: n/a-no-RNG (RNG в пайплайне нет).
 |---|---|---|---|---|---|---|---|
 | `person_name` | 56 | 0 | 56 | 54 | 56 | 56 | 93.58 – 100.00 % |
 | `inn` | 36 | 36 | 21 | 36 | 36 | 36 | 90.36 – 100.00 % |
-| `snils` | 29 | 1 | 17 | 11 | 22 | 17 | 57.89 – 87.78 % |
+| `snils` | 29 | 29 | 17 | 11 | 29 | 29 | 88.30 – 100.00 % |
 | `ogrn` | 25 | 25 | 0 | 0 | 25 | 25 | 86.68 – 100.00 % |
 | `ogrnip` | 21 | 21 | 0 | 0 | 21 | 21 | 84.54 – 100.00 % |
-| `iban` | 27 | 6 | 0 | 0 | 6 | 6 | 10.61 – 40.76 % |
+| `iban` | 27 | 27 | 0 | 0 | 27 | 27 | 87.54 – 100.00 % |
 | `address` | 40 | 0 | 40 | 40 | 40 | 40 | 91.24 – 100.00 % |
-| `card_pan` | 32 | 17 | 26 | 32 | 32 | 32 | 89.28 – 100.00 % |
+| `card_pan` | 32 | 32 | 26 | 32 | 32 | 32 | 89.28 – 100.00 % |
 | `phone` | 36 | 0 | 36 | 36 | 36 | 36 | 90.36 – 100.00 % |
 | `email` | 40 | 0 | 40 | 40 | 40 | 40 | 91.24 – 100.00 % |
 | `passport` | 16 | 0 | 10 | 16 | 16 | 10 | 80.64 – 100.00 % |
 
 | оракул | агрегат | k | n | recall | Wilson 95 % lo | hi |
 |---|---|---|---|---|---|---|
-| overlap | `union_span` | 330 | 358 | 92.18 % | 88.93 % | 94.53 % |
-| overlap | `strict_span` | 319 | 358 | 89.11 % | 85.45 % | 91.93 % |
-| overlap | `union_row` | 122 | 150 | 81.33 % | 74.34 % | 86.76 % |
-| exact | `union_span` | 323 | 358 | **90.22 %** | **86.71 %** | 92.89 % |
-| exact | `strict_span` | 144 | 358 | 40.22 % | 35.27 % | 45.38 % |
-| exact | `union_row` | 115 | 150 | 76.67 % | 69.28 % | 82.72 % |
+| overlap | `union_span` | 358 | 358 | 100.00 % | 98.94 % | 100.00 % |
+| overlap | `strict_span` | 352 | 358 | 98.32 % | 96.39 % | 99.23 % |
+| overlap | `union_row` | 150 | 150 | 100.00 % | 97.50 % | 100.00 % |
+| exact | `union_span` | 356 | 358 | **99.44 %** | **97.99 %** | 99.85 % |
+| exact | `strict_span` | 197 | 358 | 55.03 % | 49.85 % | 60.10 % |
+| exact | `union_row` | 148 | 150 | 98.67 % | 95.27 % | 99.63 % |
 
 ### 5.3 Отрицательный split — FP-контроль
 
@@ -244,45 +244,36 @@ seed: n/a-no-RNG (RNG в пайплайне нет).
 
 | τ | union | union lo | строгий | строгий lo | row-level | FP-спанов union |
 |---|---|---|---|---|---|---|
-| 0.10 | 93.85 % | 90.87 % | 89.11 % | 85.45 % | 85.33 % | 24 |
-| 0.15 | 93.30 % | 90.22 % | 89.11 % | 85.45 % | 84.00 % | 24 |
-| 0.20 | 92.46 % | 89.25 % | 89.11 % | 85.45 % | 82.00 % | 24 |
-| 0.25 | 92.18 % | 88.93 % | 89.11 % | 85.45 % | 81.33 % | 24 |
-| 0.30 | 91.34 % | 87.97 % | 89.11 % | 85.45 % | 79.33 % | 24 |
-| 0.40 | 91.34 % | 87.97 % | 89.11 % | 85.45 % | 79.33 % | 24 |
-| 0.50 | 91.06 % | 87.65 % | 89.11 % | 85.45 % | 78.67 % | 24 |
-
-Оптимум сетки (lexicographic: union → строгий → меньше FP → меньше τ):
-**τ = 0.10** — union 93.85 % (lo 90.87 %),
-строгий 89.11 % (lo 85.45 %).
 
 ### 5.5 Вердикт по планке
 
 ```text
-UNION|verdict|known-below-bar|thr|0.20|union|92.46|union_k|331|union_n|358|union_wilson_lo|89.25|strict|89.11|strict_wilson_lo|85.45|row|82.00|k_for_bar|357|deficit_spans|26|bar|98.0
+UNION|verdict|meets-bar|thr|0.20|union|100.00|union_k|358|union_n|358|union_wilson_lo|98.94|strict|98.32|strict_wilson_lo|96.39|row|100.00|k_for_bar|357|deficit_spans|0|bar|98.0
 ```
 
-- union (τ = 0.20): **92.46 %** (k = 331 из
-  358), нижняя граница Wilson **89.25 %**;
-  строгая мера 89.11 % (lo 85.45 %);
-  row-level 82.00 %.
+- union (τ = 0.20): **100.00 %** (k = 358 из
+  358), нижняя граница Wilson **98.94 %**;
+  строгая мера 98.32 % (lo 96.39 %);
+  row-level 100.00 %.
 - Чтобы нижняя граница стала ≥ 98 % при n = 358, нужно k ≥
-  357 — дефицит **26 span'ов**.
-- **Гейт-метрика по рюлингу #77 (byte-exact, span-уровень): union 91.34 %**
-  (k = 327 из 358), нижняя граница Wilson
-  **87.97 %** — планка 98 % **не закрыта**. Строгая координатная
-  мера тем же оракулом: 40.22 %
-  (lo 35.27 %). Overlap-диагностика
-  той же сетки: union 92.46 % (lo 89.25 %).
-- Статус гейта #14B: **не закрыт** (`known-below-bar` печатается из фактических
-  чисел харнесом, не из шаблона; `deficit_spans` — расстояние до `k_for_bar`,
-  который харнес считает для overlap-знаменателя).
+  357 — дефицит **0 span'ов**.
+- **Гейт-метрика по рюлингу #77 (byte-exact, span-уровень): union 99.72 %**
+  (k = 357 из 358), нижняя граница Wilson
+  **98.43 %** — планка 98.0 % **закрыта**. Строгая координатная
+  мера тем же оракулом: 55.03 %
+  (lo 49.85 %). Overlap-диагностика
+  той же сетки: union 100.00 % (lo 98.94 %).
+- Статус гейта #14B: **закрыт** (токен харнеса `meets-bar`; `deficit_spans` —
+  расстояние до `k_for_bar`, который харнес считает для overlap-знаменателя).
 - Сравнение с базлайнами §5.7 C (τ = 0.25, знаменатель 285 = только 8 модельных
   классов, span-level): lockR fp16 86.67 (lo 82.23, k 247), Decide q4f16 92.98
-  (lo 89.41, k 265). Union на полном знаменателе 358 добавляет валидаторные классы
-  и закрывает часть span-промахов каскада 1, но 98 % не закрывает — см. §7.
+  (lo 89.41, k 265). Это константы сравнения из §5.7 C, не промер текущего
+  артефакта. Union на полном знаменателе 358 добавляет
+  валидаторные классы; итог по планке — см. вердикт выше и §7.
 
 ## 6. Находки промера
+
+**Покрывка каскада 0 на этом артефакте** (гейт-метрика exact, τ = 0.20, только чексуммные классы): **170/170** — `inn` 36/36, `snils` 29/29, `ogrn` 25/25, `ogrnip` 21/21, `iban` 27/27, `card_pan` 32/32.
 
 1. **Дыра продуктового покрытия каскада 0.** Демон отдаёт только чексуммно
    валидируемые классы; `person_name`, `phone`, `email`, `address`, `passport` в
@@ -308,34 +299,17 @@ UNION|verdict|known-below-bar|thr|0.20|union|92.46|union_k|331|union_n|358|union
    (таблица счетов первичкой не закрыта: SPEC §11 п.6, AGENTS §Дисциплина п.3).
 4. **Расхождение оракулов и направление смещения координат** — метрика чувствительна
    к определению попадания; направление смещения померено отдельно, не угадано:
-   при τ = 0.20 тот же прогон даёт union 92.46 % по overlap и
-   91.34 % по byte-exact (k 327/358 против
-   331/358); по строгой координатной мере разрыв
-   89.11 % (overlap) против
-   40.22 % (exact).
-   Промер `tools/metrics/probe_coords.py` (τ = 0.20, lockR fp16, 2 треда, артефакт
-   в §8.1): из 503
-   перекрывающихся пар предсказание/gold — 465
-   лежат **целиком внутри** gold-границ, 38 точных,
-   superset = 0, partial = 0.
-   Направление: **модель недо-сегментирует (режет хвосты)**, а не «шире» gold:
-   d_start медиана 5 (min 0 — начало
-   никогда левее gold, max 42), d_end медиана -8
-   (max 0 — конец никогда правее gold; в 80.1 %
-   случаев конец обрезан). Медианная длина: gold 18 байт,
-   предсказание 14. Механизм — сужение
-   хвостовых `##`-токенов в декодере (`run_lockr`) плюс конец на границе слова:
-   усечённый спан лежит
-   внутри gold ⇒ по overlap зачёт идёт, по byte-exact — нет.
-   Первая версия абзаца утверждала обратное («координаты шире gold-границ»);
-   перевёрнутое направление поймано ревью #80, перемерено первичкой и исправлено
-   в генераторе, а не в тексте (иначе следующая генерация вернула бы ошибку).
+   при τ = 0.20 тот же прогон даёт union 100.00 % по overlap и
+   99.72 % по byte-exact (k 357/358 против
+   358/358); по строгой координатной мере разрыв
+   98.32 % (overlap) против
+   55.03 % (exact).
    Владелец определения попадания должен быть один файл: README golden говорит
    «exact», Rust-харнес — «overlap». Это дефект определения метрики, не модели —
    заведён в **#77**; рюлинг 21.10 выбрал byte-exact (см. §1, §5.5).
 5. **Row-level кредит Decide** (§3) завышает `union_span` над `strict_span`:
-   при τ = 0.20 это 92.46 % против 89.11 %
-   (k 319 против 331 при n = 358).
+   при τ = 0.20 это 100.00 % против 98.32 %
+   (k 352 против 358 при n = 358).
 6. **Потоки**: записаны в метод (§4), иначе повтор прогона не обязан сойтись с числами.
 7. **`data/golden/README.md` §«Метрика recall» содержит устаревшее CI-число**: «нижняя
    граница ≥ 94.5 % при 146/146». Промер формулой §8: при n = 146 и k = n граница
@@ -366,6 +340,14 @@ UNION|verdict|known-below-bar|thr|0.20|union|92.46|union_k|331|union_n|358|union
    нарезаны.
 
 ## 7. Что нужно, чтобы закрыть планку
+
+**Статус на этом артефакте:** токен харнеса `meets-bar` (τ = 0.20), дефицит до
+`k_for_bar` = 0 span'ов; гейт-метрика exact: lo
+98.43 % против планки 98.0 % — закрыта.
+
+Пункты ниже — план базлайнового прогона (#80), написан по артефакту 20.10.
+Пункт 3 — разделители в каскаде 0 + обычные валидные IBAN (issue #51) — выполнен
+в PR #86 и измеряется строкой покрытия в §6. Пункты 1, 2, 4 и 5 открыты.
 
 0. Детерминированность подтверждена повтором: `diff` по `UNION|`-строкам двух прогонов
    (команда в §4) = пусто, промер 21.10, артефакты r1/r2 по 100 строк.
@@ -424,101 +406,75 @@ UNION|sha|model_q4f16.onnx_data|df2b05dc97ff875e0d2b51ec21de0049b7b3e7feddaa5224
 UNION|sha|tokenizer.json|3ad87d9ffe669147063e70850927dd2da90249e2acc5c8527f1eb65df467bcc8
 UNION|sha|schema.default.json|039133c07bcca89b86eb8bdd40b39b3deae8fffcc1ddbcc83070bad5c7c65a24
 UNION|bar|recall|98.0|ci|wilson95-lower|formula|docs/dep-verify-algorithms.md §8
-UNION|cascade0|binary|/Users/user/Documents/dsh-projects/fasad/target/debug/fasad|url|http://127.0.0.1:52507|log|/var/folders/5r/0pgnt72j0_x6g30xw66gcgnc0000gn/T/union-recall-daemon-536mic2w.log
-TIME|cascade0|s|0.08|rows|150|spans|117
+UNION|cascade0|binary|/Users/user/Documents/dsh-projects/fasad-step9norm/target/debug/fasad|url|http://127.0.0.1:59217|log|/var/folders/5r/0pgnt72j0_x6g30xw66gcgnc0000gn/T/union-recall-daemon-df2lx1qz.log
+TIME|cascade0|s|0.08|rows|150|spans|182
 TIME|cascade0|s|0.02|rows|54|spans|5
-TIME|lockr_fp16|s|64.99|rows|150|batch|8|threads|2|spans|533
-TIME|decide_q4f16|s|202.99|rows|150|unk_rows|0|threads|2
-TIME|lockr_fp16|s|26.93|rows|54|batch|8|threads|2|spans|19
+TIME|lockr_fp16|s|63.99|rows|150|batch|8|threads|2|spans|533
+TIME|decide_q4f16|s|355.37|rows|150|unk_rows|0|threads|2
+TIME|lockr_fp16|s|44.52|rows|54|batch|8|threads|2|spans|19
 UNION|table|thr|0.20|oracle|overlap|cols|class|n|c0|lockr|decide|union|strict|wilson_lo|wilson_hi
 UNION|per_class|person_name|56|0|56|55|56|56|93.58|100.00
 UNION|per_class|inn|36|36|21|36|36|36|90.36|100.00
-UNION|per_class|snils|29|1|17|16|23|17|61.61|90.15
+UNION|per_class|snils|29|29|17|16|29|29|88.30|100.00
 UNION|per_class|ogrn|25|25|0|0|25|25|86.68|100.00
 UNION|per_class|ogrnip|21|21|0|0|21|21|84.54|100.00
-UNION|per_class|iban|27|6|0|0|6|6|10.61|40.76
+UNION|per_class|iban|27|27|0|0|27|27|87.54|100.00
 UNION|per_class|address|40|0|40|40|40|40|91.24|100.00
-UNION|per_class|card_pan|32|17|26|32|32|32|89.28|100.00
+UNION|per_class|card_pan|32|32|26|32|32|32|89.28|100.00
 UNION|per_class|phone|36|0|36|36|36|36|90.36|100.00
 UNION|per_class|email|40|0|40|40|40|40|91.24|100.00
 UNION|per_class|passport|16|0|10|16|16|10|80.64|100.00
-UNION|overall|thr|0.20|oracle|overlap|agg|union_span|k|331|n|358|recall|92.46|wilson95_lo|89.25|wilson95_hi|94.77
-UNION|overall|thr|0.20|oracle|overlap|agg|strict_span|k|319|n|358|recall|89.11|wilson95_lo|85.45|wilson95_hi|91.93
-UNION|overall|thr|0.20|oracle|overlap|agg|union_row|k|123|n|150|recall|82.00|wilson95_lo|75.08|wilson95_hi|87.32
+UNION|overall|thr|0.20|oracle|overlap|agg|union_span|k|358|n|358|recall|100.00|wilson95_lo|98.94|wilson95_hi|100.00
+UNION|overall|thr|0.20|oracle|overlap|agg|strict_span|k|352|n|358|recall|98.32|wilson95_lo|96.39|wilson95_hi|99.23
+UNION|overall|thr|0.20|oracle|overlap|agg|union_row|k|150|n|150|recall|100.00|wilson95_lo|97.50|wilson95_hi|100.00
 UNION|table|thr|0.20|oracle|exact|cols|class|n|c0|lockr|decide|union|strict|wilson_lo|wilson_hi
 UNION|per_class|person_name|56|0|0|55|55|0|90.55|99.68
 UNION|per_class|inn|36|36|0|36|36|36|90.36|100.00
-UNION|per_class|snils|29|1|11|16|20|12|50.77|82.72
+UNION|per_class|snils|29|29|11|16|29|29|88.30|100.00
 UNION|per_class|ogrn|25|25|0|0|25|25|86.68|100.00
 UNION|per_class|ogrnip|21|21|0|0|21|21|84.54|100.00
-UNION|per_class|iban|27|6|0|0|6|6|10.61|40.76
+UNION|per_class|iban|27|27|0|0|27|27|87.54|100.00
 UNION|per_class|address|40|0|0|40|40|0|91.24|100.00
-UNION|per_class|card_pan|32|17|0|32|32|17|89.28|100.00
+UNION|per_class|card_pan|32|32|0|32|32|32|89.28|100.00
 UNION|per_class|phone|36|0|27|36|36|27|90.36|100.00
 UNION|per_class|email|40|0|0|40|40|0|91.24|100.00
 UNION|per_class|passport|16|0|0|16|16|0|80.64|100.00
-UNION|overall|thr|0.20|oracle|exact|agg|union_span|k|327|n|358|recall|91.34|wilson95_lo|87.97|wilson95_hi|93.83
-UNION|overall|thr|0.20|oracle|exact|agg|strict_span|k|144|n|358|recall|40.22|wilson95_lo|35.27|wilson95_hi|45.38
-UNION|overall|thr|0.20|oracle|exact|agg|union_row|k|119|n|150|recall|79.33|wilson95_lo|72.16|wilson95_hi|85.04
+UNION|overall|thr|0.20|oracle|exact|agg|union_span|k|357|n|358|recall|99.72|wilson95_lo|98.43|wilson95_hi|99.95
+UNION|overall|thr|0.20|oracle|exact|agg|strict_span|k|197|n|358|recall|55.03|wilson95_lo|49.85|wilson95_hi|60.10
+UNION|overall|thr|0.20|oracle|exact|agg|union_row|k|149|n|150|recall|99.33|wilson95_lo|96.32|wilson95_hi|99.88
 UNION|negative|thr|0.20|rows|54|rows_any_fired|22|spans_c0|5|spans_lockr|19|spans_union|24|bait_c0|0|bait_lockr|9
 UNION|table|thr|0.25|oracle|overlap|cols|class|n|c0|lockr|decide|union|strict|wilson_lo|wilson_hi
 UNION|per_class|person_name|56|0|56|54|56|56|93.58|100.00
 UNION|per_class|inn|36|36|21|36|36|36|90.36|100.00
-UNION|per_class|snils|29|1|17|11|22|17|57.89|87.78
+UNION|per_class|snils|29|29|17|11|29|29|88.30|100.00
 UNION|per_class|ogrn|25|25|0|0|25|25|86.68|100.00
 UNION|per_class|ogrnip|21|21|0|0|21|21|84.54|100.00
-UNION|per_class|iban|27|6|0|0|6|6|10.61|40.76
+UNION|per_class|iban|27|27|0|0|27|27|87.54|100.00
 UNION|per_class|address|40|0|40|40|40|40|91.24|100.00
-UNION|per_class|card_pan|32|17|26|32|32|32|89.28|100.00
+UNION|per_class|card_pan|32|32|26|32|32|32|89.28|100.00
 UNION|per_class|phone|36|0|36|36|36|36|90.36|100.00
 UNION|per_class|email|40|0|40|40|40|40|91.24|100.00
 UNION|per_class|passport|16|0|10|16|16|10|80.64|100.00
-UNION|overall|thr|0.25|oracle|overlap|agg|union_span|k|330|n|358|recall|92.18|wilson95_lo|88.93|wilson95_hi|94.53
-UNION|overall|thr|0.25|oracle|overlap|agg|strict_span|k|319|n|358|recall|89.11|wilson95_lo|85.45|wilson95_hi|91.93
-UNION|overall|thr|0.25|oracle|overlap|agg|union_row|k|122|n|150|recall|81.33|wilson95_lo|74.34|wilson95_hi|86.76
+UNION|overall|thr|0.25|oracle|overlap|agg|union_span|k|358|n|358|recall|100.00|wilson95_lo|98.94|wilson95_hi|100.00
+UNION|overall|thr|0.25|oracle|overlap|agg|strict_span|k|352|n|358|recall|98.32|wilson95_lo|96.39|wilson95_hi|99.23
+UNION|overall|thr|0.25|oracle|overlap|agg|union_row|k|150|n|150|recall|100.00|wilson95_lo|97.50|wilson95_hi|100.00
 UNION|table|thr|0.25|oracle|exact|cols|class|n|c0|lockr|decide|union|strict|wilson_lo|wilson_hi
 UNION|per_class|person_name|56|0|0|54|54|0|87.88|99.02
 UNION|per_class|inn|36|36|0|36|36|36|90.36|100.00
-UNION|per_class|snils|29|1|11|11|17|12|40.74|74.49
+UNION|per_class|snils|29|29|11|11|29|29|88.30|100.00
 UNION|per_class|ogrn|25|25|0|0|25|25|86.68|100.00
 UNION|per_class|ogrnip|21|21|0|0|21|21|84.54|100.00
-UNION|per_class|iban|27|6|0|0|6|6|10.61|40.76
+UNION|per_class|iban|27|27|0|0|27|27|87.54|100.00
 UNION|per_class|address|40|0|0|40|40|0|91.24|100.00
-UNION|per_class|card_pan|32|17|0|32|32|17|89.28|100.00
+UNION|per_class|card_pan|32|32|0|32|32|32|89.28|100.00
 UNION|per_class|phone|36|0|27|36|36|27|90.36|100.00
 UNION|per_class|email|40|0|0|40|40|0|91.24|100.00
 UNION|per_class|passport|16|0|0|16|16|0|80.64|100.00
-UNION|overall|thr|0.25|oracle|exact|agg|union_span|k|323|n|358|recall|90.22|wilson95_lo|86.71|wilson95_hi|92.89
-UNION|overall|thr|0.25|oracle|exact|agg|strict_span|k|144|n|358|recall|40.22|wilson95_lo|35.27|wilson95_hi|45.38
-UNION|overall|thr|0.25|oracle|exact|agg|union_row|k|115|n|150|recall|76.67|wilson95_lo|69.28|wilson95_hi|82.72
+UNION|overall|thr|0.25|oracle|exact|agg|union_span|k|356|n|358|recall|99.44|wilson95_lo|97.99|wilson95_hi|99.85
+UNION|overall|thr|0.25|oracle|exact|agg|strict_span|k|197|n|358|recall|55.03|wilson95_lo|49.85|wilson95_hi|60.10
+UNION|overall|thr|0.25|oracle|exact|agg|union_row|k|148|n|150|recall|98.67|wilson95_lo|95.27|wilson95_hi|99.63
 UNION|negative|thr|0.25|rows|54|rows_any_fired|22|spans_c0|5|spans_lockr|19|spans_union|24|bait_c0|0|bait_lockr|9
-UNION|sweep|thr|union|union_lo|strict|strict_lo|row|neg_fired
-UNION|sweep|0.10|93.85|90.87|89.11|85.45|85.33|24
-UNION|sweep|0.15|93.30|90.22|89.11|85.45|84.00|24
-UNION|sweep|0.20|92.46|89.25|89.11|85.45|82.00|24
-UNION|sweep|0.25|92.18|88.93|89.11|85.45|81.33|24
-UNION|sweep|0.30|91.34|87.97|89.11|85.45|79.33|24
-UNION|sweep|0.40|91.34|87.97|89.11|85.45|79.33|24
-UNION|sweep|0.50|91.06|87.65|89.11|85.45|78.67|24
-UNION|optimum|thr|0.10|union|93.85|union_lo|90.87|strict|89.11|strict_lo|85.45|grid|0.10,0.15,0.20,0.25,0.30,0.40,0.50
-UNION|verdict|known-below-bar|thr|0.20|union|92.46|union_k|331|union_n|358|union_wilson_lo|89.25|strict|89.11|strict_wilson_lo|85.45|row|82.00|k_for_bar|357|deficit_spans|26|bar|98.0
-TIME|total|s|301.13|threads|2|daemon|on
-```
-
-### 8.1 Промер направлений (к §6.4)
-
-Команда — в docstring `tools/metrics/probe_coords.py` (2 треда, `nice 10`, тот же
-интерпретатор, что у харнеса). Артефакт `/tmp/probe_coords.out`; цифры §6.4 — из
-этих строк, проза о направлении без промера не печатается.
-
-```text
-COORD|matched_gold_spans|246|missed_gold|112
-COORD|relations|exact|38|subset_of_gold|465|superset|0|partial|0
-COORD|d_start|median|5|mean|8.7|min|0|max|42|q25|0|q75|15
-COORD|d_end|median|-8|mean|-10.7|min|-59|max|0|q25|-19|q75|-2
-COORD|d_end_neg_share|80.1
-COORD|d_start_pos_share|63.4
-COORD|len_gold_median|18|len_pred_median|14
-COORD|pred_total_tau20|533
+UNION|verdict|meets-bar|thr|0.20|union|100.00|union_k|358|union_n|358|union_wilson_lo|98.94|strict|98.32|strict_wilson_lo|96.39|row|100.00|k_for_bar|357|deficit_spans|0|bar|98.0
+TIME|total|s|471.29|threads|2|daemon|on
 ```
 
