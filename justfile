@@ -233,9 +233,14 @@ deps-licenses:
     echo "deps-licenses ok: $(wc -l < dist/THIRD-PARTY-LICENSES.txt | tr -d ' ') строк, $(grep -c '^  - ' dist/THIRD-PARTY-LICENSES.txt | tr -d ' ') записей пакет→версия→лицензия"
 
 # Упаковка бандла (бинарь + LICENSE + README-ссылка + схема + лицензии +
-# SHA256SUMS) в tar.gz/zip. Девелер: dist/ в .gitignore (строка `dist/`).
+# SHA256SUMS) в архив. Формат выбирает ОС ХОСТА СБОРКИ, не параметр: unix →
+# tar.gz, Windows (MINGW/MSYS/CYGWIN) → zip через `powershell Compress-Archive`
+# (Git-for-Windows `tar` zip не умеет) — scripts/make-bundle.sh:86-89,163-164.
+# На macOS локальный прогон даёт ОДИН tar.gz: обещать рядом zip в этой строке
+# было бы врать про ячейку, на которой ты стоишь.
+# Девелер: dist/ в .gitignore (строка `dist/`).
 
-# Упаковка бандла (бинарь, лицензии, схема, SHA256SUMS) в tar.gz/zip.
+# Упаковка бандла (бинарь, лицензии, схема, SHA256SUMS): tar.gz на unix, zip на Windows-хосте.
 dist: release-build deps-licenses
     bash scripts/make-bundle.sh
 
