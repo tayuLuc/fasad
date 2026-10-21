@@ -81,15 +81,17 @@ curl -s -X POST localhost:8765/v1/analyze \
 ```
 
 Ответ — голый массив спанов (контракт Presidio `AnalyzerResult`; `start`/`end`
-в символах, `byte_start`/`byte_end` в байтах). Промер 22.10 на смонтированном
-процессе §1 (стадия `cascade-0+models`, `FASAD_THREADS=2`, спаны упорядочены по
-`byte_start`, порядок в ответе демона — `inn, snils, person_name ×3`):
+в символах, `byte_start`/`byte_end` в байтах). Блок ниже — дословный вывод
+демона (промер 22.10, релизный бинарь `596f249` с фичей `ort-inference`,
+стадия `cascade-0+models`, `FASAD_THREADS=2`); порядок элементов — живой
+порядок ответа демона (`inn, snils, person_name ×3`), не сортировка по
+`byte_start`:
 
 ```json
-[{"entity_type":"person_name","start":0,"end":7,"score":0.9993022701030719,"class":"person_name","byte_start":0,"byte_end":14,"role":null,"source":"gliner_extractor","verdict":"mask_surrogate","validator":null},{"entity_type":"person_name","start":8,"end":12,"score":0.9995770575012553,"class":"person_name","byte_start":15,"byte_end":23,"role":null,"source":"gliner_extractor","verdict":"mask_surrogate","validator":null},{"entity_type":"person_name","start":13,"end":16,"score":0.9996872998599853,"class":"person_name","byte_start":24,"byte_end":30,"role":null,"source":"gliner_extractor","verdict":"mask_surrogate","validator":null},{"entity_type":"inn","start":27,"end":37,"score":1.0,"class":"inn","byte_start":49,"byte_end":59,"role":null,"source":"checksum_rf","verdict":"mask_surrogate","validator":"inn10"},{"entity_type":"snils","start":45,"end":56,"score":1.0,"class":"snils","byte_start":72,"byte_end":83,"role":null,"source":"checksum_rf","verdict":"mask_surrogate","validator":"snils"}]
+[{"entity_type":"inn","start":27,"end":37,"score":1.0,"class":"inn","byte_start":49,"byte_end":59,"role":null,"source":"checksum_rf","verdict":"mask_surrogate","validator":"inn10"},{"entity_type":"snils","start":45,"end":56,"score":1.0,"class":"snils","byte_start":72,"byte_end":83,"role":null,"source":"checksum_rf","verdict":"mask_surrogate","validator":"snils"},{"entity_type":"person_name","start":0,"end":7,"score":0.9993022701030719,"class":"person_name","byte_start":0,"byte_end":14,"role":null,"source":"gliner_extractor","verdict":"mask_surrogate","validator":null},{"entity_type":"person_name","start":8,"end":12,"score":0.9995770575012553,"class":"person_name","byte_start":15,"byte_end":23,"role":null,"source":"gliner_extractor","verdict":"mask_surrogate","validator":null},{"entity_type":"person_name","start":13,"end":16,"score":0.9996872998599853,"class":"person_name","byte_start":24,"byte_end":30,"role":null,"source":"gliner_extractor","verdict":"mask_surrogate","validator":null}]
 ```
 
-Пять спанов, и их координаты — cmp-эталон витрины (#137, ревью `caf08658`):
+Пять спанов, и их координаты — cmp-эталон витрины (#137, эталон ревью-сессии 21.10, 5 координат):
 `0..14 @ 0.9993022701030719`, `15..23 @ 0.9995770575012553`,
 `24..30 @ 0.9996872998599853`, inn `49..59 @ 1.0`, snils `72..83 @ 1.0` —
 совпали побайтово (промер 22.10, `count=5`). Патроним модель усекла: спан
@@ -98,11 +100,11 @@ curl -s -X POST localhost:8765/v1/analyze \
 §7 п.5.
 
 Заголовки этого же ответа (промер 22.10): `x-guard-redacted-count: 5`,
-`x-guard-max-risk: 1`, `x-guard-latency-ms: 481` (повторы 468 / 440 / 401,
-тёплый демон), `x-guard-stage: cascade-0+models`, `x-guard-cascade2: ok`,
+`x-guard-max-risk: 1`, `x-guard-latency-ms: 360` (повторы четырёх холодных стартов на
+свободной машине 279–416, промер 22.10), `x-guard-stage: cascade-0+models`, `x-guard-cascade2: ok`,
 `x-guard-policy-applied: mask`, `x-guard-score-threshold: 0.2`.
 `X-Guard-Cascade2` — лег каскада 2 на ЭТОМ запросе (`ok` / `skipped` / `absent`;
-имя — `http.rs:56`, сетка — SPEC §8:384-387, `docs/daemon-scope.md:16`):
+имя — `http.rs:56`, сетка — SPEC §8:400-414, `docs/daemon-scope.md:16`):
 `absent` = каскада 2 в процессе нет (headless-бинарь без фичи, `x-guard-redacted-count: 2`
 — два спана ИНН/СНИЛС, имени нет: см. §5 п.2). Тот же запрос на смонтированном
 весе даёт `ok` и пять спанов — промер в §5 п.4.
@@ -131,11 +133,11 @@ curl -s -X POST localhost:8765/v1/anonymize \
 значение даёт только этот ответ, из документации его не берут:
 
 ```json
-{"text":"[[F0#<маркер 1>]] [[F0#<маркер 2>]] [[F0#<маркер 3>]], ИНН [[F0#<маркер 4>]], СНИЛС [[F0#<маркер 5>]]","items":[{"entity_type":"person_name","start":0,"end":7,"byte_start":0,"byte_end":14,"replacement":"[[F0#<маркер 1>]]","operator":"mask"},{"entity_type":"person_name","start":8,"end":12,"byte_start":15,"byte_end":23,"replacement":"[[F0#<маркер 2>]]","operator":"mask"},{"entity_type":"person_name","start":13,"end":16,"byte_start":24,"byte_end":30,"replacement":"[[F0#<маркер 3>]]","operator":"mask"},{"entity_type":"inn","start":27,"end":37,"byte_start":49,"byte_end":59,"replacement":"[[F0#<маркер 4>]]","operator":"mask"},{"entity_type":"snils","start":45,"end":56,"byte_start":72,"byte_end":83,"replacement":"[[F0#<маркер 5>]]","operator":"mask"}]}
+{"text":"[[F0#<маркер 1>]] [[F0#<маркер 2>]] [[F0#<маркер 3>]]вична, ИНН [[F0#<маркер 4>]], СНИЛС [[F0#<маркер 5>]]","items":[{"entity_type":"person_name","start":0,"end":7,"byte_start":0,"byte_end":14,"replacement":"[[F0#<маркер 1>]]","operator":"mask"},{"entity_type":"person_name","start":8,"end":12,"byte_start":15,"byte_end":23,"replacement":"[[F0#<маркер 2>]]","operator":"mask"},{"entity_type":"person_name","start":13,"end":16,"byte_start":24,"byte_end":30,"replacement":"[[F0#<маркер 3>]]","operator":"mask"},{"entity_type":"inn","start":27,"end":37,"byte_start":49,"byte_end":59,"replacement":"[[F0#<маркер 4>]]","operator":"mask"},{"entity_type":"snils","start":45,"end":56,"byte_start":72,"byte_end":83,"replacement":"[[F0#<маркер 5>]]","operator":"mask"}]}
 ```
 
 Обратный ход — `POST /v1/deanonymize` телом `{"text": "<замазанное>"}`, где
-`<замазанное>` — поле `text` из вывода п.1 **того же запущенного процесса**, с теми
+`<замазанное>` — поле `text` из вывода п.2 **того же запущенного процесса**, с теми
 же `<маркер 1>`…`<маркер 5>` (промер 22.10, `cmp` восстановленного текста с
 оригиналом — rc=0, побайтово):
 
@@ -154,12 +156,16 @@ curl -s -X POST localhost:8765/v1/analyze -H 'content-type: application/json' \
   -d '{"text":"ИНН контрагента: восемьсот двадцать пять миллиардов восемьдесят два миллиона четыреста девяносто две тысячи девятьсот шестьдесят четыре, просим проверить"}'
 ```
 
-`/v1/analyze` (промер 22.10 на смонтированном процессе, латентность 443 мс,
-повторы 421 / 394) отдаёт один спан `{"entity_type":"inn","start":17,"end":135,
+`/v1/analyze` (промер 22.10 на смонтированном процессе, латентность 338 мс,
+повторы 388 / 321 / 375) отдаёт один спан `{"entity_type":"inn","start":17,"end":135,
 "score":1.0,"byte_start":31,"byte_end":254,"source":"checksum_rf",
 "validator":"inn12"}` — спан на фразу словами; `/v1/anonymize` с этими
-координатами заменяет фразу маркером (тело маркера — 283 символа, следствие
-поднятого потолка: stateless-токен 223-байтового спана, §7 п.4),
+координатами заменяет фразу маркером (тело маркера — 68–80 символов на спан:
+тело случайно по nonce, промер 22.10 по пяти спанам витрины — 79/71/68/74/75;
+на 223-байтовом спане тело 283, токен 283; граница worst-case
+`MAX_MARKER_BYTES` = 1594 на токен 1587, `crates/guard-vault/src/token.rs:121`
+и asserts `token.rs:1423-1424`, следствие поднятого потолка — stateless-токен
+спана под 1024, §7 п.4),
 `/v1/deanonymize` того же процесса возвращает оригинал (`substituted: 1`, `restore_refused: 0`, `cmp` rc=0 на 287 Б).
 
 Почему маркеры — плейсхолдеры, а не литералы: без `FASAD_VAULT_KEY` ключ
@@ -170,10 +176,10 @@ AES-256-GCM генерируется из CSPRNG на старт процесс�
 `422 {"error":{"code":"unresolved_token","message":"не развернулось маркеров: 2 — отдаём отказ, а не partial-restore"}}`
 (промер 21.10 на релизном бинаре, два независимых процесса; переснято 22.10
 живым curl'ом — текст тот же, счётчик равнен числу маркеров в копипасте:
-копипаст пяти маркеров этой витрины отвечает `…маркеров: 5…`, промер 22.10);
+копипаст пяти маркеров чужого процесса отвечает `…маркеров: 5…`, промер 22.10);
 маркеры своего прогона разворачиваются в исходный текст байт-в-байт,
 `substituted: 5`. Угловые скобки `<маркер N>` не входят в алфавит тела
-маркера — `A-Za-z0-9-_` (`rewriter.rs:102`), —
+маркера — `A-Za-z0-9-_` (`rewriter.rs:41`), —
 и демон их не разворачивает и нерезолвнутым не считает: `substituted: 0`, текст
 проходит нетронутым (переснято 22.10 тем же curl'ом). Обратимость, переживающая
 перезапуск, — `FASAD_VAULT_KEY` (§1, §4).
@@ -454,8 +460,8 @@ Stateless-контур (режим по умолчанию) на том же т�
    N_decide·8000` мс при `FASAD_THREADS=2`, где `N_*` — число чанков (окно
    lockR 256 токенов + overlap 32; геометрия Decide — `ChunkCfg::default()` =
    384/32, §I1, метод счёта чанков — вызов продуктового
-   `guard_onnx::chunker::chunk`). Дефолт покрывает витрину §2 (285–481 мс,
-   промеры 22.10 двух процессов), 44 Б и 230 Б; 8 КБ — НЕ покрывает (2 958 мс
+   `guard_onnx::chunker::chunk`). Дефолт покрывает витрину §2 (279–416 мс,
+   промеры 22.10 четырёх свободных процессов, §2), 44 Б и 230 Б; 8 КБ — НЕ покрывает (2 958 мс
    на свободной машине против 3 636 мс под фоновой нагрузкой, §I1 п.4):
    длинные документы на проде требуют тюна. Край окна — честный `502`: чанк,
    не влезший в окно (латинская/цифровая плотность).
@@ -492,7 +498,8 @@ Stateless-контур (режим по умолчанию) на том же т�
    (`POOL_SLOTS·POOL_SLOT_BYTES` = 16×2176 Б = 34 КиБ, const-assert «пул
    влезает в 64 KiB»). Цена поднятия: stateless-токен худшего спана 1587
    символов (первичка #120, docs/daemon-scope.md п.4); на витринном словесном
-   ИНН-12 тело маркера — 283 символа (промер 22.10, §2).
+   ИНН-12 тело маркера — 283 символа, токен 283 (промер 22.10, §2; на спанах
+   витрины тело 68–80 символов — случайно по nonce).
 5. **ФИО отдаётся усечёнными спанами.** Границы рисует каскад 1: на витрине §2
    патроним `Саввична` (символы 13–21) усечён спаном `Сав` (13–16) — модель
    красит начало патронима, хвост обрывается; координат у каскада 2 нет (#41),
