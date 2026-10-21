@@ -525,4 +525,37 @@ mod tests {
         assert_eq!(obj["verdict"], "mask_surrogate");
         assert_eq!(obj["role"], serde_json::Value::Null);
     }
+
+    /// Base64-обход на проводе (issue #51 п.3, требование п.3 приёмки): поле
+    /// `source` = `base64_decode`, координаты — исходный токен, вес — вето 1.0
+    /// (тот же `DeterministicW`, что у чексумм: подтвердил окно валидатор).
+    #[test]
+    #[allow(clippy::float_cmp)] // 1.0 — константа контракта
+    fn response_json_marks_base64_decoded_spans() {
+        use base64::Engine as _;
+        let token = base64::engine::general_purpose::STANDARD.encode("СНИЛС 65707715421 в реестре");
+        let text = format!("приложение {token} конец");
+        let a = analyze(&req(&text), &schema(), &cfg(), Policy::Mask).expect("ок");
+        let body = serde_json::to_value(&a.spans).expect("сериализуется");
+        let obj = body
+            .as_array()
+            .expect("массив спанов")
+            .first()
+            .expect("спан есть")
+            .clone();
+        assert_eq!(obj["source"], "base64_decode", "{obj}");
+        assert_eq!(obj["class"], "snils");
+        assert_eq!(obj["validator"], "snils");
+        assert_eq!(obj["score"], 1.0);
+        assert_eq!(obj["verdict"], "mask_surrogate");
+        // Координаты — байты токена в оригинале: декодированные наружу не
+        // показываются вообще.
+        let at = text.find(&token).expect("токен в тексте");
+        assert_eq!(obj["byte_start"], at);
+        assert_eq!(obj["byte_end"], at + token.len());
+        assert_eq!(
+            obj["entity_type"], "snils",
+            "entity_type = класс находки (Presidio-совместимое поле)"
+        );
+    }
 }

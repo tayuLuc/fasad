@@ -157,16 +157,23 @@ mod tests {
         );
         // Список детерминированных источников зафиксирован здесь, а не выводится из
         // того же кода: правка вектора весов = правка SPEC §2, не рефакторинг.
+        // Третья позиция — `Base64Decode` (issue #51 п.3): окно подтвердил тот же
+        // валидатор, только найдено оно в декодированной нагрузке; способ доставки
+        // ПДн не меняет силу доказательства, поэтому вето общее.
         assert_eq!(
             weighed,
-            vec!["ChecksumRf".to_owned(), "ChecksumEu".to_owned()],
+            vec![
+                "ChecksumRf".to_owned(),
+                "ChecksumEu".to_owned(),
+                "Base64Decode".to_owned(),
+            ],
             "список источников с абсолютным вето изменился"
         );
     }
 
     #[test]
     fn parser_sees_every_variant() {
-        // Анти-galo: разбор обязан видеть все 6 вариантов enum, иначе «все учтены»
+        // Анти-galo: разбор обязан видеть все 7 вариантов enum, иначе «все учтены»
         // становится ложно-зелёным.
         let variants = parse_enum_variants(include_str!("../src/verdict.rs"));
         assert_eq!(
@@ -174,6 +181,7 @@ mod tests {
             vec![
                 "ChecksumRf",
                 "ChecksumEu",
+                "Base64Decode",
                 "SecretEntropy",
                 "AhoCorasickRule",
                 "GlinerExtractor",
@@ -202,11 +210,28 @@ mod tests {
         assert_eq!(weight, "0.9");
 
         let dropped = flat.replace(
-            "Self::ChecksumRf | Self::ChecksumEu => Some(Self::DeterministicW)",
-            "Self::ChecksumEu => Some(Self::DeterministicW)",
+            "Self::ChecksumRf | Self::ChecksumEu | Self::Base64Decode => Some(Self::DeterministicW)",
+            "Self::ChecksumEu | Self::Base64Decode => Some(Self::DeterministicW)",
         );
         let (_, _, weighed) = parse_weight_fact(&dropped).expect("разбирается");
-        assert_eq!(weighed, vec!["ChecksumEu".to_owned()]);
+        assert_eq!(
+            weighed,
+            vec!["ChecksumEu".to_owned(), "Base64Decode".to_owned()],
+            "парсер не увидел, что из вектора выпал первый источник"
+        );
+
+        // Выпадение `Base64Decode` (добавлен issue #51 п.3) обязано краснеть
+        // так же: мутируем ручку, убрав только его.
+        let no_b64 = flat.replace(
+            "Self::ChecksumEu | Self::Base64Decode => Some(Self::DeterministicW)",
+            "Self::ChecksumEu => Some(Self::DeterministicW)",
+        );
+        let (_, _, weighed) = parse_weight_fact(&no_b64).expect("разбирается");
+        assert_eq!(
+            weighed,
+            vec!["ChecksumRf".to_owned(), "ChecksumEu".to_owned()],
+            "парсер не увидел, что из вектора выпал base64-декод"
+        );
 
         // Константа переименована/удалена → MissingConst: парсер ищет `pub const
         // Deterministic…`, после переименования контракта разбор честно падает.

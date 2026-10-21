@@ -93,6 +93,13 @@ pub enum DetectionSource {
     /// Чексумма иностранного документа (IBAN и т.п.) — SPEC §2 каскад 0.
     #[serde(rename = "checksum_eu")]
     ChecksumEu,
+    /// Та же чексумма, что подтверждена ВНУТРИ декодированной base64-нагрузки
+    /// токена (issue #51 п.3, каскад 0). Имя отдельное, а не `checksum_*`:
+    /// происхождение спана нужно политике и отладке (номер найден не в тексте,
+    /// а в бинаре — это надо уметь видеть в ответе), а вес общий с чексуммами:
+    /// подтверждает окно валидатор, значит вето абсолютное (SPEC §2).
+    #[serde(rename = "base64_decode")]
+    Base64Decode,
     /// Энтропия Шеннона + Probability-of-Randomness в окне секрет-префикса.
     SecretEntropy,
     /// Детерминированный автомат (Ахо–Корасик): ОПФ, адресные/паспортные маркеры.
@@ -114,10 +121,15 @@ impl DetectionSource {
     /// Вес детекции: `Some(1.0)` ровно у чексумм (абсолютное вето, SPEC §2 каскад 0:
     /// «приоритет чексуммы = 1.0, нейросети его не пересматривают»), `None` — у
     /// вероятностных источников; их скор приходит в [`AnnotatedSpan::score`].
+    ///
+    /// [`Self::Base64Decode`] стоит в весовой ручке наравне с чексуммами: то, что
+    /// окно нашли после декода, меняет способ доставки, а не доказательство —
+    /// подтвердил его тот же валидатор (issue #51 п.3; вектор весов сверяет
+    /// `tests/invariant_checksum_w.rs`, правка вектора = правка SPEC §2).
     #[must_use]
     pub const fn deterministic_weight(self) -> Option<f64> {
         match self {
-            Self::ChecksumRf | Self::ChecksumEu => Some(Self::DeterministicW),
+            Self::ChecksumRf | Self::ChecksumEu | Self::Base64Decode => Some(Self::DeterministicW),
             Self::SecretEntropy
             | Self::AhoCorasickRule
             | Self::GlinerExtractor
@@ -363,6 +375,7 @@ mod tests {
         for (src, name) in [
             (DetectionSource::ChecksumRf, "checksum_rf"),
             (DetectionSource::ChecksumEu, "checksum_eu"),
+            (DetectionSource::Base64Decode, "base64_decode"),
             (DetectionSource::SecretEntropy, "secret_entropy"),
             (DetectionSource::AhoCorasickRule, "aho_corasick_rule"),
             (DetectionSource::GlinerExtractor, "gliner_extractor"),

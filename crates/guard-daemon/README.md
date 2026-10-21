@@ -80,6 +80,24 @@ fasad 0.1.0 cascade-0-only, listening on http://127.0.0.1:8765/health (клас�
 2. `role` всегда `null` (SPEC §14 — шаг 8).
 3. `verdict` ∈ `mask_surrogate | block | audit_only`; политика из
    `X-Guard-Policy`, дефолт `mask`.
+4. `source` — кто нашёл, полный перечень (имена фиксирует serde и проверяет
+   тест `detection_source_serde_names_are_stable`): `checksum_rf` — чексумма
+   российского документа, `checksum_eu` — IBAN, `base64_decode` — та же
+   чексумма, подтверждённая **внутри** декодированной base64-нагрузки токена
+   (каскад 0, issue #51 п.3); `secret_entropy`, `aho_corasick_rule`,
+   `gliner_extractor`, `gliner_decide_arbitrator` — каскады 1–2, на стадии
+   `cascade-0-only` не выдаются. У первых трёх вес абсолютный
+   (`DeterministicW` = 1.0, SPEC §2): источник `base64_decode` отличается
+   способом доставки ПДн, а не силой доказательства — окно подтвердил тот же
+   валидатор, поэтому вето общее (сверяет
+   `crates/guard-types/tests/invariant_checksum_w.rs`).
+5. Спан base64-находки указывает на **исходный токен** в теле запроса
+   (`byte_start`/`byte_end` — его байты): декодированные координаты наружу не
+   отдаются, маскируется ровно то, что прислал клиент. Обход — один уровень
+   вложенности, кандидат обязан стоять на пробельной границе; промер
+   `поле MjQ4MjAxNDMzOCDQstGL0LTQsNC9 конец` → `byte_start: 9, byte_end: 37`,
+   `source: base64_decode`. Правила и контроль ложных срабатываний —
+   §«Что каскад 0 находит и не находит» в `docs/daemon-scope.md`.
 
 ### `POST /v1/anonymize` / `POST /v1/deanonymize`
 
