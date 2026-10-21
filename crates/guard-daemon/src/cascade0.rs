@@ -807,7 +807,7 @@ mod tests {
     fn fullwidth_digits_are_found_at_original_offsets() {
         // Нормализатор кладёт fullwidth-цифры в ASCII; карта обязана вернуть
         // координаты в оригинал (по 3 байта на цифру).
-        let text = "ИНН ８２５０８２４９２９６４ уплата";
+        let text = "ИНН ８２５０８２４９２９６４ уплата"; // scan-lang:allow
         let hits = scan(text, &schema());
         let h = hits
             .iter()
@@ -815,7 +815,7 @@ mod tests {
             .expect("найдётся");
         assert_eq!(
             h.span.slice(text),
-            Some("８２５０８２４９２９６４"),
+            Some("８２５０８２４９２９６４"), // scan-lang:allow
             "спан обязан указывать на исходные широкие цифры"
         );
     }

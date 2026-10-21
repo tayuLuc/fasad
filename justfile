@@ -104,7 +104,7 @@ union-recall *ARGS:
     cargo build --bin fasad
     nice -n 10 env OMP_NUM_THREADS=2 uv run --isolated --python ~/.local/bin/python3.13 \
         --with numpy --with onnxruntime --with tokenizers \
-        python tools/metrics/union_recall.py --threads 2 {{ARGS}}
+        python tools/metrics/union_recall.py --threads 2 {{ ARGS }}
 
 # docs/golden-report.md из сырого артефакта прогона: числа в документацию попадают
 # генерацией, а не переписыванием руками (правило факта «отформатированное число —
@@ -112,7 +112,7 @@ union-recall *ARGS:
 # `tools/metrics/probe_coords.py` (COORD-строки, §6.4/§8.1): без него раздел о
 # направлении смещения печатает «?» и остаётся прозой без первички.
 union-report RAW OUT PROBE="":
-    uv run --locked python tools/metrics/render_report.py {{RAW}} {{OUT}} {{PROBE}}
+    uv run --locked python tools/metrics/render_report.py {{ RAW }} {{ OUT }} {{ PROBE }}
 
 # Positive control генератора отчёта: подсаженные утечки (имя поля вместо значения,
 # плейсхолдер "? %", значение = имя поля, вердикт о планке вразрез с числом)
@@ -127,12 +127,18 @@ report-selftest:
 # этого неприменим: классы трактует не по кодовым точкам (промер 20.10).
 # Дефолт `--all` = весь текстовый tree (инвентарь репозитория; пустой вход = rc 2,
 # не «чисто»). На диффе PR — `just lang-scan-files <файлы>`.
+# Легальный CJK (тесты полноширинных цифр, цитаты иероглифов) исключается
+# директивой `scan-lang:` + `allow` (в коде — слитно) ровно в той же строке, где
+# стоит литерал: области
+# действия у неё нет за пределами строки, файловых исключений нет, а «мёртвая»
+# директива (строка без хита) краснит прогон — мёртвое исключение равно
+# мёртвому контролю. Разрешённые печатаются в отчёте (`LANG|allow|…`).
 lang-scan:
     uv run --locked python scripts/scan_lang.py --self-test --all
 
 # Тот же гейт по списку файлов (на диффе PR: красный = только что добавленное).
 lang-scan-files *FILES:
-    uv run --locked python scripts/scan_lang.py --self-test --files {{FILES}}
+    uv run --locked python scripts/scan_lang.py --self-test --files {{ FILES }}
 
 # Релизный путь ORT (issue #11): официальный dylib вместо статики pyke.
 # Каталог lib: MAC — onnxruntime-osx-arm64-1.31.0/lib release-архива
@@ -142,7 +148,7 @@ lang-scan-files *FILES:
 ort-dylib *ARGS:
     # Собирает/гоняет с динамическим ORT: rpath прописывает build.rs (guard-onnx),
     # окружение — два обязательных env. Пример: just ort-dylib -- --arb --lockr
-    ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib}" {{ARGS}}
+    ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib}" {{ ARGS }}
 
 # Полный spike-прогон релиза на dylib (issue #11 гейт): сборка release + --arb --lockr.
 # Контракт (нить N6, ревью #32): build и run — ОДНИМИ env ниже. Build без

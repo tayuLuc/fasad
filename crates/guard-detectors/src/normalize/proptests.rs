@@ -67,7 +67,7 @@ const MARKS: &[char] = &[
 ];
 const LATIN: &[char] = &['a', 'b', 'Z', 'x', 'Q'];
 const DIGITS: &[char] = &['0', '5', '7', '9'];
-const FW: &[char] = &['７', '１', '２', 'Ａ', 'ｂ', 'Ｚ'];
+const FW: &[char] = &['７', '１', '２', 'Ａ', 'ｂ', 'Ｚ']; // scan-lang:allow
 const SEPS: &[char] = &[
     ' ', '\u{A0}', '-', '_', '\u{2013}', '\u{2010}', '\u{200B}', '\u{FEFF}', '\t', '\n', ',', ';',
     '.',

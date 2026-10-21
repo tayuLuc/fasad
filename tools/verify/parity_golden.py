@@ -103,7 +103,7 @@ QUESTIONS = {
     "address": "Is there a postal address ?",
     # card_pan: spike-эталонная формулировка 4b-2a «a bank card number» (не
     # «payment card…»): переформулировка стоила 24 ложных FN на fp32 (промер
-    # полного ранa 20.10 — сырьё в коммите) — вопрос в модели = контракт.
+    # полного прогона 20.10 — сырьё в коммите) — вопрос в модели = контракт.
     "card_pan": "Is there a bank card number ?",
     "email": "Is there an e-mail address ?",
     "inn": "Is there a tax identification number ?",

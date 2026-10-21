@@ -17,7 +17,7 @@
    Контроль формата на живом примере: `example.ru` → `state: REGISTERED, NOT
    DELEGATED, VERIFIED` — значит «No entries» = отсутствие записи, а не отказ сервера.
 3. **Поиск/кэш:**
-   - DDG `inconify.ru` → только iconify-замены (iconify.design и пр.), ни одногоinconify-упоминания.
+   - DDG `inconify.ru` → только iconify-замены (iconify.design и пр.), ни одного упоминания inconify.
    - DDG `"inconify" анонимайзер` → единственный хит `x.com/Inconify`.
    - X @Inconify: страница отдаётся, `<title>` = «Incon (@Inconify) / X» — аккаунт
      существует, но это несёрфовый профиль (не опровергает смерть сервиса).

@@ -7,7 +7,7 @@
     "(issue #53, docs/quant-policy.md §3 п.2b). Правьте состав — правьте вместе с",
     "перезамером recall по golden-v1.1, молча не переставляйте.",
     "Поля question/answers/lockr_tags перенесены дословно из измерительного",
-    "харнеса crates/guard-onnx/examples/recall_golden.rs (реvision 08c35c3):",
+    "харнеса crates/guard-onnx/examples/recall_golden.rs (ревизия 08c35c3):",
     "question_of() / schema: CLASSES.iter().map(|c| (question_of(c), [\"yes\",\"no\"]))",
     "/ bio_to_class(). Тест schema::tests::questions_match_measured_harness держит",
     "это равенство байтов, а не намерение.",

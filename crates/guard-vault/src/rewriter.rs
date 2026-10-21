@@ -569,7 +569,7 @@ mod tests {
         let bytes = text.as_bytes();
         assert_eq!(bytes.len(), 13, "проверь ожидание перед перебором");
         let (whole, _) = run(text, &[(0, bytes.len())]);
-        assert_eq!(whole, "aЁлки-иголкиё");
+        assert_eq!(whole, "aЁлки-иголкиё"); // scan-lang:allow
         let mut checked = 0_usize;
         for split in all_splits(bytes.len()) {
             let (out, _) = run(text, &split);
@@ -755,7 +755,7 @@ mod tests {
     /// совпадает с монолитным прогоном.
     #[test]
     fn output_never_splits_a_utf8_sequence() {
-        let text = "абвгдежзийкл [CLIENT_PERSON_1] mnoпрст";
+        let text = "абвгдежзийкл [CLIENT_PERSON_1] mnoпрст"; // scan-lang:allow
         let bytes = text.as_bytes();
         let mut r = rewriter();
         let mut joined = Vec::new();
@@ -779,7 +779,7 @@ mod tests {
         joined.extend_from_slice(&tail);
         assert_eq!(
             String::from_utf8(joined).expect("склейка валидна"),
-            "абвгдежзийкл Ушакова Кира Саввична mnoпрст"
+            "абвгдежзийкл Ушакова Кира Саввична mnoпрст" // scan-lang:allow
         );
         assert_eq!(r.held.len(), 0, "хвост не выплавлен после finish");
     }
