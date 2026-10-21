@@ -95,15 +95,25 @@ lint: shellcheck
 # Формула `!ls` (bang-prefix, см. SHELL_SOURCES): bash раскрывает её в массиве
 # списком слов, артефакт «!ls» режет слайс [1:] — shellcheck получает ровно
 # 7 файлов. fail-closed по образцу `deny`: отсутствие shellcheck = rc 2, не
-# молчаливый пропуск. Промёр: green rc=0; dead var → SC2034 rc=1; shellcheck
-# вне PATH → rc=2.
+# молчаливый пропуск.
+# --severity=warning — граница MegaLinter: descriptor BASH_SHELLCHECK не
+# передаёт severity (промер megalinter v9.6.0 bash.megalinter-descriptor.yml:
+# cli_lint_extra_args = --color=auto --external-sources; pin shellcheck
+# v0.11.0), у бинаря дефолт = warning. Severity-skew между CI-контейнером и
+# локальным brew-бинарём (класс issue #25) промёрзан на merge-дереве PR:
+# 0.10.0 (podman koalaman/shellcheck:v0.10.0) печатает SC2015-info, 0.11.0 —
+# нет (5 info в логе run 39625561652 при пине 0.11.0 = сигнал, что контейнер
+# на прогоне печатал info; версии не сверяем — warning-срез идентичен на
+# обеих, мёртвый код краснеет на обеих границах).
+# Промёр: green rc=0; dead var → SC2034 (warning) rc=1; shellcheck вне PATH
+# → rc=2.
 shellcheck:
     #!/usr/bin/env bash
     set -euo pipefail
     command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck не установлен — гейт НЕИСПОЛНЕН, не провален (brew install shellcheck)"; exit 2; }
     files=( {{SHELL_SOURCES}} )
     files=( "${files[@]:1}" )
-    shellcheck -x "${files[@]}"
+    shellcheck --severity=warning -x "${files[@]}"
 
 # Линтер CI-тулчейном (issue #25: CI стабильно свежее локального stable —
 # assert_is_empty-класс drift'а ловится ТОЛЬКО прогоном версии CI).
