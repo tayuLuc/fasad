@@ -438,95 +438,629 @@ struct IbanFormat {
 /// Таблицу расширять **только** строками реестра: без проверки длины по стране
 /// «DE89…01300» (21 символ) даёт мусор вместо отказа (§6b, правило 1).
 const IBAN_REGISTRY: [(&str, IbanFormat); 89] = [
-    ("AD", IbanFormat { len: 24, mask: "4n4n12c" }),
-    ("AE", IbanFormat { len: 23, mask: "3n16n" }),
-    ("AL", IbanFormat { len: 28, mask: "8n16c" }),
-    ("AT", IbanFormat { len: 20, mask: "5n11n" }),
-    ("AZ", IbanFormat { len: 28, mask: "4a20c" }),
-    ("BA", IbanFormat { len: 20, mask: "3n3n8n2n" }),
-    ("BE", IbanFormat { len: 16, mask: "3n7n2n" }),
-    ("BG", IbanFormat { len: 22, mask: "4a4n2n8c" }),
-    ("BH", IbanFormat { len: 22, mask: "4a14c" }),
-    ("BI", IbanFormat { len: 27, mask: "5n5n11n2n" }),
-    ("BR", IbanFormat { len: 29, mask: "8n5n10n1a1c" }),
-    ("BY", IbanFormat { len: 28, mask: "4c4n16c" }),
-    ("CH", IbanFormat { len: 21, mask: "5n12c" }),
-    ("CR", IbanFormat { len: 22, mask: "4n14n" }),
-    ("CY", IbanFormat { len: 28, mask: "3n5n16c" }),
-    ("CZ", IbanFormat { len: 24, mask: "4n6n10n" }),
-    ("DE", IbanFormat { len: 22, mask: "8n10n" }),
-    ("DJ", IbanFormat { len: 27, mask: "5n5n11n2n" }),
-    ("DK", IbanFormat { len: 18, mask: "4n9n1n" }),
-    ("DO", IbanFormat { len: 28, mask: "4c20n" }),
-    ("EE", IbanFormat { len: 20, mask: "2n14n" }),
-    ("EG", IbanFormat { len: 29, mask: "4n4n17n" }),
-    ("ES", IbanFormat { len: 24, mask: "4n4n1n1n10n" }),
-    ("FI", IbanFormat { len: 18, mask: "3n11n" }),
-    ("FK", IbanFormat { len: 18, mask: "2a12n" }),
-    ("FO", IbanFormat { len: 18, mask: "4n9n1n" }),
-    ("FR", IbanFormat { len: 27, mask: "5n5n11c2n" }),
-    ("GB", IbanFormat { len: 22, mask: "4a6n8n" }),
-    ("GE", IbanFormat { len: 22, mask: "2a16n" }),
-    ("GI", IbanFormat { len: 23, mask: "4a15c" }),
-    ("GL", IbanFormat { len: 18, mask: "4n9n1n" }),
-    ("GR", IbanFormat { len: 27, mask: "3n4n16c" }),
-    ("GT", IbanFormat { len: 28, mask: "4c20c" }),
-    ("HN", IbanFormat { len: 28, mask: "4a20n" }),
-    ("HR", IbanFormat { len: 21, mask: "7n10n" }),
-    ("HU", IbanFormat { len: 28, mask: "3n4n1n15n1n" }),
-    ("IE", IbanFormat { len: 22, mask: "4a6n8n" }),
-    ("IL", IbanFormat { len: 23, mask: "3n3n13n" }),
-    ("IQ", IbanFormat { len: 23, mask: "4a3n12n" }),
-    ("IS", IbanFormat { len: 26, mask: "4n2n6n10n" }),
-    ("IT", IbanFormat { len: 27, mask: "1a5n5n12c" }),
-    ("JO", IbanFormat { len: 30, mask: "4a4n18c" }),
-    ("KW", IbanFormat { len: 30, mask: "4a22c" }),
-    ("KZ", IbanFormat { len: 20, mask: "3n13c" }),
-    ("LB", IbanFormat { len: 28, mask: "4n20c" }),
-    ("LC", IbanFormat { len: 32, mask: "4a24c" }),
-    ("LI", IbanFormat { len: 21, mask: "5n12c" }),
-    ("LT", IbanFormat { len: 20, mask: "5n11n" }),
-    ("LU", IbanFormat { len: 20, mask: "3n13c" }),
-    ("LV", IbanFormat { len: 21, mask: "4a13c" }),
-    ("LY", IbanFormat { len: 25, mask: "3n3n15n" }),
-    ("MC", IbanFormat { len: 27, mask: "5n5n11c2n" }),
-    ("MD", IbanFormat { len: 24, mask: "2c18c" }),
-    ("ME", IbanFormat { len: 22, mask: "3n13n2n" }),
-    ("MK", IbanFormat { len: 19, mask: "3n10c2n" }),
-    ("MN", IbanFormat { len: 20, mask: "4n12n" }),
-    ("MR", IbanFormat { len: 27, mask: "5n5n11n2n" }),
-    ("MT", IbanFormat { len: 31, mask: "4a5n18c" }),
-    ("MU", IbanFormat { len: 30, mask: "4a2n2n12n3n3a" }),
-    ("NI", IbanFormat { len: 28, mask: "4a20n" }),
-    ("NL", IbanFormat { len: 18, mask: "4a10n" }),
-    ("NO", IbanFormat { len: 15, mask: "4n6n1n" }),
-    ("OM", IbanFormat { len: 23, mask: "3n16c" }),
-    ("PK", IbanFormat { len: 24, mask: "4a16c" }),
-    ("PL", IbanFormat { len: 28, mask: "8n16n" }),
-    ("PS", IbanFormat { len: 29, mask: "4a21c" }),
-    ("PT", IbanFormat { len: 25, mask: "4n4n11n2n" }),
-    ("QA", IbanFormat { len: 29, mask: "4a21c" }),
-    ("RO", IbanFormat { len: 24, mask: "4a16c" }),
-    ("RS", IbanFormat { len: 22, mask: "3n13n2n" }),
-    ("RU", IbanFormat { len: 33, mask: "9n5n15c" }),
-    ("SA", IbanFormat { len: 24, mask: "2n18c" }),
-    ("SC", IbanFormat { len: 31, mask: "4a2n2n16n3a" }),
-    ("SD", IbanFormat { len: 18, mask: "2n12n" }),
-    ("SE", IbanFormat { len: 24, mask: "3n16n1n" }),
-    ("SI", IbanFormat { len: 19, mask: "5n8n2n" }),
-    ("SK", IbanFormat { len: 24, mask: "4n6n10n" }),
-    ("SM", IbanFormat { len: 27, mask: "1a5n5n12c" }),
-    ("SO", IbanFormat { len: 23, mask: "4n3n12n" }),
-    ("ST", IbanFormat { len: 25, mask: "4n4n11n2n" }),
-    ("SV", IbanFormat { len: 28, mask: "4a20n" }),
-    ("TL", IbanFormat { len: 23, mask: "3n14n2n" }),
-    ("TN", IbanFormat { len: 24, mask: "2n3n13n2n" }),
-    ("TR", IbanFormat { len: 26, mask: "5n1n16c" }),
-    ("UA", IbanFormat { len: 29, mask: "6n19c" }),
-    ("VA", IbanFormat { len: 22, mask: "3n15n" }),
-    ("VG", IbanFormat { len: 24, mask: "4a16n" }),
-    ("XK", IbanFormat { len: 20, mask: "4n10n2n" }),
-    ("YE", IbanFormat { len: 30, mask: "4a4n18c" }),
+    (
+        "AD",
+        IbanFormat {
+            len: 24,
+            mask: "4n4n12c",
+        },
+    ),
+    (
+        "AE",
+        IbanFormat {
+            len: 23,
+            mask: "3n16n",
+        },
+    ),
+    (
+        "AL",
+        IbanFormat {
+            len: 28,
+            mask: "8n16c",
+        },
+    ),
+    (
+        "AT",
+        IbanFormat {
+            len: 20,
+            mask: "5n11n",
+        },
+    ),
+    (
+        "AZ",
+        IbanFormat {
+            len: 28,
+            mask: "4a20c",
+        },
+    ),
+    (
+        "BA",
+        IbanFormat {
+            len: 20,
+            mask: "3n3n8n2n",
+        },
+    ),
+    (
+        "BE",
+        IbanFormat {
+            len: 16,
+            mask: "3n7n2n",
+        },
+    ),
+    (
+        "BG",
+        IbanFormat {
+            len: 22,
+            mask: "4a4n2n8c",
+        },
+    ),
+    (
+        "BH",
+        IbanFormat {
+            len: 22,
+            mask: "4a14c",
+        },
+    ),
+    (
+        "BI",
+        IbanFormat {
+            len: 27,
+            mask: "5n5n11n2n",
+        },
+    ),
+    (
+        "BR",
+        IbanFormat {
+            len: 29,
+            mask: "8n5n10n1a1c",
+        },
+    ),
+    (
+        "BY",
+        IbanFormat {
+            len: 28,
+            mask: "4c4n16c",
+        },
+    ),
+    (
+        "CH",
+        IbanFormat {
+            len: 21,
+            mask: "5n12c",
+        },
+    ),
+    (
+        "CR",
+        IbanFormat {
+            len: 22,
+            mask: "4n14n",
+        },
+    ),
+    (
+        "CY",
+        IbanFormat {
+            len: 28,
+            mask: "3n5n16c",
+        },
+    ),
+    (
+        "CZ",
+        IbanFormat {
+            len: 24,
+            mask: "4n6n10n",
+        },
+    ),
+    (
+        "DE",
+        IbanFormat {
+            len: 22,
+            mask: "8n10n",
+        },
+    ),
+    (
+        "DJ",
+        IbanFormat {
+            len: 27,
+            mask: "5n5n11n2n",
+        },
+    ),
+    (
+        "DK",
+        IbanFormat {
+            len: 18,
+            mask: "4n9n1n",
+        },
+    ),
+    (
+        "DO",
+        IbanFormat {
+            len: 28,
+            mask: "4c20n",
+        },
+    ),
+    (
+        "EE",
+        IbanFormat {
+            len: 20,
+            mask: "2n14n",
+        },
+    ),
+    (
+        "EG",
+        IbanFormat {
+            len: 29,
+            mask: "4n4n17n",
+        },
+    ),
+    (
+        "ES",
+        IbanFormat {
+            len: 24,
+            mask: "4n4n1n1n10n",
+        },
+    ),
+    (
+        "FI",
+        IbanFormat {
+            len: 18,
+            mask: "3n11n",
+        },
+    ),
+    (
+        "FK",
+        IbanFormat {
+            len: 18,
+            mask: "2a12n",
+        },
+    ),
+    (
+        "FO",
+        IbanFormat {
+            len: 18,
+            mask: "4n9n1n",
+        },
+    ),
+    (
+        "FR",
+        IbanFormat {
+            len: 27,
+            mask: "5n5n11c2n",
+        },
+    ),
+    (
+        "GB",
+        IbanFormat {
+            len: 22,
+            mask: "4a6n8n",
+        },
+    ),
+    (
+        "GE",
+        IbanFormat {
+            len: 22,
+            mask: "2a16n",
+        },
+    ),
+    (
+        "GI",
+        IbanFormat {
+            len: 23,
+            mask: "4a15c",
+        },
+    ),
+    (
+        "GL",
+        IbanFormat {
+            len: 18,
+            mask: "4n9n1n",
+        },
+    ),
+    (
+        "GR",
+        IbanFormat {
+            len: 27,
+            mask: "3n4n16c",
+        },
+    ),
+    (
+        "GT",
+        IbanFormat {
+            len: 28,
+            mask: "4c20c",
+        },
+    ),
+    (
+        "HN",
+        IbanFormat {
+            len: 28,
+            mask: "4a20n",
+        },
+    ),
+    (
+        "HR",
+        IbanFormat {
+            len: 21,
+            mask: "7n10n",
+        },
+    ),
+    (
+        "HU",
+        IbanFormat {
+            len: 28,
+            mask: "3n4n1n15n1n",
+        },
+    ),
+    (
+        "IE",
+        IbanFormat {
+            len: 22,
+            mask: "4a6n8n",
+        },
+    ),
+    (
+        "IL",
+        IbanFormat {
+            len: 23,
+            mask: "3n3n13n",
+        },
+    ),
+    (
+        "IQ",
+        IbanFormat {
+            len: 23,
+            mask: "4a3n12n",
+        },
+    ),
+    (
+        "IS",
+        IbanFormat {
+            len: 26,
+            mask: "4n2n6n10n",
+        },
+    ),
+    (
+        "IT",
+        IbanFormat {
+            len: 27,
+            mask: "1a5n5n12c",
+        },
+    ),
+    (
+        "JO",
+        IbanFormat {
+            len: 30,
+            mask: "4a4n18c",
+        },
+    ),
+    (
+        "KW",
+        IbanFormat {
+            len: 30,
+            mask: "4a22c",
+        },
+    ),
+    (
+        "KZ",
+        IbanFormat {
+            len: 20,
+            mask: "3n13c",
+        },
+    ),
+    (
+        "LB",
+        IbanFormat {
+            len: 28,
+            mask: "4n20c",
+        },
+    ),
+    (
+        "LC",
+        IbanFormat {
+            len: 32,
+            mask: "4a24c",
+        },
+    ),
+    (
+        "LI",
+        IbanFormat {
+            len: 21,
+            mask: "5n12c",
+        },
+    ),
+    (
+        "LT",
+        IbanFormat {
+            len: 20,
+            mask: "5n11n",
+        },
+    ),
+    (
+        "LU",
+        IbanFormat {
+            len: 20,
+            mask: "3n13c",
+        },
+    ),
+    (
+        "LV",
+        IbanFormat {
+            len: 21,
+            mask: "4a13c",
+        },
+    ),
+    (
+        "LY",
+        IbanFormat {
+            len: 25,
+            mask: "3n3n15n",
+        },
+    ),
+    (
+        "MC",
+        IbanFormat {
+            len: 27,
+            mask: "5n5n11c2n",
+        },
+    ),
+    (
+        "MD",
+        IbanFormat {
+            len: 24,
+            mask: "2c18c",
+        },
+    ),
+    (
+        "ME",
+        IbanFormat {
+            len: 22,
+            mask: "3n13n2n",
+        },
+    ),
+    (
+        "MK",
+        IbanFormat {
+            len: 19,
+            mask: "3n10c2n",
+        },
+    ),
+    (
+        "MN",
+        IbanFormat {
+            len: 20,
+            mask: "4n12n",
+        },
+    ),
+    (
+        "MR",
+        IbanFormat {
+            len: 27,
+            mask: "5n5n11n2n",
+        },
+    ),
+    (
+        "MT",
+        IbanFormat {
+            len: 31,
+            mask: "4a5n18c",
+        },
+    ),
+    (
+        "MU",
+        IbanFormat {
+            len: 30,
+            mask: "4a2n2n12n3n3a",
+        },
+    ),
+    (
+        "NI",
+        IbanFormat {
+            len: 28,
+            mask: "4a20n",
+        },
+    ),
+    (
+        "NL",
+        IbanFormat {
+            len: 18,
+            mask: "4a10n",
+        },
+    ),
+    (
+        "NO",
+        IbanFormat {
+            len: 15,
+            mask: "4n6n1n",
+        },
+    ),
+    (
+        "OM",
+        IbanFormat {
+            len: 23,
+            mask: "3n16c",
+        },
+    ),
+    (
+        "PK",
+        IbanFormat {
+            len: 24,
+            mask: "4a16c",
+        },
+    ),
+    (
+        "PL",
+        IbanFormat {
+            len: 28,
+            mask: "8n16n",
+        },
+    ),
+    (
+        "PS",
+        IbanFormat {
+            len: 29,
+            mask: "4a21c",
+        },
+    ),
+    (
+        "PT",
+        IbanFormat {
+            len: 25,
+            mask: "4n4n11n2n",
+        },
+    ),
+    (
+        "QA",
+        IbanFormat {
+            len: 29,
+            mask: "4a21c",
+        },
+    ),
+    (
+        "RO",
+        IbanFormat {
+            len: 24,
+            mask: "4a16c",
+        },
+    ),
+    (
+        "RS",
+        IbanFormat {
+            len: 22,
+            mask: "3n13n2n",
+        },
+    ),
+    (
+        "RU",
+        IbanFormat {
+            len: 33,
+            mask: "9n5n15c",
+        },
+    ),
+    (
+        "SA",
+        IbanFormat {
+            len: 24,
+            mask: "2n18c",
+        },
+    ),
+    (
+        "SC",
+        IbanFormat {
+            len: 31,
+            mask: "4a2n2n16n3a",
+        },
+    ),
+    (
+        "SD",
+        IbanFormat {
+            len: 18,
+            mask: "2n12n",
+        },
+    ),
+    (
+        "SE",
+        IbanFormat {
+            len: 24,
+            mask: "3n16n1n",
+        },
+    ),
+    (
+        "SI",
+        IbanFormat {
+            len: 19,
+            mask: "5n8n2n",
+        },
+    ),
+    (
+        "SK",
+        IbanFormat {
+            len: 24,
+            mask: "4n6n10n",
+        },
+    ),
+    (
+        "SM",
+        IbanFormat {
+            len: 27,
+            mask: "1a5n5n12c",
+        },
+    ),
+    (
+        "SO",
+        IbanFormat {
+            len: 23,
+            mask: "4n3n12n",
+        },
+    ),
+    (
+        "ST",
+        IbanFormat {
+            len: 25,
+            mask: "4n4n11n2n",
+        },
+    ),
+    (
+        "SV",
+        IbanFormat {
+            len: 28,
+            mask: "4a20n",
+        },
+    ),
+    (
+        "TL",
+        IbanFormat {
+            len: 23,
+            mask: "3n14n2n",
+        },
+    ),
+    (
+        "TN",
+        IbanFormat {
+            len: 24,
+            mask: "2n3n13n2n",
+        },
+    ),
+    (
+        "TR",
+        IbanFormat {
+            len: 26,
+            mask: "5n1n16c",
+        },
+    ),
+    (
+        "UA",
+        IbanFormat {
+            len: 29,
+            mask: "6n19c",
+        },
+    ),
+    (
+        "VA",
+        IbanFormat {
+            len: 22,
+            mask: "3n15n",
+        },
+    ),
+    (
+        "VG",
+        IbanFormat {
+            len: 24,
+            mask: "4a16n",
+        },
+    ),
+    (
+        "XK",
+        IbanFormat {
+            len: 20,
+            mask: "4n10n2n",
+        },
+    ),
+    (
+        "YE",
+        IbanFormat {
+            len: 30,
+            mask: "4a4n18c",
+        },
+    ),
 ];
 
 /// Проверка маски BBAN по строке реестра (`"9n5n15c"`).
@@ -580,12 +1114,12 @@ fn bban_matches(mask: &str, bban: &[u8]) -> bool {
 /// (`guard_daemon::cascade0::num_runs`), валидатор по нему же канонизирует
 /// вход — два владельца одного перечня неизбежно разъехались бы.
 pub const NUMBER_SEPARATORS: &[&[u8]] = &[
-    b" ",                    // U+0020 (нормализатор сводит к нему все Zs, включая NBSP)
-    b"-",                    // U+002D HYPHEN-MINUS
-    "\u{2010}".as_bytes(),  // U+2010 HYPHEN
-    "\u{2011}".as_bytes(),  // U+2011 NON-BREAKING HYPHEN
-    "\u{2012}".as_bytes(),  // U+2012 FIGURE DASH
-    "\u{FF0D}".as_bytes(),  // U+FF0D FULLWIDTH HYPHEN-MINUS
+    b" ",                  // U+0020 (нормализатор сводит к нему все Zs, включая NBSP)
+    b"-",                  // U+002D HYPHEN-MINUS
+    "\u{2010}".as_bytes(), // U+2010 HYPHEN
+    "\u{2011}".as_bytes(), // U+2011 NON-BREAKING HYPHEN
+    "\u{2012}".as_bytes(), // U+2012 FIGURE DASH
+    "\u{FF0D}".as_bytes(), // U+FF0D FULLWIDTH HYPHEN-MINUS
 ];
 
 /// Нормализация IBAN: пропуски разделителей ([`NUMBER_SEPARATORS`]), верхний
@@ -594,7 +1128,10 @@ fn iban_normalize(input: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(input.len());
     let mut i = 0usize;
     while i < input.len() {
-        if let Some(sep) = NUMBER_SEPARATORS.iter().find(|s| input[i..].starts_with(*s)) {
+        if let Some(sep) = NUMBER_SEPARATORS
+            .iter()
+            .find(|s| input[i..].starts_with(*s))
+        {
             i += sep.len();
             continue;
         }
@@ -1488,11 +2025,7 @@ mod tests {
             assert_eq!(iban(v.as_bytes()), Some(true), "{cc}: {v}");
         }
         for (cc, v) in REGISTRY_PRINT {
-            assert_eq!(
-                iban(v.as_bytes()),
-                Some(true),
-                "{cc}: печатная форма «{v}»"
-            );
+            assert_eq!(iban(v.as_bytes()), Some(true), "{cc}: печатная форма «{v}»");
         }
     }
 
@@ -1533,7 +2066,13 @@ mod tests {
                 i += 1;
                 sum += n;
             }
-            assert_eq!(sum, f.len - 4, "{cc}: маска {:?} не сходится с длиной {}", f.mask, f.len);
+            assert_eq!(
+                sum,
+                f.len - 4,
+                "{cc}: маска {:?} не сходится с длиной {}",
+                f.mask,
+                f.len
+            );
         }
     }
 

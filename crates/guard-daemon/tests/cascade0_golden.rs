@@ -72,8 +72,9 @@ fn slice<'a>(text: &'a str, s: &Span) -> &'a str {
 
 /// Покрывает ли каскад-0 золотой спан (overlap-оракул).
 fn covered(hits: &[guard_daemon::cascade0::Hit], s: &Span, class: &str) -> bool {
-    hits.iter()
-        .any(|h| h.class.as_str() == class && h.span.start < s.end_byte && h.span.end > s.start_byte)
+    hits.iter().any(|h| {
+        h.class.as_str() == class && h.span.start < s.end_byte && h.span.end > s.start_byte
+    })
 }
 
 /// Покрытие: ни одного промаха по чексумменным классам recall-сплита.
@@ -84,15 +85,14 @@ fn c0_covers_every_checksum_span_of_recall_split() {
     let mut miss: Vec<String> = Vec::new();
     for r in rows().iter().filter(|r| r.split == "recall") {
         let hits = scan(&r.text, &schema);
-        for s in r.spans.iter().filter(|s| CLASSES.contains(&s.category.as_str())) {
+        for s in r
+            .spans
+            .iter()
+            .filter(|s| CLASSES.contains(&s.category.as_str()))
+        {
             total += 1;
             if !covered(&hits, s, &s.category) {
-                miss.push(format!(
-                    "{} {} «{}»",
-                    r.id,
-                    s.category,
-                    slice(&r.text, s)
-                ));
+                miss.push(format!("{} {} «{}»", r.id, s.category, slice(&r.text, s)));
             }
         }
     }
@@ -118,7 +118,11 @@ fn c0_span_of_formatted_number_sits_on_original_text() {
     let mut bad: Vec<String> = Vec::new();
     for r in rows().iter().filter(|r| r.split == "recall") {
         let hits = scan(&r.text, &schema);
-        for s in r.spans.iter().filter(|s| CLASSES.contains(&s.category.as_str())) {
+        for s in r
+            .spans
+            .iter()
+            .filter(|s| CLASSES.contains(&s.category.as_str()))
+        {
             let gold = slice(&r.text, s);
             let Some(h) = hits
                 .iter()
@@ -128,7 +132,10 @@ fn c0_span_of_formatted_number_sits_on_original_text() {
                 continue; // промах считает предыдущий тест
             };
             checked += 1;
-            let got = r.text.get(h.span.start..h.span.end).unwrap_or("<не граница>");
+            let got = r
+                .text
+                .get(h.span.start..h.span.end)
+                .unwrap_or("<не граница>");
             if got != gold {
                 bad.push(format!(
                     "{} {} gold «{}» ⊄ hit «{}»",
@@ -169,12 +176,15 @@ fn c0_measurements_are_emitted() {
 /// Покрытие gold-спанов: `(всего закрыто, [(класс, закрыто, всего)])`.
 fn recall_coverage() -> (usize, Vec<(&'static str, usize, usize)>) {
     let schema = Schema::embedded().expect("канон схемы валиден");
-    let mut per: Vec<(&'static str, usize, usize)> =
-        CLASSES.map(|c| (c, 0usize, 0usize)).to_vec();
+    let mut per: Vec<(&'static str, usize, usize)> = CLASSES.map(|c| (c, 0usize, 0usize)).to_vec();
     let mut cov = 0usize;
     for r in rows().iter().filter(|r| r.split == "recall") {
         let hits = scan(&r.text, &schema);
-        for s in r.spans.iter().filter(|s| CLASSES.contains(&s.category.as_str())) {
+        for s in r
+            .spans
+            .iter()
+            .filter(|s| CLASSES.contains(&s.category.as_str()))
+        {
             let i = CLASSES.iter().position(|c| *c == s.category).unwrap();
             per[i].2 += 1;
             if covered(&hits, s, &s.category) {
@@ -197,7 +207,10 @@ fn negative_counts() -> (usize, usize, usize) {
         let hits = scan(&r.text, &schema);
         spans += hits.len();
         for s in &r.spans {
-            if hits.iter().any(|h| h.span.start < s.end_byte && h.span.end > s.start_byte) {
+            if hits
+                .iter()
+                .any(|h| h.span.start < s.end_byte && h.span.end > s.start_byte)
+            {
                 bait += 1;
             }
         }
@@ -218,7 +231,10 @@ fn c0_releases_no_bait_span_on_negative_split() {
         let hits = scan(&r.text, &schema);
         spans += hits.len();
         for s in &r.spans {
-            if hits.iter().any(|h| h.span.start < s.end_byte && h.span.end > s.start_byte) {
+            if hits
+                .iter()
+                .any(|h| h.span.start < s.end_byte && h.span.end > s.start_byte)
+            {
                 bait += 1;
                 detail.push(format!("{} {} «{}»", r.id, s.category, slice(&r.text, s)));
             }
