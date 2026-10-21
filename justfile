@@ -14,6 +14,27 @@ _default:
 # В CI не используется: там свои ядра и свои лимиты раннера.
 CPU_CALM := "CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2 nice -n 10"
 
+# Единый источник списка шелл-скриптов для локального shellcheck-гейта (находка
+# #137): глоб, а не ручной список — новый скрипт в scripts/ или tools/verify/
+# попадает в гейт в момент появления в дереве; ручные списки дрейфуют, и CI
+# краснеет при зелёном `just lint` (класс рецидива). Фиксация расхождения:
+# MegaLinter-список статичен (lint.yml:38 ENABLE_LINTERS, файл не трогаем),
+# локальный список = glob.
+# Промер 24.10 (just 1.58): backtick-`ls …` раскрывается при определении
+# переменной и в recipe прилетает МНОГОСТРОЧНЫМ блоком — под bash-массив
+# уходит первая строка, остальные ломают синтаксис (промер: 1 файл из 7 /
+# syntax error — ложно-зелёная слепая зона). Форма `!ls …` (bang-prefix,
+# рабочая): значение = одна строка, в bash-массиве раскрывается полным
+# списком слов (промер: 7 аргументов из 7, «!ls» префиксом в ls — glob живой,
+# ls бегает рантаймом shell при каждом вызове).
+SHELL_SOURCES := "!ls scripts/*.sh tools/verify/*.sh"
+
+# Расхождение списков (промер ls vs lint.yml): в дереве 7 скриптов —
+# scripts/fetch-models.sh, make-bundle.sh, measure-daemon-rss.sh, measure-rss.sh,
+# snapshot-competitors.sh, verify-bundle.sh, tools/verify/fetch_manifest_weights.sh.
+# Ручного списка файлов в lint.yml нет (первичка файла 24.10): MegaLinter берёт
+# дерево своим глоболом (VALIDATE_ALL_CODEBASE: "true", lint.yml:36).
+
 # Прогнать всё, что блокирует merge: линты + тесты + аудит зависимостей + python.
 #
 # `lang-scan` — Python-нога (язык-гейт текста, #103/#105), в recipe её добавило
@@ -30,7 +51,7 @@ CPU_CALM := "CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2 nice -n 10"
 # перед push (плюс ручной `just lang-scan`), в CI язык-гейт НЕ смонтирован.
 
 # Прогнать всё, что блокирует merge: линты (Rust + Python) + язык-гейт + тесты + аудит.
-check: lint python-lint lang-scan golden-verify test net-audit deny
+check: lint shellcheck python-lint lang-scan golden-verify test net-audit deny
 
 # Гейт «демон не тащит сеть» (#56 п.5). Исполняется как обычный интеграционный
 # тест `crates/guard-daemon/tests/net_audit.rs`, а не grep-рецептом: `just` на
@@ -50,6 +71,14 @@ fix:
     cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged
 
 # Только линтеры (fmt-проверка + clippy с deny-флагами CI).
+# Шелл-нога — ОТДЕЛЬНЫЙ рецепт `shellcheck` (находка #137), в `lint` НЕ
+# монтируется: recipe обязана владеть shebang-блоком целиком (промер 24.10:
+# строки ДО `#!/usr/bin/env bash` sh парсит своим доменом, после — тело
+# скрипта), а раннеры build-test (macos/windows) бинаря shellcheck не имеют —
+# fail-closed recipe валила ci.yml rc=2 (промер runs 39625561652/39628047538),
+# ci.yml трогать нельзя (контракт микро-атома). Вешать бинарь на 3 раннера =
+# правка ci.yml = отдельный атом. check (локальный полный гейт) монтирует её
+# сам; на CI шелл-контур = MegaLinter в lint.yml.
 lint:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used
@@ -63,6 +92,34 @@ lint:
     # этой конфигурации, и ниже стоящая строка guard-onnx его поймала, а `just
     # lint` — нет, потому что путей демона с фичей в ней не было.
     cargo clippy -p guard-daemon --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
+
+# Шелл-гейт дерева (находка #137): джоба Lint = MegaLinter BASH_SHELLCHECK по
+# дереву (lint.yml:38), в локальном гейте shellcheck не было ни строки —
+# мёртвая переменная в новом скрипте краснила CI при зелёном `just lint`.
+# Формула `!ls` (bang-prefix, см. SHELL_SOURCES): bash раскрывает её в массиве
+# списком слов, артефакт «!ls» режет слайс [1:] — shellcheck получает ровно
+# 7 файлов.
+# Граница = warning (явно, не дефолтом): descriptor BASH_SHELLCHECK severity
+# не передаёт (промер megalinter v9.6.0 bash.megalinter-descriptor.yml,
+# cli_lint_extra_args = --color=auto --external-sources), у бинаря дефолт
+# warning. Версия CI-контейнера локальной не равна (класс issue #25): в логе
+# run 39625561652 SC2015-info печатались при пине v0.11.0, а podman-промер
+# koalaman/shellcheck:v0.10.0 на merge-дереве даёт РОВНО эти 5 info, v0.11.0 —
+# ноль: контейнер CI на прогоне печатал ниже warning. warning-срез идентичен
+# на обеих версиях (промер обеих на merge-дереве) — явный флаг делает skew
+# безвредным, дефолт 0.10-контейнера красил бы CI зелёным-локальным-красным.
+# fail-closed по образцу `deny`: бинарь вне PATH = rc 2 с сообщением
+# (brew install shellcheck / apt-get install shellcheck / choco install
+# shellcheck — по ОС раннера).
+# Промёр: green rc=0; dead var → SC2034 (warning) rc=1; shellcheck вне PATH
+# → rc=2.
+shellcheck:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck не установлен — гейт НЕИСПОЛНЕН, не провален (brew install shellcheck / apt-get install shellcheck / choco install shellcheck)"; exit 2; }
+    files=( {{SHELL_SOURCES}} )
+    files=( "${files[@]:1}" )
+    shellcheck --severity=warning -x "${files[@]}"
 
 # Линтер CI-тулчейном (issue #25: CI стабильно свежее локального stable —
 # assert_is_empty-класс drift'а ловится ТОЛЬКО прогоном версии CI).
