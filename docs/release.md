@@ -201,9 +201,9 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    AGENTS §3 п.3): на стадии `cascade-0-only` он инертен — разбор `config.rs:423`
    кладёт значение в `cfg.threads`, а единственным потребителем поля в демоне
    оставался тест `config.rs:638`; с монтажом каскадов 1–2 (#87) рычаг жив —
-   `cascades.rs:558` берёт `cfg.threads` в `Spec`, и он уходит в
+   `cascades.rs:746` берёт `cfg.threads` в `Spec`, и он уходит в
    `LockrExtractor::load(…, threads)` и `DecideArbiter::load(…, threads)`
-   (`cascades.rs:675,677`). Номера пересняты grep'ом на этом дереве (класс #93:
+   (`cascades.rs:863,865`). Номера пересняты grep'ом на этом дереве (класс #93:
    влитые PR сдвинули строки первички #76). `OMP_NUM_THREADS` не рычаг: вендорный
    `libonnxruntime` osx-arm64 без OpenMP, переменную не читает (первичка
    правки к рюлингу — `otool`/`strings`, ревью #73).
