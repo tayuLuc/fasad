@@ -321,21 +321,50 @@ fn tray_feature_tree_carries_no_browser_stack_and_no_gtk() {
     }
 }
 
-/// `cargo tree -p guard-daemon --features <f> --offline [доп. аргументы]`.
+/// `cargo tree -p guard-daemon --features <f> [доп. аргументы]`.
+///
+/// БЕЗ `--offline` (в отличие от [`run_tree`]): на windows-2022 (run
+/// 39637034386) `.cargo`-кэш раннера содержит только граф **дефолтных** фич
+/// (сборка фичу `tray` не линковала), и offline-дерево фичи разваливается
+/// «failed to download adler2 … --offline was specified» — гейт краснел бы
+/// на отсутствии кэша, а не на факте дерева. Дерево фичи собирается из
+/// index+локального кэша с докачкой; air-gap-контракт фактов 1–4 это не
+/// трогает (они про манифест/исходники/дерево демона).
 fn run_tree_features(feature: &str, extra: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO"));
-    cmd.args([
-        "tree",
-        "-p",
-        "guard-daemon",
-        "--features",
-        feature,
-        "--offline",
-    ]);
+    cmd.args(["tree", "-p", "guard-daemon", "--features", feature]);
     cmd.args(extra);
     cmd.current_dir(manifest_dir())
         .output()
         .expect("cargo tree запускается")
+}
+
+/// Positive control факта 5 (тот же канон, что у канарейки факта 4): сканер,
+/// зелёный на пустом дереве, стеной не является. Зуб проверяется на ЖИВОМ
+/// дереве фичи `tray` (тот же вызов, что у факта 5) инвертированным
+/// предикатом — «найди то, что в дереве есть»: `tray-icon` и `muda` обязаны
+/// находиться. Не нашли = предикат мёртв, и «GTK нет» в факте 5 значит «не
+/// заметили», а не «нет». (Промёр живого зуба: посаженный `if false` краснит
+/// этот тест, fact-5 остаётся зелёным — ровно как и задумано.)
+#[test]
+fn tray_tree_scan_finds_what_is_there() {
+    let out = run_tree_features("tray", &["--target", "x86_64-unknown-linux-gnu"]);
+    assert!(
+        out.status.success(),
+        "дерево фичи не строится (см. факт 5): {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let tree = String::from_utf8_lossy(&out.stdout);
+    let mut found = 0;
+    for token in ["tray-icon", "muda"] {
+        if tree.contains(token) {
+            found += 1;
+        }
+    }
+    assert_eq!(
+        found, 2,
+        "positive control: живой сканер обязан НАЙТИ tray-icon/muda в дереве          фичи; нашёл {found} — предикат мёртв, факт 5 ложно-зелёный"
+    );
 }
 
 /// `cargo tree -p guard-daemon -i <token> --offline`.
