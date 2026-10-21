@@ -11,7 +11,8 @@
 // Решение конструктивное, контракт не ломает: единственный unsafe (FFI
 // `task_info(TASK_VM_INFO)` — единственный источник private-RSS на macOS, issue
 // п.3) живёт в C — spike/rss_mach.c, с layout-ассертами `_Static_assert`
-// (372 B, offsetof internal=48; промер cc по MacOSX.sdk). Rust-часть видит
+// на ПОТРЕБЛЯЕМОЕ поле (offsetof internal=48, ширина 8; полный размер не
+// пиним — он плавает по SDK, промеры 372/356 ниже). Rust-часть видит
 // safe-обёртку `fasad_spike_rss_mib`. Линкуется build.rs ТОЛЬКО в example spike
 // (`cargo:rustc-link-arg-examples`), библиотека крейта C не содержит.
 #include <mach/task_info.h>
@@ -19,8 +20,19 @@
 #include <stddef.h>
 #include <stdint.h>
 
-_Static_assert(sizeof(struct task_vm_info) == 372, "task_vm_info layout drift");
 _Static_assert(offsetof(struct task_vm_info, internal) == 48, "internal offset drift");
+_Static_assert(sizeof(((struct task_vm_info *)0)->internal) == 8, "internal width drift");
+/* #31 живой промер: sizeof(struct task_vm_info) ПЛАВАЕТ по SDK — 372 в локальном
+ * MacOSX.sdk (промер 19.10, прежний пин), 356 в SDK CI-раннера macos-14
+ * (run 39592065551, job 119195226125, clang: «expression evaluates to
+ * '356 == 372'», 21.10). Apple дописывает поля в ХВОСТ, ABI-префикс заморожен,
+ * а потребляем мы только `internal` = байты [48,56). Точный пин полного
+ * размера = ложная растяжка (краснеет на законных дрейфах хвоста), поэтому
+ * пины: смещение+ширина потребляемого поля, нижняя граница под него и
+ * целость TASK_VM_INFO_COUNT (= sizeof/4 из ЭТОГО заголовка; буфер того же
+ * размера, ядро клампит count — на старом ядре префикс валиден). */
+_Static_assert(sizeof(struct task_vm_info) >= 56, "task_vm_info too small for internal");
+_Static_assert(sizeof(struct task_vm_info) % 4 == 0, "TASK_VM_INFO_COUNT not whole");
 
 /// out_mib — рабочий выровненный double; 0 = OK, иначе kern_return.
 int32_t fasad_spike_rss_mib(double *out_mib) {
