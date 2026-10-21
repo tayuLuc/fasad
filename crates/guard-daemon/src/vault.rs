@@ -117,8 +117,11 @@ const MAX_SESSIONS: usize = 256;
 const NONCE_BYTES: usize = 4;
 
 /// Ключевые слова ответа `anonymize` — операторы Presidio (`mask`/`replace`).
-const OP_MASK: &str = "mask";
-const OP_REPLACE: &str = "replace";
+pub const OP_MASK: &str = "mask";
+/// Публично: харнес гейта `restoration-integrity` (`examples/restore_probe.rs`)
+/// обязана отличить round-trip через суррогатную форму от round-trip через
+/// маркер, а литерал `"replace"` для этого был бы вторым источником правды.
+pub const OP_REPLACE: &str = "replace";
 
 /// Один испанский фрагмент запроса `anonymize`.
 ///
@@ -507,6 +510,20 @@ impl Vault {
         self.mode
     }
 
+    /// Движок хранилища: только для наблюдения и для тестовой подделки записи.
+    ///
+    /// Публично харнесу гейта `restoration-integrity`
+    /// (`examples/restore_probe.rs`) и тесту
+    /// [`Self::divergent_form_refuses_restore_and_shows_in_counter`]: им нужно
+    /// состояние «запись в кэше не та», которое штатным путём недостижимо
+    /// (выдача на перенятый слот отказывает — `guard-vault`), и нужно снять
+    /// счётчик `restoration_mismatches` тем же путём, что `/health`.
+    /// Продуктовый код обращается к полю напрямую, наружу метод не торчит.
+    #[must_use]
+    pub fn engine(&self) -> &VaultEngine {
+        &self.engine
+    }
+
     /// Заменить spans обратимыми подменами.
     ///
     /// # Errors
@@ -652,8 +669,11 @@ impl Vault {
     ///
     /// Вынесено из [`Self::deanonymize`] без изменения смысла: потоковый путь
     /// прокси (шаг 7c) обязан доставать тот же список, что и не-потоковый, иначе
-    /// два канала начнут разно-восстанавливать ФИО.
-    fn session_forms(&self, session: &str) -> Vec<String> {
+    /// два канала начнут разно-восстанавливать ФИО. Публично для харнеса гейта
+    /// `restoration-integrity`: ей строится состояние «форма указывает на чужой
+    /// оригинал» (`examples/restore_probe.rs`, `Fault::DivergentStore`).
+    #[must_use]
+    pub fn session_forms(&self, session: &str) -> Vec<String> {
         let guard = self.locked();
         guard
             .sessions
