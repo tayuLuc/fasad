@@ -414,3 +414,131 @@ information is read from the file system on each call»), и маршрут
 `/assets/{path}` с путём из запроса в отладочном бинаре читал бы что угодно
 вне каталога. Тест `asset_names_outside_the_allow_list_are_refused` держит это
 и на `%2e%2e%2f`-поднятии.
+
+## 16. Промер трея: `tray-icon` (22.10, issue #128; решение оператора в комментарии к #128; первичка crates.io API + `.crate`-деревья + gh api, user-agent `fasad-depverify`)
+
+**Решение оператора (цитата, gh issue view 128, комментарий от tayuLuc):** «трей
+ДЕЛАЕМ — сценарий: Linux-сервер = systemd-юнит (консольный демон, без трея),
+Windows и macOS = трей (иконка статуса). dep-verify-строка tray-icon (0.26.1,
+MIT/Apache-2.0, rust-version 1.90 — MSRV-bump канона 1.85→1.90 решение оператора
+здесь же), фича tray DEFAULT OFF… linux-дефолт-фича libappindicator/muda gtk3
+отключается дефолтами… Релизные бандлы: tray-бинарь для win/mac (feature on),
+linux бандл = headless (systemd-контур, юнит-файл в доки)». MSRV-bump канона
+`rust-version = "1.85"` (`Cargo.toml:38`) → 1.90 — решение оператора, вписано
+в скоуп атома; прецедент формы — keyring §12:228-230 («bump MSRV = отдельное
+решение», здесь оно и принято).
+
+### Таблица промера (первичка этой сессии, запросы `crates.io/api/v1/...`)
+
+| предмет | версия | дата релиза | лицензия | rust-version | yanked | первичка |
+|---|---|---|---|---|---|---|
+| tray-icon | 0.26.1 (newest = max_stable) | 2026-10-07 | MIT OR Apache-2.0 | **1.90** | false | API crate+version; `LICENSE-APACHE`/`LICENSE-MIT`/`LICENSE.spdx` в `.crate` (tar-лист) |
+| muda (ед. runtime-зависимость меню) | 0.21.0 (пин tray-icon `^0.21`; newest 0.21.2 2026-10-08) | 2026-09-30 | Apache-2.0 OR MIT | **1.90** | false | API version/dependencies |
+| libappindicator (feature `libappindicator`) | 0.9.0 — newest крейта | 2023-10-01 | Apache-2.0 OR MIT | — (нет поля) | false | API crate (newest 0.9.0, updated 2023-10-01); `.crate` |
+| ksni (feature `ksni`, alt-бэкенд) | 0.3.7 | 2026-10-20 | Unlicense | 1.80 | false | API version |
+| objc2-app-kit (mac-бэкенд) | 0.3.2 (пин `^0.3.2`) | 2025-10-04 | Zlib OR Apache-2.0 OR MIT | 1.71 | false | API version |
+| windows-sys (win-бэкенд) | 0.61.2 (пин `>=0.60, <=0.61`) | 2025-10-06 | MIT OR Apache-2.0 | 1.71 | false | API version |
+| png (linux+mac) | 0.18.1 | 2026-02-14 | MIT OR Apache-2.0 | 1.73 | false | API version |
+| thiserror / once_cell / crossbeam-channel (общие) | 2.0.21 / 1.21.4 / 0.5.17 | 2026-09-23 / 2026-03-12 / 2026-09-05 | MIT OR Apache-2.0 | 1.77 / 1.65 / 1.60 | false | API version |
+
+Репо-первичка (`gh api`, 22.10): `tauri-apps/tray-icon` — 411 ★, последний
+коммит 2026-10-19 (`1100fbe`), открытые issues 35 (счёт по
+`issues?state=open`, без PR; `open_issues_count`=47 включает PR), релизный
+ритм: 0.24.2 → 2026-07-27, 0.25.0 → 2026-09-11, 0.25.1 → 2026-09-16,
+0.26.0 → 2026-09-30, 0.26.1 → 2026-10-07 (живое сопровождение, 4 релиза за 10
+недель); contributors: amrbashir 83 +Legend-Master 12 (ядро — мейнтейнер
+tauri). `tauri-apps/muda` — 428 ★, push 2026-10-17, открытые issues 30,
+релизы 0.21.0/0.21.1/0.21.2 — 30.09/07.10/08.10.2026. docs.rs:
+`tray-icon/0.26.1`, `muda/0.21.0` — HTTP 200.
+
+### Feature-карта linux (первичка: API `/dependencies` + `src/lib.rs` `.crate`)
+
+`default = ["libappindicator"]`, и `libappindicator = [dep:dirs,
+dep:libappindicator, muda-gtk3]`, `muda-gtk3 = ["muda/gtk3"]` ⇒ **дефолт
+крейта на linux тянет GTK3-стек** (muda `default = ["gtk3"]` → `dep:gtk` +
+`dep:libc`). При этом `src/lib.rs:128-138` (`.crate` 0.26.1):
+
+```rust
+#[cfg(all(target_os = "linux", not(any(feature = "libappindicator", feature = "ksni"))))]
+compile_error!("either the `libappindicator` or `ksni` feature must be enabled on Linux and BSD");
+```
+
+То есть `default-features = false` на linux = **compile_error**, легальной
+headless-сборки трея на linux нет ни одной фичей. Ровно это решение оператора
+и фиксирует: linux-бандл без трея (systemd-контур, см. `docs/release.md`
+§«Что в бандле» п.7), трей = feature-gated под win/mac.
+`ksni`-фича (`ksni = [dep:ksni, muda-snapshot]`) как linux-лег не берётся:
+`ksni 0.3.7` — лицензия **Unlicense**, её нет в allow-листе `deny.toml`
+(`allow` = Apache-2.0/MIT/BSD/ISC/Unicode-3.0/CC0-1.0/Zlib/CDLA-Permissive-2.0,
+`deny.toml:60-72` — расширять под неё allow = отдельное решение), плюс она
+тянет zbus-контур (`zbus ^5` + `ashpd`, `gtk4`, `smol` — промер
+`/dependencies` 0.3.7), а `zvariant`/`zbus_names`/`zvariant_derive` помечены
+`informational = "unmaintained"` (RUSTSEC-2026-0370/-0371/-0372, дата
+2026-10-16, `patched = []`; диапазоны unstated = весь актуальный ряд
+4.x/5.x — первичка advisory-фронтов; записи открыты и в самих репо — issues
+#381-#386 tauri-apps/tray-icon).
+
+### Вердикт-кандидат
+
+`tray-icon 0.26.1`, `default-features = false`, фича продукта `tray`
+(default OFF, проброшена к `guard-daemon`) — по решению оператора. Лицензия
+MIT OR Apache-2.0 — в allow-листе `deny.toml`, расширять не надо. MSRV:
+`rust-version = "1.90"` у tray-icon 0.26.1 и у пинимого muda 0.21.x ⇒ канон
+workspace `1.85` → `1.90` (решение оператора, цитата выше; toolchain-пин
+`rust-toolchain.toml` = 1.99.1 ≥ 1.90 — сборочный пол не двигается, двигается
+заявленный канон + текст SPEC §1 п.1 «MSRV 1.85+»). Фичи-флаг `tray` на linux
+не собирается ни в какой конфигурации (compile_error выше) — CI-матрица
+проверяет feature-off на ubuntu (linux-джобы не линкуют трей-код) и feature-on
+на windows/macos.
+
+Что включено на win/mac при `tray = ["tray-icon"]` (без default):
+windows — `windows-sys` (5 Win32-фич: WindowsAndMessaging/Foundation/
+SystemServices/Gdi/Shell); macos — `objc2*` (app-kit/foundation/
+core-foundation/core-graphics, feature-списки NS*-модулей в `/dependencies`);
+общие — `muda 0.21` (пин в `Cargo.toml.orig` 0.26.1: `muda = { version =
+"0.21", default-features = false }` — промер `.crate`; gtk-деп у muda
+opt-зафичен и на win/mac-цели не таргетится — промер `/dependencies`
+target-полей), `crossbeam-channel`,
+`once_cell`, `png` (linux+mac), `thiserror`. Все — non-optional-зависимости
+0.26.1, из linux-цели выключены cfg-мишенями (промер `/dependencies`
+target-полей).
+
+### Риск-строки
+
+1. **linux-дефолт GTK-ловушка (закрыта вердиктом).** `default =
+   ["libappindicator"]` → `muda/gtk3` → `gtk 0.18` (build-dep `pkg-config` —
+   первичка `.crate` gtk-0.18.2 `[build-dependencies] pkg-config ^0.3.7`) +
+   системный `libappindicator3.so.1`/`libayatana-appindicator3.so.1`
+   (runtime-load через `libloading` — первичка `libappindicator-sys-0.9.0/
+   src/lib.rs`, `Library::new(...)`). Ubuntu-раннер CI без `-dev` пакетов
+   краснеет на такой сборке; в `Cargo.lock` крейта GTK-кластер занимает место
+   в 521-узловом дереве (промер `grep -c 'name ='` по `.crate/Cargo.lock`
+   tray-icon 0.26.1 против 232 узлов нашего workspace). Лечится `default-features
+   = false` + never-подключение linux-таргета — см. вердикт.
+2. **muda-transitivity (MSRV).** MSRV 1.90 задают ДВА крейта (tray-icon 0.26.1
+   и muda 0.21.0). Линейка с floor ≤1.73 — tray-icon 0.24.2 (`rust-version
+   1.73`, последняя 1.73-линейка: 0.23.0…0.24.2, 2026-04-29…07-27) +
+   muda 0.19.3 (1.73) — существует, но её linux-дефолт `["libxdo","gtk"]`
+   (feature-карта API 0.19.3: `libxdo = [dep:libxdo]`) тянет системный libxdo,
+   а сама ветка заморожена с 2026-07-27 (4 месяца без релиза на 22.10).
+   Bump канона 1.85→1.90 — осознанная цена живой линейки; прецедент — keyring
+   §12.
+3. **cruft-профиль репо (низкий).** 411 ★, коммит 11 дней назад, 35 открытых
+   issues из 47 (PR-фильтр gh api 22.10); RUSTSEC по tray-icon/muda/
+   libappindicator/objc2/windows-sys/png/thiserror/once_cell/crossbeam-channel
+   — 0 записей (первичка: локальный клон advisory-db HEAD
+   `4b587f00996ebe5c05a73eaef105ef241e876414` от 2026-10-21, `find crates/`
+   по всем девяти именам — пусто). Единственные RUSTSEC рядом с контуром —
+   `informational=unmaintained` по zbus-ветке `ksni`, которую мы не берём.
+   `libappindicator 0.9.0` мёртв с 2023-10-01 (newest крейта) — на linux-путь
+   не влияет: linux-трея нет по решению; крейт в дерево не попадает при
+   `default-features = false` (opt-зависимость за фичей).
+4. **MSRV-канон 1.90 ≠ toolchain 1.99.1.** Билд на 1.99.1 зелёным считать
+   нельзя заранее — проверка входит в phase-2 (code-атом: feature `tray` +
+   `cargo check --features tray` на win/mac-джобах). Локально на этой машине
+   трей не промеряется (feature-on собирается только под win/mac-таргеты;
+   osx-arm64-промер `cargo check -p guard-daemon --features tray` возможен на
+   mac-хосте оператора — фаза 2).
+5. **`muda` newest = 0.21.2 (08.10.2026), пин tray-icon `^0.21`** ⇒ resolution
+   возьмёт 0.21.2 (тот же MSRV 1.90, лицензии те же, features-карта
+   идентична 0.21.0 — первичка API). Дельта патчей, bump не решение.

@@ -36,6 +36,17 @@
    `FASAD_SCHEMA`).
 6. `SHA256SUMS.txt` — sha256 всех файлов бандла; рядом с архивом лежит
    `fasad-…-cascade-0.<ext>.sha256` (хэш самого архива).
+7. Платформенный контур запуска (решение оператора 21.10, issue #128):
+   **linux-бандл = headless-демон под systemd** (консольный запуск, юнит-файл
+   `fasad.service` в бандле, бинд loopback по дефолту — `config.rs:28`), трей
+   в linux-артефакт не входит; **win/mac-бандлы несут tray-бинарь** (feature
+   `tray` ON, иконка статуса). На стороне зависимостей это зафиксировано в
+   [dep-verify-crates.md](dep-verify-crates.md) §16: `tray-icon` берётся с
+   `default-features = false` (linux-дефолт `libappindicator` = GTK3-вес, а
+   linux-сборка трея без него физически невозможна — `compile_error` в
+   `tray-icon-0.26.1/src/lib.rs:128-138`), linux-джобы CI собирают feature-off.
+   Код-контур (сама фича, юнит-файл в `make-bundle.sh`, клик-обработчик) —
+   фаза 2, за этой строкой.
 
 ## Матрица сборки
 
