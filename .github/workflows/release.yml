@@ -156,9 +156,16 @@ jobs:
           set -euo pipefail
           url="https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/${{ matrix.ort_archive }}"
           curl -sSfL --retry 3 -A "fasad-release-ci/1.0" -o "$RUNNER_TEMP/ort.tgz" "$url"
-          printf '%s  %s\n' "${{ matrix.ort_sha256 }}  " "$RUNNER_TEMP/ort.tgz" > "$RUNNER_TEMP/ort.sum"
-          # sed убирает хвостовые пробелы, чтобы форма совпала с `-c` форматом
-          sed -i 's/[[:space:]]*$//' "$RUNNER_TEMP/ort.sum"
+          # Ровно ДВА пробела между хэшем и путём, и оба — из формата, а не из
+          # аргумента. Промер 21.10 на BSD `/sbin/sha256sum` («sha256sum (Darwin)
+          # 1.0»), то есть на macos-14: прежняя форма с `'…  '` внутри аргумента
+          # давала четыре пробела, поле пути начиналось с пробела, и
+          # `sha256sum -c` отвечал rc=1 («No such file or directory» на
+          # существующий файл). Правка 21.10 чинила это `sed -i`, а он на BSD
+          # съедает имя файла как суффикс бэкапа (rc=1, «invalid command code») —
+          # гейт умирал ДО сверки хэша. `sed` удалён; форма каноническая, GNU и
+          # BSD читают её одинаково.
+          printf '%s  %s\n' "${{ matrix.ort_sha256 }}" "$RUNNER_TEMP/ort.tgz" > "$RUNNER_TEMP/ort.sum"
           ( cd "$RUNNER_TEMP" && sha256sum -c ort.sum )
           mkdir -p "$RUNNER_TEMP/ort"
           tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP/ort"
