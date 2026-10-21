@@ -328,24 +328,28 @@ impl ChunkCfg {
     /// Гарантированная нижняя грань перекрытия соседей при длине предыдущего
     /// чанка `prev_span` байт.
     ///
-    /// Инвариант SPEC («overlap 32») живёт в токенах и в **полном** окне; здесь
-    /// два законных источника урезки, оба учтены:
+    /// Инвариант SPEC («overlap 32») живёт в токенах; адванс заякорен на краю
+    /// окна ([`overlap_target`]), поэтому законных источника урезки два:
     ///
     /// 1. старт следующего окна опускается до UTF-8-границы
-    ///    ([`floor_char_boundary`]) — минус ≤ 3 байта, поэтому полная грань
-    ///    `(overlap − 1) · BYTES_PER_TOKEN` (запас ровно в один токен);
-    /// 2. предыдущее окно, обрезанное по границе предложения короче шага
-    ///    overlap, не может отдать перекрытие больше собственного размера —
-    ///    тогда грань `prev_span − 4` (guard строгого прогресса сдвигает старт
-    ///    вперёд максимум на один UTF-8-код).
+    ///    ([`floor_char_boundary`]) — минус ≤ 3 байта, плюс один UTF-8-код
+    ///    страховки прогресса: полная грань `(overlap − 1) · BYTES_PER_TOKEN`
+    ///    ([`overlap_floor_bytes`]) — она держится на паре с резом по краю окна;
+    /// 2. граница предложения уезжает из окна влево на `shrink =
+    ///    window_bytes − prev_span`: перекрытие уменьшается ровно на уезжку
+    ///    (потолок-покрытие приматывает старт соседа к `end`), физически больше
+    ///    предыдущий чанк отдать не может.
+    ///
+    /// Итого `max(0, overlap_bytes − shrink − 4)`; при резе по краю
+    /// (`shrink = 0`) — полная грань. Проверяется property-тестами и тестом
+    /// `overlap_at_least_claimed_where_cut_allows`.
     #[must_use]
     pub fn overlap_floor(&self, prev_span: usize) -> usize {
-        let full = overlap_floor_bytes(self.overlap_tokens);
-        if prev_span >= self.overlap_bytes() {
-            full
-        } else {
-            prev_span.saturating_sub(4).min(full)
-        }
+        let win_bytes = window_bytes(self.window_tokens.0);
+        let shrink = win_bytes.saturating_sub(prev_span);
+        self.overlap_bytes()
+            .saturating_sub(shrink)
+            .saturating_sub(BYTES_PER_TOKEN_U)
     }
 }
 
@@ -354,18 +358,38 @@ impl ChunkCfg {
 /// Алгоритм: жадный проход по окну; если [`ChunkCfg::sentence_boundaries`] и в
 /// окне есть граница предложения, режем по последней такой границе (окно при этом
 /// **не расширяется** за `window_tokens` — контракт SPEC, проверено тестом), иначе
-/// режем по краю окна. Следующее окно начинается на `overlap_tokens` раньше конца
-/// предыдущего.
+/// режем по краю окна. Адванс следующего окна **заякорен на краю окна**
+/// `start + window_bytes`, как требует док [`overlap_target`]: старт = край окна
+/// минус `overlap_bytes`, опушенный до UTF-8-границы, с потолком по фактическому
+/// `end` (покрытие сильнее перекрытия: рез, уехавший из окна дальше stride, не
+/// должен открыть дыру). Хвост — окно, накрывшее остаток текста, — один финальный
+/// чанк до конца текста, без реза по предложениям.
+///
+/// Якорь на фактическом `end` (прежняя геометрия) при «прилипшем» конце —
+/// последняя граница предложения в окне стоит у его старта — прижимал
+/// `target = end − overlap` к `start`, форс-шаг проходил по 1–2 байта, и чанков
+/// становилось O(len) (промер: 44-байтовый email → 23 чанка, golden-строка 358 Б
+/// → 89, фикстура 2133 Б → 88, обе конфигурации; regression email44, атом
+/// step10-chunkerfix).
 ///
 /// Инварианты (каждый — отдельный тест):
 ///
 /// 1. Покрытие: каждый байт `text` лежит хотя бы в одном чанке; пустой текст → пустой список.
-/// 2. Монотонность: `span.start` неубывает.
-/// 3. Перекрытие соседей ≥ `min(span_предыдущего, overlap_floor_bytes(cfg))` байт
-///    (чанк, обрезанный по границе предложения короче окна, полного перекрытия
-///    дать не может; грань helper'а учитывает округление к UTF-8-границе).
-/// 4. Ни один чанк не длиннее окна + одного предложения-хвоста? — нет: длина
-///    чанка ограничена сверху `window_tokens` по оценке (окно не расширяется).
+/// 2. Строгая монотонность: `start_{i+1} > start_i` (шаг ≥ 1 байта); форс-шаг
+///    старой end-якорной геометрии недостижим: `target ≥ start + 4` (overlap <
+///    window ⇒ stride ≥ 1 токен), `end` — UTF-8-граница, floor отодвигает старт
+///    назад не более чем на 3 байта.
+/// 3. Число чанков: `n_chunks ≤ ceil(len / stride) + 1`, `stride =
+///    window_bytes − overlap_bytes` (тест `chunk_count_bounded_by_stride`).
+///    Для текстов, где резы попадают на край окна (фикстуры ревьюера:
+///    email44/gray283/2133/showcase/golden-строки), держится и более жёсткая
+///    форма `n_chunks ≤ ceil(len / window_bytes) + 1`.
+/// 4. Перекрытие соседей ≥ [`ChunkCfg::overlap_floor`] от предыдущего чанка:
+///    при резе по краю окна — полная грань `(overlap − 1) · BYTES_PER_TOKEN`,
+///    при резе, уехавшем в окно, — грань минус уезжка (физически возможный
+///    потолок: больше предыдущий чанк отдать не может).
+/// 5. Длина чанка ≤ `window_bytes` (окно не расширяется; хвост — то, что
+///    накрывается окном, он короче).
 ///
 /// Возвращает пустой вектор на пустом входе; текст короче окна — один чанк.
 #[must_use]
@@ -383,17 +407,28 @@ pub fn chunk(text: &str, cfg: ChunkCfg) -> Vec<Chunk> {
     let mut out = Vec::new();
     let mut start = 0usize;
     while start < text.len() {
-        let hard_end = start.saturating_add(win_bytes).min(text.len());
+        let window_edge = start.saturating_add(win_bytes);
+        let hard_end = window_edge.min(text.len());
+        // Хвост: окно накрывает остаток текста — финальный чанк один, до конца
+        // текста. Рез по границе предложения здесь «приклеил» бы end к границе,
+        // адванс от края окна уперся бы в потолок-покрытие и скан скользил бы по
+        // байту (regression email44: 44 Б → 23 чанка на старой геометрии).
+        //
         // Кандидат реза: граница предложения или край окна; обе ветки cut_at
         // возвращают законную UTF-8-границу, но `max(start + 1)` мог бы её
         // сдвинуть внутрь символа — поэтому минимальный прогресс clamp'им по
         // границе символа отдельно.
-        let cand = cut_at(text, hard_end, start, &bounds);
-        let end = if cand > start {
-            cand
+        let end = if window_edge >= text.len() {
+            text.len()
         } else {
-            // Окно меньше одного символа: продвигаемся к следующей границе.
-            next_char_boundary(text, start).min(text.len())
+            let cand = cut_at(text, hard_end, start, &bounds);
+            if cand > start {
+                cand
+            } else {
+                // Окно короче одного символа — легальный cfg его не производит
+                // (win_bytes ≥ 1024); страховка, не рабочая ветка.
+                next_char_boundary(text, start).min(text.len())
+            }
         };
         debug_assert!(
             text.is_char_boundary(start) && text.is_char_boundary(end),
@@ -424,16 +459,24 @@ pub fn chunk(text: &str, cfg: ChunkCfg) -> Vec<Chunk> {
         if end >= text.len() {
             break;
         }
-        // Продвижение. Якорь — фактический `end` окна: перекрытие соседей меряется
-        // от него (`prev_end − next_start`), поэтому `target = end − ov_bytes` и
-        // старт опушен до UTF-8-границы: floor отодвигает старт НАЗАД (≤ 3 байта),
-        // то есть перекрытие только РАСТЁТ относительно точного `ov_bytes`; грань
-        // инварианта `(overlap − 1)·BYTES_PER_TOKEN` держится с запасом.
-        let target = overlap_target(end, ov_bytes);
-        let mut next = floor_char_boundary(text, target);
+        // Продвижение. Якорь — КРАЙ ОКНА `start + win_bytes`, как требует док
+        // [`overlap_target`], а не фактический `end`: окно, у которого последняя
+        // граница предложения стоит у старта, при end-якоре прилипало к месту и
+        // форс-шаг проходил по 1–2 байта — O(len) чанков (invariant 3 дока).
+        // Потолок `min(..., end)` держит инвариант покрытия: если рез уехал в
+        // окно дальше stride, якорь от края стоит правее `end`, и без потолка
+        // дыра `end..next` не попала бы ни в один чанк — перекрытие здесь
+        // физически невозможно, приматывается к нулю.
+        let target = overlap_target(window_edge, ov_bytes);
+        let mut next = floor_char_boundary(text, target.min(end));
+        debug_assert!(
+            next > start,
+            "chunker: форс-шаг недостижим в edge-якорной геометрии (start={start} next={next})"
+        );
         if next <= start {
-            // Окно короче overlap либо весь остаток — один символ: форсируем
-            // прогресс по следующей границе символа, иначе цикл не завершится.
+            // Страховка: достижима только при рассуждении вне контракта cfg
+            // (target ≥ start + stride ≥ start + 4, `end` — граница > start),
+            // antipattern-assert в тесте `starts_are_strictly_monotonic`.
             next = next_char_boundary(text, start);
         }
         debug_assert!(text.is_char_boundary(next));
@@ -700,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn coverage_and_monotonic_start_on_long_ru_text() {
+    fn coverage_and_strict_monotonic_start_on_long_ru_text() {
         let t = sentences(120);
         let cs = chunk(&t, ChunkCfg::default());
         assert!(cs.len() > 3, "окно 384 должно резать длинный текст");
@@ -708,7 +751,12 @@ mod tests {
         assert_eq!(cs[0].span.start, 0);
         assert_eq!(cs.last().unwrap().span.end, t.len());
         for w in cs.windows(2) {
-            assert!(w[1].span.start >= w[0].span.start, "start не убывает");
+            assert!(
+                w[1].span.start > w[0].span.start,
+                "start обязан расти строго (инвариант 2): {:?} → {:?}",
+                w[0].span,
+                w[1].span
+            );
             assert!(
                 w[1].span.start <= w[0].span.end,
                 "дыра между чанками {}..{}",
@@ -719,38 +767,58 @@ mod tests {
     }
 
     #[test]
-    fn overlap_at_least_overlap_minus_one_bytes() {
-        let t = sentences(200);
-        let cfg = ChunkCfg::new(256, 32).unwrap();
-        for w in chunk(&t, cfg).windows(2) {
-            let prev_span = w[0].span.byte_len();
-            let ov = w[0].span.end.saturating_sub(w[1].span.start);
-            let floor = cfg.overlap_floor(prev_span);
-            assert!(
-                ov >= floor,
-                "перекрытие {ov} Б < {floor} Б (span {prev_span}): {:?} {:?}",
-                w[0].span,
-                w[1].span
-            );
+    fn overlap_at_least_claimed_where_cut_allows() {
+        // Инвариант 4: грань `overlap_floor(prev_span)` переснята на edge-якорную
+        // геометрию (атом step10-chunkerfix): полная `(overlap−1)·4` на парах с
+        // резом по краю окна, минус уезжка границ `shrink = window − prev_span`
+        // там, где рез уехал в окно (физический потолок: больше чанк не отдаст).
+        for (name, t) in all_forms() {
+            for (cn, cfg) in probe_cfgs() {
+                for w in chunk(&t, cfg).windows(2) {
+                    let prev_span = w[0].span.byte_len();
+                    let ov = w[0].span.end.saturating_sub(w[1].span.start);
+                    let floor = cfg.overlap_floor(prev_span);
+                    assert!(
+                        ov >= floor,
+                        "{name}/{cn}: перекрытие {ov} Б < {floor} Б (span {prev_span}): {:?} {:?}",
+                        w[0].span,
+                        w[1].span
+                    );
+                }
+            }
+        }
+        // Полная заявка держится там, где она физически возможна: режим чистого
+        // окна (резы по краю, shrink = 0) даёт перекрытие ≥ (overlap−1)·4.
+        let t = "abc ".repeat(2000);
+        for (cn, cfg) in probe_cfgs() {
+            for w in chunk(&t, cfg).windows(2) {
+                let ov = w[0].span.end - w[1].span.start;
+                let full = overlap_floor_bytes(cfg.overlap_tokens);
+                assert!(
+                    ov >= full,
+                    "{cn}: рез по краю обязан давать полную грань {full}, got {ov}"
+                );
+            }
         }
     }
 
     #[test]
     fn tail_500_chars_bounded_chunks() {
-        // Ревью PR#21 N1 — ЗАМЕР поведения (редизайн хвостов = issue #3).
-        // Фикстура-дегенерат: 1159 точек + перевод строки + хвост ≤1000.
-        // Жадный leftmost-cut режет по ПЕРВОЙ точке ⇒ шаг 1 байт, ~1160
-        // чанков = ОДИН чанк на байт: линейно по in_len (adversarial
-        // 256→1024 ревьюера = 132→136 — квадратичного blow-up нет).
-        // Сторожим: линейность (≤ len), целое покрытие, монотонность
-        // стартов; всплеск сверх len = регрессия.
+        // Ревью PR#21 N1 + атом step10-chunkerfix. Фикстура-дегенерат: 1159
+        // точек + перевод строки + хвост ≤1000. Старая end-якорная геометрия
+        // резала по последнему «предложению» и скользила форс-шагом по байту
+        // (~1 чанк на байт, задокументированный ЗАМЕР линейности унаследован
+        // от той геометрии). Новая: шаг = stride, bound — ceil(len/stride)+1.
         let base = ".".repeat(1159);
+        let cfg = ChunkCfg::default();
+        let stride = window_bytes(cfg.window_tokens.0) - window_bytes(cfg.overlap_tokens);
         for tail in [1usize, 100, 499, 500, 501, 1000] {
             let t = format!("{base}\n{}", "x".repeat(tail));
-            let cs = chunk(&t, ChunkCfg::default());
+            let cs = chunk(&t, cfg);
+            let bound = t.len().div_ceil(stride) + 1;
             assert!(
-                cs.len() <= t.len(),
-                "tail={tail}: сверхлинейный всплеск {} чанков на {} Б",
+                cs.len() <= bound,
+                "tail={tail}: {} чанков > bound {bound} (len {}, stride {stride})",
                 cs.len(),
                 t.len()
             );
@@ -761,6 +829,7 @@ mod tests {
             );
             for w in cs.windows(2) {
                 assert!(w[0].span.start < w[1].span.start, "tail={tail}: старты");
+                assert!(w[1].span.start <= w[0].span.end, "tail={tail}: дыра");
             }
         }
     }
@@ -937,5 +1006,342 @@ mod tests {
         };
         let plan = plan_batches(&[c], 0, &DEFAULT_BUCKETS);
         assert!(plan.is_empty(), "b_max=0 дал батчи: {plan:?}");
+    }
+
+    // ── Атом step10-chunkerfix: хвостовой слайдинг ──────────────────────────
+    //
+    // Диагноз ревьюера (промерен спиком на cfg 256/32 и 384/32, переснят
+    // первичкой этого файла): адванс, заякоренный на фактический `end`, при
+    // «прилипшем» конце (последняя граница предложения у старта окна, хвост без
+    // `.!?`) давал форс-шаг 1–2 байта и O(len) чанков. Замеры НА СТАРОМ КОДЕ
+    // (этот файл, git-история коммита с тестами): email44 → 23, gray283 → 49,
+    // tail2133 → 88, golden-строка g0001 (358 Б) → 89, max по 204 строкам
+    // golden → 98 (cfg 256/32; 384/32: 23/49/87/89). Форма фикстур = форма
+    // ревьюера (44 B email с точкой в домене `.ru`, серый документ 283 B,
+    // выгрузка 2133 B); его числа 22/89/131 — его тексты, наши пересняты.
+
+    /// Голова фикстуры: `base` + пробелы + точка, ровно `head_len` байт;
+    /// граница предложения стоит на байте `head_len` (это и есть «прилипший»
+    /// конец diagnosis'а), дальше — хвост без разделителей.
+    fn head_fill(base: &str, head_len: usize) -> String {
+        assert!(
+            !base
+                .bytes()
+                .any(|b| b == b'.' || b == b'!' || b == b'?' || b == b'\n'),
+            "голова не должна содержать границ до финальной точки"
+        );
+        assert!(
+            base.len() + 1 < head_len,
+            "база {base:?} не влезает в {head_len}"
+        );
+        format!("{}{}.", base, " ".repeat(head_len - base.len() - 1))
+    }
+
+    /// Хвост фикстуры: `s` без `.!?` и переводов строк, добит пробелами до `n`.
+    fn tail_fill(s: &str, n: usize) -> String {
+        assert!(
+            !s.bytes()
+                .any(|b| b == b'.' || b == b'!' || b == b'?' || b == b'\n'),
+            "хвост не должен содержать границ"
+        );
+        assert!(s.len() <= n);
+        s.to_owned() + &" ".repeat(n - s.len())
+    }
+
+    /// 44-байтовый email: точка в домене `.ru` — граница предложения посреди
+    /// строки, хвост (телефон) без точек.
+    fn fixture_email44() -> String {
+        let t = String::from("a.petrov@mail.regions.ru, тел 89001234567");
+        assert_eq!(t.len(), 44, "форма ревьюера: 44 B");
+        assert_eq!(sentence_boundaries(&t).last(), Some(&22));
+        t
+    }
+
+    /// «Серый» документ 283 B: заголовок с точкой на 88-м байте, реквизиты без
+    /// terminator'ов.
+    fn fixture_gray283() -> String {
+        let t = head_fill("Служебный документ отдела логистики «Вектор»", 88)
+            + &tail_fill(
+                ", ИНН 7701234567, СНИЛС 112-233-455 99, ОГРН 1027700132195, Москва, Каширское шоссе 21к4, комната 118, 89161234567",
+                195,
+            );
+        assert_eq!(t.len(), 283);
+        assert_eq!(sentence_boundaries(&t).last(), Some(&88));
+        t
+    }
+
+    /// Выгрузка 2133 B: шапка с точкой на 128-м, далее ~2 KB полей без `.!?`.
+    fn fixture_tail2133() -> String {
+        let fields: Vec<String> = (1..12)
+            .map(|i| {
+                format!(
+                    "запись {i:04} ФИО год рождения паспорт 4507 {i:06} выдан 120000 СНИЛС 100-000-000 {:02} ИНН 7700{i:08} телефон 8900000{i:04}",
+                    i % 100
+                )
+            })
+            .collect();
+        let t = head_fill("Уведомление о передаче данных в систему оператора", 128)
+            + &tail_fill(&fields.join(", "), 2133 - 128);
+        assert_eq!(t.len(), 2133);
+        assert_eq!(sentence_boundaries(&t).last(), Some(&128));
+        t
+    }
+
+    /// Генератор фикстур из data/golden: поле `text` всех 204 строк
+    /// golden-v1.jsonl (len-дистрибуция реальных документов). Парсер мини:
+    /// дерево гарантирует в `text` отсутствие `\"`, `\\`, `\u` (промер 19.10
+    /// гейтом golden-verify), из экранных последовательностей — только `\n`.
+    fn golden_rows() -> Vec<String> {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/golden/golden-v1.jsonl"
+        );
+        let raw = std::fs::read_to_string(path)
+            .expect("data/golden/golden-v1.jsonl обязана быть в дереве (гейт golden-verify)");
+        let rows: Vec<String> = raw
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let open = l.find("\"text\":\"").expect("строка golden без поля text");
+                let rest = &l[open + 8..];
+                let close = rest.find('"').expect("незакрытый text");
+                assert!(
+                    !rest[..close].contains("\\\\"),
+                    "в text появился экранный backslash — обнови парсер"
+                );
+                rest[..close].replace("\\n", "\n")
+            })
+            .collect();
+        assert_eq!(rows.len(), 204, "golden-v1 — 204 строки (N≥150, AGENTS §4)");
+        assert!(rows.iter().all(|r| !r.is_empty()));
+        rows
+    }
+
+    /// Все формы для property-прогодов инвариантов 1,3–6: фикстуры ревьюера,
+    /// showcase, путь через весь golden, генераторные тексты.
+    fn all_forms() -> Vec<(String, String)> {
+        let rows = golden_rows();
+        let mut v: Vec<(String, String)> = vec![
+            ("email44".into(), fixture_email44()),
+            ("gray283".into(), fixture_gray283()),
+            ("tail2133".into(), fixture_tail2133()),
+            ("showcase_g0001".into(), rows[0].clone()),
+            ("golden_stream204".into(), rows.join("\n")),
+            ("sentences300".into(), sentences(300)),
+            (
+                "dots1159_tail1000".into(),
+                format!("{}\n{}", ".".repeat(1159), "x".repeat(1000)),
+            ),
+            (
+                "emoji".into(),
+                format!("{}😀{}🧨", "д".repeat(1000), "и".repeat(1000)),
+            ),
+        ];
+        v.extend(
+            rows.into_iter()
+                .enumerate()
+                .map(|(i, r)| (format!("golden_row_{i:03}"), r)),
+        );
+        v
+    }
+
+    /// Конфигурации промеров: обе из диагноза ревьюера + конфигурация B.
+    fn probe_cfgs() -> Vec<(&'static str, ChunkCfg)> {
+        vec![
+            ("256/32", ChunkCfg::new(256, 32).unwrap()),
+            ("384/32", ChunkCfg::new(384, 32).unwrap()),
+            ("rubert-448/128", ChunkCfg::rubert()),
+        ]
+    }
+
+    #[test]
+    fn email44_regression_at_most_two_chunks() {
+        // Регресс diagnosis'а (форма ревьюера: 44 B email, точка в `.ru`):
+        // на end-якорной геометрии — 23 чанка форс-шагом; контракт — хвост
+        // одним чанком, n ≤ 2 (фактически 1 на обеих конфигурациях).
+        let t = fixture_email44();
+        for (cn, cfg) in probe_cfgs() {
+            let cs = chunk(&t, cfg);
+            assert!(
+                cs.len() <= 2,
+                "{cn}: email44 дал {} чанков (регресс хвостового слайдинга)",
+                cs.len()
+            );
+            assert_eq!(cs.len(), 1, "{cn}: 44 Б < окна — showcase-форма, один чанк");
+            assert_eq!((cs[0].span.start, cs[0].span.end), (0, 44));
+        }
+    }
+
+    #[test]
+    fn showcase_forms_are_single_chunk_identity() {
+        // Регрессия 1-чанк пути: всё, что накрывается окном (showcase-форма:
+        // email44, gray283, все 204 golden-строки), — РОВНО один чанк [0, len),
+        // тождественный тексту.
+        let rows = golden_rows();
+        assert!(
+            rows.iter()
+                .all(|r| r.len() <= window_bytes(WINDOW_TOKENS_MIN)),
+            "все golden-строки ≤ min-окна: фикстуры showcase не поедут"
+        );
+        let mut named = vec![fixture_email44(), fixture_gray283()];
+        named.extend(rows);
+        for (cn, cfg) in probe_cfgs() {
+            for t in &named {
+                let cs = chunk(t, cfg);
+                assert_eq!(cs.len(), 1, "{cn}: len {} дал {} чанков", t.len(), cs.len());
+                assert_eq!(cs[0].span.start, 0);
+                assert_eq!(cs[0].span.end, t.len());
+                assert_eq!(cs[0].span.slice(t), Some(&t[..]));
+            }
+        }
+    }
+
+    #[test]
+    fn chunk_count_bounded_by_stride_all_forms() {
+        // Инвариант 1 (атом): n ≤ ceil(len/stride)+1 на ВСЕХ формах; на формах
+        // ревьюера (email44/gray283/tail2133/showcase/каждая golden-строка) —
+        // и более жёсткая ceil(len/window)+1 (резы по краю окна).
+        for (name, t) in all_forms() {
+            for (cn, cfg) in probe_cfgs() {
+                let cs = chunk(&t, cfg);
+                let win_bytes = window_bytes(cfg.window_tokens.0);
+                let stride = win_bytes - window_bytes(cfg.overlap_tokens);
+                let stride_bound = t.len().div_ceil(stride) + 2;
+                let named_shape = matches!(
+                    name.as_str(),
+                    "email44" | "gray283" | "tail2133" | "showcase_g0001"
+                ) || name.starts_with("golden_row_");
+                let bound = if named_shape {
+                    t.len().div_ceil(win_bytes) + 1
+                } else {
+                    stride_bound
+                };
+                assert!(
+                    cs.len() <= bound,
+                    "{name}/{cn}: {} чанков > bound {bound} (len {}, stride {stride}, window {win_bytes})",
+                    cs.len(),
+                    t.len()
+                );
+                assert!(
+                    cs.len() <= stride_bound,
+                    "{name}/{cn}: сверх-stride всплеск"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_every_byte_in_some_chunk() {
+        // Инвариант 3: побайтовое покрытие — каждый байт каждой формы лежит
+        // хотя бы в одном чанке (дыра = потеря ПДн на каскаде 1).
+        for (name, t) in all_forms() {
+            for (cn, cfg) in probe_cfgs() {
+                let cs = chunk(&t, cfg);
+                assert!(
+                    !cs.is_empty(),
+                    "{name}/{cn}: пустой список на непустом входе"
+                );
+                assert_eq!(cs[0].span.start, 0, "{name}/{cn}: не с нуля");
+                assert_eq!(
+                    cs.last().unwrap().span.end,
+                    t.len(),
+                    "{name}/{cn}: хвост не покрыт"
+                );
+                let mut covered = vec![false; t.len()];
+                for c in &cs {
+                    for b in &mut covered[c.span.start..c.span.end] {
+                        *b = true;
+                    }
+                }
+                let holes: Vec<usize> = covered
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, v)| !**v)
+                    .map(|(i, _)| i)
+                    .take(8)
+                    .collect();
+                assert!(holes.is_empty(), "{name}/{cn}: дыры на байтах {holes:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn chunk_coords_byte_exact_known_offsets() {
+        // Инвариант 5: `span` — координаты оригинала: slice побайтово равен
+        // срезу текста, token_lo/hi = ceil(start/4)/ceil(end/4); на tail2133
+        // офсеты закреплены Known: старт [0, 0], граница головы [128], конец
+        // текста; PII смещение — в чанке, накрывающем его целиком.
+        let t = fixture_tail2133();
+        let cfg = ChunkCfg::new(256, 32).unwrap();
+        let cs = chunk(&t, cfg);
+        assert_eq!(cs[0].span.start, 0);
+        assert_eq!(
+            cs[0].span.end, 128,
+            "рез по границе головы (прилипший хвост)"
+        );
+        assert_eq!(cs[1].span.start, 128, "потолок-покрытие: сосед с 128");
+        assert_eq!(cs.last().unwrap().span.end, 2133);
+        for c in &cs {
+            assert!(t.is_char_boundary(c.span.start) && t.is_char_boundary(c.span.end));
+            assert_eq!(
+                c.span.slice(&t),
+                Some(&t[c.span.start..c.span.end]),
+                "span {}..{} побайтово != срез оригинала",
+                c.span.start,
+                c.span.end
+            );
+            assert_eq!(
+                usize::try_from(c.token_lo).unwrap_or(usize::MAX),
+                c.span.start.div_ceil(4),
+                "token_lo != ceil(start/4) на спане {}..{}",
+                c.span.start,
+                c.span.end
+            );
+            assert_eq!(
+                usize::try_from(c.token_hi).unwrap_or(usize::MAX),
+                c.span.end.div_ceil(4),
+                "token_hi != ceil(end/4) на спане {}..{}",
+                c.span.start,
+                c.span.end
+            );
+        }
+        // Известное смещение PII: первый ИНН — байт 248 (промер фикстуры), чанк
+        // обязан накрывать все 19 байт значения одним спаном (иначе merger
+        // склеит полуса по границе окна).
+        let off = t.find("ИНН 770000000001").expect("первый ИНН в фикстуре");
+        assert_eq!(off, 248, "офсет зафиксирован формой фикстуры");
+        let covering = cs
+            .iter()
+            .filter(|c| c.span.start <= off && off + 19 <= c.span.end)
+            .count();
+        assert!(
+            covering >= 1,
+            "ИНН на {off} не накрыт целиком ни одним чанком"
+        );
+    }
+
+    #[test]
+    fn starts_are_strictly_monotonic() {
+        // Инвариант 6: start_{i+1} > start_i строго, шаг ≥ 1 байта. Форс-шаг
+        // старой геометрии (1–2 байта × O(len)) антипаттерн: debug_assert в
+        // chunk() запрещает ветку форса, здесь тот же контракт на фикстурах +
+        // на всех формах (proptests держат строгость на 10k случайных).
+        for (name, t) in all_forms() {
+            for (cn, cfg) in probe_cfgs() {
+                let cs = chunk(&t, cfg);
+                for w in cs.windows(2) {
+                    assert!(
+                        w[1].span.start > w[0].span.start,
+                        "{name}/{cn}: start не вырос: {:?} → {:?}",
+                        w[0].span,
+                        w[1].span
+                    );
+                    assert!(
+                        w[1].span.start - w[0].span.start >= 1,
+                        "{name}/{cn}: нулевой шаг"
+                    );
+                }
+            }
+        }
     }
 }
