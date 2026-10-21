@@ -6,10 +6,15 @@
 § «Что каскад 0 находит и не находит» — те документы остаются нарративом и
 контрактами; здесь справочник, и он не дублирует их прозу.
 
-Все номера строк сняты grep'ом с head ветки (base `5a36cb9` + атом #131;
-строки §1.2/§2.3/§3 пересняты на этом атоме, §1.3–§1.5/§2.1–§2.2 — на
-base, сдвигов не имеют: файлы не трогались ниже оконного слоя); при ребейзе
-переснимать, не доверять памяти (memory law: a cited primary can move).
+Все номера строк сняты grep'ом с head `e02c203` (влитый #138: word-break #131
++ leading-рамка + zero-canon veto); при ребейзе переснимать, не доверять
+памяти (memory law: a cited primary can move). Атом #138 вставил в
+`cascade0.rs` выше старых отметок (zero-canon вето у `call_validator`,
+константа `MIN_LEADING_GROUP_DIGITS` у `MAX_GROUP_DIGITS`) и в
+`checksums.rs` выше `iban` (таблица `zero_canon_passes_raw_formulas_s158`),
+поэтому сдвинулись все строки за ними (`iban` `:1210→:1301`, `scan_words`
+`:826→:995`, тесты каскада — на ~150–380 строк вниз); `normalize.rs` с
+прошлой пересъёмки (#135) не тронут, `numwords.rs` — не тронут с влития #118.
 Пересъёмка #132: указатели §5 на `daemon-scope.md` сняты живым grep'ом по
 содержанию (числа промеров, не номера строк) — у документа два владельца, и
 `5a36cb9` сдвинул его вёрстку; строки из issue (93–97, 163, 165–166) — снимок
@@ -17,9 +22,9 @@ head ревьюёра, на реальном main `5a36cb9` это 96–97, 98�
 
 ## 1. Атом-реестр
 
-Конвейер каскада 0 — `scan_with` (`crates/guard-daemon/src/cascade0.rs:285`):
+Конвейер каскада 0 — `scan_with` (`crates/guard-daemon/src/cascade0.rs:326`):
 нормализация → окна цифр → проход числительных → проход base64 → сортировка,
-дедуп, `drop_contained` (`:328`). Входная точка `scan` (`:268`), потребитель —
+дедуп, `drop_contained` (`:369`). Входная точка `scan` (`:309`), потребитель —
 `pipeline.rs:350`.
 
 ### 1.1 Нормализатор
@@ -42,30 +47,32 @@ head ревьюёра, на реальном main `5a36cb9` это 96–97, 98�
 
 ### 1.2 Оконный слой цифр (общий для всех атомов-обходов)
 
-`validated_windows` (`cascade0.rs:388`) — три прогона: `digit_runs` (`:470`),
-окна групп `num_runs` (`:570`), `iban_tokens` (`:616`). Рамки окна:
-`MAX_WINDOW_GROUPS = 5` (`:505`), `MAX_GROUP_DIGITS = 6` (`:509`).
+`validated_windows` (`cascade0.rs:429`) — три прогона: `digit_runs` (`:532`),
+окна групп `num_runs` (`:715`), `iban_tokens` (`:785`). Рамки окна:
+`MAX_WINDOW_GROUPS = 5` (`:576`), `MAX_GROUP_DIGITS = 6` (`:580`), ведущей
+группой канонического runs-токена может быть только группа полной ширины —
+`MIN_LEADING_GROUP_DIGITS = 2` (`:702`, #138; контуры — §2.3 п.3а).
 Разделители — общий перечень с валидатором:
 `checksums::NUMBER_SEPARATORS` (`checksums.rs:1128`, 8 позиций — с точкой и
 косой чертой от #131), читают его `sep_len`/`strip_separators`
-(`cascade0.rs:544,521`), цифровые окна — `sep_len_number` (`:557`) с
-FP-вето точки `checksums::dot_glues_number` (`checksums.rs:1177`). Изоляция прогона —
-`isolated` (`:655`): прижатый к латинице/цифре прогон номером не считается.
-Кредитация хита: `push_hits` (`:661`) / `push_span_hits` (`:680`).
+(`cascade0.rs:606,583`), цифровые окна — `sep_len_number` (`:628`) с
+FP-вето точки `checksums::dot_glues_number` (`checksums.rs:1179`). Изоляция прогона —
+`isolated` (`:824`): прижатый к латинице/цифре прогон номером не считается.
+Кредитация хита: `push_hits` (`:830`) / `push_span_hits` (`:849`).
 
 ### 1.3 Base64-обход (PR #94, закрыт)
 
-`scan_base64` (`cascade0.rs:854`), кандидаты `b64_tokens` (`:729`), форма
-`b64_shape_ok` (`:762`), декод `b64_decode` (`:806`, `Zeroizing`).
-Константы: `B64_MIN_PAYLOAD_BYTES = 11` (`:706`), `B64_MIN_TOKEN_BYTES = 16`
-(`:711`) — пороги разные, см. §2.2 п.2. Границы — в §2.2. Спан кредитзуется на исходный токен, источник
-`base64_decode` (`guard-types/src/verdict.rs:102`), вес 1.0.
+`scan_base64` (`cascade0.rs:1023`), кандидаты `b64_tokens` (`:898`), форма
+`b64_shape_ok` (`:931`), декод `b64_decode` (`:975`, `Zeroizing`).
+Константы: `B64_MIN_PAYLOAD_BYTES = 11` (`:875`), `B64_MIN_TOKEN_BYTES = 16`
+(`:880`) — пороги разные, см. §2.2 п.2. Границы — в §2.2. Спан кредитзуется на исходный токен, источник
+`base64_decode` (`guard-types/src/verdict.rs:101`), вес 1.0.
 
 ### 1.4 Числительные словами (issue #51 п.2, влит PR #118)
 
 `crates/guard-daemon/src/numwords.rs`: `spelled_numbers` (`:243`), структура
 `Spelled {range, digits}` (`:226`, `digits` в `Zeroizing`). Интеграция —
-`scan_words` (`cascade0.rs:826`): собранные цифры едут в те же
+`scan_words` (`cascade0.rs:995`): собранные цифры едут в те же
 `validated_windows`, спан возвращается на фразу словами; порог
 `MIN_SPELLED_DIGITS = 9` (`cascade0.rs:218`). Источник остаётся
 `checksum_rf`/`checksum_eu`, восьмой вариант `DetectionSource` не заводён.
@@ -73,7 +80,10 @@ FP-вето точки `checksums::dot_glues_number` (`checksums.rs:1177`). Из
 
 ### 1.5 Чексуммы (реестр валидаторов)
 
-Вызов по имени из схемы — `call_validator` (`cascade0.rs:223`); таблица длин
+Вызов по имени из схемы — `call_validator` (`cascade0.rs:261`); на входе
+него стоит zero-canon вето `is_single_digit_canon` (`:242`, #158) — единая
+точка для всех путей, где канон доверяется чексумме (сплошные прогоны цифр,
+окна групп, числа словами, base64-нагрузка; §2.3 п.3б). Таблица длин
 `DIGIT_SPECS` (`:149`), IBAN отдельно (`:203`). Схема по умолчанию —
 `config/schema.default.json` (класс → валидатор). Позиция «в каскаде 0» для
 банковских строк — «формат без класса»: валидатор живёт в коде, класса схемы
@@ -82,23 +92,23 @@ FP-вето точки `checksums::dot_glues_number` (`checksums.rs:1177`). Из
 
 | Класс | Функция | Валидатор (checksums.rs) | Формула (первичка dep-verify-algorithms.md) | Вес | Контракт-тест |
 | --- | --- | --- | --- | --- | --- |
-| ИНН-10 | `inn10` (`:126`) | mod 11, веса удвоением | §1 | 1.0 | `reference_vectors.rs:131` · §1: `checksums.rs:1314,1340` |
-| ИНН-12 | `inn12` (`:140`) | mod 11 две ступени (cd11, cd12) | §2 | 1.0 | тот же TSV · §2: `:1367` |
-| СНИЛС | `snils` (`:190`) | веса 9..1, mod 101, floor >001001998 | §3 | 1.0 | тот же TSV · §3: `:1395,1425` |
-| ОГРН-13 | `ogrn13` (`:286`) | mod 11 + структурное вето п.7 165н (`ogrn_structure_ok` `:252`) | §4 | 1.0 | тот же TSV · `:1481,1549` |
-| ОГРНИП-15 | `ogrnip15` (`:316`) | mod 13 + вето (С∈{3,4}, КК≠00) | §4 (SPEC-«mod11» опровергнут замером) | 1.0 | тот же TSV · `:1481,1549` |
-| Карта (PAN) | `luhn` (`:375`) | Луна ISO 7812-1:2017, 12..19 цифр | §5 | 1.0 | тот же TSV · `:1652`; hint `mir_bin` (`:393`) — тип, не фильтр |
-| IBAN | `iban` (`:1210`) | ISO 13616: реестр 89 стран (`IBAN_REGISTRY` `:440`) + mod-97 (`:1169`) | §7/§7a | 1.0 | тот же TSV |
-| БИК | `bik_format` (`:1247`) | формат: 9 цифр с `04` (чексуммы нет, 383-П; SPEC-«спец 000/001/002» кодом НЕ реализован, вето на них нет — `checksums.rs:1239–1246`); ловушка `040106…` (форма ОКУД) — за словарным слоем | §7 | 1.0 | тот же TSV (семейство `bik`) |
-| Счёт банка | `bank_account_format` (`:1279`) | формат: 20 цифр, префикс `ACCOUNT_PREFIXES` (`:1262`: 3010/3011/40/42; полная таблица 809-П не собрана) | §7/§7a | 1.0 | тот же TSV (семейство `account`) |
-| Пара БИК↔счёт | `bik_account_cross` (`:1295`) | перекрёст БИК[1:3]==счёт[6:8]; в оконный сканер не смонтирован (атом B, `cascade0.rs:147–149`) | §7 | 1.0 | тот же TSV (семейство `bik_account`) · `:2203` `#[ignore]` (`fn bik_account_cross_reference_pair_discrepancy`, расхождение первички) |
+| ИНН-10 | `inn10` (`:126`) | mod 11, веса удвоением | §1 | 1.0 | `reference_vectors.rs:131` · §1: `checksums.rs:1534,1560` |
+| ИНН-12 | `inn12` (`:140`) | mod 11 две ступени (cd11, cd12) | §2 | 1.0 | тот же TSV · §2: `:1587` |
+| СНИЛС | `snils` (`:190`) | веса 9..1, mod 101, floor >001001998 | §3 | 1.0 | тот же TSV · §3: `:1615,1645` (нижние границы статуса — `:1677,1686,1692` `#[ignore]`, эталон не дособран) |
+| ОГРН-13 | `ogrn13` (`:286`) | mod 11 + структурное вето п.7 165н (`ogrn_structure_ok` `:252`) | §4 | 1.0 | тот же TSV · `:1701,1769` |
+| ОГРНИП-15 | `ogrnip15` (`:316`) | mod 13 + вето (С∈{3,4}, КК≠00) | §4 (SPEC-«mod11» опровергнут замером) | 1.0 | тот же TSV · `:1854` |
+| Карта (PAN) | `luhn` (`:375`) | Луна ISO 7812-1:2017, 12..19 цифр | §5 | 1.0 | тот же TSV · `:1872`; hint `mir_bin` (`:393`) — тип, не фильтр |
+| IBAN | `iban` (`:1301`) | ISO 13616: реестр 89 стран (`IBAN_REGISTRY` `:440`) + mod-97 (`iban_mod97` `:1260`) | §7/§7a | 1.0 | тот же TSV |
+| БИК | `bik_format` (`:1338`) | формат: 9 цифр с `04` (чексуммы нет, 383-П; SPEC-«спец 000/001/002» кодом НЕ реализован, вето на них нет — док `checksums.rs:1328–1331`); ловушка `040106…` (форма ОКУД) — за словарным слоем | §7 | 1.0 | тот же TSV (семейство `bik`) · `:2356` |
+| Счёт банка | `bank_account_format` (`:1370`) | формат: 20 цифр, префикс `ACCOUNT_PREFIXES` (`:1353`: 3010/3011/40/42; полная таблица 809-П не собрана) | §7/§7a | 1.0 | тот же TSV (семейство `account`) · `:2376` |
+| Пара БИК↔счёт | `bik_account_cross` (`:1386`) | перекрёст БИК[1:3]==счёт[6:8]; в оконный сканер не смонтирован (атом B, `cascade0.rs:147–148`; zero-canon вето к нему не применяется — парный фильтр, одиночных спанов не порождает) | §7 | 1.0 | тот же TSV (семейство `bik_account`) · `:2432` `#[ignore]` (`fn bik_account_cross_reference_pair_discrepancy`, расхождение первички) |
 
 Эталонные векторы — `data/golden/reference-vectors.tsv` (таблицы из
 `dep-verify-algorithms.md` §1–§7; читают
 `crates/guard-detectors/tests/reference_vectors.rs:131` (сверка) и `:195`
 (покрытие семейств)). Ожидаемое NEVER вычисляется проверяемой функцией
 (AGENTS §Дисциплина фактов п.3). Вектор весов — контракт
-`crates/guard-types/tests/invariant_checksum_w.rs:233` (выпадение base64-декода
+`crates/guard-types/tests/invariant_checksum_w.rs:151` (выпадение base64-декода
 из ручки весов краснит тест).
 
 ### 1.6 Секреты (атом live, НЕ смонтирован в демон)
@@ -109,15 +119,17 @@ FP-вето точки `checksums::dot_glues_number` (`checksums.rs:1177`). Из
 `WINDOW = 200` байт (`:162`, `validate_body` `:422`) → энтропия Шеннона
 (`shannon_entropy` `:530`, 16-грамма `ENTROPY_WINDOW` `:165`, порог
 `ENTROPY_THRESHOLD = 4.0` `:170`, `entropy_pass` `:485`). Confidence: формат
-`0.95` (`:156`), entropy-only `0.60` (`:158`). API: `SecretScanner::new`
+`CONFIDENCE_FORMAT = 0.95` (`:156`), entropy-only `CONFIDENCE_ENTROPY = 0.60`
+(`:158`). API: `SecretScanner::new`
 (`:370`), `scan` (`:381`), convenience `scan` (`:564`). Классы `SecretKind`
 (`:91`): AWS `AKIA`, GitHub `ghp_/gho_/ghs_/ghu_/ghr_`, fine-grained
 `github_pat_`, OpenAI `sk-/sk-proj-/sk-svcacct-`, Google `AIza`, Slack
 `xoxb-/xoxp-`, GitLab `glpat-`, JWT `eyJ`, `HighEntropy`. Probability-of-Randomness
 из SPEC §2 кодом нет — только энтропия Шеннона (первичка: `secrets.rs:34–35`).
-Проверяется: `secrets.rs:577–819` (`format_vectors_hit_with_confidence_095`,
-anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
-`eyj_midword_not_jwt`, `hex_strings_do_not_trigger_entropy`).
+Проверяется: `secrets.rs:618–819` (`format_vectors_hit_with_confidence_095`
+`:618`,
+anti-FP-классы `word_skiff_and_skincare_not_format_openai` `:660`,
+`eyj_midword_not_jwt` `:672`, `hex_strings_do_not_trigger_entropy` `:718`).
 Монтаж: в `pipeline.rs` / каскаде 0 демона не вызывается — grep
 `secrets::|SecretScanner` по `crates/guard-daemon/src` пустой; SPEC §10 п.3
 (сборка детектора в демон) — атом впереди.
@@ -129,19 +141,19 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
 (`:62`), `match_spans` (`:78`), convenience `match_spans` (`:177`). Списки слов
 приходят из конфигурации (`config/schema.default.json`), не хардкод.
 Ограничения по первичке: ASCII-case-insensitive (кириллица матчится
-регистр-сохраняюще, `:10–17`); `WordBoundary::Ascii` (`enum WordBoundary` `:36`) — граница по
+регистр-сохраняюще, док модуля `:10–17`); `WordBoundary::Ascii` (`enum WordBoundary` `:36`) — граница по
 символу-соседу, кириллица слово продолжает. Проверяется: `dictionary.rs:256,281`
 (word-boundary), `:222` (кириллический регистр — задокументированное
-ограничение). Монтаж в демон — тот же атом SPEC §10 п.3, что у секретов.
+ограничение; `ru_ci_does_not_fold_cyrillic_documented`). Монтаж в демон — тот же атом SPEC §10 п.3, что у секретов.
 
 ## 2. Границы (per-атом)
 
-### 2.1 numwords (`numwords.rs`, интеграция `cascade0.rs:826`)
+### 2.1 numwords (`numwords.rs`, интеграция `cascade0.rs:995`)
 
 1. Порог: 9 цифр — `MIN_SPELLED_DIGITS` (`cascade0.rs:218`), числами короче
    валидаторам нечем подтверждаться; он же guard года: «тысяча девятьсот
    семьдесят один» = 1971 спана не даёт. Связь константы с `DIGIT_SPECS`
-   пинит `spelled_floor_is_the_shortest_digit_spec` (`cascade0.rs:1775`).
+   пинит `spelled_floor_is_the_shortest_digit_spec` (`cascade0.rs:2158`).
 2. Токен = максимальная цепочка кириллицы (U+0400..U+04FF, ведущие байты
    `0xD0/0xD1` — `is_cyrillic_lead` `numwords.rs:473`); латиница и цифры слово
    ОБРЫВАЮТ, не склеиваются (`latin_and_digits_split_tokens_and_never_glue`
@@ -165,56 +177,57 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
 6. FP-контроль: спан только по подтверждению валидатора; задокументированный
    FP-класс — круглые количества: «пять миллиардов» = 5000000000 проходит
    ИНН-10 (`spelled_round_billion_is_the_documented_tradeoff`
-   `cascade0.rs:1983`); обмен FN→FP работает в пользу нахождения.
-7. LUHN-подтверждение словами: `spelled_card_pan_passes_luhn` (`:1830`),
-   реестровые — `spelled_registry_numbers_fire` (`:1849`).
+   `cascade0.rs:2366`); обмен FN→FP работает в пользу нахождения.
+7. LUHN-подтверждение словами: `spelled_card_pan_passes_luhn` (`:2213`),
+   реестровые — `spelled_registry_numbers_fire` (`:2232`).
 8. Потолок спана — `MAX_ORIGINAL_BYTES`
-   (`crates/guard-vault/src/token.rs`, переснято grep'ом): 128 — снимок этого
-   пункта ДО #120; с #120 = 1024 Б, round-trip словесных номеров цел, за
+   (`crates/guard-vault/src/token.rs`, переснято grep'ом): `:72` = 1024 Б
+   (поднят с 128 в #120/#137), снимок этого пункта ДО #120 — 128; round-trip
+   словесных номеров цел, за
    потолком по-прежнему `TooLong` → `503 span_too_long` (fail-closed). Число и
    номер строки не пиним: их меняет PR #137 (объявление едет `:53` → `:72`),
    значение носит ссылка на #137. Ребейз через #137: брать ЭТУ версию пункта,
    число 128 оставлять только как отметку «до #120». Контракт — по имени теста в
    `crates/guard-daemon/tests/vault_span_cap.rs` (после #137 —
-   `cap_is_the_documented_1024`; в базе — отказ
+   `cap_is_the_documented_1024` `:179`; в базе — отказ
    `spelled_registry_number_over_the_cap_is_refused_with_its_reason` и маска
-   ниже потолка `spelled_phrase_under_the_cap_masks_normally`).
+   ниже потолка `spelled_phrase_under_the_cap_masks_normally` `:301`).
 9. Вложенность: числительные внутри base64-нагрузки не ищем (`scan_words`
    читает нормализованный текст; `words_inside_base64_are_not_scanned`
-   `cascade0.rs:2003`).
+   `cascade0.rs:2386`).
 
-### 2.2 base64 (`cascade0.rs:854`)
+### 2.2 base64 (`cascade0.rs:1023`)
 
-1. Кандидат: пробельная граница с обеих сторон (`b64_tokens:743–744` —
+1. Кандидат: пробельная граница с обеих сторон (`b64_tokens:912–913` —
    `is_ascii_whitespace`; в норме все широкие Zs уже сведены к U+0020), длина
-   кратна 4 и ≥ `B64_MIN_TOKEN_BYTES = 16` (`:711`), паддинг `=` только
-   хвостом ≤ 2, алфавит в токене не смешан (`b64_shape_ok:762`; стандартный и
+   кратна 4 и ≥ `B64_MIN_TOKEN_BYTES = 16` (`:880`), паддинг `=` только
+   хвостом ≤ 2, алфавит в токене не смешан (`b64_shape_ok:931`; стандартный и
    url-safe принимаются по отдельности).
-2. Декод: сначала standard, затем url-safe (`b64_decode:806`); полезная
+2. Декод: сначала standard, затем url-safe (`b64_decode:975`); полезная
    нагрузка ≥ `B64_MIN_PAYLOAD_BYTES = 11` байт — ИНН-10 с одной перемычкой;
    blob ровно из 10 цифр не проверяется — принятый FN
-   (`base64_payload_floor_is_the_documented_tradeoff` `:1559`). Пороги специально
-   разделены: декодер принимает токен от `B64_MIN_TOKEN_BYTES = 16` (`:711`),
-   кредитация спана — с нагрузки от `B64_MIN_PAYLOAD_BYTES = 11` (`:706`):
+   (`base64_payload_floor_is_the_documented_tradeoff` `:1942`). Пороги специально
+   разделены: декодер принимает токен от `B64_MIN_TOKEN_BYTES = 16` (`:880`),
+   кредитация спана — с нагрузки от `B64_MIN_PAYLOAD_BYTES = 11` (`:875`):
    16-байтовый токен без паддинга даёт ровно 11 байт нагрузки, то есть
    минимальная кредитация совпадает с самой короткой подтверждаемой сущностью
    (ИНН-10 с одной перемычкой) — см. п.1.
 3. Окно: нагрузка проходит тот же слой, что текст — UTF-8-with-losses →
    `normalize::normalize` → `validated_windows`; фильтр «в нагрузке есть
    цифра» стоит ПОСЛЕ нормализации (полноширинные цифры, ревью #94 F-1;
-   `base64_fullwidth_digits_match_the_text_path` `:1346`).
+   `base64_fullwidth_digits_match_the_text_path` `:1729`).
 4. Вложенность ровно один уровень: кандидатов в нагрузке не ищем
-   (`base64_nesting_is_exactly_one_level` `:1427`; рекурсия = неограниченный
+   (`base64_nesting_is_exactly_one_level` `:1810`; рекурсия = неограниченный
    CPU на вражеском входе).
 5. FP-контроль: спан только по подтверждению валидатора; случайные байты,
    JWT-сегменты (`a.b.c` не стоит на пробельной границе) и base64 текста без
-   цифр спанов не дают (`base64_negative_registry` `:1471`). Маркер
-   обратимости нашего vault (`[[F0#base64url]]`, `MARKER_PREFIX` `token.rs:96`)
+   цифр спанов не дают (`base64_negative_registry` `:1854`). Маркер
+   обратимости нашего vault (`[[F0#base64url]]`, `MARKER_PREFIX` `token.rs:117`)
    кандидатом не является — прижат к `#`, самого-маскирования токена прокси
    нет (`r7_vault_markers`, `tests/cascade0_bypass_review94.rs:454`).
 6. Координаты = исходный токен: `span = map.map_span_to_original(токен)`
    (fail-closed на не-char-границе), декод наружу не отдаётся
-   (`base64_span_sits_on_original_bytes` `:1451`).
+   (`base64_span_sits_on_original_bytes` `:1831`).
 7. `Zeroizing`: залочены декод и его строковая копия; третий буфер (копия
    нормализатора) не залочен — осознанный паритет с текстовым путём, чинится
    в нормализаторе (ревью #94 F-3).
@@ -222,20 +235,22 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
 ### 2.3 Общий оконный слой (границы, общие для числовых атомов)
 
 1. Прогон изолирован: прижатый к латинице/цифре номером не считается
-   (`isolated:655`, `glued_digits_are_not_numbers` `:1166`); кириллица соседом
+   (`isolated:824`, `glued_digits_are_not_numbers` `:1549`); кириллица соседом
    не считается — «ИНН7785240858» без пробела типична.
-2. Рамки окна: ≤5 групп, ≤6 цифр в группе (`:505,509`) — «1000000000
+2. Рамки окна: ≤5 групп, ≤6 цифр в группе (`:576,580`) — «1000000000
    2000000000» не склеивается в счёт (`window_frames_refuse_plain_number_pairs`
-   `:1089`).
+   `:1472`). Ведущая группа канонического runs-токена — только полной ширины:
+   `MIN_LEADING_GROUP_DIGITS = 2` (`:702`, #138) — три контура, п.3а.
 3. Разделители внутри номера: 8 позиций `NUMBER_SEPARATORS`
    (`checksums.rs:1128–1139`): пробел, U+002D, U+2010, U+2011, U+2012,
    U+FF0D, U+002E точка, U+002F косая черта (последние две — #131,
    word-break). Разделитель признаётся только **между** цифрами одного
    прогона (сдвоенный/ведущий/хвостовой отшиты). Точка — с FP-вето
    `dot_glues_number` (`checksums.rs:1179`), читают его
-   `sep_len_number`/`num_runs` (`cascade0.rs:557,600`): склеивает 2+3
+   `sep_len_number`/`num_runs` (`cascade0.rs:628,715`): склеивает 2+3
    («12.345»), 4+4 (банковские группы) и прочие разнодлинные пары, обрывает
-   прогон на равных группах (2+2 = календарь «12.03.1990», время), на
+   прогон на равных группах (2+2 = календарь «12.03.1990», время — #159
+   OPEN), на
    правой/левой группе из одной цифры («12.5», «1.2.4»). IBAN-прогон
    (`iban_tokens`) и `strip_separators` читают чистый перечень без вето —
    печатная форма IBAN точками не разбивается датой. Косая черта вето не
@@ -244,17 +259,65 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
    Не покрыто: U+2013/U+2014/U+2212 (#101), попарная ИНН-форма
    «77.43.58.41.75.09» (6 групп — за рамкой #102; локально неотличима от
    календаря), сдвоенные разделители.
+3а. Leading-рамка `MIN_LEADING_GROUP_DIGITS = 2` (`:702`, #138, ревью
+    d6a34d2d): группа из 1 цифры не может быть ведущей группой
+    канонического runs-токена. Три контура (первичка строк —
+    `grep -n MIN_LEADING_GROUP_DIGITS cascade0.rs`, сняты на head):
+    1. **Join-вето** `sep_len_number` (`:628`; длины групп слева/справа —
+       `digit_run_len_before`/`digit_run_len_after` `:645,654`): группа <2
+       цифры с любой стороны разделителя → разделитель не склеивает; точка
+       сверх того проходит `dot_glues_number`. Основная рамка — на склейке.
+    2. **Keep-вето** `num_runs` (`:715`; проверка `:774`): прогон с ведущей
+       1-группой отшивается, сканер приседает за первую группу полной
+       ширины (`i = groups[0].end + 1`) — хвост разбирается заново,
+       рекурсия по цепочке («1.0.0000.0000.0000» → «0.0000.0000.0000» →
+       «0000.0000.0000»). Голый прогон из одной цифры под вето не попадает
+       (`groups.len() > 1`): он не окно, а сдвиг сканера съел бы хвост
+       «12.34567890123» (СНИЛС).
+    3. **Canon-cut** `validated_windows` (`:429`; позиция первой группы
+       полной ширины `:477`, рекурсивно): окно и канон начинаются с первой
+       группы ≥2 цифр; спан считается по тому же окну, которому поверил
+       валидатор. Склейка ведущей цифры с хвостом рождала канон-суффикс, и
+       валидатор проходил ровно его, а не форму из текста.
+    Стражи: `leading_single_digit_group_never_becomes_a_canonical_suffix`
+    (`:1269`), `two_digit_leading_group_still_glues` (`:1364` — non-zero
+    канон-хвосты живы: «9.3005.0489.9258» → inn, «код 1.2204.4132.9947» →
+    card_pan; leading-рамка их не убивает и не обязана — валидны сами по
+    себе).
+3б. Zero-canon вето (#158, ревью b01080a9): `is_single_digit_canon`
+    (`:242`) на входе `call_validator` (`:261`) — канон из ОДНОЙ цифры (все
+    символы канона совпадают; минимальная длина канона 9 цифр —
+    `bik_format`) не валидируется НИ ОДНИМ классом `DIGIT_SPECS`
+    (luhn/inn10/inn12/snils/ogrn13/ogrnip15/bik_format/bank_account_format).
+    Единая точка — вход валидации каскада-0: текст / окна групп / numwords
+    / base64 идут через `call_validator`, вето закрывает их одним
+    проверенным шлюзом; вето на цифровых канонах — IBAN идёт канонизированной
+    строкой с буквенным префиксом и держится вне проверки (`is_ascii_digit`),
+    чтобы не резать IBAN-путь; `bik_account_cross` — парный фильтр вне
+    `DIGIT_SPECS`, одиночных спанов не порождает, вето не применяется.
+    ФОРМУЛЫ первички такие каноны ПРОХОДЯТ «по нулям» (Луна 0¹⁶: Σ=0 mod 10;
+    ИНН-10/12: взвешенная сумма 0; СНИЛС-ветка ниже границы) — первичка
+    механизма зафиксирована unit-таблицей
+    `zero_canon_passes_raw_formulas_s158` (`checksums.rs:1453`); veto
+    продуктовое, формулы не тронуты. Вето шире нулей («канон из одной
+    цифры»): репдиты «888888888888»/«6666666666666»/«22222222222222222» →
+    dead. Стражи: `single_digit_canon_veto_covers_nonzero_repdigits`
+    (`:1346`).
 4. Перекрывающиеся классы — вектор, не победитель; из вложенных спанов одного
-   класса остаётся самый широкий (`drop_contained:328`).
+   класса остаётся самый широкий (`drop_contained:369`).
 
 ## 3. НЕ покрыто (открытые issues, промер gh live на этом head)
 
 | Issue | Заголовок (gh) | Где болит (первичка) |
 | --- | --- | --- |
-| #51 п.1 (OPEN) | транслит RU→LAT / LAT→RU в препроцессинге | нормализатор транслита не знает: `normalize.rs` правил 1–4 (§1.1), Ушаков/Ushakov не сводятся; пункт принят к рассмотрению, не реализован |
+| #51 п.1 (OPEN) | транслит RU→LAT / LAT→RU в препроцессинге | нормализатор транслита не знает: `normalize.rs` правил 1–4 (док `:167–175`, §1.1), Ушаков/Ushakov не сводятся; пункт принят к рассмотрению, не реализован |
 | #101 (OPEN) | NUMBER_SEPARATORS: нет U+2013/U+2014/U+2212 | в перечне их нет по head (`checksums.rs:1128–1139`): номерок из Word/PDF с длинным тире не склеивается — FN-класс |
-| #102 (OPEN) | MAX_WINDOW_GROUPS=5 → FP на перечислениях «1000 2000 3000 4000» | рамка `cascade0.rs:505` + LUHN ~10 % на 16 цифрах |
-| #131 (этот PR) | word-break: точка/косая черта внутри цифрового токена | закрыт склейкой (`NUMBER_SEPARATORS` + вето `dot_glues_number`); остаток класса — U+2013/2014/2212 (#101) и формы ≥6 групп (#102), см. §2.3 п.3 |
+| #102 (OPEN) | MAX_WINDOW_GROUPS=5 → FP на перечислениях «1000 2000 3000 4000» | рамка `cascade0.rs:576` + LUHN ~10 % на 16 цифрах |
+| #131 (закрыт, влит #138 `e02c203`) | word-break: точка/косая черта внутри цифрового токена | закрыт склейкой (`NUMBER_SEPARATORS` + вето `dot_glues_number`); leading-рамка (#138) + zero-canon veto (#158) сняли FP-хвост склейки — §2.3 п.3/п.3а/п.3б; остаток класса — U+2013/2014/2212 (#101), формы ≥6 групп (#102), 2+2-пары (#159), канон-суффиксы с ненулевым LUHN-хвостом (#162), см. §2.3 п.3 |
+| #138 (MERGED, влит `e02c203`) | word-break точка/слэш (#131) + leading-рамка канона | leading-рамка `MIN_LEADING_GROUP_DIGITS=2` — три контура (join-вето / keep-вето / canon-cut, §2.3 п.3а); вето #158 доехало в этом же PR |
+| #158 (закрыт вето, влит #138) | zero-canon FP: 0000.0000.0000.0000 → 16 нулей Луна 0 | закрыт `is_single_digit_canon` на входе `call_validator` (§2.3 п.3б); первичка формул — `zero_canon_passes_raw_formulas_s158`; FP-класс: 0¹⁶ проходит Луна «по нулям», veto продуктовое |
+| #159 (OPEN) | dot-вето равных групп: «ИНН 24.82.01.43.38», «БИК 04.4525225» | join-вето точки режет равные 2-группы (календарь), попарная форма не склеивается — §2.3 п.3 |
+| #162 (OPEN) | канон-хвосты, валидные сами по себе (LUHN-13 «1.2204.4132.9947») | leading-рамка их не убивает и не обязана: канон валиден сам по себе, на dash-эквивалентах live-подтверждён на base — §2.3 п.3а стражи |
 | #26 (OPEN) | чексумма-совпала ⇒ маркер не обязателен (FN-хвост golden) | хвост покрытия golden-v1, `docs/golden-report.md`; гейт recall меряет его родителю |
 | #72 (OPEN) | опознавание владельца регистрозависимо (одна фамилия в двух регистрах) | не каскад 0, смежный слой vault/morph (`guard-vault/src/morph.rs`); в инвентаре как граница «что детерминированный путь не чинит» |
 | #65 (OPEN) | PendingForms: ключение владельца поверхностью токена | движок `crates/guard-vault/src/morph.rs` (`MorphTable` `:360`); SPEC §3 ссылка «открытая задача #65» (`SPEC.md:156`) |
@@ -268,9 +331,9 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
 | Атом | Регресс | Golden-спаны | Прочее |
 | --- | --- | --- | --- |
 | Нормализатор | `normalize/tests.rs:43,89,149,174` (рваная кириллица, разрывы цифр, fullwidth, идемпотентность через карту) | — | property: `normalize/proptests.rs:353,358,364` (монотонность, round-trip, алфавиты) |
-| Оконный слой цифр | юниты `cascade0.rs:925–1238` (8 именованных: `golden_values_are_found`, `formatted_numbers_are_found_with_full_span`, `nested_windows_collapse_to_the_widest`, `window_frames_refuse_plain_number_pairs`, `iban_ru_from_golden_is_found_with_source_eu`, `invalid_vectors_from_reference_table_are_not_hits`, `glued_digits_are_not_numbers`, `overlapping_classes_are_a_vector_not_a_winner`; последний из них `:1193`, далее до `:1238` идут `hits_are_sorted_by_offsets`, `nothing_to_find_costs_nothing`, `schema_without_a_class_disables_its_validator`, `every_digit_spec_names_a_known_validator`) | `crates/guard-daemon/tests/cascade0_golden.rs`: `:82` покрытие recall-сплита, `:115` форматированный номер, `:227` negative-split (приманки) | эталоны чексумм: `reference_vectors.rs:131,195`; контракт весов `invariant_checksum_w.rs:233` |
-| base64 | юниты `cascade0.rs:1283–1659` (payload/span/nesting/алфавиты/флор/векторы) | `cascade0_golden.rs:276` (каждое золотое значение в base64), `:332` (приманки base64-доставки) | независимый review-набор `tests/cascade0_bypass_review94.rs` (`r1`–`r9`, `:61–454`); промер `REVIEW94|fill_100KiB` (`:83`) |
-| numwords | юниты `numwords.rs:507–683` (task_vectors, роды, падежи, вложенный масштаб, разделители, рестарт) + `cascade0.rs:1775–2003` (порог, год, золотые словами, schema, coexist, FP-класс, base64-паритет) | золотые значения словами: `spelled_inn12_fires_with_the_phrase_as_span` `:1808`, `spelled_card_pan_passes_luhn` `:1830`, `spelled_registry_numbers_fire` `:1849` (значения взяты из `data/golden/golden-v1.jsonl`, не пересчитаны); контракт потолка `vault_span_cap.rs:138,182` | значения словесных тестов (`:1808` inn12 `825082492964`, `:1830` карта `4575503590352993`) — из `golden-v1.jsonl`, промерены живым прогоном `spelled_*` (4/4) |
+| Оконный слой цифр | юниты `cascade0.rs:1093–1631` (9 именованных: `golden_values_are_found`, `formatted_numbers_are_found_with_full_span`, `nested_windows_collapse_to_the_widest`, `window_frames_refuse_plain_number_pairs`, `iban_ru_from_golden_is_found_with_source_eu`, `invalid_vectors_from_reference_table_are_not_hits`, `glued_digits_are_not_numbers`, `overlapping_classes_are_a_vector_not_a_winner`, `separators_do_not_weaken_the_validator`; последний из них `:1415`, далее до `:1631` идут `hits_are_sorted_by_offsets`, `nothing_to_find_costs_nothing`, `schema_without_a_class_disables_its_validator`, `every_digit_spec_names_a_known_validator`; word-break/leading/zero-canon-стражи — `:1199–1364`: `slash_and_dot_separators_glue_valid_numbers` `:1199`, `word_break_separators_do_not_fire_on_prose_numbers` `:1236`, `leading_single_digit_group_never_becomes_a_canonical_suffix` `:1269`, `single_digit_canon_veto_covers_nonzero_repdigits` `:1346`, `two_digit_leading_group_still_glues` `:1364`) | `crates/guard-daemon/tests/cascade0_golden.rs`: `:82` покрытие recall-сплита, `:115` форматированный номер, `:227` negative-split (приманки) | эталоны чексумм: `reference_vectors.rs:131,195`; контракт весов `invariant_checksum_w.rs:151` |
+| base64 | юниты `cascade0.rs:1666–2058` (payload/span/nesting/алфавиты/флор/векторы) | `cascade0_golden.rs:276` (каждое золотое значение в base64), `:332` (приманки base64-доставки) | независимый review-набор `tests/cascade0_bypass_review94.rs` (`r1`–`r9`, `:61–454`); промер `REVIEW94|fill_100KiB` (`:83`) |
+| numwords | юниты `numwords.rs:507–683` (task_vectors, роды, падежи, вложенный масштаб, разделители, рестарт) + `cascade0.rs:2158–2386` (порог, год, золотые словами, schema, coexist, FP-класс `:2366`, base64-паритет `:2386`) | золотые значения словами: `spelled_inn12_fires_with_the_phrase_as_span` `:2191`, `spelled_card_pan_passes_luhn` `:2213`, `spelled_registry_numbers_fire` `:2232` (значения взяты из `data/golden/golden-v1.jsonl`, не пересчитаны); контракт потолка `vault_span_cap.rs:179,301` | значения словесных тестов (`:2191` inn12 `825082492964`, `:2213` карта `4575503590352993`) — из `golden-v1.jsonl`, промерены живым прогоном `spelled_*` (4/4) |
 | Секреты | юниты `secrets.rs:618–819` (форматные векторы 0.95, anti-FP, энтропия) | — | — |
 | Dictionary | юниты `dictionary.rs:212–346` (регистр, границы, байтовые спаны) | — | — |
 | Монтированность пути | `tests/cascade_parity.rs` (`cascade0::scan` vs `pipeline::analyze`), `tests/cascade_http.rs`, `tests/cascade_failclosed.rs` | — | — |
@@ -280,12 +343,12 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
 
 | Что | Число | Откуда (код печати → где задокументировано) |
 | --- | --- | --- |
-| numwords-слой, 10 КиБ русской прозы | `WORDMICRO|prose|bytes|10270|found|0|iters|500|min_us|91|median_us|109` (~9 % бюджета каскада 0) | печать `cascade0.rs:2056` (fn `words_hot_path_microbench` `:2034`) → `daemon-scope.md:166` |
-| base64-обход, горячий путь (100 кандидатов / 10 КиБ, release) | +124 мкс min | `cascade0.rs:1721` (ноги before/after, fn `:1697`) → `daemon-scope.md:102–103` |
-| base64, плотный корпус `blobs|100` после влития слов | 264 мкс min (было 136 до) | те же ноги `cascade0.rs:1721` → `daemon-scope.md:169` |
-| 100 КиБ base64-заливки без цифр | 26.6 мс debug (наш промер); 21.8 мс debug / 1.2 мс release (промер ревью #94) | печать `tests/cascade0_bypass_review94.rs:83` → `daemon-scope.md:96–97` |
+| numwords-слой, 10 КиБ русской прозы | `WORDMICRO|prose|bytes|10270|found|0|iters|500|min_us|91|median_us|109` (~9 % бюджета каскада 0) | печать `cascade0.rs:2439` (fn `words_hot_path_microbench` `:2417`) → `daemon-scope.md:166` |
+| base64-обход, горячий путь (100 кандидатов / 10 КиБ, release) | +124 мкс min | печать `cascade0.rs:2103–2104` (ноги before/after, fn `:2080`) → `daemon-scope.md:102–103` |
+| base64, плотный корпус `blobs|100` после влития слов | 264 мкс min (было 136 до) | та же печать `cascade0.rs:2103–2104` → `daemon-scope.md:169` |
+| 100 КиБ base64-заливки без цифр | 26.6 мс debug (наш промер); 21.8 мс debug / 1.2 мс release (промер ревью #94) | печать `tests/cascade0_bypass_review94.rs:83` (живая; промер `c0_measurements_are_emitted` `cascade0_golden.rs:165`) → `daemon-scope.md:96–97` |
 | Тело = один base64-токен на потолке 1 МиБ | 29.2 мс release (в бюджете SPEC 80–300 мс) | `daemon-scope.md:98–100` (предел `config.rs:33` `DEFAULT_MAX_BODY_BYTES = 1_048_576`) |
-| Потолок words-слоя (регресс-утверждение) | min < 2 мс на 10 КиБ | assert в `cascade0.rs:2062` |
+| Потолок words-слоя (регресс-утверждение) | min < 2 мс на 10 КиБ | assert `samples[0] < 2_000` — `cascade0.rs:2444` |
 
 Бюджет каскада 0 (<1 мс) — SPEC §2; метрика recall (гейт ≥98 %, N≥150,
 Вилсон) измеряется родителем на харнесе, KNOWN-RED B1 остаётся `#[ignore]` —
