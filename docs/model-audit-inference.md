@@ -4,16 +4,20 @@
 > репо-обычай `dep-verify-*`: родитель + спутники с суффиксом). Сюда вынесены
 > бывшие §11–§12 родителя — переименованы в §I1–§I2, нумерация родителя не
 > сдвигается; внешние ссылки «model-audit §11/§12» переведены на
-> `model-audit-inference.md §I1/§I2` разом со split'ом. Дефекты харнесса, RSS
-> релизного контура и парити-промеры (§5, §9, §10) — в родителе.
+> `model-audit-inference.md §I1/§I2` разом со split'ом. Дефекты харнесса и
+> парити-промеры (бывш. §5) — со 22.10 в спутнике №2,
+> [model-audit-weights.md](model-audit-weights.md) §W2; RSS релизного контура
+> (§9, §10) — в родителе. Голые ссылки §5.N/§5 п.N/§5.7 в этом файле —
+> промеры из §W2 спутника №2; «§10» — родитель (карта шва в его шапке).
 
 ## Оглавление (компас)
 
 - §I1 Чанкинг пути запроса: латентность и RSS на длинном документе (#84)
 - §I2 α-калибровка смесителя серой зоны и границы τ_low (#85)
-- Родитель (model-audit.md): §1 веса · §2 METRIC · §3 external data · §4 IO-контракты
-  · §5 дефекты харнесса (+5.6, +5.7) · §6 CI · §8 dylib ORT · §9 Release RSS
-  · §10 RSS демона с каскадами 1–2
+- Родитель (model-audit.md): §1 веса · §2 METRIC · §3 external data
+  · §8 dylib ORT · §9 Release RSS · §10 RSS демона с каскадами 1–2
+- Спутник №2 (model-audit-weights.md): §W1 IO-контракты · §W2 дефекты харнесса (+W2.6, +W2.7)
+  · §W3 CI-контракт
 
 ## I1. Чанкинг пути запроса: латентность и RSS на длинном документе (issue #84)
 
@@ -137,7 +141,7 @@ Decide), артефакты `chunks_OLD_geometry.txt` и `chunks_NEW_geometry.tx
    cascades.rs: 0.65/0.15) гонится до загрузки весов; при α=1.0 строки
    режима совпадают с baseline-строками того же прогона (тождество blend).
    Дата 21.10.2026; машина Darwin-arm64; python 3.13.13, onnxruntime 1.31.0,
-   numpy 2.5.4; threads=2 (intra/inter_op, OMP инертен — model-audit.md §5.7), nice -n 10,
+   numpy 2.5.4; threads=2 (intra/inter_op, OMP инертен — model-audit-weights.md §W2.7), nice -n 10,
    один прогон за раз; каскад 0 — релизный бинарь `target/release/fasad`
    (демон cascade-0-only, FASAD_THREADS=2); веса — sha из артефакта
    (`UNION|sha`): lockR fp16 `039aba6be0c6…`, Decide q4f16 `93f3e0d4ed8b…` +

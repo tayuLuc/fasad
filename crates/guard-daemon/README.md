@@ -63,7 +63,7 @@ fasad 0.1.0 cascade-0-only, listening on http://127.0.0.1:8765/health (клас�
 
    Env-префикс — не украшение, а условие работоспособности команды на чистой
    macOS: без него release-линковка краснеет на `___isPlatformVersionAtLeast`
-   (статика pyke тянет CoreML-хелпер, `docs/model-audit.md` §5 п.2) — промер
+   (статика pyke тянет CoreML-хелпер, `docs/model-audit-weights.md` §W2 п.2) — промер
    ревью #97 (2-й раунд) на head этой ветки. Та же строка гейта в теле PR и в
    `docs/release.md` пишется с префиксом: голой её читать нельзя ни в одном из
    двух мест.
