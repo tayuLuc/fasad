@@ -1,0 +1,45 @@
+{{!
+  about.hbs — шаблон THIRD-PARTY-LICENSES.txt для `cargo about generate`
+  (рецепт `just deps-licenses`, SPEC §10 п.9: бандл обязан нести лицензии).
+
+  Синтаксис = handlebars; контекст взят из первички cargo-about 0.9.2
+  (EmbarkStudios/cargo-about, docs/src/cli/generate/output.md @tag 0.9.2,
+  промер 21.10), а не из памяти о чужих шаблонах:
+    переменные верха: `overview` (список LicenseSet: count, name, id)
+                      `licenses` (список License: name, id, text, source_path, used_by)
+    elements used_by  (UsedBy: crate — metadata пакета cargo, path)
+    поля crate        name, version (cargo_metadata::Package)
+  Минимальный контракт бандла: имя, версия, лицензия — плюс тело лицензии,
+  потому что Apache-2.0/MIT требуют донесения текста до получателя.
+
+  Скобки ТРОЙНЫЕ: handlebars по умолчанию HTML-экранирует двойную форму,
+  живой прогон 21.10 выдал в текстовый файл `BSD 3-Clause &quot;New&quot;
+  or &quot;Revised&quot;`. Тройная форма = без экранирования, для .txt
+  она единственная корректная.
+}}
+fasad — сторонние лицензии (THIRD-PARTY-LICENSES)
+================================================
+
+Генерируется `just deps-licenses` (cargo-about 0.9.x, конфиг about.toml).
+Формат: краткий обзор лицензий, затем пакет → версия → лицензия → полный текст.
+
+Краткий обзор (лицензия → сколько пакетов её использует):
+{{#each overview}}
+  - {{{name}}} ({{{id}}}): {{{count}}}
+{{/each}}
+
+Полный список: пакет → версия → лицензия → текст лицензии
+=========================================================
+{{#each licenses}}
+
+## {{{name}}} ({{{id}}})
+
+Используют:
+{{#each used_by}}
+  - {{{crate.name}}} {{{crate.version}}}
+{{/each}}
+
+Текст лицензии:
+
+{{{text}}}
+{{/each}}

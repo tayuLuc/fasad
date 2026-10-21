@@ -1,0 +1,320 @@
+name: release
+
+# SPEC §10 п.9 (шаг 9): релиз по тегу `v*`.
+#
+# Матрица: ubuntu-24.04, windows-2022, macos-14 (#31 третья платформа).
+# Контур бандла — каскад-0: `guard-daemon` не имеет фичи `ort-inference`
+# (crates/guard-daemon/Cargo.toml), модельного пути спанов в демоне нет
+# (crates/guard-daemon/src/pipeline.rs, заголовок модуля), поэтому артефакт
+# метится `-cascade-0` честно, а орт-контур проверяется отдельной job'ой
+# `ort-dylib` (сборка харнеса каскадов 1–2 на официальном dylib ORT).
+#
+# Пины action'ов — SHA + комментарий с живым промером (первичка: `gh api
+# repos/<owner>/<repo>/releases/latest`, промер 21.10.2026):
+#   actions/checkout       v7.0.1   (SPEC §9 пинил v4 — просрочен на 3 мажора,
+#                                    dep-verify-repos §1 `[PARTIAL]`; latest=v7.0.1)
+#   публикация релиза — `gh release` в скрипте, НЕ third-party action (zizmor
+#                                    superfluous-actions + поверхность
+#                                    `contents: write`)
+#   actions/upload-artifact v7.0.2, actions/download-artifact v8.0.2
+#   Swatinem/rust-cache    v2.9.3   (у нас plain commit = ЦЕЛЬ аннотированного
+#                                    тега v2.9.3: ref → tag-object
+#                                    2201cc584a476d1b508be977bbe4b7d1c7a52e9c →
+#                                    commit d1527c8f67ef…, промер 21.10;
+#                                    `git/tags/<sha>` требует полный sha,
+#                                    короткий отвечает 404)
+#                                    Прежняя формулировка «в ci.yml пин v2.8.7
+#                                    через ANNOTATED tag object» была ложной по
+#                                    обоим фактам (ревью #76, F2): тега v2.8.7 у
+#                                    апстрима нет (`git/ref/tags/v2.8.7` = 404,
+#                                    последний линейки 2.8.x = v2.8.2), а
+#                                    ci.yml:33 пинит plain commit 6323deb102c3…,
+#                                    озаглавленный «2.9.2», ярлыком `# v2.8.7`.
+#                                    Расхождение ярлыка и содержимого — defect
+#                                    ci.yml, чинит его владелец, не этот PR.
+#   dtolnay/rust-toolchain commit-pin b725eda52536… («toolchain: stable»,
+#                                    2026-10-16). Формулировка «мажорных тегов
+#                                    нет» (F3, ревью #76) была ложью: moving-тег
+#                                    v1 есть — `releases/latest` = v1,
+#                                    `git/ref/tags/v1` → commit 683b588c487a.
+#                                    Пиним коммит не от бедности, а потому, что
+#                                    v1 — движущаяся цель (обновляется вместе со
+#                                    stable), а релизный контур обязан быть
+#                                    воспроизводимым по sha.
+# Аннотированные теги (rust-cache v2.9.3) дереференцены
+# в commit через `gh api repos/<r>/git/ref/tags/<t>` → `git/tags/<sha>` — пинить
+# sha tag-объекта нельзя, он не resolvable как `uses:`.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+# Workflow-level пусто: каждый job поднимает ровно своё (класс F2 known-red,
+# снят PR #10 — тот же профиль, что в ci.yml).
+permissions: {}
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  dist:
+    name: dist (${{ matrix.os }})
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bundle: tar.gz
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            bundle: zip
+          - os: macos-14
+            target: aarch64-apple-darwin
+            bundle: tar.gz
+    defaults:
+      run:
+        # На windows-2022 без явного shell `just` гоняет shebang-рецепты через
+        # cmd, где нет ни `set -euo`, ни tar, ни find (тот же класс дефекта, что
+        # описан в комментарии к `net-audit` в justfile).
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Только чтение кэша. Публикующий воркфлоу не имеет права писать в
+          # общий кэш (zizmor cache-poisoning, High: «runtime artifacts potentially
+          # vulnerable to a cache poisoning attack»; фикс предложен самим zizmor,
+          # input `lookup-only` первичен — action.yml pinned-коммита d1527c8,
+          # описание «Check if a cache entry exists without downloading the cache»).
+          lookup-only: "true"
+      - name: Install just + cargo-about
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: just, cargo-about
+      - name: "Релизный бинарь (каскад-0, профиль release: lto=fat, strip)"
+        run: just release-build
+      - name: RAM-гейт каскада-0 (SPEC §10 п.9, метод в выводе)
+        # Windows-ветки метода замера (PowerShell Get-Process) не реализовано:
+        # scripts/measure-rss.sh на неизмеренной ОС падает с exit 2 и явной
+        # причиной, а не рисует ноль.
+        if: matrix.os != 'windows-2022'
+        run: just measure-rss --skip-build
+      - name: "Бандл: бинарь + LICENSE + README + схема + лицензии + SHA256SUMS"
+        run: just dist
+      - name: "Проверка бандла: распаковка, запуск, /health, сверка хэшей"
+        run: bash scripts/verify-bundle.sh
+      - name: Upload bundle
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fasad-${{ github.ref_name }}-${{ matrix.target }}-cascade-0
+          path: |
+            dist/fasad-*.tar.gz
+            dist/fasad-*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  ort-dylib:
+    # Сборка каскадов 1–2 (харнес spike) релизным профилем на официальном dylib
+    # ONNX Runtime. Причина job'ы: на macOS статика pyke в release-профиле
+    # SIGSEGV'ит (docs/model-audit.md §5 п.1, промер ×5), рабочий путь — официальный
+    # dylib 1.31.0 + `ORT_PREFER_DYNAMIC_LINK=1` (per первичка ort:
+    # https://ort.pyke.io/setup/linking — compile-time dynamic linking =
+    # ORT_LIB_PATH + ORT_PREFER_DYNAMIC_LINK=1; доставка рантайма на macOS/Linux —
+    # rpath `@loader_path`/`$ORIGIN` или каталог рядом с бинарём, там же).
+    # Хэши архивов — первичка docs/model-audit.md §8 п.3 (промер 19.10), не SPEC.
+    name: ort-dylib (${{ matrix.os }})
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            ort_archive: onnxruntime-osx-arm64-1.31.0.tgz
+            ort_sha256: 1031b36dd3bdaa8d976a6130d9cf2a05e9be320b93ae804f8427b91dc3432afc
+            ort_dir: onnxruntime-osx-arm64-1.31.0
+          - os: ubuntu-24.04
+            ort_archive: onnxruntime-linux-x64-1.31.0.tgz
+            ort_sha256: cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57
+            ort_dir: onnxruntime-linux-x64-1.31.0
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Только чтение кэша. Публикующий воркфлоу не имеет права писать в
+          # общий кэш (zizmor cache-poisoning, High: «runtime artifacts potentially
+          # vulnerable to a cache poisoning attack»; фикс предложен самим zizmor,
+          # input `lookup-only` первичен — action.yml pinned-коммита d1527c8,
+          # описание «Check if a cache entry exists without downloading the cache»).
+          lookup-only: "true"
+      - name: Install just
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: just
+      - name: "Официальный dylib ORT 1.31.0 и сверка sha256"
+        run: |
+          set -euo pipefail
+          url="https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/${{ matrix.ort_archive }}"
+          curl -sSfL --retry 3 -A "fasad-release-ci/1.0" -o "$RUNNER_TEMP/ort.tgz" "$url"
+          # Ровно ДВА пробела между хэшем и путём, и оба — из формата, а не из
+          # аргумента. Промер 21.10 на BSD `/sbin/sha256sum` («sha256sum (Darwin)
+          # 1.0»), то есть на macos-14: прежняя форма с `'…  '` внутри аргумента
+          # давала четыре пробела, поле пути начиналось с пробела, и
+          # `sha256sum -c` отвечал rc=1 («No such file or directory» на
+          # существующий файл). Правка 21.10 чинила это `sed -i`, а он на BSD
+          # съедает СЛЕДУЮЩИЙ аргумент как суффикс бэкапа: скрипт `'s/…//'`
+          # уходил в -i, а его место занималось ИМЕНЕМ ФАЙЛА — файл читался как
+          # sed-скрипт, первая строка (`хэш  путь`) ломалась на переводе строки
+          # внутри шаблона подстановки: rc=1, «unescaped newline inside
+          # substitute pattern» (промер 21.10 на BSD sed этого хоста:
+          # `sed: 1: "/tmp/…/ort.sum\n": unescaped newline inside substitute
+          # pattern`; прежняя скобка «invalid command code» была текстом чужой
+          # ошибки, ревью #76, D3). Гейт умирал ДО сверки хэша. `sed` удалён;
+          # форма каноническая, GNU и BSD читают её одинаково.
+          printf '%s  %s\n' "${{ matrix.ort_sha256 }}" "$RUNNER_TEMP/ort.tgz" > "$RUNNER_TEMP/ort.sum"
+          ( cd "$RUNNER_TEMP" && sha256sum -c ort.sum )
+          mkdir -p "$RUNNER_TEMP/ort"
+          tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP/ort"
+          ls -1 "$RUNNER_TEMP/ort"
+      - name: "Сборка spike с ort-inference (release, dylib)"
+        env:
+          # Корень распакованного архива = имя самого архива без .tgz
+          # (промер локальной распаковки 21.10: onnxruntime-osx-arm64-1.31.0/,
+          # onnxruntime-linux-x64-1.31.0/); каталоги `ort_dir` заданы в матрице
+          # рядом с `ort_archive`, чтобы они не разъезжались.
+          ORT_DIR: ${{ runner.temp }}/ort/${{ matrix.ort_dir }}
+        run: just build-ort
+      - name: "Проверка линковки: dylib прописан в load commands"
+        env:
+          ORT_DIR: ${{ runner.temp }}/ort/${{ matrix.ort_dir }}
+        run: |
+          set -euo pipefail
+          bin=target/release/examples/spike
+          case "$(uname -s)" in
+            Darwin) otool -L "$bin" | grep -i onnxruntime ;;
+            Linux) ldd "$bin" | grep -i onnxruntime ;;
+          esac
+          echo "ort-dylib ok: spike линкуется на официальный dylib 1.31.0 (не на pyke-статику)"
+
+  release:
+    name: GitHub Release
+    needs: dist
+    if: startsWith(github.ref, 'refs/tags/v')
+    # Job-level concurrency: публикация не отменяется на лету. На уровне
+    # воркфлоу стоит cancel-in-progress: true — смысл в том, чтобы пуш в ту же
+    # ветку не жёг раннёры на сборке матрицы. Для публикующего job то же правило
+    # опасно интервалом: между `gh release create` и загрузкой ассетов новый раннер
+    # убил бы процесс с УЖЕ СОЗДАННЫМ релизом и не догруженными ассетами
+    # (ревью #76, F6). Здесь новый прогон становится в очередь, а не отменяет
+    # идущий.
+    concurrency:
+      group: fasad-release-publish
+      cancel-in-progress: false
+    permissions:
+      # Единственный job с записью: публикация релиза. `contents: write` узок по
+      # объёму (релиз + ассеты) и не даёт ни PR, ни пакетов (zizmor
+      # excessive-permissions profile: job-level явный минимум).
+      contents: write
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Полная история нужна гарду «нет новых коммитов»: `git rev-list
+          # prev..TAG` на chekaut'e глубиной 1 слепнет (тегов в дереве нет).
+          fetch-depth: 0
+      - name: Скачать бандлы матрицы
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: fasad-*
+          path: artifacts
+          merge-multiple: true
+      - name: "Что публикуется: сверка имён и хэшей"
+        run: |
+          set -euo pipefail
+          ls -la artifacts
+          ( cd artifacts && for f in *.sha256; do sha256sum -c "$f"; done )
+      - name: "Гард --fail-on-no-commits: между релизами есть коммиты"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Релиз-пустышка = тег на том же коммите, что предыдущий релиз: ассеты
+          # байт-в-байт те же, notes те же, в списке релизов строка-дубль.
+          #
+          # База сравнения — ПОСЛЕДНЯЯ запись в списке релизов, вместе с
+          # черновиками (`gh release list --limit 1`; флаги --exclude-drafts /
+          # --exclude-pre-releases есть, мы их намеренно не ставим: свежий
+          # черновик = то же намерение публикации, и относительно него дубль
+          # тоже дубль). Прогон логики локально (риг на фальшивом gh и
+          # настоящем git, 21.10): пустышка v0.1.1 против v0.1.0 → rc=1 с двумя
+          # строками причины; v0.2.0 против v0.1.0 → «1 коммит», rc=0; пустой
+          # prev (первый релиз) → rc=0 и явное «не применимо», не «проверено»;
+          # отсутствующий в дереве prev → git fatal, шаг падает (fail-closed,
+          # не зелёный). `jq '.[0].tagName // ""'` на пустом массиве даёт "" без
+          # ошибки (промер jq: rc=0).
+          prev="$(gh release list --limit 1 --json tagName --jq '.[0].tagName // ""')"
+          if [ -z "$prev" ]; then
+              printf 'Первый релиз в репозитории: сравнивать не с чем, гард не применим\n'
+              exit 0
+          fi
+          n="$(git rev-list --count "${prev}..${TAG}")"
+          printf 'Коммитов между %s и %s: %s\n' "$prev" "$TAG" "$n"
+          if [ "$n" -eq 0 ]; then
+              printf 'ОШИБКА: тег %s указывает на тот же коммит, что %s: релиз-пустышка.\n' "$TAG" "$prev" >&2
+              printf 'ОШИБКА: сдвиньте тег на коммит с изменениями или удалите черновик (gh release delete).\n' >&2
+              exit 1
+          fi
+      - name: Опубликовать релиз
+        # Публикация — `gh release` в скрипте, а не third-party action: zizmor
+        # `superfluous-actions` (confidence High) на softprops/action-gh-release
+        # («функциональность уже есть в раннере»), а MegaLinter краснит гейт
+        # находкой ЛЮБОЙ severity — промер CI 21.10: run 39514678570,
+        # «11 findings (10 suppressed): 1 informational», zizmor rc=11. Плюс из
+        # workflow с `contents: write` уходит один сторонний экшен = меньше
+        # поверхность supply-chain.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cat >notes.md <<'NOTES'
+          Контур бандлов: **каскад-0** (детерминированные детекторы + vault).
+          Модельный путь (каскады 1–2, ONNX) в демоне ещё не сведён — см.
+          `docs/release.md` §«Что в бандле» и `docs/model-audit.md` §Release RSS
+          (замеры RAM с методом). Сборки: `x86_64-unknown-linux-gnu`
+          (ubuntu-24.04), `x86_64-pc-windows-msvc` (windows-2022),
+          `aarch64-apple-darwin` (macos-14). Каждый бандл несёт
+          `THIRD-PARTY-LICENSES.txt` (cargo-about) и `SHA256SUMS.txt`.
+          NOTES
+          shopt -s nullglob
+          files=(artifacts/*)
+          if [ "${#files[@]}" -eq 0 ]; then
+              printf 'Публиковать нечего: artifacts/ пуст (матрица не оставила ассетов)\n' >&2
+              exit 1
+          fi
+          printf 'Ассеты релиза (%s):\n' "${#files[@]}"
+          printf '  %s\n' "${files[@]}"
+          gh release create "$TAG" --title "$TAG" --notes-file notes.md \
+              --verify-tag -- "${files[@]}"
