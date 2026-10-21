@@ -29,6 +29,7 @@ pub mod pipeline;
 pub mod proxy;
 pub mod schema;
 pub mod sse;
+pub mod ui;
 pub mod vault;
 
 /// Ответ `/health`: чем крутится демон и что в нём реально включено.

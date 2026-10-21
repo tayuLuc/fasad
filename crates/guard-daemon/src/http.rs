@@ -138,6 +138,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/deanonymize", post(deanonymize_handler))
         .route("/v1/chat/completions", post(crate::proxy::handle))
         .route("/v1/sessions/{id}", delete(invalidate_handler))
+        .merge(crate::ui::router())
         .with_state(state)
 }
 

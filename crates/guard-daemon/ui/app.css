@@ -1,0 +1,273 @@
+/*
+  Статика песочницы. Правила, которые проверяются тестами, а не стилем:
+  ни @import, ни url(), ни шрифтов извне — продукт живёт оффлайн, и CSP
+  (`ui::CSP`) это запрещает на заголовке.
+*/
+
+:root {
+  --bg: #14161a;
+  --pane: #1c1f26;
+  --ink: #dfe3ea;
+  --muted: #8d97a8;
+  --line: #2c313b;
+  --pass: #3fb27f;
+  --mask: #d9a341;
+  --block: #d9534f;
+  --accent: #6aa9e8;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f7f9;
+    --pane: #ffffff;
+    --ink: #1b1e24;
+    --muted: #5d6673;
+    --line: #d8dce3;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 16px 20px 32px;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+header h1 {
+  margin: 0 0 2px;
+  font-size: 19px;
+  letter-spacing: 0.01em;
+}
+
+.mode {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+main {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+  gap: 16px;
+  margin-top: 16px;
+}
+
+@media (max-width: 900px) {
+  main {
+    grid-template-columns: 1fr;
+  }
+}
+
+.pane {
+  background: var(--pane);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px 18px;
+}
+
+.pane h2 {
+  margin: 18px 0 8px;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.pane h2:first-child {
+  margin-top: 0;
+}
+
+label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.block {
+  display: block;
+  margin-bottom: 6px;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-variant-ligatures: none;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+select,
+button,
+output {
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 6px 10px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  cursor: default;
+  color: var(--muted);
+  border-color: var(--line);
+}
+
+input[type="range"] {
+  accent-color: var(--accent);
+}
+
+fieldset {
+  margin: 14px 0 0;
+  padding: 8px 12px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+legend {
+  padding: 0 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.types label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.hint {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+code {
+  font-family: ui-monospace, sfmono-regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.status {
+  margin: 12px 0 0;
+  min-height: 20px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.status[data-kind="err"] {
+  border-color: var(--block);
+}
+
+.painted,
+.out {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-height: 44px;
+}
+
+mark.span {
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 3px;
+  border-bottom: 2px solid var(--muted);
+}
+
+mark.pass {
+  border-bottom-color: var(--pass);
+}
+
+mark.mask {
+  border-bottom-color: var(--mask);
+}
+
+mark.block {
+  border-bottom-color: var(--block);
+}
+
+table.spans {
+  width: 100%;
+  margin-top: 10px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+table.spans th,
+table.spans td {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+table.spans th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+footer {
+  margin-top: 18px;
+}
+
+.legend {
+  display: flex;
+  gap: 10px;
+  margin: 0 0 6px;
+}
+
+.key {
+  padding: 2px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.key.pass {
+  border-color: var(--pass);
+}
+
+.key.mask {
+  border-color: var(--mask);
+}
+
+.key.block {
+  border-color: var(--block);
+}

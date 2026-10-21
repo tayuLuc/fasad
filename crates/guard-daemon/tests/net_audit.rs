@@ -7,15 +7,18 @@
 //! на ubuntu+windows он не исполнялся вовсе — ложно-зелёная стена.
 //!
 //! С шага 7c формулировка «клиента нет» стала неверной: прокси `/v1/chat/completions`
-//! обязан уметь ходить наружу. Гейт от этого не ослаб, а стал строже — три факта,
-//! и все три обходятся только очевидным вандализмом:
+//! обязан уметь ходить наружу. Гейт от этого не ослаб, а стал строже — четыре
+//! факта, и все четыре обходятся только очевидным вандализмом:
 //!
 //! 1. манифест объявляет клиент ровно один: `ureq` с `default-features = false`
 //!    и с фичей `rustls` — TLS-стек приходит изнутри единственного клиента;
 //! 2. клиентский путь (`ureq::`) живёт ровно в одном файле — `src/proxy.rs`, —
 //!    и запрет подкреплён обратным требованием: в этом файле маркер обязан
 //!    встречаться, иначе «исключение» оформлено под код, которого нет;
-//! 3. в дереве зависимостей `guard-daemon` есть `ureq` и нет `reqwest`.
+//! 3. в дереве зависимостей `guard-daemon` есть `ureq` и нет `reqwest`;
+//! 4. статика песочницы (`ui/`) не содержит абсолютных адресов (§1 п.6: продукт
+//!    оффлайн), и сканер умеет находить такой адрес — на это есть positive
+//!    control, иначе пункт 4 был бы молчаливой стеной.
 //!
 //! Константы гейта написаны открыто: область сканирования — только `src/` и
 //! `Cargo.toml`, поэтому файл гейта сам себе не матчится.
@@ -67,6 +70,20 @@ const FORBIDDEN_MANIFEST: &[&str] = &[
     "tokio-rustls",
 ];
 
+/// Статика фронта (`crates/guard-daemon/ui/`): расширения, в которых адрес
+/// вообще может появиться. Факт четвёртый: песочница зашита в бинарник и живёт
+/// оффлайн, поэтому абсолютного адреса в ней быть не может — ни CDN, ни шрифтов,
+/// ни «временного» скрипта с хоста. `CSP` на ответах `/ui` запрещает это на
+/// заголовке, гейт запрещает в исходнике: заголовок можно ослабить одним
+/// коммитом, а строка в файле — это то, что-review видит глазами.
+const UI_ASSET_EXT: &[&str] = &["html", "css", "js", "json"];
+
+/// Что запрещено в статике. `//host/path` (протокол-относительный адрес) сюда
+/// не входит намеренно: в HTML-комментариях нашей статики двойной слэш
+/// встречается, и гейт краснел бы на прозе; двойной слэш как адрес ловится
+/// тем же сканером по префиксу `http`/`ws` — см. [`FORBIDDEN_URLS`].
+const FORBIDDEN_URLS: &[&str] = &["http://", "https://", "ws://", "wss://"];
+
 /// Объявленный клиент: имя, по которому ищем строку объявления. Проверка его
 /// атрибутов — не косметика: `default-features = false` у `ureq` означает
 /// «никаких gzip, cookie и системного прокси», и включение их обратно — тихое
@@ -87,6 +104,48 @@ const TREE_MUST_BE_ABSENT: &[&str] = &["reqwest"];
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Файлы статики с известными расширениями (факт 4).
+fn ui_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries {
+        let path = entry.expect("запись каталога читается").path();
+        if path.is_dir() {
+            ui_files(&path, out);
+        } else if path
+            .extension()
+            .is_some_and(|e| UI_ASSET_EXT.contains(&e.to_string_lossy().as_ref()))
+        {
+            out.push(path);
+        }
+    }
+}
+
+/// Найти абсолютные адреса в списке файлов. Возвращает «файл:строка:фрагмент».
+/// Вынесено из теста, потому что на нём же висит positive control: сканер,
+/// который ничего не умеет находить, зелёный всегда.
+fn scan_absolute_urls(files: &[PathBuf]) -> Vec<String> {
+    let mut hits = Vec::new();
+    for path in files {
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        for (no, line) in text.lines().enumerate() {
+            for needle in FORBIDDEN_URLS {
+                if line.contains(needle) {
+                    hits.push(format!(
+                        "{}:{}: {needle}",
+                        path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                        no + 1
+                    ));
+                }
+            }
+        }
+    }
+    hits
 }
 
 fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -235,4 +294,34 @@ fn run_tree(token: &str) -> std::process::Output {
         .current_dir(manifest_dir())
         .output()
         .expect("cargo tree запускается")
+}
+
+/// Факт 4: в статике песочницы нет ни одного абсолютного адреса.
+#[test]
+fn ui_assets_have_no_absolute_urls() {
+    let dir = manifest_dir().join("ui");
+    assert!(dir.is_dir(), "каталог статики {dir:?} обязан существовать");
+    let mut files = Vec::new();
+    ui_files(&dir, &mut files);
+    assert!(
+        files.len() >= 3,
+        "в статике должно быть не меньше трёх файлов (html, css, js), нашлось: {files:?}"
+    );
+    let hits = scan_absolute_urls(&files);
+    assert!(hits.is_empty(), "абсолютный адрес в статике: {hits:?}");
+}
+
+/// Positive control того же сканера: канарейка с адресом обязана быть найдена.
+/// Без этого теста предыдущий — ложно-зелёная стена: опечатка в расширении или в
+/// подстроке сделала бы его молчаливым.
+#[test]
+fn url_scan_finds_canary() {
+    let canary = manifest_dir().join("tests/fixtures/ui_url_canary.txt");
+    assert!(canary.is_file(), "канарейка {canary:?} на месте");
+    let hits = scan_absolute_urls(&[canary]);
+    assert_eq!(
+        hits.len(),
+        1,
+        "сканер не видит заведомый адрес — гейт мёртв: {hits:?}"
+    );
 }

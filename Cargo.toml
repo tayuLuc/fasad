@@ -103,7 +103,9 @@ axum       = { version = "0.8.9", features = ["json", "http1", "http2"] }
 http-body-util = "0.1.5"
 tower-http = { version = "0.7.1", features = ["cors", "trace", "timeout", "limit", "catch-panic"] }
 reqwest    = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "stream", "json"] }
-rust-embed = { version = "8.13.0", features = ["compression"] }
+# Комплекс SPEC §7 «compression» сознательно снят: UI — 30 КБ, а compression тянет
+# zstd-sys (C-сборка) и ещё 17 узлов. Поверхность интеграции — docs/dep-verify-crates.md.
+rust-embed = { version = "8.13.0", default-features = false, features = ["mime-guess", "debug-embed"] }
 
 # --- НЕ В SHAPE 1: морфология (шаг 5 SPEC §10) ---
 # petrovich = { version = "0.2.0" }   # dead-2020: крейт не обновлялся с 2020-04-06
