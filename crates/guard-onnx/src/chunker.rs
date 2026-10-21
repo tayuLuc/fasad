@@ -328,24 +328,28 @@ impl ChunkCfg {
     /// Гарантированная нижняя грань перекрытия соседей при длине предыдущего
     /// чанка `prev_span` байт.
     ///
-    /// Инвариант SPEC («overlap 32») живёт в токенах и в **полном** окне; здесь
-    /// два законных источника урезки, оба учтены:
+    /// Инвариант SPEC («overlap 32») живёт в токенах; адванс заякорен на краю
+    /// окна ([`overlap_target`]), поэтому законных источника урезки два:
     ///
     /// 1. старт следующего окна опускается до UTF-8-границы
-    ///    ([`floor_char_boundary`]) — минус ≤ 3 байта, поэтому полная грань
-    ///    `(overlap − 1) · BYTES_PER_TOKEN` (запас ровно в один токен);
-    /// 2. предыдущее окно, обрезанное по границе предложения короче шага
-    ///    overlap, не может отдать перекрытие больше собственного размера —
-    ///    тогда грань `prev_span − 4` (guard строгого прогресса сдвигает старт
-    ///    вперёд максимум на один UTF-8-код).
+    ///    ([`floor_char_boundary`]) — минус ≤ 3 байта, плюс один UTF-8-код
+    ///    страховки прогресса: полная грань `(overlap − 1) · BYTES_PER_TOKEN`
+    ///    ([`overlap_floor_bytes`]) — она держится на паре с резом по краю окна;
+    /// 2. граница предложения уезжает из окна влево на `shrink =
+    ///    window_bytes − prev_span`: перекрытие уменьшается ровно на уезжку
+    ///    (потолок-покрытие приматывает старт соседа к `end`), физически больше
+    ///    предыдущий чанк отдать не может.
+    ///
+    /// Итого `max(0, overlap_bytes − shrink − 4)`; при резе по краю
+    /// (`shrink = 0`) — полная грань. Проверяется property-тестами и тестом
+    /// `overlap_at_least_claimed_where_cut_allows`.
     #[must_use]
     pub fn overlap_floor(&self, prev_span: usize) -> usize {
-        let full = overlap_floor_bytes(self.overlap_tokens);
-        if prev_span >= self.overlap_bytes() {
-            full
-        } else {
-            prev_span.saturating_sub(4).min(full)
-        }
+        let win_bytes = window_bytes(self.window_tokens.0);
+        let shrink = win_bytes.saturating_sub(prev_span);
+        self.overlap_bytes()
+            .saturating_sub(shrink)
+            .saturating_sub(BYTES_PER_TOKEN_U)
     }
 }
 
@@ -354,18 +358,38 @@ impl ChunkCfg {
 /// Алгоритм: жадный проход по окну; если [`ChunkCfg::sentence_boundaries`] и в
 /// окне есть граница предложения, режем по последней такой границе (окно при этом
 /// **не расширяется** за `window_tokens` — контракт SPEC, проверено тестом), иначе
-/// режем по краю окна. Следующее окно начинается на `overlap_tokens` раньше конца
-/// предыдущего.
+/// режем по краю окна. Адванс следующего окна **заякорен на краю окна**
+/// `start + window_bytes`, как требует док [`overlap_target`]: старт = край окна
+/// минус `overlap_bytes`, опушенный до UTF-8-границы, с потолком по фактическому
+/// `end` (покрытие сильнее перекрытия: рез, уехавший из окна дальше stride, не
+/// должен открыть дыру). Хвост — окно, накрывшее остаток текста, — один финальный
+/// чанк до конца текста, без резa по предложениям.
+///
+/// Якорь на фактическом `end` (прежняя геометрия) при «прилипшем» конце —
+/// последняя граница предложения в окне стоит у его старта — прижимал
+/// `target = end − overlap` к `start`, форс-шаг проходил по 1–2 байта, и чанков
+/// становилось O(len) (промер: 44-байтовый email → 23 чанка, golden-строка 358 Б
+/// → 89, фикстура 2133 Б → 88, обе конфигурации; regression email44, атом
+/// step10-chunkerfix).
 ///
 /// Инварианты (каждый — отдельный тест):
 ///
 /// 1. Покрытие: каждый байт `text` лежит хотя бы в одном чанке; пустой текст → пустой список.
-/// 2. Монотонность: `span.start` неубывает.
-/// 3. Перекрытие соседей ≥ `min(span_предыдущего, overlap_floor_bytes(cfg))` байт
-///    (чанк, обрезанный по границе предложения короче окна, полного перекрытия
-///    дать не может; грань helper'а учитывает округление к UTF-8-границе).
-/// 4. Ни один чанк не длиннее окна + одного предложения-хвоста? — нет: длина
-///    чанка ограничена сверху `window_tokens` по оценке (окно не расширяется).
+/// 2. Строгая монотонность: `start_{i+1} > start_i` (шаг ≥ 1 байта); форс-шаг
+///    старой end-якорной геометрии недостижим: `target ≥ start + 4` (overlap <
+///    window ⇒ stride ≥ 1 токен), `end` — UTF-8-граница, floor отодвигает старт
+///    назад не более чем на 3 байта.
+/// 3. Число чанков: `n_chunks ≤ ceil(len / stride) + 1`, `stride =
+///    window_bytes − overlap_bytes` (тест `chunk_count_bounded_by_stride`).
+///    Для текстов, где резы попадают на край окна (фикстуры ревьюера:
+///    email44/gray283/2133/showcase/golden-строки), держится и более жёсткая
+///    форма `n_chunks ≤ ceil(len / window_bytes) + 1`.
+/// 4. Перекрытие соседей ≥ [`ChunkCfg::overlap_floor`] от предыдущего чанка:
+///    при резе по краю окна — полная грань `(overlap − 1) · BYTES_PER_TOKEN`,
+///    при резе, уехавшем в окно, — грань минус уезжка (физически возможный
+///    потолок: больше предыдущий чанк отдать не может).
+/// 5. Длина чанка ≤ `window_bytes` (окно не расширяется; хвост — то, что
+///    накрывается окном, он короче).
 ///
 /// Возвращает пустой вектор на пустом входе; текст короче окна — один чанк.
 #[must_use]
@@ -383,17 +407,28 @@ pub fn chunk(text: &str, cfg: ChunkCfg) -> Vec<Chunk> {
     let mut out = Vec::new();
     let mut start = 0usize;
     while start < text.len() {
-        let hard_end = start.saturating_add(win_bytes).min(text.len());
+        let window_edge = start.saturating_add(win_bytes);
+        let hard_end = window_edge.min(text.len());
+        // Хвост: окно накрывает остаток текста — финальный чанк один, до конца
+        // текста. Рез по границе предложения здесь «приклеил» бы end к границе,
+        // адванс от края окна уперся бы в потолок-покрытие и скан скользил бы по
+        // байту (regression email44: 44 Б → 23 чанка на старой геометрии).
+        //
         // Кандидат реза: граница предложения или край окна; обе ветки cut_at
         // возвращают законную UTF-8-границу, но `max(start + 1)` мог бы её
         // сдвинуть внутрь символа — поэтому минимальный прогресс clamp'им по
         // границе символа отдельно.
-        let cand = cut_at(text, hard_end, start, &bounds);
-        let end = if cand > start {
-            cand
+        let end = if window_edge >= text.len() {
+            text.len()
         } else {
-            // Окно меньше одного символа: продвигаемся к следующей границе.
-            next_char_boundary(text, start).min(text.len())
+            let cand = cut_at(text, hard_end, start, &bounds);
+            if cand > start {
+                cand
+            } else {
+                // Окно короче одного символа — легальный cfg его не производит
+                // (win_bytes ≥ 1024); страховка, не рабочая ветка.
+                next_char_boundary(text, start).min(text.len())
+            }
         };
         debug_assert!(
             text.is_char_boundary(start) && text.is_char_boundary(end),
@@ -424,16 +459,24 @@ pub fn chunk(text: &str, cfg: ChunkCfg) -> Vec<Chunk> {
         if end >= text.len() {
             break;
         }
-        // Продвижение. Якорь — фактический `end` окна: перекрытие соседей меряется
-        // от него (`prev_end − next_start`), поэтому `target = end − ov_bytes` и
-        // старт опушен до UTF-8-границы: floor отодвигает старт НАЗАД (≤ 3 байта),
-        // то есть перекрытие только РАСТЁТ относительно точного `ov_bytes`; грань
-        // инварианта `(overlap − 1)·BYTES_PER_TOKEN` держится с запасом.
-        let target = overlap_target(end, ov_bytes);
-        let mut next = floor_char_boundary(text, target);
+        // Продвижение. Якорь — КРАЙ ОКНА `start + win_bytes`, как требует док
+        // [`overlap_target`], а не фактический `end`: окно, у которого последняя
+        // граница предложения стоит у старта, при end-якоре прилипало к месту и
+        // форс-шаг проходил по 1–2 байта — O(len) чанков (invariant 3 дока).
+        // Потолок `min(..., end)` держит инвариант покрытия: если рез уехал в
+        // окно дальше stride, якорь от края стоит правее `end`, и без потолка
+        // дыра `end..next` не попала бы ни в один чанк — перекрытие здесь
+        // физически невозможно, приматывается к нулю.
+        let target = overlap_target(window_edge, ov_bytes);
+        let mut next = floor_char_boundary(text, target.min(end));
+        debug_assert!(
+            next > start,
+            "chunker: форс-шаг недостижим в edge-якорной геометрии (start={start} next={next})"
+        );
         if next <= start {
-            // Окно короче overlap либо весь остаток — один символ: форсируем
-            // прогресс по следующей границе символа, иначе цикл не завершится.
+            // Страховка: достижима только при рассуждении вне контракта cfg
+            // (target ≥ start + stride ≥ start + 4, `end` — граница > start),
+            // antipattern-assert в тесте `starts_are_strictly_monotonic`.
             next = next_char_boundary(text, start);
         }
         debug_assert!(text.is_char_boundary(next));
