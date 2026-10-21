@@ -570,6 +570,16 @@ class Tee:
             self.fh.flush()
 
 
+def _niceness() -> str:
+    # os.nice(0) бросает PermissionError в песочницах, где понижение nice
+    # запрещено политикой (macOS sandbox):Niceness — диагностика среды,
+    # отказ измерять её не имеет права валить промер.
+    try:
+        return str(os.nice(0))
+    except PermissionError:
+        return "forbidden-in-sandbox"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--threads", type=int, default=2,
@@ -615,7 +625,7 @@ def main() -> None:
     print(f"UNION|env|python|{platform.python_version()}|ort|{rt.__version__}|numpy|{np.__version__}"
           f"|platform|{platform.system()}-{platform.machine()}|threads|{args.threads}"
           f"|omp_num_threads|{os.environ.get('OMP_NUM_THREADS', 'unset')}"
-          f"|niceness|{os.nice(0)}|seed|n/a-no-RNG")
+          f"|niceness|{_niceness()}|seed|n/a-no-RNG")
     for k, v in shas.items():
         print(f"UNION|sha|{k}|{v}")
     print(f"UNION|bar|recall|{BAR}|ci|wilson95-lower|formula|docs/dep-verify-algorithms.md §8")
