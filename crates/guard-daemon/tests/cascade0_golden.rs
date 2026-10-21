@@ -163,10 +163,12 @@ fn c0_span_of_formatted_number_sits_on_original_text() {
 /// промер (AGENTS, память оператора).
 #[test]
 fn c0_measurements_are_emitted() {
+    use std::fmt::Write as _;
     let (cov, per) = recall_coverage();
     let mut line = format!("C0GOLDEN|covered|{cov}/{GOLD_CHECKSUM_SPANS}");
     for (c, k, n) in &per {
-        line.push_str(&format!("|{c}|{k}/{n}"));
+        // String в качестве приемника `write!` не инвалидируется никогда.
+        let _ = write!(line, "|{c}|{k}/{n}");
     }
     let (spans, bait, nrows) = negative_counts();
     println!("{line}");
