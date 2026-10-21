@@ -231,9 +231,9 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    AGENTS §3 п.3): на стадии `cascade-0-only` он инертен — разбор `config.rs:423`
    кладёт значение в `cfg.threads`, а единственным потребителем поля в демоне
    оставался тест `config.rs:638`; с монтажом каскадов 1–2 (#87) рычаг жив —
-   `cascades.rs:558` берёт `cfg.threads` в `Spec`, и он уходит в
+   `cascades.rs:750` берёт `cfg.threads` в `Spec`, и он уходит в
    `LockrExtractor::load(…, threads)` и `DecideArbiter::load(…, threads)`
-   (`cascades.rs:675,677`). Номера пересняты grep'ом на этом дереве (класс #93:
+   (`cascades.rs:867,869`). Номера пересняты grep'ом на этом дереве (класс #93:
    влитые PR сдвинули строки первички #76). `OMP_NUM_THREADS` не рычаг: вендорный
    `libonnxruntime` osx-arm64 без OpenMP, переменную не читает (первичка
    правки к рюлингу — `otool`/`strings`, ревью #73).
@@ -330,6 +330,11 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    https://ort.pyke.io/setup/linking: compile-time dynamic = `ORT_LIB_PATH` +
    `ORT_PREFER_DYNAMIC_LINK=1`; рантайм-поиск на macOS — rpath `@loader_path`
    либо каталог рядом с бинарём).
+   Голое `cargo build --release --features ort-inference` (без env-префикса) на
+   чистой macOS не линкуется: `___isPlatformVersionAtLeast` undefined, CoreML-
+   хелпер из pyke-статики (docs/model-audit.md §5 п.2; промер ревью #97, 2-й
+   раунд). Команды сборки в этой ветке пишутся с префиксом — рецепт
+   §«Как включить монтаж каскадов 1–2» п.1 в `crates/guard-daemon/README.md`.
 2. Фактическая сборка промерена 21.10 на macOS arm64 (rustc 1.99.1):
    `ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib cargo build --release --features ort-inference --example spike`
    = exit 0 за 4m05s, линкуется на `libonnxruntime.1.31.0.dylib`, полный

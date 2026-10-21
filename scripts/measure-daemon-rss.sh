@@ -85,7 +85,7 @@ trap cleanup EXIT
 
 echo "METRIC|method|ps-rss-sampling-100ms|threads|$THREADS|reqs|$REQS|bin|$BIN"
 FASAD_MODEL_DIR="$MODEL_DIR" FASAD_THREADS="$THREADS" FASAD_PORT="$PORT" \
-  FASAD_BIND=127.0.0.1 FASAD_TIMEOUT_MS=30000 \
+  FASAD_BIND=127.0.0.1 FASAD_TIMEOUT_MS="${FASAD_TIMEOUT_MS:-30000}" \
   "$BIN" >"$LOG" 2>&1 &
 PID=$!
 
@@ -126,11 +126,24 @@ for i in $(seq 1 "$REQS"); do
   code=$(curl -s -D "$HEADERS" -o /tmp/rss-body.json -w '%{http_code}' -X POST \
     -H 'content-type: application/json' -H 'x-guard-policy: audit_only' \
     --data "{\"text\":\"$TXT\"}" "http://127.0.0.1:$PORT/v1/analyze" || echo "000")
-  spans=$(grep -o '"entity_type"' /tmp/rss-body.json 2>/dev/null | wc -l | tr -d ' ')
+  # Настоящий убийца прогона #84 (ревью #97, 22.10). `grep -o` отдаёт rc=1,
+  # когда совпадений нет: тело `502 cascade_unavailable`, пустое тело, 200 с
+  # нулём сущностей. Под `set -o pipefail` ненулевой статус ЛЮБОГО звена
+  # становится статусом трубы, а `set -e` на ненулевом статусе присваивания
+  # `spans=$(…)` валит скрипт МОЛЧА — до первой `METRIC|req`, без единой цифры.
+  # Прежний диагноз («`[[ -z "$rss" ]] && rss=0` под `set -e` убивал прогон на
+  # первом 200-ответе») опровергнут: команда слева от `&&` изъята из выхода,
+  # идиом жив на bash 3.2.57 и 5.x (трассировки — в теле PR #97). Нулевой
+  # счётчик — легальный исход запроса, поэтому фолбэк 0, а не аварап.
+  spans=$(grep -o '"entity_type"' /tmp/rss-body.json 2>/dev/null | wc -l | tr -d ' ') || spans=0
   stage=$(tr -d '\r' <"$HEADERS" | grep -i '^x-guard-stage:' | cut -d' ' -f2 || true)
   c2=$(tr -d '\r' <"$HEADERS" | grep -i '^x-guard-cascade2:' | cut -d' ' -f2 || true)
   rss=$(ps -o rss= -p "$PID" 2>/dev/null | tr -d ' ')
-  [[ -z "$rss" ]] && rss=0
+  # Пустой снимок = демон умер между запросом и `ps`; фолбэк расширением
+  # параметра, а не `&&`-списком: у него нет статуса команды, `set -e` не за что.
+  rss=${rss:-0}
+  # Живой идиом, не ловушка: `(( … ))` слева от `&&` изъят из выхода `set -e`
+  # (промер ревью #97 — ложный диагноз этого же файла). Меняем коммент, не код.
   (( rss > peak )) && peak=$rss
   echo "METRIC|req|$i|http|$code|spans|$spans|stage|${stage:-none}|cascade2|${c2:-none}|rss_kib|$rss"
 done
