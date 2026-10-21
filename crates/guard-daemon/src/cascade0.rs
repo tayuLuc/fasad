@@ -44,10 +44,55 @@
 //! которое каскады 1–2 не переспорят (SPEC §2), т.е. masking чужого текста.
 //! Кириллица соседом не считается — «ИНН7785240858» без пробела типична для
 //! русских документов, а хэшей кириллицей не пишут.
+//!
+//! # Base64-обход (атом #51 п.3)
+//!
+//! Запрос может нести `ПДн` внутри base64-blob: поле интеграции приезжает как
+//! `base64(ИНН)`, лог — как `base64(карты)`. Обход закрыт одним проходом
+//! ([`scan_base64`]), правила такие:
+//!
+//! 1. **кандидат** = токен алфавита base64, ограниченный пробелом с обеих
+//!    сторон (в нормализованном тексте все Zs уже сведены к U+0020), длина
+//!    кратна 4, `=` только хвостом, полезная нагрузка ≥
+//!    [`B64_MIN_PAYLOAD_BYTES`] байт;
+//! 2. **алфавит** принимаем оба: standard (`+/`) и url-safe (`-_`). Смешанный
+//!    токен (`+` рядом с `_`) кандидатом не считается: один эмитент даёт один
+//!    алфавит, смесь — это текст с дефисами, а не base64 (промер на JWT:
+//!    `a.b.c` распадается на сегменты, ни один не стоит на пробельной границе);
+//! 3. **спан** кредитзуется на **исходный токен**: vault меняет текст по
+//!    координатам оригинала, а декодированные координаты наружу не показываются
+//!    (их нет в ответе вообще — SPEC §8 отдаёт только оригинальные);
+//! 4. **вложенность ровно один уровень**: нагрузку мы ведём окном по байтам,
+//!    но кандидатов в ней не ищем — `base64(base64(ИНН))` не раскручивается.
+//!    Рекурсивный декод — это неограниченный CPU на вражеском входе и
+//!    FP-поверхность на каждом уровне;
+//! 5. **FP-контроль**: анти-паттерн «decode и верь» отшит тем, что спан
+//!    появляется **только** если окно в нагрузке подтвердил чексумменный
+//!    валидатор схемы. Случайные 16 байт, JWT-сегменты и base64 utf-8 текста
+//!    без цифр спанов не дают (юниты `base64_negative_*`).
+//! 6. **фильтр «в нагрузке есть цифра» стоит ПОСЛЕ нормализации**, а не на
+//!    сырых байтах декода: полноширинные цифры `U+FF10…U+FF19` ASCII-цифрами в
+//!    байтах не являются, и до правки ревью #94 (F-1) такой токен терялся, хотя
+//!    тем же текстом находился. Пара «тот же вход текстом / тот же вход
+//!    токеном» — `base64_fullwidth_digits_match_the_text_path`; цена порядка —
+//!    нормализация каждого кандидата, она меряется микромерой
+//!    `base64_bypass_hot_path_microbench` (цена на безцифровой заливке —
+//!    промер `REVIEW94|fill_100KiB`).
+//!
+//! Окно в нагрузке ищет тот же слой, что и в тексте ([`validated_windows`]),
+//! поэтому перемычки внутри декодированного («044 525 …») ловит тот же
+//! нормализатор и те же окна групп, что и в открытом тексте.
+//!
+//! Поле `source` у такой находки — [`DetectionSource::Base64Decode`]
+//! (JSON `base64_decode`), а не `checksum_*`: вес остаётся абсолютным вето 1.0
+//! (подтверждение то же — чексумма), но происхождение спана видно и политике,
+//! и человеку в `/ui`.
 
+use base64::Engine as _;
 use guard_detectors::checksums;
 use guard_detectors::normalize;
 use guard_types::{ByteSpan, ClassId, DetectionSource, NewtypeId};
+use zeroize::Zeroizing;
 
 use crate::schema::{KNOWN_VALIDATORS, Schema};
 
@@ -182,75 +227,28 @@ impl Hit {
 /// (SPEC §8 «векторы классов»).
 #[must_use]
 pub fn scan(text: &str, schema: &Schema) -> Vec<Hit> {
+    scan_with(text, schema, true)
+}
+
+/// Ядро [`scan`]; `with_base64 = false` выключает обход (атом #51 п.3).
+///
+/// Параметр не публичный API, а рычаг замера: нога «до» в
+/// `base64_bypass_hot_path_microbench` обязана считать ровно тот код, что был
+/// на базе, в том же бинаре. Два бинаря из двух деревьев несравнимы: вклад
+/// сборки в них разный, а у двух прогонов одного кода различается ровно тот
+/// проход, который добавлен.
+fn scan_with(text: &str, schema: &Schema, with_base64: bool) -> Vec<Hit> {
     let (norm, map) = normalize::normalize(text);
     let bytes = norm.as_bytes();
     let wanted = wanted_validators(schema);
     let mut hits = Vec::new();
 
-    for (start, end) in digit_runs(bytes) {
-        let len = end - start;
-        for spec in DIGIT_SPECS {
-            if len < spec.min || len > spec.max {
-                continue;
-            }
-            if !wanted.iter().any(|(v, _)| *v == spec.name) {
-                continue;
-            }
-            if !isolated(bytes, start, end) {
-                continue;
-            }
-            if call_validator(spec.name, &bytes[start..end]) == Some(true) {
-                push_hits(&mut hits, text, &map, start..end, spec, &wanted);
-            }
-        }
+    for w in validated_windows(bytes, &wanted) {
+        push_hits(&mut hits, text, &map, w.range, w.spec, &wanted);
     }
 
-    // Окна из соседних групп цифр: форматированный номер («378-312-074 87»)
-    // валидатору отдаётся склейкой, спан остаётся на оригинале.
-    for run in num_runs(bytes) {
-        // Окно = прогон ЦЕЛИКОМ, внутренних подокон нет. Подокно удваивало бы
-        // FP-поверхность: в прогоне «1000 2000 3000 4000 5000 6000» любое
-        // 16-значное склеенное окно проходит Луну с вероятностью 1/10, а
-        // настоящим номерам в golden хватает целого прогона (170/170 — тест
-        // `c0_covers_every_checksum_span_of_recall_split`).
-        let (start, end) = (run.groups[0].start, run.groups[run.groups.len() - 1].end);
-        if !isolated(bytes, start, end) {
-            continue;
-        }
-        let canon = run.canonical(bytes, 0, run.groups.len());
-        let len = canon.len();
-        for spec in DIGIT_SPECS {
-            if len < spec.min || len > spec.max {
-                continue;
-            }
-            if !wanted.iter().any(|(v, _)| *v == spec.name) {
-                continue;
-            }
-            if call_validator(spec.name, &canon) == Some(true) {
-                push_hits(&mut hits, text, &map, start..end, spec, &wanted);
-            }
-        }
-    }
-
-    let ib = &IBAN_SPEC;
-    if wanted.iter().any(|(v, _)| *v == ib.name) {
-        for (start, end) in iban_tokens(bytes) {
-            if !isolated(bytes, start, end) {
-                continue;
-            }
-            // Печатная форма («RU19 0445 2522 …») длиннее канона на разделители:
-            // рамку 15..=34 проверяем по канону, спан берём полный.
-            let canon = strip_separators(&bytes[start..end]);
-            if canon.len() < ib.min || canon.len() > ib.max {
-                continue;
-            }
-            // mod97 считается по верхнему регистру (ISO 13616-1 §2.1); регистр
-            // оригинала остаётся в координатах, а не в данных.
-            let up: Vec<u8> = canon.iter().map(u8::to_ascii_uppercase).collect();
-            if call_validator(ib.name, &up) == Some(true) {
-                push_hits(&mut hits, text, &map, start..end, ib, &wanted);
-            }
-        }
+    if with_base64 {
+        scan_base64(text, bytes, &map, &wanted, &mut hits);
     }
 
     hits.sort_by(|a, b| {
@@ -323,6 +321,101 @@ fn wanted_validators(schema: &Schema) -> Vec<(&'static str, ClassId)> {
     for c in &schema.validator_only {
         add(&c.id, &c.validators);
     }
+    out
+}
+
+/// Подтверждённое валидатором окно в координатах того буфера, по которому
+/// гоняли (`range`), плюс спецификация, которая подтвердила.
+struct Window {
+    range: std::ops::Range<usize>,
+    spec: &'static Spec,
+}
+
+/// Три прогона каскада-0 по байтам: сплошные прогоны цифр, окна групп цифр и
+/// IBAN-токены — всё, что доверяется чексумме схемы, и только это.
+///
+/// Слой отделин от `scan` ради base64-обхода: тот же код окон обязан бегать и
+/// по нормализованному тексту, и по декодированной нагрузке, а различаются
+/// вызывающие только тем, **куда** кредитовать найденное окно (карта
+/// координат vs спан исходного токена).
+fn validated_windows(bytes: &[u8], wanted: &[(&'static str, ClassId)]) -> Vec<Window> {
+    let mut out = Vec::new();
+
+    for (start, end) in digit_runs(bytes) {
+        let len = end - start;
+        for spec in DIGIT_SPECS {
+            if len < spec.min || len > spec.max {
+                continue;
+            }
+            if !wanted.iter().any(|(v, _)| *v == spec.name) {
+                continue;
+            }
+            if !isolated(bytes, start, end) {
+                continue;
+            }
+            if call_validator(spec.name, &bytes[start..end]) == Some(true) {
+                out.push(Window {
+                    range: start..end,
+                    spec,
+                });
+            }
+        }
+    }
+
+    // Окна из соседних групп цифр: форматированный номер («378-312-074 87»)
+    // валидатору отдаётся склейкой, спан остаётся на оригинале.
+    for run in num_runs(bytes) {
+        // Окно = прогон ЦЕЛИКОМ, внутренних подокон нет. Подокно удваивало бы
+        // FP-поверхность: в прогоне «1000 2000 3000 4000 5000 6000» любое
+        // 16-значное склеенное окно проходит Луну с вероятностью 1/10, а
+        // настоящим номерам в golden хватает целого прогона (170/170 — тест
+        // `c0_covers_every_checksum_span_of_recall_split`).
+        let (start, end) = (run.groups[0].start, run.groups[run.groups.len() - 1].end);
+        if !isolated(bytes, start, end) {
+            continue;
+        }
+        let canon = run.canonical(bytes, 0, run.groups.len());
+        let len = canon.len();
+        for spec in DIGIT_SPECS {
+            if len < spec.min || len > spec.max {
+                continue;
+            }
+            if !wanted.iter().any(|(v, _)| *v == spec.name) {
+                continue;
+            }
+            if call_validator(spec.name, &canon) == Some(true) {
+                out.push(Window {
+                    range: start..end,
+                    spec,
+                });
+            }
+        }
+    }
+
+    let ib = &IBAN_SPEC;
+    if wanted.iter().any(|(v, _)| *v == ib.name) {
+        for (start, end) in iban_tokens(bytes) {
+            if !isolated(bytes, start, end) {
+                continue;
+            }
+            // Печатная форма («RU19 0445 2522 …») длиннее канона на разделители:
+            // рамку 15..=34 проверяем по канону, спан берём полный.
+            let canon = strip_separators(&bytes[start..end]);
+            if canon.len() < ib.min || canon.len() > ib.max {
+                continue;
+            }
+            // mod97 считается по верхнему регистру (ISO 13616-1 §2.1); регистр
+            // оригинала остаётся в координатах, а не в данных.
+            let up: Vec<u8> = canon.iter().map(u8::to_ascii_uppercase).collect();
+            if call_validator(ib.name, &up) == Some(true) {
+                out.push(Window {
+                    range: start..end,
+                    spec: ib,
+                });
+            }
+        }
+    }
+
     out
 }
 
@@ -529,13 +622,211 @@ fn push_hits(
     let Some(span) = map.map_span_to_original(text, window) else {
         return;
     };
+    push_span_hits(hits, span, spec, spec.source, wanted);
+}
+
+/// Тот же контракт, что [`push_hits`], но спан уже известен.
+///
+/// Вектор классов не дублируется: один класс схемы может быть объявлен двумя
+/// валидаторами, и каждый подтверждённый даёт отдельный хит (SPEC §8 «векторы
+/// классов»).
+fn push_span_hits(
+    hits: &mut Vec<Hit>,
+    span: ByteSpan,
+    spec: &Spec,
+    source: DetectionSource,
+    wanted: &[(&'static str, ClassId)],
+) {
     for (_, class) in wanted.iter().filter(|(v, _)| *v == spec.name) {
         hits.push(Hit {
             span,
             class: class.clone(),
             validator: spec.name,
-            source: spec.source,
+            source,
         });
+    }
+}
+
+// ── Base64-обход (атом #51 п.3) ─────────────────────────────────────────────
+
+/// Минимальная полезная нагрузка декода, байт.
+///
+/// 11 — это ИНН-10 с одной перемычкой (`778524 0858`): короче нечего проверять
+/// чексумме, а каждая лишняя проверка короткого канона — это FP-поверхность.
+/// Побочный эффект порога известен и принят: blob, в котором ровно 10 байт
+/// «2482014338» без обрамления, не проверяется (тест
+/// `base64_payload_floor_is_the_documented_tradeoff`).
+const B64_MIN_PAYLOAD_BYTES: usize = 11;
+
+/// Минимальная длина кандидата, байт: 16 — ближайшее кратное 4, чей декод не
+/// короче [`B64_MIN_PAYLOAD_BYTES`]. Дешёвый префильтр: отсекает кандидатов до
+/// того, как мы вообще посмотрим на алфавит.
+const B64_MIN_TOKEN_BYTES: usize = 16;
+
+/// Символы обоих алфавитов base64 плюс паддинг: standard `A-Za-z0-9+/`,
+/// url-safe `A-Za-z0-9-_`, `=`.
+const fn is_b64_symbol(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'-' | b'_' | b'=')
+}
+
+/// Кандидаты base64: токены алфавита, ограниченные пробелом с обеих сторон.
+///
+/// Граница — пробел (в нормализованном тексте все Zs уже сведены к U+0020), а
+/// не «любой не-алфавитный символ». Это и есть ответ на «почему JWT не
+/// декодируется»: `a.b.c` — один токеном-не-токен, точки разрывают алфавит, но
+/// части не стоят на пробельной границе, а прижатая к букве base64-цепочка
+/// (`sha256=…`, `data:…;base64,AAAA…`, `[[F0#base64url]]` нашего же vault) —
+/// это поле формата, а не вставка пользователя. Последнее важно не только для
+/// FP: разворачивать собственный маркер обратимости означало бы маскировать
+/// токен, который прокси сам вставляет в тело (#60).
+fn b64_tokens(bytes: &[u8]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let n = bytes.len();
+    let mut i = 0usize;
+    while i < n {
+        if !is_b64_symbol(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < n && is_b64_symbol(bytes[i]) {
+            i += 1;
+        }
+        let end = i;
+        let left_ws = start == 0 || bytes[start - 1].is_ascii_whitespace();
+        let right_ws = end == n || bytes[end].is_ascii_whitespace();
+        if !(left_ws && right_ws) {
+            continue;
+        }
+        if b64_shape_ok(&bytes[start..end]) {
+            out.push((start, end));
+        }
+    }
+    out
+}
+
+/// Форма кандидата: длина кратна 4 и не короче [`B64_MIN_TOKEN_BYTES`],
+/// паддинг только хвостом (≤ 2), алфавит в токене не смешан.
+///
+/// Каноничность паддинга и «мусор в хвосте» доверены декодеру:
+/// `general_purpose::STANDARD`/`URL_SAFE` требуют каноничный паддинг
+/// (`DecodePaddingMode::RequireCanonical`) и не терпят лишних битов, так что
+/// здесь только то, что декодер по своим правилам не отвергает.
+fn b64_shape_ok(tok: &[u8]) -> bool {
+    if tok.len() < B64_MIN_TOKEN_BYTES || tok.len() % 4 != 0 {
+        return false;
+    }
+    let mut pads = 0usize;
+    let mut standard = false;
+    let mut url_safe = false;
+    let mut seen_pad = false;
+    for &b in tok {
+        match b {
+            b'=' => {
+                pads += 1;
+                seen_pad = true;
+            }
+            b'+' | b'/' => {
+                if seen_pad {
+                    return false;
+                }
+                standard = true;
+            }
+            b'-' | b'_' => {
+                if seen_pad {
+                    return false;
+                }
+                url_safe = true;
+            }
+            _ => {
+                if seen_pad {
+                    return false;
+                }
+            }
+        }
+    }
+    pads <= 2 && !(standard && url_safe)
+}
+
+/// Декод кандидата: сначала standard-алфавит, затем url-safe.
+///
+/// Порядок не косметика: standard — подавляющее большинство входов, и вторая
+/// попытка стоит только на токенах с `-_`. Смешанный алфавит отвергают оба
+/// движка (`InvalidByte`), что и есть правило «один токен — один алфавит».
+///
+/// Буфер обёрнут в [`Zeroizing`]: в декодированных байтах лежат оригиналы `ПДн`,
+/// а AGENTS §Инженерные инварианты требует zeroize на всех таких буферах.
+fn b64_decode(token: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+    use base64::engine::general_purpose::{STANDARD, URL_SAFE};
+    STANDARD
+        .decode(token)
+        .or_else(|_| URL_SAFE.decode(token))
+        .map(Zeroizing::new)
+        .ok()
+}
+
+/// Base64-обход: прогон каскада-0 по декодированной нагрузке каждого кандидата.
+///
+/// Координаты окон в нагрузке никуда не идут: все хиты этого токена
+/// кредитуются на спан исходного токена ([`scan_base64`] заголовок модуля).
+///
+/// Вложенность — ровно один уровень: нагрузку ведём [`validated_windows`], но
+/// [`b64_tokens`] внутри неё не зовём, поэтому `base64(base64(x))` даёт ноль
+/// находок (тест `base64_nesting_is_exactly_one_level`).
+fn scan_base64(
+    text: &str,
+    norm: &[u8],
+    map: &normalize::OffsetMap,
+    wanted: &[(&'static str, ClassId)],
+    hits: &mut Vec<Hit>,
+) {
+    if wanted.is_empty() {
+        return;
+    }
+    for (start, end) in b64_tokens(norm) {
+        // Спан кредитывается на токен: если граница токена не char-граница
+        // оригинала, fail-closed — находку выбрасываем, а не сдвигаем координаты
+        // (маскирование не того байта дороже пропуска).
+        let Some(span) = map.map_span_to_original(text, start..end) else {
+            continue;
+        };
+        let Some(payload) = b64_decode(&norm[start..end]) else {
+            continue;
+        };
+        if payload.len() < B64_MIN_PAYLOAD_BYTES {
+            continue;
+        }
+        // Нагрузка — произвольные байты: читаем как UTF-8 с потерями (ASCII-
+        // цифры от замены байтов не меняются, а бинарные хвосты становятся
+        // U+FFFD и разрезают окна). Дальше — тот же слой, что для текста,
+        // поэтому перемычки («044 525 …») внутри декодированного ловит тот же
+        // нормализатор и те же окна групп.
+        //
+        // Честность по [`Zeroizing`]: из трёх буферов залочены два — декод
+        // `payload` и его строковая копия `payload_str`. Третий, `dnorm`,
+        // приходит из `normalize::normalize` как `Cow<str>`; в ветке
+        // `Cow::Owned` (в нагрузке что-то заменялось) это незакрытый
+        // `String`-оригинал. Тот же дефект живёт на текстовом пути: там
+        // `normalize` вызывается из `scan` и обёрнут ровно так же, поэтому
+        // оставляем как есть — паритет путей важнее одностороннего улучшения,
+        // а чинить надо в нормализаторе одним движением для обоих (ревью #94
+        // F-3, задокументировано, а не проигнорировано).
+        let payload_str = Zeroizing::new(String::from_utf8_lossy(payload.as_slice()).into_owned());
+        let (dnorm, _) = normalize::normalize(&payload_str);
+        // Чексумме нечего проверять без цифр: все валидаторы схемы
+        // (ИНН/СНИЛС/ОГРН/Луна/БИК/счёт/IBAN) требуют цифры в окне. Фильтр
+        // стоит ПОСЛЕ нормализации, а не на сырых байтах: полноширинные цифры
+        // `U+FF10…U+FF19` в байтах декода ASCII-цифрами не являются, а
+        // нормализатор сводит их к ASCII (ревью #94 F-1; пара «тот же вход
+        // текстом / тот же вход токеном» —
+        // `base64_fullwidth_digits_match_the_text_path`). Цена — нормализация
+        // каждого кандидата, она меряется в микромере.
+        if !dnorm.as_bytes().iter().any(u8::is_ascii_digit) {
+            continue;
+        }
+        for w in validated_windows(dnorm.as_bytes(), wanted) {
+            push_span_hits(hits, span, w.spec, DetectionSource::Base64Decode, wanted);
+        }
     }
 }
 
@@ -877,5 +1168,519 @@ mod tests {
             assert!(s.min <= s.max, "{}: перевёрнутый диапазон", s.name);
         }
         assert!(call_validator("нет-такого", b"123").is_none());
+    }
+    // ── Base64-обход (атом #51 п.3) ─────────────────────────────────────────
+
+    /// Кодирование тестовых входов — эталонным движком (`STANDARD`/`URL_SAFE`
+    /// crate `base64`), а не нашим декодером: ожидаемое не должно зависеть от
+    /// проверяемого кода (AGENTS §Дисциплина фактов п.3).
+    fn b64(data: &[u8]) -> String {
+        use base64::engine::general_purpose::STANDARD;
+        STANDARD.encode(data)
+    }
+
+    /// То же, что [`b64`], url-safe алфавитом.
+    fn b64u(data: &[u8]) -> String {
+        use base64::engine::general_purpose::URL_SAFE;
+        URL_SAFE.encode(data)
+    }
+
+    /// 3 байта `fb ff ff` — единственное место алфавита, где в standard
+    /// попадают `+` и `/` (`+///…`), а в url-safe — `-` и `_` (`-___…`): на них
+    /// и построена пара «оба алфавита принимаем, смешанный отвергаем».
+    fn probe_bytes(payload: &[u8]) -> Vec<u8> {
+        let mut v = vec![0xfb, 0xff, 0xff];
+        v.extend_from_slice(payload);
+        v
+    }
+
+    /// Base64-обход: номер в декодированной нагрузке находится, спан сидит на
+    /// исходном токене, `source` = `base64_decode`, вес = вето 1.0.
+    ///
+    /// Значения — те же золотые, что в `golden_values_are_found` (категории
+    /// спанов из `data/golden/golden-v1.jsonl`), ожидаемое не пересчитано
+    /// нашим валидатором.
+    #[test]
+    #[allow(clippy::float_cmp)] // 1.0 — константа контракта (DeterministicW)
+    fn base64_payload_numbers_are_found_on_the_token_span() {
+        let cases: [(&str, &str); 6] = [
+            ("ИНН 2482014338 выдан", "inn"),
+            ("ИНН 825082492964 для контрагента", "inn"),
+            ("СНИЛС 65707715421 в реестре", "snils"),
+            ("ОГРН 7146617178591 запись", "ogrn"),
+            ("ОГРНИП 313777542563312 ИП", "ogrnip"),
+            ("карта 4575503590352993 на оплату", "card_pan"),
+        ];
+        for (payload, class) in cases {
+            let token = b64(payload.as_bytes());
+            let text = format!("приложение {token} конец");
+            let hits = scan(&text, &schema());
+            let hit = hits
+                .iter()
+                .find(|h| h.class.as_str() == class)
+                .unwrap_or_else(|| panic!("{payload:?} в base64 не найдено: {:?}", classes(&hits)));
+            assert_eq!(
+                hit.span.slice(&text),
+                Some(token.as_str()),
+                "спан обязан покрывать исходный токен, а не декодированные байты"
+            );
+            assert_eq!(
+                hit.source,
+                DetectionSource::Base64Decode,
+                "происхождение находки — декод, а не прямое чтение текста"
+            );
+            assert_eq!(hit.score(), 1.0, "чексумма подтверждена — вето 1.0");
+        }
+    }
+
+    /// Перемычки внутри декодированной нагрузки ловит тот же оконный слой, что
+    /// и в тексте (п.8 приёмки): СНИЛС 3-3-3-2, карта 4-4-4-4, ИНН парами,
+    /// IBAN groups по 4 — всё в форме, напечатанной до кодирования.
+    #[test]
+    fn base64_payload_separators_are_caught_by_the_window_layer() {
+        let cases: [(&str, &str); 4] = [
+            ("СНИЛС 378-312-074 87 в реестре", "snils"),
+            ("карта 2204-9947-4132-9761 на оплату", "card_pan"),
+            ("ИНН 24 82 01 43 38 платёжный", "inn"),
+            ("расчёт RU19 04452522540820407677025210608 спасибо", "iban"),
+        ];
+        for (payload, class) in cases {
+            let token = b64(payload.as_bytes());
+            let text = format!("приложение {token} конец");
+            let hits = scan(&text, &schema());
+            assert!(
+                classes(&hits).contains(&class),
+                "{payload:?}: ждали {class}, выпустили {:?}",
+                classes(&hits)
+            );
+            for h in &hits {
+                assert_eq!(h.source, DetectionSource::Base64Decode, "{payload:?}");
+            }
+        }
+    }
+
+    /// Красный гейт F-1 (ревью #94): префильтр обязан стоять ПОСЛЕ
+    /// нормализации, а не на сырых байтах декода. Пара «тот же вход текстом /
+    /// тот же вход токеном» на полноширинных цифрах: нормализатор сводит
+    /// `U+FF10…U+FF19` к ASCII, и оба пути обязаны найти один и тот же номер.
+    /// До правки пара была асимметричной: текстом находилось, токеном — пусто.
+    #[test]
+    fn base64_fullwidth_digits_match_the_text_path() {
+        let payload = "ИНН ２４８２０１４３３８ выдан"; // scan-lang:allow
+        // Нога «текстом» — базовая линия пары: тот же вход без доставки.
+        let text_hits = scan(payload, &schema());
+        let text_inn = text_hits
+            .iter()
+            .find(|h| h.class.as_str() == "inn")
+            .expect("текстовый путь обязан находить полноширинные цифры");
+        // Нога «токеном».
+        let token = b64(payload.as_bytes());
+        let text = format!("приложение {token} конец");
+        let b64_hits = scan(&text, &schema());
+        let b64_inn = b64_hits
+            .iter()
+            .find(|h| h.class.as_str() == "inn")
+            .expect("base64-доставка обязана найти то же, что текст (ревью #94 F-1)");
+        assert_eq!(b64_inn.source, DetectionSource::Base64Decode);
+        assert_eq!(
+            b64_inn.span.slice(&text),
+            Some(token.as_str()),
+            "координаты — исходный токен в байтах оригинала, не декода"
+        );
+        // Паритет по валидатору и весу: тот же номер, та же чексумма.
+        assert_eq!(
+            b64_inn.validator, text_inn.validator,
+            "валидатор разъехался"
+        );
+        assert_eq!(b64_inn.score(), text_inn.score(), "вес разъехался");
+    }
+
+    /// Оба алфавита принимаются: standard (`+/`) и url-safe (`-_`).
+    #[test]
+    fn base64_both_alphabets_are_accepted() {
+        let payload = probe_bytes(b" 2482014338");
+        let std = b64(&payload);
+        let url = b64u(&payload);
+        assert!(
+            std.contains('+') && std.contains('/'),
+            "вход не задевает standard-хвосты алфавита: {std}"
+        );
+        assert!(
+            url.contains('-') && url.contains('_'),
+            "вход не задевает url-safe-хвосты алфавита: {url}"
+        );
+        for token in [std, url] {
+            let text = format!("поле {token} конец");
+            let hits = scan(&text, &schema());
+            let hit = hits
+                .iter()
+                .find(|h| h.class.as_str() == "inn" && h.validator == "inn10")
+                .unwrap_or_else(|| panic!("токен {token} не разобран: {:?}", classes(&hits)));
+            assert_eq!(hit.span.slice(&text), Some(token.as_str()));
+            assert_eq!(hit.source, DetectionSource::Base64Decode);
+        }
+    }
+
+    /// Смешанный алфавит — не кандидат: один эмитент даёт один алфавит, а
+    /// смесь `+` и `_` — это текст с дефисами и плюсами, а не base64.
+    #[test]
+    fn base64_mixed_alphabet_token_is_rejected() {
+        let payload = probe_bytes(b" 2482014338");
+        let std = b64(&payload);
+        let mixed = std.replacen('/', "_", 1);
+        assert!(
+            mixed.contains('+') && mixed.contains('_'),
+            "подмена не сделала токен смешанным: {mixed}"
+        );
+        assert!(
+            !b64_shape_ok(mixed.as_bytes()),
+            "смесь обязана отшиваться формой"
+        );
+        let text = format!("поле {mixed} конец");
+        assert_eq!(
+            scan(&text, &schema()),
+            [] as [Hit; 0],
+            "смешанный токен {mixed} раскрутился"
+        );
+    }
+
+    /// Вложенность ровно один уровень: `base64(base64(ИНН))` не раскручивается.
+    #[test]
+    fn base64_nesting_is_exactly_one_level() {
+        let inner = b64("ИНН 2482014338 выдан".as_bytes());
+        // Позитивный контроль: один уровень находится, значит пустой результат
+        // ниже — следствие правила, а не сломанного декодера.
+        let one = format!("поле {inner} конец");
+        assert!(
+            classes(&scan(&one, &schema())).contains(&"inn"),
+            "первый уровень обязан находиться: {inner}"
+        );
+        let outer = b64(inner.as_bytes());
+        let two = format!("поле {outer} конец");
+        assert_eq!(
+            scan(&two, &schema()),
+            [] as [Hit; 0],
+            "второй уровень раскручен — рекурсии быть не должно"
+        );
+    }
+
+    /// Координаты — оригинальные байты текста: нормализация (NBSP вокруг
+    /// токена) двигает карту, спан обязан указывать на токен в оригинале.
+    #[test]
+    fn base64_span_sits_on_original_bytes() {
+        let token = b64("СНИЛС 65707715421 в реестре".as_bytes());
+        let text = format!("СНИЛС\u{A0}{token}\u{A0}конец");
+        let hits = scan(&text, &schema());
+        let hit = hits
+            .iter()
+            .find(|h| h.class.as_str() == "snils")
+            .expect("СНИЛС в base64 находится");
+        assert_eq!(hit.span.slice(&text), Some(token.as_str()));
+        let at = text.find(&token).expect("токен в тексте");
+        assert_eq!(hit.span.start, at, "левый край спана = левый край токена");
+        assert_eq!(
+            hit.span.end,
+            at + token.len(),
+            "правый край = правый край токена"
+        );
+    }
+
+    /// Негативы (п.4 приёмки, анти-паттерн «decode и верь»). Ожидаемое «пусто»
+    /// — утверждение об отсутствии подтверждения валидатором (или об отказе
+    /// формы/границы), а не о том, что декод не запустился: у части входов декод
+    /// проходит, и спана нет именно потому, что чексумма не сошлась.
+    #[test]
+    fn base64_negative_registry() {
+        let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.\
+                   eyJzdWIiOiIxMjM0NTY3ODkwIn0.\
+                   dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        let cases: Vec<(String, &str)> = vec![
+            // JWT целиком: сегменты склеены точкой, ни один не на границе.
+            (jwt.to_owned(), "JWT (сегменты через точку)"),
+            // Первый сегмент один на пробельной границе: декод
+            // `{"alg":"HS256","typ":"JWT"}`, цифра одна — «256», 3 < minLength 9.
+            (
+                "шапка eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 конец".to_owned(),
+                "JWT-шапка (кандидат, цифр на номер нет)",
+            ),
+            // Payload того же JWT с паддингом: декодируется в
+            // `{"sub":"1234567890"}`, 10 цифр изолированы — ИНН 1234567890
+            // невалиден (промер по §1 первички), спана нет.
+            (
+                "токен eyJzdWIiOiIxMjM0NTY3ODkwIn0= конец".to_owned(),
+                "JWT payload: 10 цифр с невалидной чексуммой",
+            ),
+            // Payload без паддинга: длина 27 не кратна 4 — не кандидат.
+            (
+                "токен eyJzdWIiOiIxMjM0NTY3ODkwIn0 конец".to_owned(),
+                "JWT payload без паддинга (длина не кратна 4)",
+            ),
+            // base64 utf-8 текста без цифр.
+            (b64("Привет, мир! 👋🙂".as_bytes()), "utf-8 текст без цифр"),
+            (b64("😀😀😀😀😀😀😀😀😀😀".as_bytes()), "эмодзи"),
+            // Чистая бинарность: 16 и 18 байт, ASCII-цифр в нагрузке нет.
+            (
+                "blob AAAAAAAAAAAAAAAAAAAAAAAA конец".to_owned(),
+                "18 байт нулей",
+            ),
+            ("blob //////////////////// конец".to_owned(), "15 байт 0xFF"),
+            (
+                "blob Rm9sbG93IG1lIG5vdyEhISEh конец".to_owned(),
+                "ASCII-16 без цифр",
+            ),
+            (
+                "blob aGVsbG8gd29ybGQgaGVsbG8gd29ybGQ= конец".to_owned(),
+                "ASCII-23 без цифр",
+            ),
+            // hex-дамп: алфавит base64, длина кратна 4, декод — 24 байта мусора.
+            (
+                "sha 0123456789abcdef0123456789abcdef конец".to_owned(),
+                "hex-дамп 32 символа",
+            ),
+            // Чистая случайность 16 байт (фиксированный набор, не ГПСЧ: цифра
+            // в отчёте обязана быть воспроизводимой).
+            (
+                "blob Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OQ== конец".to_owned(),
+                "ASCII-22: 9 цифр, BIK-структура не проходит",
+            ),
+            // Нагрузка ровно 10 байт — ниже пола 11 (документированный FN).
+            (b64(b"2482014338"), "ИНН без обрамления (пол 11 байт)"),
+            // Отрицательные векторы reference-vectors.tsv, завёрнутые в base64.
+            (
+                b64("номер 1110005080 в карточке".as_bytes()),
+                "invalid inn10 (§1 первички)",
+            ),
+            (
+                b64("номер 7743880976 в карточке".as_bytes()),
+                "invalid inn10 (§1 первички)",
+            ),
+            (
+                b64("карта 4575503590352994 на оплату".as_bytes()),
+                "invalid luhn (карта из golden с последней цифрой +1)",
+            ),
+            // Цифры прижаты к буквам внутри нагрузки: окно не изолировано
+            // (то же правило, что в тексте, `glued_digits_are_not_numbers`).
+            (b64(b"sha256=2482014338abc"), "склейка с хэшем"),
+            // Наш собственный маркер обратимости: base64url внутри `[[F0#…]]`
+            // не ограничен пробелом. Маскировать токен прокси значило бы ломать
+            // deanonymize (#60).
+            (
+                "[[F0#Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OQ]]".to_owned(),
+                "маркер vault (граница не пробельная)",
+            ),
+        ];
+        for (text, what) in cases {
+            let hits = scan(&text, &schema());
+            assert!(hits.is_empty(), "{what}: {text:?} дал {hits:?}");
+        }
+    }
+
+    /// Пол по нагрузке работает в обе стороны: те же 10 цифр находятся, как
+    /// только появляется обрамление (нагрузка ≥ 11 байт).
+    #[test]
+    fn base64_payload_floor_is_the_documented_tradeoff() {
+        let bare = b64(b"2482014338");
+        assert_eq!(
+            bare.len(),
+            16,
+            "промер: 10-байтная нагрузка кодируется в 16 символов"
+        );
+        assert_eq!(
+            scan(format!("поле {bare} конец").as_str(), &schema()),
+            [] as [Hit; 0],
+            "нагрузка 10 байт — ниже пола 11, обход обязан промолчать"
+        );
+        let framed = b64("ИНН 2482014338".as_bytes());
+        assert!(
+            classes(&scan(format!("поле {framed} конец").as_str(), &schema())).contains(&"inn"),
+            "10 цифр + обрамление = нагрузка 17 байт — находится"
+        );
+    }
+
+    /// Форма кандидата: длина кратна 4 и не короче 16, `=` только хвостом
+    /// (≤ 2), алфавит в токене не смешан.
+    #[test]
+    fn base64_candidate_shape_rules() {
+        assert!(b64_shape_ok(b"MjQ4MjAxNDMzOCB2"), "16 символов канона");
+        assert!(!b64_shape_ok(b"MjQ4MjAxNDMzOB2"), "15: длина не кратна 4");
+        assert!(!b64_shape_ok(b"MjQ4=MjAxNDMzOB2"), " паддинг в середине");
+        assert!(!b64_shape_ok(b"MjQ4MjAxNDMz+==="), "три байта паддинга");
+        assert!(!b64_shape_ok(b"QUJD"), "короче порога 16");
+        assert!(!b64_shape_ok(b"-///MjQ4MjAxNDMzOA=="), "смешанный алфавит");
+        assert!(b64_shape_ok(b"+///MjQ4MjAxNDMzOA=="), "standard целиком");
+        assert!(b64_shape_ok(b"-___IDI0ODIwMTQzMzg="), "url-safe целиком");
+    }
+
+    /// Граница кандидата обязана быть пробельной: прижатые к буквам и пунктуации
+    /// base64-цепочки — это поля формата (URL, `data:`-mime, `sha256=`), а не
+    /// вставка пользователя.
+    #[test]
+    fn base64_candidate_needs_whitespace_boundaries() {
+        let token = b64("ИНН 2482014338 выдан".as_bytes());
+        for (text, why) in [
+            (format!("x{token} "), "прижат слева буквой"),
+            (format!(" {token}y"), "прижат справа буквой"),
+            (format!(" {token}, конец"), "запятая справа"),
+            (format!("данные:base64,{token} "), "mime-префикс"),
+        ] {
+            assert!(
+                b64_tokens(text.as_bytes()).is_empty(),
+                "{why}: {text:?} принят кандидатом"
+            );
+        }
+        assert_eq!(
+            b64_tokens(format!(" {token} ").as_bytes()).len(),
+            1,
+            "пробел с двух сторон"
+        );
+        assert_eq!(
+            b64_tokens(format!("{token}\nконец").as_bytes()).len(),
+            1,
+            "НФ и край текста — границы"
+        );
+    }
+
+    /// Обход уважает схему: выключенный класс не приходит и из нагрузки.
+    #[test]
+    fn base64_respects_the_schema() {
+        let token = b64("расчёт RU1904452522540820407677025210608 спасибо".as_bytes());
+        let text = format!("поле {token} конец");
+        let mut s = schema();
+        s.validator_only.retain(|c| c.id != "iban");
+        assert!(
+            !classes(&scan(&text, &s)).contains(&"iban"),
+            "iban выключен"
+        );
+        assert!(
+            classes(&scan(&text, &schema())).contains(&"iban"),
+            "схема с iban находит нагрузку"
+        );
+    }
+
+    /// Один токен с двумя номерами даёт два хита на один спан (вектор классов,
+    /// SPEC §8), а не «победителя».
+    #[test]
+    fn base64_one_token_two_numbers_is_a_vector() {
+        let token = b64("ИНН 2482014338 и СНИЛС 65707715421".as_bytes());
+        let text = format!("приложение {token} конец");
+        let hits = scan(&text, &schema());
+        let on_token: Vec<&Hit> = hits
+            .iter()
+            .filter(|h| h.span.slice(&text) == Some(token.as_str()))
+            .collect();
+        let cls: Vec<&str> = on_token.iter().map(|h| h.class.as_str()).collect();
+        assert!(cls.contains(&"inn") && cls.contains(&"snils"), "{cls:?}");
+        for h in &on_token {
+            assert_eq!(h.source, DetectionSource::Base64Decode);
+        }
+    }
+
+    /// Открытый текст и base64-нагрузка в одном запросе: оба источника живут,
+    /// `source` различается, координаты не пересекаются.
+    #[test]
+    fn base64_and_plain_findings_coexist() {
+        let token = b64("СНИЛС 65707715421 в реестре".as_bytes());
+        let text = format!("ИНН 2482014338 и {token}");
+        let hits = scan(&text, &schema());
+        let inn = hits
+            .iter()
+            .find(|h| h.class.as_str() == "inn")
+            .expect("открытый ИНН");
+        let snils = hits
+            .iter()
+            .find(|h| h.class.as_str() == "snils")
+            .expect("СНИЛС в нагрузке");
+        assert_eq!(inn.source, DetectionSource::ChecksumRf);
+        assert_eq!(snils.source, DetectionSource::Base64Decode);
+        assert_eq!(snils.span.slice(&text), Some(token.as_str()));
+        assert!(
+            inn.span.end <= snils.span.start,
+            "спан открытого номера залез в токен: {inn:?} {snils:?}"
+        );
+    }
+
+    /// Микромера горячего пути (п.7 приёмки).
+    ///
+    /// Метод: корпус = проза до 10 `КиБ` + 100 base64-blob по 33 байта
+    /// (псевдослучайных, xorshift64 с семенем 0x5EED — корпус воспроизводим,
+    /// фактическая длина печатается); 500 прогонов на ногу; считаем **минимум**
+    /// и медиану (минимум — статистика микромера на шуме ноутбука); профиль
+    /// `release`, `--test-threads=2`, `nice -n 10`, TMPDIR=/tmp, один прогон.
+    ///
+    /// Нога «до» = тот же бинарь с выключенным проходом (`scan_with(.., false)`:
+    /// код трёх оконных проходов не менялся), нога «после» = `scan`.
+    ///
+    /// Запуск (`--lib` обязателен: без него cargo берёт integration-таргеты
+    /// crate, а они на этом дереве требуют монтирования каскадов — `E0432` на
+    /// `install_test_mount`, промер ревью #94 F-5; микромера про lib-код):
+    /// `cargo test --release -p guard-daemon --lib base64_bypass_hot_path -- --ignored --test-threads=2 --nocapture`
+    #[test]
+    #[ignore = "микромера, не регресс: печать B64MICRO; требует release и щадящего режима"]
+    fn base64_bypass_hot_path_microbench() {
+        use std::time::Instant;
+
+        let schema = schema();
+        // Два корпуса: плотный (100 blob на 10 КиБ — худший случай, половина
+        // тела кандидаты) и разреженный (2 blob — форма реального запроса).
+        for blobs in [100usize, 2] {
+            let (text, _) = b64_corpus(blobs);
+            let tokens = b64_tokens(text.as_bytes()).len();
+            println!(
+                "B64MICRO|blobs|{blobs}|bytes|{}|candidates|{tokens}|iters|500",
+                text.len()
+            );
+            let mut mins = Vec::new();
+            for (label, with_base64) in [("before", false), ("after", true)] {
+                let mut samples = Vec::with_capacity(500);
+                let mut found = 0usize;
+                for _ in 0..500 {
+                    let t = Instant::now();
+                    found = scan_with(&text, &schema, with_base64).len();
+                    samples.push(t.elapsed().as_micros());
+                }
+                samples.sort_unstable();
+                println!(
+                    "B64MICRO|blobs|{blobs}|{label}|min_us|{}|median_us|{}|hits|{found}",
+                    samples[0],
+                    samples[samples.len() / 2]
+                );
+                mins.push(samples[0]);
+                std::hint::black_box(&samples);
+            }
+            assert!(tokens > 0, "корпус без кандидатов — мера бессмысленна");
+            assert!(
+                mins[1] >= mins[0],
+                "нога «после» быстрее «до»: мера недостоверна ({} < {})",
+                mins[1],
+                mins[0]
+            );
+        }
+    }
+
+    /// Корпус микромеры: `n` base64-blob'ов из псевдослучайных байт, вклеенных
+    /// в русскоязычную прозу. ГПСЧ — xorshift64 с фиксированным семенем: число
+    /// в отчёте обязано быть воспроизводимым, а не случайным.
+    fn b64_corpus(n: usize) -> (String, usize) {
+        use base64::engine::general_purpose::STANDARD;
+        let prose =
+            "Согласно договору поставки счёт выставлен сторонам, акт приёмки подписан директором. ";
+        let mut text = String::new();
+        let mut state: u64 = 0x5EED;
+        for i in 0..n {
+            while text.len() < (10_240 / n) * (i + 1) {
+                text.push_str(prose);
+            }
+            let mut blob = Vec::with_capacity(33);
+            for _ in 0..33 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                blob.push((state & 0xff) as u8);
+            }
+            text.push(' ');
+            text.push_str(&STANDARD.encode(&blob));
+            text.push(' ');
+        }
+        (text, n)
     }
 }

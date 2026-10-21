@@ -252,3 +252,107 @@ fn c0_releases_no_bait_span_on_negative_split() {
         "каскад-0 стал шумнее на negative-сплите: {spans} спанов (порог 5, промер 21.10)"
     );
 }
+
+// ── Base64-обход на золотом наборе (атом #51 п.3) ───────────────────────────
+//
+// Датасет НЕ тронут (`data/golden/golden-v1.jsonl` — замороженный знаменатель
+// закрытого гейта 98 %, `just golden-verify`). Новые кейсы — производные: те же
+// золотые значения, завёрнутые в base64, т.е. прогон того же набора через
+// обход. Знаменатель от этого не меняется.
+
+use base64::Engine as _;
+
+/// Обёртка значения: base64 от «голого» 10-значного ИНН — это нагрузка 10 байт,
+/// ниже задокументированного пола в 11 байт, поэтому значение едет в прозе.
+/// Обёртка не даёт валидатору ничего лишнего: номер изолирован пробелами.
+fn wrapped(value: &str) -> String {
+    format!("документ {value} подтверждён")
+}
+
+/// Base64-обход обязан покрыть все 170 золотых чексумменных значений, если
+/// вместо открытого текста подать их base64-токеном, и отдать координаты
+/// токена + `source: base64_decode`.
+#[test]
+fn c0_covers_every_checksum_value_wrapped_in_base64() {
+    use guard_types::DetectionSource;
+    let schema = Schema::embedded().expect("канон схемы валиден");
+    let mut total = 0usize;
+    let mut cov = 0usize;
+    let mut per: Vec<(&'static str, usize, usize)> = CLASSES.map(|c| (c, 0usize, 0usize)).to_vec();
+    let mut miss: Vec<String> = Vec::new();
+    for r in rows().iter().filter(|r| r.split == "recall") {
+        for s in r
+            .spans
+            .iter()
+            .filter(|s| CLASSES.contains(&s.category.as_str()))
+        {
+            let gold = slice(&r.text, s);
+            let token = base64::engine::general_purpose::STANDARD.encode(wrapped(gold));
+            let text = format!("приложение {token} конец");
+            let hits = scan(&text, &schema);
+            total += 1;
+            let i = CLASSES.iter().position(|c| *c == s.category).unwrap();
+            per[i].2 += 1;
+            let hit = hits.iter().find(|h| h.class.as_str() == s.category);
+            let ok = hits
+                .iter()
+                .all(|h| h.source == DetectionSource::Base64Decode)
+                && hit.is_some_and(|h| h.span.slice(&text) == Some(token.as_str()));
+            if ok {
+                cov += 1;
+                per[i].1 += 1;
+            } else {
+                miss.push(format!("{} {} «{}»", r.id, s.category, gold));
+            }
+        }
+    }
+    println!(
+        "C0B64|covered|{cov}/{total}|{}",
+        per.iter()
+            .map(|(c, k, n)| format!("{c}|{k}/{n}"))
+            .collect::<Vec<_>>()
+            .join("|")
+    );
+    assert_eq!(
+        total, GOLD_CHECKSUM_SPANS,
+        "знаменатель base64-прогона обязан равняться знаменателю текстового"
+    );
+    assert!(
+        miss.is_empty(),
+        "base64-обход закрыл {cov} из {total}, промахи:\n{}",
+        miss.join("\n")
+    );
+}
+
+/// Тот же контроль FP, что `c0_releases_no_bait_span_on_negative_split`, но на
+/// base64-доставке: бейт negative-сплита, завёрнутый в токен, обязан не дать
+/// НИ ОДНОГО спана (у negative-значений чексумма не сходится — декод не имеет
+/// права её «починить»).
+#[test]
+fn c0_base64_delivery_releases_no_bait_of_negative_split() {
+    let schema = Schema::embedded().expect("канон схемы валиден");
+    let mut checked = 0usize;
+    let mut leaked: Vec<String> = Vec::new();
+    for r in rows().iter().filter(|r| r.split != "recall") {
+        for s in r
+            .spans
+            .iter()
+            .filter(|s| CLASSES.contains(&s.category.as_str()))
+        {
+            let gold = slice(&r.text, s);
+            let token = base64::engine::general_purpose::STANDARD.encode(wrapped(gold));
+            let hits = scan(format!("приложение {token} конец").as_str(), &schema);
+            checked += 1;
+            if !hits.is_empty() {
+                leaked.push(format!("{} {} «{}» → {hits:?}", r.id, s.category, gold));
+            }
+        }
+    }
+    println!("C0B64NEG|checked|{checked}|leaked|{}", leaked.len());
+    assert!(
+        leaked.is_empty(),
+        "base64-обход раскрутил бейты negative-сплита ({}):\n{}",
+        leaked.len(),
+        leaked.join("\n")
+    );
+}
