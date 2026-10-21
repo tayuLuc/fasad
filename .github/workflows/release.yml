@@ -148,7 +148,7 @@ jobs:
   ort-dylib:
     # Сборка каскадов 1–2 (харнес spike) релизным профилем на официальном dylib
     # ONNX Runtime. Причина job'ы: на macOS статика pyke в release-профиле
-    # SIGSEGV'ит (docs/model-audit.md §5 п.1, промер ×5), рабочий путь — официальный
+    # SIGSEGV'ит (docs/model-audit-weights.md §W2 п.1, промер ×5), рабочий путь — официальный
     # dylib 1.31.0 + `ORT_PREFER_DYNAMIC_LINK=1` (per первичка ort:
     # https://ort.pyke.io/setup/linking — compile-time dynamic linking =
     # ORT_LIB_PATH + ORT_PREFER_DYNAMIC_LINK=1; доставка рантайма на macOS/Linux —

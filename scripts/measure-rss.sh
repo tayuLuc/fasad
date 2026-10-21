@@ -19,7 +19,7 @@
 #              нет (crates/guard-daemon/src/pipeline.rs, заголовок модуля), поэтому
 #              «полный каскад демона» физически неизмерим — измеряется харнес.
 #
-# Контракт dylib (docs/model-audit.md §5 п.1, §8; нить N6 ревью #32): сборка И
+# Контракт dylib (docs/model-audit-weights.md §W2 п.1, docs/model-audit.md §8; нить N6 ревью #32): сборка И
 # прогон полных каскадов — ОДНИМИ env `ORT_PREFER_DYNAMIC_LINK=1
 # ORT_LIB_PATH=…`, иначе ort-sys уходит на pyke-статику 1.23 + copy-dylibs
 # затирает шейды рядом с бинарём = SIGSEGV 139.
@@ -27,7 +27,7 @@
 # Выход: строки `RSS|<контур>|<точка>|<значение MiB>|<метод>` и вердикт
 # `BUDGET|<контур>|ok|peak_mib=…|budget_mib=1843.2` (SPEC §1 ≤1.8 ГБ = 1843.2 MiB).
 # Вердикт считается по КОНСЕРВАТИВНОМУ пику (max по точкам), не по медиане —
-# бэджет safety-critical, см. docs/model-audit.md §5.6 п.5.
+# бэджет safety-critical, см. docs/model-audit-weights.md §W2.6 п.5.
 #
 # Код возврата — часть контракта (класс false-green «print-only landing test»,
 # реестр 15/18): вердикт OVER обязан валить скрипт, а не только печататься.
@@ -256,7 +256,8 @@ report_point() {
 }
 
 track_peak() {
-    # peak = max по всем точкам контура — консервативный вердикт (§5.6 п.5).
+    # peak = max по всем точкам контура — консервативный вердикт
+    # (docs/model-audit-weights.md §W2.6 п.5).
     value="$1"
     if [ -z "${PEAK:-}" ] || awk -v a="$value" -v b="$PEAK" 'BEGIN { exit !(a > b) }'; then
         PEAK="$value"
@@ -386,7 +387,7 @@ run_full() {
     [ -n "$lib" ] || die "в $ORT_DIR/lib нет libonnxruntime* (docs/model-audit.md §8 п.3)"
 
     # --arb-budget = обе модели в ОДНОМ процессе, пик по всем точкам: контракт
-    # docs/model-audit.md §5.6 п.5 (именно эта точка закрывает бюджет SPEC §1).
+    # docs/model-audit-weights.md §W2.6 п.5 (именно эта точка закрывает бюджет SPEC §1).
     # Пул потоков инференса = FASAD_SPIKE_THREADS (по умолчанию 2): ruling
     # оператора от 21.10 «не нагружать CPU ноута» (ORT-сессии спайка по
     # умолчанию гоняют threads=4, spike.rs:158 `unwrap_or(4)`; это собственный
@@ -403,7 +404,7 @@ run_full() {
     rc="$?"
     set -e
     grep -E '^(METRIC\|rss|BUDGET\||ERROR)' "$out" || true
-    [ "$rc" -eq 0 ] || die "харнес.full exited rc=$rc (см. docs/model-audit.md §5: SIGSEGV 139 = нарушен dylib-контракт)"
+    [ "$rc" -eq 0 ] || die "харнес.full exited rc=$rc (см. docs/model-audit-weights.md §W2: SIGSEGV 139 = нарушен dylib-контракт)"
     peak="$(grep -oE 'METRIC\|rss_peak_mib_both_models\|[0-9.]+' "$out" | tail -1 | cut -d'|' -f3)"
     [ -n "$peak" ] || die "харнес не напечатал rss_peak_mib_both_models (контракт METRIC нарушен)"
     emit_line "RSS|full|peak_both_models|$peak|spike task_info TASK_VM_INFO.internal (macOS) / VmRSS (Linux)"

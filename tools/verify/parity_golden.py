@@ -58,7 +58,7 @@ THRESHOLDS = [0.20, 0.25, 0.50, 0.70]
 # Вердикт PARITY|verdict = AND только по РАБОЧИМ порогам конвейера (≤ τ_раб
 # 0.25, SPEC §5 п.6 / quant-policy §3.2); пороги выше рабочей точки —
 # informational (рулинг 4b-3, тикет родителя): репортятся метрикой, не в
-# агрегат. Деградация кванта выше τ — известная Characteristics (см. §5.7).
+# агрегат. Деградация кванта выше τ — известная Characteristics (см. audit §W2.7).
 WORKING_THRESHOLDS = [0.20, 0.25]
 RECALL_GATE_PP = 0.5
 CLASS_GATE_PP = 1.0
