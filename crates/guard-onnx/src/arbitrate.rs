@@ -2,7 +2,7 @@
 //!
 //! Констрэкт SPAN-разметки + инференция + softmax-по-группам в одном типе:
 //! [`DecideArbiter::load`] поднимает сессию `model_q4f16.onnx` (external data
-//! лежит рядом — `model_q4f16.onnx_data`, контракт audit §5.1) и
+//! лежит рядом — `model_q4f16.onnx_data`, контракт `docs/model-audit-weights.md` §W1 п.2) и
 //! `tokenizer.json` из кэша `scripts/fetch-models.sh`; [`DecideArbiter::prompts`]
 //! строит план разметки; [`DecideArbiter::arbitrate_text`] гоняет ОДИН прогон на
 //! весь текст и отдаёт вердикты по вопросам.
@@ -16,7 +16,7 @@
 //! разбивка по окну — отдельный фоллов (4b-2d: см. [`DecideArbiter::arbitrate_chunked`]
 //! — она нужна ради латентности O(L²) и RSS, НЕ ради «position-overflow»:
 //! промер графа 4b-2d показал DeBERTa *relative* bias, а не абсолютные
-//! position-эмбеддинги с cap 512 — вход L=1236 валиден, см. audit §5.6).
+//! position-эмбеддинги с cap 512 — вход L=1236 валиден, см. audit §W2.6).
 //!
 //! Fail-Closed (AGENTS §Инварианты): расхождение живого vocab с
 //! [`crate::decide::SPECIALS`], пустая схема и маркерный индекс вне
@@ -49,7 +49,7 @@ const UNK_ID: u32 = 3;
 
 /// Rel-pos-бакет Decide (`encoder.encoder.rel_embeddings.weight`, dims
 /// `[1024, 512]`: 1024 = `relative_attention_num_buckets`, 512 =
-/// `relative_attention_max_distance`; промер ONNX-первички 4b-2d, audit §5.6 —
+/// `relative_attention_max_distance`; промер ONNX-первички 4b-2d, audit §W2.6 —
 /// заголовок `pytorch 2.14.0`, `position`-эмбеддингов в графе НЕТ). КЛЭМПЕР
 /// относительных смещений, НЕ cap последовательности: вход L > 512 (живой
 /// `--arb` = 1236) прогоняется и точен. Чанковка 4b-2d держит окно ≤
@@ -453,7 +453,7 @@ impl DecideArbiter {
     /// (контейнер); entity-HEAD — фоллов [#41](https://github.com/tayuLuc/fasad/issues/41).
     ///
     /// Бюджет входа (`DECIDE_REL_MAX_DISTANCE`) — ПРАКТИЧЕСКИЙ потолок O(L²)/RSS
-    /// (см. док константы, §5.6: Decide = rel-pos bias, не seq-cap). Окно
+    /// (см. док константы, audit §W2.6: Decide = rel-pos bias, не seq-cap). Окно
     /// `cfg.window + SCHEMA_OVERHEAD_TOKENS` обязан уложить в лимит ВЫЗЫВАЮЩИЙ
     /// ([`arb_chunk_cfg`]); этот метод перепроверяет ФАКТИЧЕСКИЙ `L` после encode
     /// и отказывает [`ArbError::ChunkTooLong`], а не молча гонит oversize.
@@ -787,7 +787,7 @@ pub fn arb_chunk_cfg(cfg: ChunkCfg, overhead: u32) -> Option<ChunkCfg> {
     let mut out = cfg;
     out.window_tokens.0 = w;
     // Легальность проверяется на ИТОГОВОМ окне: множество A `256..=384` плюс
-    // B-значение 448 (§5.7). Сужение 448 -> 400 (завышенный overhead) — вне
+    // B-значение 448 (audit §W2.7). Сужение 448 -> 400 (завышенный overhead) — вне
     // множества => None (fail-closed), а не тихий полутактический гибрид.
     let legal = (crate::chunker::WINDOW_TOKENS_MIN..=crate::chunker::WINDOW_TOKENS_MAX)
         .contains(&w)
@@ -1136,7 +1136,7 @@ mod tests {
             arb_chunk_cfg(ChunkCfg::default(), SCHEMA_OVERHEAD_TOKENS).map(|c| c.window_tokens.0),
             Some(384)
         );
-        // Конфиг B §5.7: 448 + 56 = 504 ≤ 512 — влезает ПОЛНОСТЬЮ; arb_chunk_cfg
+        // Конфиг B audit §W2.7: 448 + 56 = 504 ≤ 512 — влезает ПОЛНОСТЬЮ; arb_chunk_cfg
         // обязан НЕ переделывать через ChunkCfg::new (448 вне 256..=384, но легален).
         assert_eq!(
             arb_chunk_cfg(ChunkCfg::rubert(), SCHEMA_OVERHEAD_TOKENS).map(|c| c.window_tokens.0),
@@ -1239,7 +1239,7 @@ mod tests {
         // кусках -> union только внутри класса. Орт-контур arbitrate_chunked
         // гоняет ЭТОТ ЖЕ merge_arb_hits; end-to-end заполнение merged_hits
         // покрывает spike --arb-chunked (COVERAGE|hits>0 на PII-корпусе —
-        // сырой промер 4b-2d, audit §5.6: hits=3, covered=4301/4301).
+        // сырой промер 4b-2d, audit §W2.6: hits=3, covered=4301/4301).
         let text = "0123456789";
         let s0 = ByteSpan::new(text, 0, 5).unwrap();
         let s1 = ByteSpan::new(text, 3, 9).unwrap();

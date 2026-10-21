@@ -60,7 +60,7 @@ double fasad_spike_rss(void) {
 }
 
 /* Сильный стаб clang-runtime helper'а `___isPlatformVersionAtLeast` (см.
- * docs/model-audit.md §5.2 и nit #7 ревью #9): орт-статик rc.14 ссылается на
+ * docs/model-audit-weights.md §W2 п.2 и nit #7 ревью #9): орт-статик rc.14 ссылается на
  * него при min<12.3; бэкпорт в libSystem требует min>=12.3, cargo печатает
  * min=11.0. Стаб внутри ЭТОГО TU (dylib) — не отдельная platform_stub.c:
  * промер 19.10 (54888b8) — так он линкуется и не мешает орт-хостам. */

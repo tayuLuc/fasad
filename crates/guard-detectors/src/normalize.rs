@@ -296,13 +296,13 @@ impl OffsetMap {
                 continue;
             }
             // -- Правила 1в/1г: замены (fullwidth→ASCII, широкие Zs→U+0020).
-            if let Some(a) = fullwidth_to_ascii(c).or_else(|| nfkc_space_to_ascii(c)) {
-                if a != c {
-                    changed = true;
-                    note_breakpoint(&mut segs, norm.len(), i, c.len_utf8() - a.len_utf8());
-                    norm.push(a);
-                    continue;
-                }
+            if let Some(a) = fullwidth_to_ascii(c).or_else(|| nfkc_space_to_ascii(c))
+                && a != c
+            {
+                changed = true;
+                note_breakpoint(&mut segs, norm.len(), i, c.len_utf8() - a.len_utf8());
+                norm.push(a);
+                continue;
             }
             // -- Identity (в т.ч. разделители между цифрами: `1- 23` → `1- 23`,
             // схлопывания нет — толерантность к разрывам обязанность regex-слоя).
@@ -313,12 +313,12 @@ impl OffsetMap {
         // дельту последней точки до len_orig − len_norm).
         debug_assert!(norm.len() <= original.len(), "норма длиннее оригинала");
         let total_delta = original.len() - norm.len();
-        if total_delta != 0 {
-            if let Some(last) = segs.last_mut() {
-                let acc = last.orig as usize - last.norm as usize;
-                debug_assert!(total_delta >= acc, "дельта не убывает");
-                last.orig += (total_delta - acc) as u32;
-            }
+        if total_delta != 0
+            && let Some(last) = segs.last_mut()
+        {
+            let acc = last.orig as usize - last.norm as usize;
+            debug_assert!(total_delta >= acc, "дельта не убывает");
+            last.orig += (total_delta - acc) as u32;
         }
         // `Cow::Borrowed` ровно когда ни одно правило не сработало (инвариант 4).
         let out = if changed {

@@ -4,10 +4,10 @@
 //! померена separately в parity-harness, tools/verify). Один прогон-скрипт =
 //! эта единица (ТЗ 4b-3C): метрики печатает, ничего не решает.
 //!
-//! Метрика: span-level per class (тот же оракул, что B-парити (§5.7 audit)): gold-спан
+//! Метрика: span-level per class (тот же оракул, что B-парити (audit §W2.7)): gold-спан
 //! засчитан, если модельный спан того же golden-класса пересекает байтовый
 //! диапазон при conf ≥ порога. Классы = 8 heads-покрываемых (iban/ogrn/ogrnip
-//! вне модели — не в знаменателе, см. golden-инвентарь §5.7 audit).
+//! вне модели — не в знаменателе, см. golden-инвентарь audit §W2.7).
 //! Wilson lower 95% — формула dep-verify-algorithms §8 (z = 1.959963984540054),
 //! НЕ вторая (тот же контракт, что гейт #14 в `golden_v1.rs`).
 //!
@@ -439,7 +439,7 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
     // при фактическом пороге прогона (он же в строке): overall Decide ≥ 98 % ПО
     // Wilson-lower — нет; по точке — нет. Формулировка Known (не pass/fail по
     // ≥0.98): гейт SPEC §5.7 для каскада в целом (lockR ∨ чексуммы каскада-1,
-    // issue #26 хвост) — см. §5.7.
+    // issue #26 хвост) — см. docs/model-audit-weights.md §W2.7.
     let wl = wilson_lower(nd as usize, den as usize);
     let verdict = if wl >= 0.98 {
         "pass"

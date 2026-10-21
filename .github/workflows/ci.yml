@@ -29,7 +29,7 @@ jobs:
         # download-binaries, Cargo.toml:90). Runtime-путь macOS с dylib
         # (ORT_LIB_PATH + ORT_PREFER_DYNAMIC_LINK, justfile build-ort) живёт в
         # release.yml job `ort-dylib`; причина — pyke-статика на macOS SIGSEGV'ит
-        # в release-профиле (docs/model-audit.md §5 п.1, промер ×5). `just test`
+        # в release-профиле (docs/model-audit-weights.md §W2 п.1, промер ×5). `just test`
         # гоняет guard-onnx без фич (justfile:87-90) — тестов, линкуемых на ORT,
         # в матрице нет намеренно.
         os: [ubuntu-24.04, windows-2022, macos-14]
@@ -60,6 +60,31 @@ jobs:
       # Spike с фичей орта линтится здесь же (review #9 B5): без этого шага
       # example-код с фичей живёт вне CI-гейта.
       - run: cargo clippy -p guard-onnx --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
+      # Трей (#128 фаза 2): feature-on путь — только win/mac (linux-сборка
+      # физически невозможна: `compile_error` в tray-icon 0.26.1 без
+      # libappindicator/ksni, docs/dep-verify-crates.md §16). Та же причина,
+      # что у ort-строки выше (#54 H3): feature-on под `--workspace` не
+      # попадает, отдельная нога обязательна. Контракт = `just tray-check`
+      # (тот же, что локально, §5.5.5).
+      - name: "just tray-check (tray feature: win/mac)"
+        if: matrix.os != 'ubuntu-24.04'
+        run: just tray-check
+      # Linux-лег: фича `tray` НЕ собирается ни в какой конфигурации —
+      # промер красной строки компилятора на живой цели (§16). Шаг обязан
+      # падать: rc=0 здесь = тихое отключение фичи (кто-то снёс cfg-gate или
+      # дефолт tray-icon), и бандл вдруг соберёт GTK3-вес.
+      - name: "Красная строка linux: --features tray обязан краснеть (compile_error, #128/§16)"
+        if: matrix.os == 'ubuntu-24.04'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if cargo check -p guard-daemon --features tray 2>tray-probe.log; then
+              echo "ОШИБКА: cargo check --features tray на linux ПРОШЁЛ — compile_error крейта не сработал" >&2
+              echo "        (docs/dep-verify-crates.md §16: легальной linux-сборки трея нет; что-то изменило фичи/дефолты)" >&2
+              exit 1
+          fi
+          grep -q "must be enabled on Linux and BSD" tray-probe.log
+          echo "red-line ok: linux-сборка фичи tray краснеет compile_error'ом крейта"
       - run: just test
       - run: just deny
 

@@ -36,16 +36,57 @@
    `FASAD_SCHEMA`).
 6. `SHA256SUMS.txt` — sha256 всех файлов бандла; рядом с архивом лежит
    `fasad-…-cascade-0.<ext>.sha256` (хэш самого архива).
+7. Платформенный контур запуска (решение оператора 21.10, issue #128):
+   **linux-бандл = headless-демон под systemd** (консольный запуск, юнит
+   `contrib/systemd/fasad.service` в бандле — #140, бинд loopback по дефолту —
+   `config.rs`), трей в linux-артефакт не входит; **win/mac-бандлы несут
+   tray-бинарь** `bin/fasad-tray` (feature `tray` ON, иконка статуса — #128
+   фаза 2, PR-контур `crates/guard-daemon/src/tray.rs`: клик = открыть UI
+   браузером ОС, меню = «Выход (graceful)» = shutdown-канал демона, tooltip =
+   `fasad: <счётчик отказов> / <stage>` без ПДн). На стороне зависимостей это
+   зафиксировано в [dep-verify-crates.md](dep-verify-crates.md) §16: `tray-icon`
+   берётся с `default-features = false` (linux-дефолт `libappindicator` =
+   GTK3-вес, а linux-сборка трея без него физически невозможна — `compile_error`
+   в `tray-icon-0.26.1/src/lib.rs:128-138`), linux-джобы CI собирают
+   feature-off, win/mac-ноги проверяют feature-on (`just tray-check`).
+   Проверка контура — `scripts/verify-bundle.sh` п.5: linux-бандл обязан нести
+   юнит и НЕ нести трей-бинарь; win/mac-бандл обязан нести исполняемый
+   `bin/fasad-tray`, поднимающийся на `/health` с тем же `stage`.
+
+## Linux: установка systemd-юнита (#140)
+
+Юнит едет в linux-бандле (`contrib/systemd/fasad.service`), статический
+(без авто-`enable`). Установка из распакованного бандла (права root, путь
+`/usr/local` — не пакетный менеджер, бандл и есть менеджер):
+
+    useradd -r -s /usr/sbin/nologin -d /var/lib/fasad -m fasad
+    install -Dm755 bin/fasad /usr/local/bin/fasad
+    install -Dm644 contrib/systemd/fasad.service /etc/systemd/system/fasad.service
+    systemctl start fasad.service && systemctl status fasad.service
+
+Первичка полей юнита (не конвенция): `MemoryMax=1843M` = SPEC §1 п.3 «≤1.8 ГБ»
+(1843.2 MiB в замере `scripts/measure-rss.sh`, округление вниз);
+`LimitMEMLOCK=64K` = типичный `RLIMIT_MEMLOCK` дефолтного раннера, vault-пул
+34 KiB (`POOL_SLOTS·POOL_SLOT_BYTES` = 16·2176 Б,
+`crates/guard-vault/src/token.rs`, const-assert «пул влезает в 64 KiB» держит
+связку на компиляции); `Restart=on-failure` + `User=fasad` +
+`NoNewPrivileges` — по брифу #140. Конфиг = `EnvironmentFile=-/etc/default/fasad`
+(`FASAD_*`, первичка `crates/guard-daemon/src/config.rs`).
 
 ## Матрица сборки
 
 `.github/workflows/release.yml`, job `dist` (матрица `include`, `fail-fast: false`):
 
-| runner | triple | архив |
-| --- | --- | --- |
-| ubuntu-24.04 | x86_64-unknown-linux-gnu | tar.gz |
-| windows-2022 | x86_64-pc-windows-msvc | zip |
-| macos-14 | aarch64-apple-darwin | tar.gz |
+| runner | triple | архив | контур |
+| --- | --- | --- | --- |
+| ubuntu-24.04 | x86_64-unknown-linux-gnu | tar.gz | headless + systemd-юнит (#140) |
+| windows-2022 | x86_64-pc-windows-msvc | zip | + `bin/fasad-tray.exe` (#128) |
+| macos-14 | aarch64-apple-darwin | tar.gz | + `bin/fasad-tray` (#128) |
+
+win/mac-ячейки собирают второй бинарь шагом `just release-build-tray`
+(фича `tray`); linux-ячейка его не собирает физически (§16) и несёт
+`contrib/systemd/fasad.service`; зуб «бандл несёт контур своей ОС» —
+`scripts/verify-bundle.sh` п.5.
 
 Отличие от SPEC §9 (ubuntu-22.04, две ОС): раннер Linux поднят до 24.04 по
 постановке задачи шага 9, macOS-14 добавлен как третья платформа (issue #31).
@@ -249,7 +290,7 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    1.31.0): пик двух моделей в одном процессе 976.3 MiB (`--threads 4`,
    53 % бюджета) и 889.1 MiB (`--threads 2`, 48 %); для бюджета держим max.
    Промеры 21.10, метод и сырые строки — docs/model-audit.md §9.
-4. Профиль: бюджет-гейт раньше был закрыт dev-числом 1434.6 MiB (§5.6 п.5),
+4. Профиль: бюджет-гейт раньше был закрыт dev-числом 1434.6 MiB (docs/model-audit-weights.md §W2.6 п.5),
    релизный профиль даёт 976.3 — оговорка профиля по этой точке снята.
 5. Windows: **не промерено**. `scripts/measure-rss.sh` на `MINGW*`/`MSYS*`
    падает exit 2 с явной причиной (реализованы Darwin/Linux); PowerShell-метод
@@ -325,14 +366,14 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 ## ORT-контур на macOS (промер, issue #31)
 
 1. Статика pyke (`download-binaries`, default) в **release**-профиле на macOS
-   SIGSEGV'ит (docs/model-audit.md §5 п.1, промер ×5, обе конфигурации) —
+   SIGSEGV'ит (docs/model-audit-weights.md §W2 п.1, промер ×5, обе конфигурации) —
    релизный путь = официальный dylib (ort-дока
    https://ort.pyke.io/setup/linking: compile-time dynamic = `ORT_LIB_PATH` +
    `ORT_PREFER_DYNAMIC_LINK=1`; рантайм-поиск на macOS — rpath `@loader_path`
    либо каталог рядом с бинарём).
    Голое `cargo build --release --features ort-inference` (без env-префикса) на
    чистой macOS не линкуется: `___isPlatformVersionAtLeast` undefined, CoreML-
-   хелпер из pyke-статики (docs/model-audit.md §5 п.2; промер ревью #97, 2-й
+   хелпер из pyke-статики (docs/model-audit-weights.md §W2 п.2; промер ревью #97, 2-й
    раунд). Команды сборки в этой ветке пишутся с префиксом — рецепт
    §«Как включить монтаж каскадов 1–2» п.1 в `crates/guard-daemon/README.md`.
 2. Фактическая сборка промерена 21.10 на macOS arm64 (rustc 1.99.1):

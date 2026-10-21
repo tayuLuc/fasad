@@ -12,7 +12,7 @@
 //!
 //! # Разделители внутри номерка (закрыто шагом 9, PR #80)
 //!
-//! `378-312-074 87` — это СНИЛС, и finding-промер (`docs/golden-report.md` §6.2)
+//! `378-312-074 87` — это СНИЛС, и finding-промер (`docs/golden-report.md` §6 п.2)
 //! показал, что на расщеплённых номерах каскад 0 теряет 28 СНИЛС из 29, 15 карт
 //! из 15 и 18 IBAN из 21: чексумма требует compact-вид, а в тексте номер
 //! напечатан группами.
@@ -760,7 +760,7 @@ fn b64_tokens(bytes: &[u8]) -> Vec<(usize, usize)> {
 /// (`DecodePaddingMode::RequireCanonical`) и не терпят лишних битов, так что
 /// здесь только то, что декодер по своим правилам не отвергает.
 fn b64_shape_ok(tok: &[u8]) -> bool {
-    if tok.len() < B64_MIN_TOKEN_BYTES || tok.len() % 4 != 0 {
+    if tok.len() < B64_MIN_TOKEN_BYTES || !tok.len().is_multiple_of(4) {
         return false;
     }
     let mut pads = 0usize;

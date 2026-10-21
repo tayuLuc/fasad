@@ -11,6 +11,15 @@ repository.workspace   = true
 name = "fasad"
 path = "src/main.rs"
 
+# Второй бинарь = тот же код с зашитой фичей `tray` (#128 фаза 2). Держим
+# фичу на bin-секции, а НЕ в default: default-фича отравила бы CI-матрицу
+# (linux-нога краснеет, §16) и релизный headless-бинарь. `required-features`
+# не нужен: фичу включает сам путь сборки (`just release-build-tray`).
+[[bin]]
+name = "fasad-tray"
+path = "src/main.rs"
+required-features = ["tray"]
+
 [dependencies]
 guard-types     = { path = "../guard-types" }
 guard-detectors = { path = "../guard-detectors" }
@@ -41,6 +50,15 @@ ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 # Только `Stream` для `Body::from_stream` (прокси-стрим из блокирующей задачи).
 # `tokio-stream` не берём: этот крейт уже в дереве через axum, lock не двигается.
 futures-core = { version = "0.3", default-features = false }
+# Иконка трея для win/mac (#128 фаза 2, решение оператора в комментарии к issue:
+# «трей ДЕЛАЕМ — Linux-сервер = systemd-юнит, Windows и macOS = трей»). Пин и
+# `default-features = false` — вердикт docs/dep-verify-crates.md §16: дефолт
+# крейта на linux = `libappindicator` → muda/gtk3 → GTK3-вес + системный
+# libappindicator3, а без него linux-сборка физически невозможна (`compile_error`
+# в `tray-icon-0.26.1/src/lib.rs:128-138`, промер §16 и этой сессии).
+# `optional = true`: линкуется только под фичей `tray` ниже; на linux фича
+# красной строкой компилятора (см. [features]).
+tray-icon = { version = "0.26.1", default-features = false, optional = true }
 
 [features]
 # Монтаж каскадов 1–2 (issue #14A, SPEC §2): модельный путь демона — lockR
@@ -57,6 +75,25 @@ futures-core = { version = "0.3", default-features = false }
 # старте; не поднялись — старт отказывает (`cascades::startup`), молчаливой
 # деградации до каскада 0 не существует.
 ort-inference = ["guard-onnx/ort-inference"]
+# Иконка трея (#128 фаза 2): default OFF — CI-матрица трёх ОС не трогается,
+# feature-off = обычные ноги; релизный headless-бинарь (`just release-build`
+# без фичи, #76/#128) не линкует GUI. Сузление нити #151 M2: локальная
+# `cargo build --features tray` собирает ОБЕ цели bin (`fasad` + `fasad-tray`,
+# features пер-крейт) — в on-сборке код трея есть и в `fasad`.
+#
+# Linux: фича ФИЗИЧЕСКИ недоступна. При `tray-icon` с `default-features = false`
+# крейт красит `compile_error!("either the `libappindicator` or `ksni` feature
+# must be enabled on Linux and BSD")` (`tray-icon-0.26.1/src/lib.rs:128-138`,
+# промер §16) — легальной headless-сборки трея на linux нет ни одной фичей;
+# `ksni`-лег отклонён §16 (Unlicense вне allow-листа deny.toml + zbus-unmaintained
+# RUSTSEC). Красная строка приходит ОТ КОМПИЛЯТОРА на `cargo check --features
+# tray` под linux-таргетом (промер этой сессии на x86_64-unknown-linux-gnu),
+# в рантайме проверять нечего. Код модуля `tray` гейтится cfg-мишенью win/mac.
+#
+# `dep:`-форма (не строка `"tray-icon"`): строка в списке фич включила бы и
+# дефолты самого tray-icon (`default = ["libappindicator"]`) — ровно ту GTK3-
+# ловушку, от которой вердикт §16 спасает `default-features = false`.
+tray = ["dep:tray-icon"]
 
 [dev-dependencies]
 # ServiceExt::oneshot для тестов роутера без поднятия сокета.

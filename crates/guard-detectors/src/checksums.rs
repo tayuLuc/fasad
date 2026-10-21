@@ -377,7 +377,7 @@ pub fn luhn(input: &[u8]) -> Option<bool> {
     if d.len() < 12 || d.len() > 19 {
         return None;
     }
-    Some(luhn_sum(&d) % 10 == 0)
+    Some(luhn_sum(&d).is_multiple_of(10))
 }
 
 /// Hint-предикат «номер из блока ПС „Мир“» по первым 6 цифрам (BIN).

@@ -807,12 +807,11 @@ fn write_slot(body: &mut serde_json::Value, slot: &Slot, text: &str) {
             }
         }
         Some(pi) => {
-            if let Some(serde_json::Value::Array(parts)) = msg.get_mut("content") {
-                if let Some(part) = parts.get_mut(pi) {
-                    if part.get("text").is_some_and(serde_json::Value::is_string) {
-                        part["text"] = serde_json::Value::String(text.to_owned());
-                    }
-                }
+            if let Some(serde_json::Value::Array(parts)) = msg.get_mut("content")
+                && let Some(part) = parts.get_mut(pi)
+                && part.get("text").is_some_and(serde_json::Value::is_string)
+            {
+                part["text"] = serde_json::Value::String(text.to_owned());
             }
         }
     }

@@ -399,10 +399,10 @@ pub fn analyze_with(
         if !route.extracted() {
             continue;
         }
-        if let Some(want) = filter.as_deref() {
-            if !want.iter().any(|w| *w == c.class.as_str()) {
-                continue;
-            }
+        if let Some(want) = filter.as_deref()
+            && !want.iter().any(|w| *w == c.class.as_str())
+        {
+            continue;
         }
         // Поля читаем до конструктора: `class` — `String`, частичный переезд
         // ломает последующие заимствования кандидата.

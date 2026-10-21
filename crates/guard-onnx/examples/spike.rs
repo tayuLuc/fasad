@@ -66,7 +66,7 @@ mod ffi {
     }
 
     /// Мост к C-острову (issue #6): прямой extern не долетает до release-линковки
-    /// (`docs/model-audit.md` §5); dylib грузится dlopen по полному пути из
+    /// (`docs/model-audit-weights.md` §W2); dylib грузится dlopen по полному пути из
     /// `SPIKE_DYLIB`, фанк-пойтер кэшируется `OnceLock` (nit #18 ревью #9).
     fn rss_fn() -> Option<extern "C" fn() -> f64> {
         static CACHE: std::sync::OnceLock<Option<extern "C" fn() -> f64>> =
@@ -492,7 +492,7 @@ fn arbiter_probe(
     }
 
     // (2) IO-контракт: open_session = external data + Disable-оптимизации
-    // (контракт audit §5.1); load-метрики для бюджета q4f16.
+    // (контракт `docs/model-audit-weights.md` §W1 п.1); load-метрики для бюджета q4f16.
     let base = rss("before_load_probe");
     let t = Instant::now();
     let mut session = open_session(env, &path, threads)?;
@@ -857,37 +857,38 @@ fn measure_arbiter(
     println!("MARKER|arb|run=ok|markers={m}");
     // (4) Выход: форма (1,M) = по логиту на маркер + softmax по меткам каждой
     //     группы — первый шаг содержательной сверки контракта logits↔маркеры.
-    if let Ok(outputs) = session.run(inputs.clone()) {
-        if let Some((_, v)) = outputs.iter().next() {
-            if let Ok((shape, data)) = v.try_extract_tensor::<f32>() {
-                let m = i64::try_from(m).unwrap_or(-1);
+    // Let-chain (MSRV 1.90, #128): те же проверки, тем же порядком — clippy
+    // `collapsible_if` просит свёртку, поведение не двигается.
+    if let Ok(outputs) = session.run(inputs.clone())
+        && let Some((_, v)) = outputs.iter().next()
+        && let Ok((shape, data)) = v.try_extract_tensor::<f32>()
+    {
+        let m = i64::try_from(m).unwrap_or(-1);
+        println!(
+            "MARKER|arb|logits|shape={:?}|ok={}",
+            shape,
+            **shape == [1, m] && data.len() == usize::try_from(m).unwrap_or(0)
+        );
+        if **shape == [1, m] {
+            // marker_positions = concat(групп), логит-слайс группы gi =
+            // [off, off+n), n = число маркеров группы; softmax внутри —
+            // контракт «softmax within each question's markers».
+            inline_logits = Some(data.to_vec());
+            let mut off = 0usize;
+            for (gi, (first, ps)) in groups.iter().enumerate() {
+                let hi = (off + ps.len()).min(data.len());
+                let probs = softmax(&data[off..hi]);
+                inline_probs.push(probs.first().copied().unwrap_or(0.0));
+                off = hi;
+                let joined = probs
+                    .iter()
+                    .map(|x| format!("{x:.4}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
                 println!(
-                    "MARKER|arb|logits|shape={:?}|ok={}",
-                    shape,
-                    **shape == [1, m] && data.len() == usize::try_from(m).unwrap_or(0)
+                    "MARKER|arb|softmax|group={gi}|first={first}|n={}|probs={joined}",
+                    ps.len()
                 );
-                if **shape == [1, m] {
-                    // marker_positions = concat(групп), логит-слайс группы gi =
-                    // [off, off+n), n = число маркеров группы; softmax внутри —
-                    // контракт «softmax within each question's markers».
-                    inline_logits = Some(data.to_vec());
-                    let mut off = 0usize;
-                    for (gi, (first, ps)) in groups.iter().enumerate() {
-                        let hi = (off + ps.len()).min(data.len());
-                        let probs = softmax(&data[off..hi]);
-                        inline_probs.push(probs.first().copied().unwrap_or(0.0));
-                        off = hi;
-                        let joined = probs
-                            .iter()
-                            .map(|x| format!("{x:.4}"))
-                            .collect::<Vec<_>>()
-                            .join(",");
-                        println!(
-                            "MARKER|arb|softmax|group={gi}|first={first}|n={}|probs={joined}",
-                            ps.len()
-                        );
-                    }
-                }
             }
         }
     }
@@ -1128,7 +1129,7 @@ fn vmfoot_mib() -> Option<f64> {
 /// (тот же вход, что `--arb`), режется [`guard_onnx::chunker::chunk`] под
 /// бюджет Decide, на каждый кусок — отдельный прогон `DecideArbiter`.
 /// Метрики: промеры `L_chunk`, `p50` latency на текст (ожидание ТЗ ≤1500 мс
-/// против 5963 мс one-прогона — см. сырьё и разбор в audit §5.6), покрытие
+/// против 5963 мс one-прогона — см. сырьё и разбор в audit §W2.6), покрытие
 /// `merged`-хитов оригинального текста.
 #[cfg(feature = "ort-inference")]
 fn arb_chunked_run(

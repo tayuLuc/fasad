@@ -14,6 +14,27 @@ _default:
 # В CI не используется: там свои ядра и свои лимиты раннера.
 CPU_CALM := "CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2 nice -n 10"
 
+# Единый источник списка шелл-скриптов для локального shellcheck-гейта (находка
+# #137): глоб, а не ручной список — новый скрипт в scripts/ или tools/verify/
+# попадает в гейт в момент появления в дереве; ручные списки дрейфуют, и CI
+# краснеет при зелёном `just lint` (класс рецидива). Фиксация расхождения:
+# MegaLinter-список статичен (lint.yml:38 ENABLE_LINTERS, файл не трогаем),
+# локальный список = glob.
+# Промер 24.10 (just 1.58): backtick-`ls …` раскрывается при определении
+# переменной и в recipe прилетает МНОГОСТРОЧНЫМ блоком — под bash-массив
+# уходит первая строка, остальные ломают синтаксис (промер: 1 файл из 7 /
+# syntax error — ложно-зелёная слепая зона). Форма `!ls …` (bang-prefix,
+# рабочая): значение = одна строка, в bash-массиве раскрывается полным
+# списком слов (промер: 7 аргументов из 7, «!ls» префиксом в ls — glob живой,
+# ls бегает рантаймом shell при каждом вызове).
+SHELL_SOURCES := "!ls scripts/*.sh tools/verify/*.sh"
+
+# Расхождение списков (промер ls vs lint.yml): в дереве 7 скриптов —
+# scripts/fetch-models.sh, make-bundle.sh, measure-daemon-rss.sh, measure-rss.sh,
+# snapshot-competitors.sh, verify-bundle.sh, tools/verify/fetch_manifest_weights.sh.
+# Ручного списка файлов в lint.yml нет (первичка файла 24.10): MegaLinter берёт
+# дерево своим глоболом (VALIDATE_ALL_CODEBASE: "true", lint.yml:36).
+
 # Прогнать всё, что блокирует merge: линты + тесты + аудит зависимостей + python.
 #
 # `lang-scan` — Python-нога (язык-гейт текста, #103/#105), в recipe её добавило
@@ -37,7 +58,10 @@ CPU_CALM := "CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2 nice -n 10"
 # ниже — в `check` НЕ смонтирован, чтобы не плодить две canonical-ноги.
 
 # Прогнать всё, что блокирует merge: линты (Rust + Python) + язык-гейт + тесты + аудит.
-check: lint python-lint lang-scan golden-verify test net-audit deny
+# `restore-integrity` (#60 п.3) — локальная нога по образцу union-recall: поднимает
+# живой демон на recall-сплите, в CI не монтируется (там модели 879 МБ вне git и
+# union-recall не смонтирован — grep `.github/` union-recall, ноль).
+check: lint shellcheck python-lint lang-scan golden-verify test net-audit deny restore-integrity
 
 # Гейт «демон не тащит сеть» (#56 п.5). Исполняется как обычный интеграционный
 # тест `crates/guard-daemon/tests/net_audit.rs`, а не grep-рецептом: `just` на
@@ -57,6 +81,14 @@ fix:
     cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged
 
 # Только линтеры (fmt-проверка + clippy с deny-флагами CI).
+# Шелл-нога — ОТДЕЛЬНЫЙ рецепт `shellcheck` (находка #137), в `lint` НЕ
+# монтируется: recipe обязана владеть shebang-блоком целиком (промер 24.10:
+# строки ДО `#!/usr/bin/env bash` sh парсит своим доменом, после — тело
+# скрипта), а раннеры build-test (macos/windows) бинаря shellcheck не имеют —
+# fail-closed recipe валила ci.yml rc=2 (промер runs 39625561652/39628047538),
+# ci.yml трогать нельзя (контракт микро-атома). Вешать бинарь на 3 раннера =
+# правка ci.yml = отдельный атом. check (локальный полный гейт) монтирует её
+# сам; на CI шелл-контур = MegaLinter в lint.yml.
 lint:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used
@@ -71,6 +103,49 @@ lint:
     # lint` — нет, потому что путей демона с фичей в ней не было.
     cargo clippy -p guard-daemon --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
 
+# Шелл-гейт дерева (находка #137): джоба Lint = MegaLinter BASH_SHELLCHECK по
+# дереву (lint.yml:38), в локальном гейте shellcheck не было ни строки —
+# мёртвая переменная в новом скрипте краснила CI при зелёном `just lint`.
+# Формула `!ls` (bang-prefix, см. SHELL_SOURCES): bash раскрывает её в массиве
+# списком слов, артефакт «!ls» режет слайс [1:] — shellcheck получает ровно
+# 7 файлов.
+# Граница = warning (явно, не дефолтом): descriptor BASH_SHELLCHECK severity
+# не передаёт (промер megalinter v9.6.0 bash.megalinter-descriptor.yml,
+# cli_lint_extra_args = --color=auto --external-sources), у бинаря дефолт
+# warning. Версия CI-контейнера локальной не равна (класс issue #25): в логе
+# run 39625561652 SC2015-info печатались при пине v0.11.0, а podman-промер
+# koalaman/shellcheck:v0.10.0 на merge-дереве даёт РОВНО эти 5 info, v0.11.0 —
+# ноль: контейнер CI на прогоне печатал ниже warning. warning-срез идентичен
+# на обеих версиях (промер обеих на merge-дереве) — явный флаг делает skew
+# безвредным, дефолт 0.10-контейнера красил бы CI зелёным-локальным-красным.
+# fail-closed по образцу `deny`: бинарь вне PATH = rc 2 с сообщением
+# (brew install shellcheck / apt-get install shellcheck / choco install
+# shellcheck — по ОС раннера).
+# Промёр: green rc=0; dead var → SC2034 (warning) rc=1; shellcheck вне PATH
+# → rc=2.
+shellcheck:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck не установлен — гейт НЕИСПОЛНЕН, не провален (brew install shellcheck / apt-get install shellcheck / choco install shellcheck)"; exit 2; }
+    files=( {{SHELL_SOURCES}} )
+    files=( "${files[@]:1}" )
+    shellcheck --severity=warning -x "${files[@]}"
+
+# Трей (#128 фаза 2): feature-on линт — ОТДЕЛЬНЫЙ рецепт, не строка в `lint`.
+# Причина ровно зеркальная #54 H3: под `--workspace` фича не включается (дефолт
+# OFF), а смонтировать её в `lint` нельзя — линт бегает и на ubuntu-ноге CI, где
+# `--features tray` физически несобираем (`compile_error` tray-icon,
+# docs/dep-verify-crates.md §16): linux-нога краснела бы всегда. CI зовёт этот
+# рецепт условно (ci.yml: `if: matrix.os != 'ubuntu-24.04'`), локально он же —
+# гейт mac/windows-машины оператора.
+tray-check:
+    cargo clippy -p guard-daemon --all-targets --features tray -- -D warnings -D clippy::unwrap_used
+    cargo check -p guard-daemon --features tray
+    # Юниты модуля под фичей; живые GUI-тесты — `#[ignore]` (headless-раннер
+    # без окна краснеет на тесте, не на продукте) и промеряются руками:
+    # cargo test -p guard-daemon --features tray --test tray_live -- --ignored
+    cargo test -p guard-daemon --features tray --lib
+
 # Линтер CI-тулчейном (issue #25: CI стабильно свежее локального stable —
 # assert_is_empty-класс drift'а ловится ТОЛЬКО прогоном версии CI).
 # Версию обновлять синхронно с rustc на раннере (промер: gh run view --log).
@@ -82,6 +157,9 @@ lint-ci:
     rustup run 1.99.1 cargo clippy -p guard-onnx --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
     rustup run 1.99.1 cargo clippy -p guard-vault --all-targets --features decliner -- -D warnings -D clippy::unwrap_used
     rustup run 1.99.1 cargo clippy -p guard-daemon --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
+    # Трей под CI-тулчейном — та же ОС-обязанность, что в `tray-check`: на
+    # linux фича несобираема (§16), вызов только вне linux.
+    if [ "$(uname -s)" != "Linux" ]; then rustup run 1.99.1 cargo clippy -p guard-daemon --all-targets --features tray -- -D warnings -D clippy::unwrap_used; fi
 
 # Тесты всего workspace + пути опциональных фич (та же причина, что в `lint`:
 # `--workspace` их не включает, а матрица ci.yml обязана гонять их на Linux и
@@ -185,6 +263,42 @@ union-recall *ARGS:
     nice -n 10 env OMP_NUM_THREADS=2 uv run --isolated --python ~/.local/bin/python3.13 \
         --with numpy --with onnxruntime --with tokenizers \
         python tools/metrics/union_recall.py --threads 2 {{ ARGS }}
+
+# Гейт #60 п.3: restoration-integrity — доля побайтовых возвратов исходнику на
+# ПОЛНОГО контура демона (analyze → anonymize → deanonymize, режим хранилища 2)
+# на текстах golden-v1. Рядом с recall (#14): recall мерит детект, эта метрика
+# мерит обратный ход (реверс-индекс + разворот, шаг 7d #70); `pool_probe
+# -- integrity` мерит движок guard-vault на 27 ФИО, эта нога — продуктовый HTTP
+# на recall-сплите. Positive control (clean/sabotage) обязан быть живым:
+# мёртвый контроль = rc=2, метрика не засчитывается (доктрина ложно-зелёного).
+# Щадящий режим (рюлинг 21.10): nice -n 10, демон на 2 треда (FASAD_THREADS),
+# один прогон за раз. Датасет только читается; B2-хэш проверяется на входе
+# харнеса, гейт правок остаётся `just golden-verify`.
+# В CI не монтируется по образцу union-recall (тяжёлый контур с живым демоном;
+# grep .github union-recall — ноль): локальная нога, в `just check`.
+
+# Restoration-integrity полного контура демона (vault=session) — гейт #60 п.3.
+restore-integrity *ARGS:
+    cargo build --bin fasad
+    nice -n 10 env FASAD_THREADS=2 python3 tools/metrics/restore_integrity.py {{ ARGS }}
+
+# Та же метрика на смонтированном весе (каскады 1–2 маскируют детектом):
+# сборка демона под ort-inference на официальном dylib (контраонта
+# crates/guard-daemon/README.md §«Как включить монтаж»; macOS: без env-префикса
+# линковка краснеет, docs/model-audit §5 п.2), веса FASAD_MODEL_DIR, бюджет
+# запроса 10 с (дефолт 3000 мс на смонтированном пути не вмещает Decide-чанк —
+# README §env, промер ревью #97). Стадия проверяется харнесом по /health.
+# Ключ `--features` в профиль target/ — общий с каскад-0 сборкой: полный прогон
+# ПЕРЕТИРАЛ бы target/debug/fasad орт-смонтированным бинарём (ревью #139:
+# `just restore-integrity` ниже поднял бы смонтированный демон, и stage в
+# RESTORE|daemon|stage уехал бы молча). Отдельный --target-dir изолирует
+# артефакт, --daemon указывает на него.
+restore-integrity-full *ARGS:
+    ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib}" \
+        CARGO_BUILD_JOBS=2 nice -n 10 cargo build --target-dir target-ort --features guard-daemon/ort-inference --bin fasad
+    nice -n 10 env FASAD_THREADS=2 FASAD_MODEL_DIR="${HOME}/.cache/fasad-models" \
+        FASAD_TIMEOUT_MS=10000 \
+        python3 tools/metrics/restore_integrity.py --daemon target-ort/debug/fasad {{ ARGS }}
 
 # docs/golden-report.md из сырого артефакта прогона: числа в документацию попадают
 # генерацией, а не переписыванием руками (правило факта «отформатированное число —
@@ -298,8 +412,16 @@ _triple:
 release-build:
     cargo build --release -p guard-daemon
 
+# Трей-бинарь win/mac (#128 фаза 2): ДРУГОЙ bin-путь → `fasad-tray` (cargo
+# пишет бинарь по [[bin]].path, отдельного флага имени нет; `[[bin]]` ниже в
+# crates/guard-daemon/Cargo.toml). Линкуется на целевой ОС билда: linux-хост
+# эту фичу не соберёт (compile_error, §16) — рецепт для win/mac-ноги и
+# локальной машины оператора.
+release-build-tray:
+    cargo build --release -p guard-daemon --features tray
+
 # Сборка харнеса полного каскада (spike) релизным профилем на официальном dylib
-# ORT: контракт docs/model-audit.md §5 п.1 + §8 (статика pyke на macOS release =
+# ORT: контракт docs/model-audit-weights.md §W2 п.1 + docs/model-audit.md §8 (статика pyke на macOS release =
 # SIGSEGV; dylib 1.31.0 = живой прогон). Нужна для `just measure-rss --full`.
 
 # Харнес полного каскада (spike) релизным профилем на dylib ORT.
@@ -336,8 +458,20 @@ deps-licenses:
 # Девелер: dist/ в .gitignore (строка `dist/`).
 
 # Упаковка бандла (бинарь, лицензии, схема, SHA256SUMS): tar.gz на unix, zip на Windows-хосте.
-dist: release-build deps-licenses
-    bash scripts/make-bundle.sh
+# Трей-бинарь (#128): на win/mac хостах передаём `--tray-binary` (second bin
+# `fasad-tray`); linux-ветка скрипта сама кладёт systemd-юнит (#140).
+dist: release-build release-build-tray deps-licenses
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ext=""
+    case "$(uname -s)" in
+        MINGW* | MSYS* | CYGWIN*) ext=".exe" ;;
+    esac
+    if [ "$(uname -s)" = "Darwin" ] || [ -n "$ext" ]; then
+        bash scripts/make-bundle.sh --tray-binary "target/release/fasad-tray${ext}"
+    else
+        bash scripts/make-bundle.sh
+    fi
 
 # Полный релизный прогон на хосте = одна ячейка матрицы CI локально.
 release: dist
