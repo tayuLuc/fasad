@@ -32,7 +32,15 @@ name: release
 #                                    озаглавленный «2.9.2», ярлыком `# v2.8.7`.
 #                                    Расхождение ярлыка и содержимого — defect
 #                                    ci.yml, чинит его владелец, не этот PR.
-#   dtolnay/rust-toolchain commit-pin (мажорных тегов нет, dep-verify-repos §1)
+#   dtolnay/rust-toolchain commit-pin b725eda52536… («toolchain: stable»,
+#                                    2026-10-16). Формулировка «мажорных тегов
+#                                    нет» (F3, ревью #76) была ложью: moving-тег
+#                                    v1 есть — `releases/latest` = v1,
+#                                    `git/ref/tags/v1` → commit 683b588c487a.
+#                                    Пиним коммит не от бедности, а потому, что
+#                                    v1 — движущаяся цель (обновляется вместе со
+#                                    stable), а релизный контур обязан быть
+#                                    воспроизводимым по sha.
 # Аннотированные теги (rust-cache v2.9.3) дереференцены
 # в commit через `gh api repos/<r>/git/ref/tags/<t>` → `git/tags/<sha>` — пинить
 # sha tag-объекта нельзя, он не resolvable как `uses:`.
@@ -93,7 +101,7 @@ jobs:
           # описание «Check if a cache entry exists without downloading the cache»).
           lookup-only: "true"
       - name: Install just + cargo-about
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: just, cargo-about
       - name: "Релизный бинарь (каскад-0, профиль release: lto=fat, strip)"
@@ -160,7 +168,7 @@ jobs:
           # описание «Check if a cache entry exists without downloading the cache»).
           lookup-only: "true"
       - name: Install just
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: just
       - name: "Официальный dylib ORT 1.31.0 и сверка sha256"

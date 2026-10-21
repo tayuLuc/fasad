@@ -242,7 +242,14 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 | actions/download-artifact | `9000827c…` # v8.0.2 | v8.0.2 |
 | Swatinem/rust-cache | `d1527c8f…` # v2.9.3 | v2.9.3 |
 | taiki-e/install-action | `8cca0918…` # v2.87.29 | v2.87.29 (совпадает с ci.yml) |
-| dtolnay/rust-toolchain | `b725eda5…` (мажорных тегов нет) | — |
+| dtolnay/rust-toolchain | `b725eda5…` («toolchain: stable», 2026-10-16) | v1 |
+
+Пин dtolnay/rust-toolchain сделан коммитом осознанно: moving-тег `v1` существует
+(`releases/latest` = v1, `git/ref/tags/v1` → commit `683b588c487a`, промер 21.10),
+но он и есть движущаяся цель — `v1` едет вместе со `stable`, а релизному контуру
+нужна воспроизводимость по sha. Прежняя скобка «мажорных тегов нет» (найдена
+ревью #76, F3) утверждала обратное и удалена; первоисточник формулировки —
+docs/dep-verify-repos.md:45 (файл вне этого PR), правка там за его владельцем.
 
 Публикация релиза — `gh release create` (CLI раннера), пинить нечего: сторонний
 экшен снят по zizmor `superfluous-actions`, см. §«Как выпустить», п.4. Промер
