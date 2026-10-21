@@ -345,7 +345,7 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
         // ИНПУТ = препад-версия харнесса: ids до PAD из real-среза (срез по
         // min(len, PAD)), пад-заполнение id PAD — L252–257 parity_golden.py
         // (пост-пад `enc.pad` питает и `token_type_ids` нулями, и ids пад-id —
-        // харнес делает то же, типos все 0); порядок слов в реальном входе НЕ
+        // харнес делает то же, типы все 0); порядок слов в реальном входе НЕ
         // меняется, но `real` = харнесное `ln`.
         // ИНПУТ = харнес L252–257: numpy zeros(256) + срез [:ln] ⇒ пад-id=0.
         let mut idsv: Vec<i64> = vec![0i64; PAD];

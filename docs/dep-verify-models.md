@@ -124,7 +124,7 @@ hard-tier 0.766 против 0.784 у Q8_0; 2B Q4_K_M **не опубликов�
 
 ## 3. Топ альтернатив на случай смерти `fastino`
 
-Промер `api/models?search=gliner&sort=downloads&limit=20`, топ-10 поdownloads:
+Промер `api/models?search=gliner&sort=downloads&limit=20`, топ-10 по загрузкам:
 
 | # | id | dl | likes | лицензия |
 |---|---|---|---|---|
@@ -140,7 +140,7 @@ hard-tier 0.766 против 0.784 у Q8_0; 2B Q4_K_M **не опубликов�
 | 10 | `urchade/gliner_multi-v2.1` | 44 272 | 171 | apache-2.0 |
 
 Вне топ-10, релевантно как PII-замены: `nvidia/gliner-PII` (14 090 / 168, лицензия
-**`other`** — для оффлайн-демона пересматривать юриdически),
+**`other`** — для оффлайн-демона пересматривать юридически),
 `knowledgator/gliner-pii-large-v1.0` (13 233 / 46, apache-2.0, **ONNX есть**),
 `hivetrace/gliner-guard-omni` (5 647 / 23, apache-2.0).
 

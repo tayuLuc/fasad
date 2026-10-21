@@ -1406,7 +1406,7 @@ mod tests {
                 }],
                 &schema(),
             )
-            .expect_err("-opечатка класса");
+            .expect_err("- опечатка класса");
         assert!(
             matches!(err, VaultApiError::UnknownClass(ref c) if c == "snisl"),
             "{err:?}"

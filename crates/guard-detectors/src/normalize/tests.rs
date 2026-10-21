@@ -144,10 +144,10 @@ fn tsifry_razryvy() {
 }
 
 /// Правило 3: fullwidth-цифры/латиница → ASCII (сдвиг 0xFEE0), NBSP/`Zs` →
-/// пробел. `７７07083898 Ａｂ` (21 байт) → `7707083898 Ab` (13 байт).
+/// пробел. `７７07083898 Ａｂ` (21 байт) → `7707083898 Ab` (13 байт).  // scan-lang:allow
 #[test]
 fn fullwidth() {
-    let src = "\u{FF17}\u{FF17}07083898 \u{FF21}\u{FF42}"; // «７７07083898 Ａｂ»
+    let src = "\u{FF17}\u{FF17}07083898 \u{FF21}\u{FF42}"; // «７７07083898 Ａｂ»  // scan-lang:allow
     assert_eq!(src.len(), 21, "промер: 2×3 + 8 + 1 + 2×3");
     let (norm, map) = normalize(src);
     assert_eq!(norm.as_ref(), "7707083898 Ab");
@@ -156,7 +156,7 @@ fn fullwidth() {
     assert_eq!(map.map_to_original(13), Some(21));
     // Round-trip всей нормы — весь оригинал.
     assert_eq!(map.original_for(src, 0..13), Some(src));
-    // Разделитель НЕ схлопывается: `７ 7` → `7 7` (5→3 байта: 3+1+1 → 1+1+1).
+    // Разделитель НЕ схлопывается: `７ 7` → `7 7` (5→3 байта: 3+1+1 → 1+1+1).  // scan-lang:allow
     let (n2, m2) = normalize("\u{FF17} 7");
     assert_eq!(n2.as_ref(), "7 7");
     assert_eq!(n2.len(), 3);
@@ -172,7 +172,7 @@ fn fullwidth() {
 /// совпасть с первой картой точка-в-точку; `map2` = последовательный вызов.
 #[test]
 fn idepotentnost_cherez_map() {
-    let (n1, m1) = normalize("１- 2\u{487}"); // fw-цифра, пробелы, кирилл. марка
+    let (n1, m1) = normalize("１- 2\u{487}"); // fw-цифра, пробелы, кирилл. марка  // scan-lang:allow
     assert_eq!(n1.as_ref(), "1- 2");
     assert!(!m1.is_identity());
     let (n2, m2) = normalize(n1.as_ref());
@@ -186,7 +186,7 @@ fn idepotentnost_cherez_map() {
         m1.map_to_original(4),
         "инвариант 6: map2 = последовательный вызов"
     );
-    // Промер первичкой: `１- 2\u{487}` = 3+1+1+1+2 = 8 байт;
+    // Промер первичкой: `１- 2\u{487}` = 3+1+1+1+2 = 8 байт;  // scan-lang:allow
     // норма `1- 2` = 4; конец нормы → конец оригинала = 8.
     assert_eq!(
         OffsetMap::map2(&m1, &m2, 4),
@@ -203,7 +203,7 @@ fn idepotentnost_cherez_map() {
     for p in 0..=m1.normalized_len() {
         assert_eq!(c.map_to_original(p), m1.map_to_original(p), "p={p}");
     }
-    // Композиция двух нетождественных прогонов: `a７\u{200b}b` → `a7b`
+    // Композиция двух нетождественных прогонов: `a７\u{200b}b` → `a7b`  // scan-lang:allow
     // (промер: 1+3+3+1 = 8 байт).
     let (x1, mx) = normalize("a\u{FF17}\u{200B}b");
     assert_eq!(x1.as_ref(), "a7b");

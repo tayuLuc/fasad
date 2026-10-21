@@ -56,7 +56,7 @@
    Пути в SPEC/докрах вида «github.com/microsoft/presidio» работают только по редиректу.
 2. **Лицензия = MIT, точно.** `license.spdx_id = "MIT"` из API + корневой `LICENSE`
    = «The MIT License (MIT) / Copyright (c) Presidio Contributors.» (1084 байта).
-3. **红旗 AGPL не подтверждён**: AGPL у Presidio нигде не обнаружен. Формат
+3. **红旗 AGPL не подтверждён**: AGPL у Presidio нигде не обнаружен. Формат <!-- scan-lang:allow -->
    «Presidio-формат» в §8 — это MIT, в граф сборки как зависимость не идёт (только контракт API).
 4. **Форма контракта** (`presidio-anonymizer/README.md`, 154–186 строки, прочитано):
    - `RecognizerResult(entity_type, start, end, score)` — спан-модель, offsets символьные.
@@ -169,7 +169,7 @@
    `THIRD_PARTY_NOTICES` + вендорный `Vectorscan`) → референс «Tree-sitter контекст» валиден.
 2. `praetorian-inc/noseyparker`: **`archived=true`**, последний push 2026-02-21,
    Apache-2.0, ★2337, `version = "0.25.0-dev"`.
-   **Отдельный红旗 в SPEC §2**: noseyparker помечен как референс архитектуры
+   **Отдельный红旗 в SPEC §2**: noseyparker помечен как референс архитектуры <!-- scan-lang:allow -->
    префикс-префильтра. Как эталон кода — годится (архив = заморозка, не удаление).
    Как источник обновлений правил — нет. В `cargo-deny` bans не добавлять: не зависимость.
 3. `sirwart/ripsecrets`: жив (2025-12-15), **MIT**, ★911, 0.1.11.
@@ -252,7 +252,7 @@
 
 ### Лицензионные риски
 
-1. **AGPL-红旗 по Presidio СНЯТ: `spdx_id = MIT` точно** (API + корневой `LICENSE`,
+1. **AGPL-红旗 по Presidio СНЯТ: `spdx_id = MIT` точно** (API + корневой `LICENSE`, <!-- scan-lang:allow -->
    «The MIT License (MIT), Copyright (c) Presidio Contributors»). Никакого AGPL в
    промеренных файлах нет. Формат API §8 берётся из MIT-кода → совместим.
 2. `fastino-ai/GLiNER2` = **Apache-2.0** — без ограничений на чтение/референс;
@@ -262,7 +262,7 @@
    `ort`/`ort-sys` (MIT OR Apache-2.0) — всё чисто для `cargo-deny check licenses`
    **на правах референсов**; ни один в граф сборки не попадает по решению SPEC.
 4. GPL-репо в зависимостях: **не найдено ни одного GPL-объекта** среди промеренных —
-   красного флага «GPL в зависимостях» для текущего сsteка нет.
+   красного флага «GPL в зависимостях» для текущего стека нет.
 5. Мелочь: у `gline-rs`/`gliclass-rs` нет корневого `LICENSE`-файла (только поле
    Cargo.toml) — file-based аудит их не увидит.
 6. Юридически мутные: `DiffusionNER` и `LLaDA` — `spdx_id=null`, файла лицензии нет.
