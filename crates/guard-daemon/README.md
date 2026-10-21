@@ -145,7 +145,7 @@ truncated`, чанкинг = issue #84), не даёт координат кас
    тест `detection_source_serde_names_are_stable`): `checksum_rf` — чексумма
    российского документа, `checksum_eu` — IBAN, `base64_decode` — та же
    чексумма, подтверждённая **внутри** декодированной base64-нагрузки токена
-   (каскад 0, issue #51 п.3); `secret_entropy`, `aho_corasick_rule`,
+   (каскад 0, PR #94); `secret_entropy`, `aho_corasick_rule`,
    `gliner_extractor`, `gliner_decide_arbitrator` — каскады 1–2, на стадии
    `cascade-0-only` не выдаются. У первых трёх вес абсолютный
    (`DeterministicW` = 1.0, SPEC §2): источник `base64_decode` отличается
