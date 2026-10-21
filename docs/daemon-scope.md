@@ -42,10 +42,15 @@
 
 ## Деградация каскада: почему `cascade-0-only`
 
-1. `guard-onnx` наружу даёт только `arbitrate::DecideArbiter`. LockR-head
-   живёт в `crates/guard-onnx/examples/recall_golden.rs` — это харнес, не
-   библиотечный API. Протаскивать его в демона = тащить пример в рантайм,
-   поэтому стадия честно называется `cascade-0-only`, а не `full`.
+1. Так было до шага 9A (#14A, PR #87): `guard-onnx` наружу давал только
+   `arbitrate::DecideArbiter`, а LockR-head жил в
+   `crates/guard-onnx/examples/recall_golden.rs` — харнес, не библиотечный API,
+   и протаскивать его в демона значило тащить пример в рантайм; поэтому стадия
+   называлась `cascade-0-only`, а не `full`. С шага 9A это прошедшее время:
+   `extract::LockrExtractor` — публичная либа (`crates/guard-onnx/src/extract.rs`),
+   и демону её монтирует `cascades.rs` — тот же класс, что вызывает
+   `recall_golden.rs`, поэтому продукт и метрика recall читают один
+   decode-контракт (заголовок `cascades.rs`, «Почему либа, а не харнес»).
 2. С шага 9B (#14A) у стадии есть второе значение: `cascade-0+models`. Оно
    печатается, только когда веса реально примонтированы (`FASAD_MODEL_DIR` +
    фича `ort-inference`), а отказ загрузки валит старт демона, а не запрос.

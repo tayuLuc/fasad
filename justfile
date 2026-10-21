@@ -78,6 +78,8 @@ test:
 # применения правила, чтобы рычаги не перепечатывались в каждой сессии.
 # Набор команд идентичен `test` (весь workspace, decliner guard-vault, тесты
 # примеров guard-onnx) — отличается только окружением запуска.
+
+# Тесты workspace + опциональные фичи в щадящем режиме CPU (рычаги 21.10).
 local-test:
     {{CPU_CALM}} cargo test --workspace
     {{CPU_CALM}} cargo test -p guard-vault --features decliner
@@ -115,6 +117,8 @@ golden-verify:
 # за раз, сетка τ последовательная. Число потоков — часть воспроизводимости.
 # Веса: scripts/fetch-models.sh; в CI не запускается (модели 879 МБ вне git),
 # промер живёт в docs/golden-report.md с sha входов.
+
+# Union-recall полного каскада (0∨1∨2) на golden-наборе — гейт #14-B.
 union-recall *ARGS:
     cargo build --bin fasad
     nice -n 10 env OMP_NUM_THREADS=2 uv run --isolated --python ~/.local/bin/python3.13 \
@@ -126,6 +130,8 @@ union-recall *ARGS:
 # не факт»). Прогон меняешь — документ перегенерируется целиком. PROBE — артефакт
 # `tools/metrics/probe_coords.py` (COORD-строки, §6.4/§8.1): без него раздел о
 # направлении смещения печатает «?» и остаётся прозой без первички.
+
+# docs/golden-report.md, сгенерированный из сырого артефакта прогона.
 union-report RAW OUT PROBE="":
     uv run --locked python tools/metrics/render_report.py {{ RAW }} {{ OUT }} {{ PROBE }}
 
@@ -133,6 +139,8 @@ union-report RAW OUT PROBE="":
 # плейсхолдер "? %", значение = имя поля, вердикт о планке вразрез с числом)
 # обязаны ловиться. Мёртвый контроль = rc=2, тот же контракт, что у lang-scan:
 # зелёная проверка без живого контроля = ничто.
+
+# Positive control генератора отчёта: подсаженные утечки обязаны ловиться.
 report-selftest:
     uv run --locked python tools/metrics/render_report.py --self-test
 
@@ -148,6 +156,8 @@ report-selftest:
 # действия у неё нет за пределами строки, файловых исключений нет, а «мёртвая»
 # директива (строка без хита) краснит прогон — мёртвое исключение равно
 # мёртвому контролю. Разрешённые печатаются в отчёте (`LANG|allow|…`).
+
+# Язык-гейт всего текстового дерева: CJK-утечки и склейка кириллицы с латиницей.
 lang-scan:
     uv run --locked python scripts/scan_lang.py --self-test --all
 
