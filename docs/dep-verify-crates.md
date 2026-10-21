@@ -435,18 +435,19 @@ linux бандл = headless (systemd-контур, юнит-файл в доки
 | tray-icon | 0.26.1 (newest = max_stable) | 2026-10-07 | MIT OR Apache-2.0 | **1.90** | false | API crate+version; `LICENSE-APACHE`/`LICENSE-MIT`/`LICENSE.spdx` в `.crate` (tar-лист) |
 | muda (ед. runtime-зависимость меню) | 0.21.0 (пин tray-icon `^0.21`; newest 0.21.2 2026-10-08) | 2026-09-30 | Apache-2.0 OR MIT | **1.90** | false | API version/dependencies |
 | libappindicator (feature `libappindicator`) | 0.9.0 — newest крейта | 2023-10-01 | Apache-2.0 OR MIT | — (нет поля) | false | API crate (newest 0.9.0, updated 2023-10-01); `.crate` |
-| ksni (feature `ksni`, alt-бэкенд) | 0.3.7 | 2026-10-20 | Unlicense | 1.80 | false | API version |
+| ksni (feature `ksni`, alt-бэкенд) | 0.3.7 (newest; Cargo.lock tray-icon 0.26.1 пинит 0.3.6 — та же лицензия/rv) | 2026-10-20 | Unlicense | 1.80 | false | API version + .crate lock |
 | objc2-app-kit (mac-бэкенд) | 0.3.2 (пин `^0.3.2`) | 2025-10-04 | Zlib OR Apache-2.0 OR MIT | 1.71 | false | API version |
 | windows-sys (win-бэкенд) | 0.61.2 (пин `>=0.60, <=0.61`) | 2025-10-06 | MIT OR Apache-2.0 | 1.71 | false | API version |
 | png (linux+mac) | 0.18.1 | 2026-02-14 | MIT OR Apache-2.0 | 1.73 | false | API version |
 | thiserror / once_cell / crossbeam-channel (общие) | 2.0.21 / 1.21.4 / 0.5.17 | 2026-09-23 / 2026-03-12 / 2026-09-05 | MIT OR Apache-2.0 | 1.77 / 1.65 / 1.60 | false | API version |
+| dpi / keyboard-types (bring-up дерева muda, non-target normal) | 0.14 / 0.4 | — | MIT / MPL-2.0 | — | false | /dependencies muda |
 
 Репо-первичка (`gh api`, 22.10): `tauri-apps/tray-icon` — 411 ★, последний
 коммит 2026-10-19 (`1100fbe`), открытые issues 35 (счёт по
 `issues?state=open`, без PR; `open_issues_count`=47 включает PR), релизный
 ритм: 0.24.2 → 2026-07-27, 0.25.0 → 2026-09-11, 0.25.1 → 2026-09-16,
-0.26.0 → 2026-09-30, 0.26.1 → 2026-10-07 (живое сопровождение, 4 релиза за 10
-недель); contributors: amrbashir 83 +Legend-Master 12 (ядро — мейнтейнер
+0.26.0 → 2026-09-30, 0.26.1 → 2026-10-07 (живое сопровождение, 4 релиза за 26
+дней, окно 07-27→10-07 = 10 недель); contributors: amrbashir 83 +Legend-Master 12 (ядро — мейнтейнер
 tauri). `tauri-apps/muda` — 428 ★, push 2026-10-17, открытые issues 30,
 релизы 0.21.0/0.21.1/0.21.2 — 30.09/07.10/08.10.2026. docs.rs:
 `tray-icon/0.26.1`, `muda/0.21.0` — HTTP 200.
@@ -471,7 +472,7 @@ headless-сборки трея на linux нет ни одной фичей. Р�
 `ksni 0.3.7` — лицензия **Unlicense**, её нет в allow-листе `deny.toml`
 (`allow` = Apache-2.0/MIT/BSD/ISC/Unicode-3.0/CC0-1.0/Zlib/CDLA-Permissive-2.0,
 `deny.toml:60-72` — расширять под неё allow = отдельное решение), плюс она
-тянет zbus-контур (`zbus ^5` + `ashpd`, `gtk4`, `smol` — промер
+тянет normal-контур `zbus ^5` (`ashpd`, `gtk4`, `smol` у 0.3.7 = DEV-зависимости — промер
 `/dependencies` 0.3.7), а `zvariant`/`zbus_names`/`zvariant_derive` помечены
 `informational = "unmaintained"` (RUSTSEC-2026-0370/-0371/-0372, дата
 2026-10-16, `patched = []`; диапазоны unstated = весь актуальный ряд
@@ -541,4 +542,6 @@ target-полей).
    mac-хосте оператора — фаза 2).
 5. **`muda` newest = 0.21.2 (08.10.2026), пин tray-icon `^0.21`** ⇒ resolution
    возьмёт 0.21.2 (тот же MSRV 1.90, лицензии те же, features-карта
-   идентична 0.21.0 — первичка API). Дельта патчей, bump не решение.
+   идентична 0.21.0 — первичка API; deps-карта расходится: 0.21.2 несёт
+   `png ^0.18` target=macos, у 0.21.0 png dev-only — .crate-промер ревью #142).
+   Дельта патчей, bump не решение.
