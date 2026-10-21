@@ -6,8 +6,12 @@
 § «Что каскад 0 находит и не находит» — те документы остаются нарративом и
 контрактами; здесь справочник, и он не дублирует их прозу.
 
-Все номера строк сняты grep'ом с head ветки (commit `5a5da42`); при ребейзе
+Все номера строк сняты grep'ом с head ветки (commit `5a36cb9`); при ребейзе
 переснимать, не доверять памяти (memory law: a cited primary can move).
+Пересъёмка #132: указатели §5 на `daemon-scope.md` сняты живым grep'ом по
+содержанию (числа промеров, не номера строк) — у документа два владельца, и
+`5a36cb9` сдвинул его вёрстку; строки из issue (93–97, 163, 165–166) — снимок
+head ревьюёра, на реальном main `5a36cb9` это 96–97, 98–100, 102–103, 166, 169.
 
 ## 1. Атом-реестр
 
@@ -31,7 +35,7 @@
 - `OffsetMap` — карта координат норма→оригинал: `map_to_original` (`:392`),
   `map_span` (`:514`), `map_span_to_original` (`:492`), `compose` (`:440`),
   `map2` (`:480`), `original_for` (`:524`).
-- Сознательно не реализовано — `rules_todo` (`:530–552`), семь пунктов, в т.ч.
+- Сознательно не реализовано — `rules_todo` (`:533–552`, decl `:552`), семь пунктов, в т.ч.
   U+00AD SOFT HYPHEN (п.5) и регистронезависимость (п.7).
 
 ### 1.2 Оконный слой цифр (общий для всех атомов-обходов)
@@ -50,7 +54,7 @@
 `scan_base64` (`cascade0.rs:854`), кандидаты `b64_tokens` (`:729`), форма
 `b64_shape_ok` (`:762`), декод `b64_decode` (`:806`, `Zeroizing`).
 Константы: `B64_MIN_PAYLOAD_BYTES = 11` (`:706`), `B64_MIN_TOKEN_BYTES = 16`
-(`:711`). Границы — в §2.2. Спан кредитзуется на исходный токен, источник
+(`:711`) — пороги разные, см. §2.2 п.2. Границы — в §2.2. Спан кредитзуется на исходный токен, источник
 `base64_decode` (`guard-types/src/verdict.rs:102`), вес 1.0.
 
 ### 1.4 Числительные словами (issue #51 п.2, влит PR #118)
@@ -74,16 +78,16 @@
 
 | Класс | Функция | Валидатор (checksums.rs) | Формула (первичка dep-verify-algorithms.md) | Вес | Контракт-тест |
 | --- | --- | --- | --- | --- | --- |
-| ИНН-10 | `inn10` (`:126`) | mod 11, веса удвоением | §1 | 1.0 | `reference_vectors.rs:131` · §1: `checksums.rs:1318,1338` |
-| ИНН-12 | `inn12` (`:140`) | mod 11 две ступени (cd11, cd12) | §2 | 1.0 | тот же TSV · §2: `:1365` |
-| СНИЛС | `snils` (`:190`) | веса 9..1, mod 101, floor >001001998 | §3 | 1.0 | тот же TSV · §3: `:1393,1423` |
-| ОГРН-13 | `ogrn13` (`:286`) | mod 11 + структурное вето п.7 165н (`ogrn_structure_ok` `:252`) | §4 | 1.0 | тот же TSV · `:1479,1547` |
-| ОГРНИП-15 | `ogrnip15` (`:316`) | mod 13 + вето (С∈{3,4}, КК≠00) | §4 (SPEC-«mod11» опровергнут замером) | 1.0 | тот же TSV · `:1479,1547` |
-| Карта (PAN) | `luhn` (`:375`) | Луна ISO 7812-1:2017, 12..19 цифр | §5 | 1.0 | тот же TSV · `:1650`; hint `mir_bin` (`:393`) — тип, не фильтр |
+| ИНН-10 | `inn10` (`:126`) | mod 11, веса удвоением | §1 | 1.0 | `reference_vectors.rs:131` · §1: `checksums.rs:1314,1340` |
+| ИНН-12 | `inn12` (`:140`) | mod 11 две ступени (cd11, cd12) | §2 | 1.0 | тот же TSV · §2: `:1367` |
+| СНИЛС | `snils` (`:190`) | веса 9..1, mod 101, floor >001001998 | §3 | 1.0 | тот же TSV · §3: `:1395,1425` |
+| ОГРН-13 | `ogrn13` (`:286`) | mod 11 + структурное вето п.7 165н (`ogrn_structure_ok` `:252`) | §4 | 1.0 | тот же TSV · `:1481,1549` |
+| ОГРНИП-15 | `ogrnip15` (`:316`) | mod 13 + вето (С∈{3,4}, КК≠00) | §4 (SPEC-«mod11» опровергнут замером) | 1.0 | тот же TSV · `:1481,1549` |
+| Карта (PAN) | `luhn` (`:375`) | Луна ISO 7812-1:2017, 12..19 цифр | §5 | 1.0 | тот же TSV · `:1652`; hint `mir_bin` (`:393`) — тип, не фильтр |
 | IBAN | `iban` (`:1210`) | ISO 13616: реестр 89 стран (`IBAN_REGISTRY` `:440`) + mod-97 (`:1169`) | §7/§7a | 1.0 | тот же TSV |
 | БИК | `bik_format` (`:1247`) | формат: 9 цифр с `04` (чексуммы нет, 383-П; SPEC-«спец 000/001/002» кодом НЕ реализован, вето на них нет — `checksums.rs:1239–1246`); ловушка `040106…` (форма ОКУД) — за словарным слоем | §7 | 1.0 | тот же TSV (семейство `bik`) |
 | Счёт банка | `bank_account_format` (`:1279`) | формат: 20 цифр, префикс `ACCOUNT_PREFIXES` (`:1262`: 3010/3011/40/42; полная таблица 809-П не собрана) | §7/§7a | 1.0 | тот же TSV (семейство `account`) |
-| Пара БИК↔счёт | `bik_account_cross` (`:1295`) | перекрёст БИК[1:3]==счёт[6:8]; в оконный сканер не смонтирован (атом B, `cascade0.rs:147–149`) | §7 | 1.0 | тот же TSV (семейство `bik_account`) · `:2203` `#[ignore]` (расхождение первички) |
+| Пара БИК↔счёт | `bik_account_cross` (`:1295`) | перекрёст БИК[1:3]==счёт[6:8]; в оконный сканер не смонтирован (атом B, `cascade0.rs:147–149`) | §7 | 1.0 | тот же TSV (семейство `bik_account`) · `:2203` `#[ignore]` (`fn bik_account_cross_reference_pair_discrepancy`, расхождение первички) |
 
 Эталонные векторы — `data/golden/reference-vectors.tsv` (таблицы из
 `dep-verify-algorithms.md` §1–§7; читают
@@ -96,7 +100,8 @@
 ### 1.6 Секреты (атом live, НЕ смонтирован в демон)
 
 `crates/guard-detectors/src/secrets.rs` — трёхфазник SPEC §2: префикс-фильтр
-`aho_corasick` по якорям `ANCHORS` (`:217`, 16 якорей) → валидация тела в окне
+`aho_corasick` по якорям `ANCHORS` (`:217–353`, 15 якорей, счёт по `pat: b"`) →
+валидация тела в окне
 `WINDOW = 200` байт (`:162`, `validate_body` `:422`) → энтропия Шеннона
 (`shannon_entropy` `:530`, 16-грамма `ENTROPY_WINDOW` `:165`, порог
 `ENTROPY_THRESHOLD = 4.0` `:170`, `entropy_pass` `:485`). Confidence: формат
@@ -120,7 +125,7 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
 (`:62`), `match_spans` (`:78`), convenience `match_spans` (`:177`). Списки слов
 приходят из конфигурации (`config/schema.default.json`), не хардкод.
 Ограничения по первичке: ASCII-case-insensitive (кириллица матчится
-регистр-сохраняюще, `:10–17`); `WordBoundary::Ascii` (`:36`) — граница по
+регистр-сохраняюще, `:10–17`); `WordBoundary::Ascii` (`enum WordBoundary` `:36`) — граница по
 символу-соседу, кириллица слово продолжает. Проверяется: `dictionary.rs:256,281`
 (word-boundary), `:222` (кириллический регистр — задокументированное
 ограничение). Монтаж в демон — тот же атом SPEC §10 п.3, что у секретов.
@@ -178,7 +183,12 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
 2. Декод: сначала standard, затем url-safe (`b64_decode:806`); полезная
    нагрузка ≥ `B64_MIN_PAYLOAD_BYTES = 11` байт — ИНН-10 с одной перемычкой;
    blob ровно из 10 цифр не проверяется — принятый FN
-   (`base64_payload_floor_is_the_documented_tradeoff` `:1559`).
+   (`base64_payload_floor_is_the_documented_tradeoff` `:1559`). Пороги специально
+   разделены: декодер принимает токен от `B64_MIN_TOKEN_BYTES = 16` (`:711`),
+   кредитация спана — с нагрузки от `B64_MIN_PAYLOAD_BYTES = 11` (`:706`):
+   16-байтовый токен без паддинга даёт ровно 11 байт нагрузки, то есть
+   минимальная кредитация совпадает с самой короткой подтверждаемой сущностью
+   (ИНН-10 с одной перемычкой) — см. п.1.
 3. Окно: нагрузка проходит тот же слой, что текст — UTF-8-with-losses →
    `normalize::normalize` → `validated_windows`; фильтр «в нагрузке есть
    цифра» стоит ПОСЛЕ нормализации (полноширинные цифры, ревью #94 F-1;
@@ -194,7 +204,7 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
    нет (`r7_vault_markers`, `tests/cascade0_bypass_review94.rs:454`).
 6. Координаты = исходный токен: `span = map.map_span_to_original(токен)`
    (fail-closed на не-char-границе), декод наружу не отдаётся
-   (`base64_span_sits_on_original_bytes` `:1448`).
+   (`base64_span_sits_on_original_bytes` `:1451`).
 7. `Zeroizing`: залочены декод и его строковая копия; третий буфер (копия
    нормализатора) не залочен — осознанный паритет с текстовым путём, чинится
    в нормализаторе (ревью #94 F-3).
@@ -208,7 +218,7 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
    2000000000» не склеивается в счёт (`window_frames_refuse_plain_number_pairs`
    `:1089`).
 3. Разделители внутри номера: 6 позиций `NUMBER_SEPARATORS`
-   (`checksums.rs:1116–1123`): пробел, U+002D, U+2010, U+2011, U+2012, U+FF0D.
+   (`checksums.rs:1116–1124`): пробел, U+002D, U+2010, U+2011, U+2012, U+FF0D.
    Точка и косая черта в наборе сознательно нет (даты/дроби, док перед
    `MAX_WINDOW_GROUPS`).
 4. Перекрывающиеся классы — вектор, не победитель; из вложенных спанов одного
@@ -219,7 +229,7 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
 | Issue | Заголовок (gh) | Где болит (первичка) |
 | --- | --- | --- |
 | #51 п.1 (OPEN) | транслит RU→LAT / LAT→RU в препроцессинге | нормализатор транслита не знает: `normalize.rs` правил 1–4 (§1.1), Ушаков/Ushakov не сводятся; пункт принят к рассмотрению, не реализован |
-| #101 (OPEN) | NUMBER_SEPARATORS: нет U+2013/U+2014/U+2212 | в перечне их нет по head (`checksums.rs:1116–1123`): номерок из Word/PDF с длинным тире не склеивается — FN-класс |
+| #101 (OPEN) | NUMBER_SEPARATORS: нет U+2013/U+2014/U+2212 | в перечне их нет по head (`checksums.rs:1116–1124`): номерок из Word/PDF с длинным тире не склеивается — FN-класс |
 | #102 (OPEN) | MAX_WINDOW_GROUPS=5 → FP на перечислениях «1000 2000 3000 4000» | рамка `cascade0.rs:505` + LUHN ~10 % на 16 цифрах |
 | #26 (OPEN) | чексумма-совпала ⇒ маркер не обязателен (FN-хвост golden) | хвост покрытия golden-v1, `docs/golden-report.md`; гейт recall меряет его родителю |
 | #72 (OPEN) | опознавание владельца регистрозависимо (одна фамилия в двух регистрах) | не каскад 0, смежный слой vault/morph (`guard-vault/src/morph.rs`); в инвентаре как граница «что детерминированный путь не чинит» |
@@ -234,9 +244,9 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
 | Атом | Регресс | Golden-спаны | Прочее |
 | --- | --- | --- | --- |
 | Нормализатор | `normalize/tests.rs:43,89,149,174` (рваная кириллица, разрывы цифр, fullwidth, идемпотентность через карту) | — | property: `normalize/proptests.rs:353,358,364` (монотонность, round-trip, алфавиты) |
-| Оконный слой цифр | юниты `cascade0.rs:925–1238` (`golden_values_are_found`, `formatted_numbers_are_found_with_full_span`, `nested_windows_collapse_to_the_widest`, `window_frames_refuse_plain_number_pairs`, `iban_ru_from_golden_is_found_with_source_eu`, `invalid_vectors_from_reference_table_are_not_hits`, `glued_digits_are_not_numbers`, `overlapping_classes_are_a_vector_not_a_winner`) | `crates/guard-daemon/tests/cascade0_golden.rs`: `:82` покрытие recall-сплита, `:115` форматированный номер, `:227` negative-split (приманки) | эталоны чексумм: `reference_vectors.rs:131,195`; контракт весов `invariant_checksum_w.rs:233` |
+| Оконный слой цифр | юниты `cascade0.rs:925–1238` (8 именованных: `golden_values_are_found`, `formatted_numbers_are_found_with_full_span`, `nested_windows_collapse_to_the_widest`, `window_frames_refuse_plain_number_pairs`, `iban_ru_from_golden_is_found_with_source_eu`, `invalid_vectors_from_reference_table_are_not_hits`, `glued_digits_are_not_numbers`, `overlapping_classes_are_a_vector_not_a_winner`; последний из них `:1193`, далее до `:1238` идут `hits_are_sorted_by_offsets`, `nothing_to_find_costs_nothing`, `schema_without_a_class_disables_its_validator`, `every_digit_spec_names_a_known_validator`) | `crates/guard-daemon/tests/cascade0_golden.rs`: `:82` покрытие recall-сплита, `:115` форматированный номер, `:227` negative-split (приманки) | эталоны чексумм: `reference_vectors.rs:131,195`; контракт весов `invariant_checksum_w.rs:233` |
 | base64 | юниты `cascade0.rs:1283–1659` (payload/span/nesting/алфавиты/флор/векторы) | `cascade0_golden.rs:276` (каждое золотое значение в base64), `:332` (приманки base64-доставки) | независимый review-набор `tests/cascade0_bypass_review94.rs` (`r1`–`r9`, `:61–454`); промер `REVIEW94|fill_100KiB` (`:83`) |
-| numwords | юниты `numwords.rs:507–683` (task_vectors, роды, падежи, вложенный масштаб, разделители, рестарт) + `cascade0.rs:1775–2003` (порог, год, золотые словами, schema, coexist, FP-класс, base64-паритет) | золотые значения словами: `spelled_inn12_fires_with_the_phrase_as_span` `:1808`, `spelled_card_pan_passes_luhn` `:1830`, `spelled_registry_numbers_fire` `:1849` (значения взяты из `data/golden/golden-v1.jsonl`, не пересчитаны); контракт потолка `vault_span_cap.rs:138,182` | — |
+| numwords | юниты `numwords.rs:507–683` (task_vectors, роды, падежи, вложенный масштаб, разделители, рестарт) + `cascade0.rs:1775–2003` (порог, год, золотые словами, schema, coexist, FP-класс, base64-паритет) | золотые значения словами: `spelled_inn12_fires_with_the_phrase_as_span` `:1808`, `spelled_card_pan_passes_luhn` `:1830`, `spelled_registry_numbers_fire` `:1849` (значения взяты из `data/golden/golden-v1.jsonl`, не пересчитаны); контракт потолка `vault_span_cap.rs:138,182` | значения словесных тестов (`:1808` inn12 `825082492964`, `:1830` карта `4575503590352993`) — из `golden-v1.jsonl`, промерены живым прогоном `spelled_*` (4/4) |
 | Секреты | юниты `secrets.rs:618–819` (форматные векторы 0.95, anti-FP, энтропия) | — | — |
 | Dictionary | юниты `dictionary.rs:212–346` (регистр, границы, байтовые спаны) | — | — |
 | Монтированность пути | `tests/cascade_parity.rs` (`cascade0::scan` vs `pipeline::analyze`), `tests/cascade_http.rs`, `tests/cascade_failclosed.rs` | — | — |
@@ -246,12 +256,12 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
 
 | Что | Число | Откуда (код печати → где задокументировано) |
 | --- | --- | --- |
-| numwords-слой, 10 КиБ русской прозы | `WORDMICRO|prose|bytes|10270|found|0|iters|500|min_us|91|median_us|109` (~9 % бюджета каскада 0) | печать `cascade0.rs:2056` → `daemon-scope.md:163` |
-| base64-обход, горячий путь (100 кандидатов / 10 КиБ, release) | +124 мкс min | `cascade0.rs:1697` (ноги before/after) → `daemon-scope.md:96–97` |
-| base64, плотный корпус `blobs|100` после влития слов | 264 мкс min (было 136 до) | те же ноги `cascade0.rs:1697` → `daemon-scope.md:165–166` |
-| 100 КиБ base64-заливки без цифр | 26.6 мс debug (наш промер); 21.8 мс debug / 1.2 мс release (промер ревью #94) | печать `tests/cascade0_bypass_review94.rs:83` → `daemon-scope.md:93–95` |
-| Тело = один base64-токен на потолке 1 МиБ | 29.2 мс release (в бюджете SPEC 80–300 мс) | `daemon-scope.md:95–97` (предел `config.rs:33` `DEFAULT_MAX_BODY_BYTES = 1_048_576`) |
-| Потолок words-слоя (регресс-утверждение) | min < 2 мс на 10 КиБ | assert в `cascade0.rs:2034` |
+| numwords-слой, 10 КиБ русской прозы | `WORDMICRO|prose|bytes|10270|found|0|iters|500|min_us|91|median_us|109` (~9 % бюджета каскада 0) | печать `cascade0.rs:2056` (fn `words_hot_path_microbench` `:2034`) → `daemon-scope.md:166` |
+| base64-обход, горячий путь (100 кандидатов / 10 КиБ, release) | +124 мкс min | `cascade0.rs:1721` (ноги before/after, fn `:1697`) → `daemon-scope.md:102–103` |
+| base64, плотный корпус `blobs|100` после влития слов | 264 мкс min (было 136 до) | те же ноги `cascade0.rs:1721` → `daemon-scope.md:169` |
+| 100 КиБ base64-заливки без цифр | 26.6 мс debug (наш промер); 21.8 мс debug / 1.2 мс release (промер ревью #94) | печать `tests/cascade0_bypass_review94.rs:83` → `daemon-scope.md:96–97` |
+| Тело = один base64-токен на потолке 1 МиБ | 29.2 мс release (в бюджете SPEC 80–300 мс) | `daemon-scope.md:98–100` (предел `config.rs:33` `DEFAULT_MAX_BODY_BYTES = 1_048_576`) |
+| Потолок words-слоя (регресс-утверждение) | min < 2 мс на 10 КиБ | assert в `cascade0.rs:2062` |
 
 Бюджет каскада 0 (<1 мс) — SPEC §2; метрика recall (гейт ≥98 %, N≥150,
 Вилсон) измеряется родителем на харнесе, KNOWN-RED B1 остаётся `#[ignore]` —
