@@ -35,6 +35,19 @@ impl Daemon {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fasad"));
         cmd.env("FASAD_BIND", "127.0.0.1")
             .env("FASAD_PORT", "0")
+            // Тестовый демон поднимается БЕЗ весов и без чужих ручек окружения.
+            // Причина (ревью #87, воспроизведено на этом дереве): с
+            // унаследованным `FASAD_MODEL_DIR` каждый прогон грузит веса в
+            // каждый демон — файл распухает с 1.42 с до 23.90 с, и у
+            // ревьюера на `ui_schema_editor_knobs_reach_the_wire` это уже
+            // 8 passed / 1 failed (баннер не успевает за таймаут загрузки).
+            // Тесты файла про протокол UI, не про модель: веса им не нужны.
+            // «В CI же чисто» гейт не чинит: он обязан быть воспроизводимым
+            // на машине с весами, поэтому remove явный, а не молчаливый
+            // дефолт.
+            .env_remove("FASAD_MODEL_DIR")
+            .env_remove("FASAD_THREADS")
+            .env_remove("FASAD_TIMEOUT_MS")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

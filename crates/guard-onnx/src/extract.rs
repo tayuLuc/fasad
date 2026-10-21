@@ -34,7 +34,6 @@
 
 use std::path::Path;
 
-use ort::environment::Environment;
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
@@ -230,6 +229,32 @@ fn tags_and_probs(
     (tagv, probv)
 }
 
+/// ORT-окружение: один контекст на все каскады процесса (сессии обязаны
+/// строиться в том же окружении, в котором живут), **телеметрия выключена**
+/// (`with_telemetry(false)`): `ort` по умолчанию отправляет статистику, и это
+/// был бы единственный сетевой путь, который у гарда появляется сам по себе
+/// (AGENTS: «никакой телеметрии, никаких сетевых вызовов кроме
+/// `X-Upstream-URL`»).
+///
+/// Реэкспорт типа (`pub use`) нужен, чтобы потребитель не линковал `ort`
+/// напрямую: демон строит каскады через этот API, и в его манифесте не
+/// появляется лишнего имени, которое `just net-audit` потом обязан пропускать.
+pub use ort::environment::Environment;
+
+/// Построить [`Environment`] для каскадов 1–2.
+///
+/// # Errors
+///
+/// [`ExtractError::Ort`] — динамическая библиотека ORT не найдена/не
+/// инициализировалась (продукту это адрес: fail-closed на старте, см.
+/// `guard-daemon::cascades::startup`).
+pub fn environment() -> Result<Environment, ExtractError> {
+    ort::init()
+        .with_telemetry(false)
+        .build()
+        .map_err(|e| ExtractError::Ort(format!("ort::init: {e}")))
+}
+
 /// Живой каскад 1: сессия lockR fp16 + токенизатор rubert.
 ///
 /// Сессия `!Sync` (ран требует `&mut`), поэтому в демоне тип держится за
@@ -355,7 +380,7 @@ impl LockrExtractor {
 
         let mut spans = Vec::new();
         for (cls_tok, ts, te) in crate::decide::lockr_bio_group(&tagv) {
-            // PS-трим хвоста (harネス `decode([id]).startswith('##')`), i0 = ts.
+            // PS-трим хвоста (харнес `decode([id]).startswith('##')`), i0 = ts.
             let mut i1 = (te - 1).min(ids_u.len() - 1);
             while i1 >= ts
                 && self

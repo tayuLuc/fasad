@@ -23,6 +23,7 @@
 #![warn(missing_docs, clippy::unwrap_used)]
 
 pub mod cascade0;
+pub mod cascades;
 pub mod config;
 pub mod http;
 pub mod pipeline;

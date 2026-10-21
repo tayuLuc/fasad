@@ -307,7 +307,7 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
             }
         }
     }
-    
+
     println!("RECALL|lockr_ms|{:.0}", t0.elapsed().as_secs_f64() * 1000.0);
 
     // 4) Decide q4f16 (runtime арбитр, row-level per gold class): контракт B

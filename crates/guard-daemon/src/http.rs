@@ -50,6 +50,10 @@ pub(crate) mod h {
     pub const MAX_RISK: HeaderName = HeaderName::from_static("x-guard-max-risk");
     pub const LATENCY: HeaderName = HeaderName::from_static("x-guard-latency-ms");
     pub const STAGE: HeaderName = HeaderName::from_static("x-guard-stage");
+    /// Лег каскада 2 на запросе (`ok`/`skipped`/`absent`): стадия описывает
+    /// монтаж, этот заголовок — что вердикты были. Деградация обязана быть
+    /// видна оператору per-request, а не тонуть в общем `cascade-0+models`.
+    pub const CASCADE2: HeaderName = HeaderName::from_static("x-guard-cascade2");
     pub const POLICY: HeaderName = HeaderName::from_static("x-guard-policy-applied");
     pub const THRESHOLD: HeaderName = HeaderName::from_static("x-guard-score-threshold");
     /// Сколько маркеров не удалось развернуть (прокси, §8 шаг 7c): absent при
@@ -449,6 +453,7 @@ fn analysis_response(res: &Analysis) -> Response {
         insert(hs, h::MAX_RISK, res.max_risk);
         insert(hs, h::LATENCY, res.latency_ms);
         insert(hs, h::STAGE, res.stage);
+        insert(hs, h::CASCADE2, res.cascade2);
         insert(hs, h::POLICY, res.policy.as_str());
         insert(hs, h::THRESHOLD, res.threshold);
     }
@@ -528,6 +533,17 @@ impl ApiError {
                 "score_contract",
                 &format!("внутреннее нарушение контракта скора: {s:?}"),
             ),
+            // Шаг 9A (#14A): сбой модельного каскада при выставленном
+            // `model_dir`. 502, а не 4xx и не 200 с пустым списком: запрос не
+            // был отвергнут по своей форме, и «ПДн не нашли» при сломанной
+            // модели было бы fail-open на маскировании (AGENTS, Fail-Closed).
+            // Единственный правленный hunk этого файла в данном PR — роутер
+            // (#75) здесь не тронут.
+            AnalyzeError::Cascade(c) => Self::new(
+                StatusCode::BAD_GATEWAY,
+                "cascade_unavailable",
+                &format!("конвейер не смог досчитать каскады: {c}"),
+            ),
         }
     }
 }
@@ -563,6 +579,40 @@ mod tests {
     /// `X-Guard-Threshold` — имён, которых в коде нет: SPEC §8 определяет
     /// `X-Guard-Policy` как **входной** заголовок, а выходов с такими именами
     /// не задаёт вовсе. Правка пошла по доке, константы не тронуты.
+    /// Значения заголовков из таблицы `daemon-scope.md` против того, что
+    /// печатает код. Имена без значений — тест-пара, слепая к тому, что
+    /// реально читает оператор (#87 review).
+    fn assert_documented_values(doc: &str) {
+        // Имена — половина контракта. Значения оператор читает из тех же
+        // строк таблицы, поэтому сверяются и они: тест-пара имён к значениям
+        // слеп (код мог печатать что угодно, и сетка бы «сошлась») — #87 review.
+        let stage_row = doc
+            .lines()
+            .find(|l| l.starts_with("| `X-Guard-Stage`"))
+            .expect("строка stage в таблице");
+        for v in ["cascade-0-only", crate::cascades::STAGE_MOUNTED] {
+            assert!(
+                stage_row.contains(v),
+                "значение `{v}` печатается кодом, но не описано в сетке: {stage_row}"
+            );
+        }
+        let c2_row = doc
+            .lines()
+            .find(|l| l.starts_with("| `X-Guard-Cascade2`"))
+            .expect("строка cascade2 в таблице");
+        for v in [
+            crate::cascades::Cascade2::Absent,
+            crate::cascades::Cascade2::Ok,
+            crate::cascades::Cascade2::Skipped,
+        ] {
+            assert!(
+                c2_row.contains(v.as_header()),
+                "значение `{}` печатается кодом, но не описано в сетке: {c2_row}",
+                v.as_header()
+            );
+        }
+    }
+
     #[test]
     fn header_table_in_docs_matches_emitted_names() {
         let doc = std::fs::read_to_string(concat!(
@@ -575,6 +625,7 @@ mod tests {
             &h::MAX_RISK,
             &h::LATENCY,
             &h::STAGE,
+            &h::CASCADE2,
             &h::POLICY,
             &h::THRESHOLD,
             &h::UNRESOLVED,
@@ -598,7 +649,7 @@ mod tests {
         }
         assert_eq!(
             seen.len(),
-            10,
+            11,
             "строки таблицы разъехались с кодом: {seen:?}"
         );
         for e in &emitted {
@@ -608,6 +659,8 @@ mod tests {
                 e.as_str()
             );
         }
+
+        assert_documented_values(&doc);
 
         // SPEC §8 обязан называть всю эмиссию, а не три имени из транскрипта:
         // расхождение сетки §8 — это обещание клиенту, которое мы не отправляем.

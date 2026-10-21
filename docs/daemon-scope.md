@@ -12,7 +12,8 @@
 | `X-Guard-Redacted-Count` | `analyze`, `anonymize`, `deanonymize`, `sessions`-DELETE | число подмен (на `analyze` — найденных спанов, на `deanonymize` — возвращённых токенов); `0` — осмысленный ноль |
 | `X-Guard-Max-Risk` | `analyze` | максимальный `score` |
 | `X-Guard-Latency-Ms` | все четыре POST/DELETE | миллисекунды, округление вниз |
-| `X-Guard-Stage` | все успешные ответы | `cascade-0-only` на шаге 6 |
+| `X-Guard-Stage` | все успешные ответы | `cascade-0-only` без весов; `cascade-0+models` при смонтированных каскадах 1–2 (`FASAD_MODEL_DIR` + фича `ort-inference`) |
+| `X-Guard-Cascade2` | `analyze` и ответы прокси `chat/completions` | лег каскада 2 на ЭТОМ запросе: `ok` (отработал, включая short-circuit — серой зоны не было), `skipped` (лег был нужен и пропущен: контракт склейки нарушен на входе, `№` #88; серые спаны остались на `p1`), `absent` (каскада 2 в процессе нет); **наше расширение, вне транскрипта SPEC §8** |
 | `X-Guard-Policy-Applied` | ответ `analyze` | какая политика применена; **наше расширение, вне SPEC §8** |
 | `X-Guard-Score-Threshold` | ответ `analyze` | фактически применённый порог; **наше расширение, вне SPEC §8** |
 | `X-Session-ID` | запрос (`session`) | id сессии: непустой, ≤ 64 байт, алфавит ASCII-буквы/цифры + `.` `_` `-` |
@@ -23,8 +24,8 @@
 Исторически транскрипт SPEC §8 называл три выходных имени
 (`X-Guard-Redacted-Count`, `X-Guard-Max-Risk`, `X-Guard-Latency-Ms`);
 `X-Guard-Stage`, `X-Guard-Policy-Applied`, `X-Guard-Score-Threshold`,
-`X-Guard-Unresolved` и `X-Guard-Malformed` — наши расширения, добавленные на
-шагах 7b и 7c. Входной `X-Guard-Policy` §8 — про запрос, мы его не отправляем
+`X-Guard-Unresolved`, `X-Guard-Malformed` и `X-Guard-Cascade2` — наши расширения,
+добавленные на шагах 7b, 7c и 9B. Входной `X-Guard-Policy` §8 — про запрос, мы его не отправляем
 (наш выход называется `-Policy-Applied`, чтобы не столкнуться). С 7d сетка §8
 перечисляет всю эмиссию; имена констант в `http.rs` первичны, совпадение таблицы
 с ними и с сеткой §8 сверяет тест `header_table_in_docs_matches_emitted_names`.
@@ -43,8 +44,15 @@
 
 1. `guard-onnx` наружу даёт только `arbitrate::DecideArbiter`. LockR-head
    живёт в `crates/guard-onnx/examples/recall_golden.rs` — это харнес, не
-   библиотеочный API. Протаскивать его в демона = тащить пример в рантайм,
+   библиотечный API. Протаскивать его в демона = тащить пример в рантайм,
    поэтому стадия честно называется `cascade-0-only`, а не `full`.
+2. С шага 9B (#14A) у стадии есть второе значение: `cascade-0+models`. Оно
+   печатается, только когда веса реально примонтированы (`FASAD_MODEL_DIR` +
+   фича `ort-inference`), а отказ загрузки валит старт демона, а не запрос.
+3. Стадия описывает МОНТАЖ, а не то, что вердикты были. Лег каскада 2 на
+   конкретном запросе виден в `X-Guard-Cascade2`: `skipped` = Decide пропущен
+   на входе, который ломает контракт склейки (в словаре модели `№` = `[UNK]`,
+   #88), серые спаны при этом остаются на `p1` и не теряются.
 ### Что каскад 0 не находит
 
 Следствие для `/v1/analyze`: каскад 0 = валидаторы по цифровым классам.

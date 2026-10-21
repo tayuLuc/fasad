@@ -561,6 +561,7 @@ pub async fn handle(State(st): State<AppState>, req: Request) -> Response {
     insert(&mut extra, h::COUNT, masked.count);
     insert(&mut extra, h::LATENCY, started.elapsed().as_millis());
     insert(&mut extra, h::STAGE, st.config().stage());
+    insert(&mut extra, h::CASCADE2, masked.cascade2);
     let result = if masked.stream {
         stream_through(&st, upstream, carried, masked.body, session).await
     } else {
@@ -618,6 +619,9 @@ struct Masked {
     count: usize,
     /// Флаг `stream` из тела запроса.
     stream: bool,
+    /// Худший из сигналов каскада 2 по текстовым блокам запроса
+    /// (`X-Guard-Cascade2`): деградация на одном блоке = деградация запроса.
+    cascade2: &'static str,
 }
 
 /// Маскирование в `panic`-обёртке: тот же контракт, что у [`http::guarded`].
@@ -664,6 +668,12 @@ fn mask_request(
         .unwrap_or(false);
     let threshold = client_threshold(headers, st.config());
     let mut count = 0_usize;
+    // Сигнал по легу каскада 2: без весов `absent`, с весами — по блокам.
+    let mut cascade2 = if crate::cascades::engine().is_some() {
+        "ok"
+    } else {
+        "absent"
+    };
     for slot in block_index(&body) {
         // Индексы отдельно от заимствования: `block_index` читает дерево,
         // переписывание — по позиции, иначе `serde_json` нас не пустит.
@@ -680,6 +690,7 @@ fn mask_request(
         };
         let analysis = pipeline::analyze(&req, st.schema(), st.config(), policy)
             .map_err(ApiError::from_analysis)?;
+        cascade2 = worst_cascade2(cascade2, analysis.cascade2);
         if policy == Policy::Block && !analysis.spans.is_empty() {
             return Err(ProxyError::Blocked.into());
         }
@@ -705,7 +716,21 @@ fn mask_request(
         body: out,
         count,
         stream,
+        cascade2,
     })
+}
+
+/// Худший из двух сигналов легов каскада 2: `skipped` перевешивает `ok`,
+/// `ok` перевешивает `absent`. Запрос из нескольких текстовых блоков маскируется
+/// одним ответом, и оператор обязан увидеть деградацию, случись она хоть на
+/// одном блоке, — усреднение здесь означало бы «спрятали половину».
+fn worst_cascade2(a: &'static str, b: &'static str) -> &'static str {
+    let rank = |v: &str| match v {
+        "skipped" => 2,
+        "ok" => 1,
+        _ => 0,
+    };
+    if rank(b) > rank(a) { b } else { a }
 }
 
 /// Позиция текстового блока в дереве запроса (без заимствования).
