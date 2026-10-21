@@ -388,7 +388,7 @@ fn strip_separators(input: &[u8]) -> Vec<u8> {
 fn sep_len(bytes: &[u8], i: usize) -> usize {
     checksums::NUMBER_SEPARATORS
         .iter()
-        .find(|s| bytes[i..].starts_with(*s))
+        .find(|s| bytes[i..].starts_with(s))
         .map_or(0, |s| s.len())
 }
 

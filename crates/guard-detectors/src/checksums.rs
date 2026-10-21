@@ -1128,10 +1128,7 @@ fn iban_normalize(input: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(input.len());
     let mut i = 0usize;
     while i < input.len() {
-        if let Some(sep) = NUMBER_SEPARATORS
-            .iter()
-            .find(|s| input[i..].starts_with(*s))
-        {
+        if let Some(sep) = NUMBER_SEPARATORS.iter().find(|s| input[i..].starts_with(s)) {
             i += sep.len();
             continue;
         }
@@ -2059,7 +2056,7 @@ mod tests {
                     i += 1;
                 }
                 assert!(
-                    matches!(m.get(i), Some(b'n') | Some(b'c') | Some(b'a')),
+                    matches!(m.get(i), Some(b'n' | b'c' | b'a')),
                     "{cc}: мусор в маске {:?}",
                     f.mask
                 );
