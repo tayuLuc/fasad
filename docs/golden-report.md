@@ -97,8 +97,11 @@ FN-ориентирована (SPEC: FN фатален, FP дёшев), без F
 cargo build --bin fasad          # каскад 0 = продуктовый бинарь
 just union-recall --thr 0.20,0.25 \
     --sweep 0.10,0.15,0.20,0.25,0.30,0.40,0.50 --out /tmp/union_r1.jsonl
-uv run --locked python tools/metrics/render_report.py \
-    /tmp/union_r1.jsonl docs/golden-report.md
+just union-report /tmp/union_r1.jsonl docs/golden-report.md /tmp/probe_coords.out
+# §6.4 (направление смещения) — отдельный промер, артефакт для генератора:
+nice -n 10 env OMP_NUM_THREADS=2 uv run --isolated --python ~/.local/bin/python3.13 \
+    --with numpy --with onnxruntime --with tokenizers \
+    python tools/metrics/probe_coords.py > /tmp/probe_coords.out
 ```
 
 Окружение промера: python 3.13.13, onnxruntime 1.31.0,
