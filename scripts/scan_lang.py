@@ -42,9 +42,22 @@ Control-строки собраны из escape-последовательнос
 классу дефекта).
 
 Запуск:
-  uv run --locked python scripts/scan_lang.py --self-test
-  uv run --locked python scripts/scan_lang.py --files docs/golden-report.md tools/metrics/union_recall.py
-rc: 0 = чисто, 1 = найдено, 2 = positive control не сработал (сканер мёртв).
+  uv run --locked python scripts/scan_lang.py --self-test --all
+  uv run --locked python scripts/scan_lang.py --self-test --files docs/golden-report.md tools/metrics/union_recall.py
+  # `--self-test` БЕЗ входных файлов даёт rc 2 (проверка текста не выполнена) —
+  # это намеренно: control жив, но обход не проверял ни одного файла (промер 21.10:
+  # так же и на main, и после #105).
+
+rc-контракт (#105; та же легенда печатается в `--help`, текст — константа RC_LEGEND):
+  0 = чисто.
+  1 = найдены хиты.
+  2 = проверка НЕ выполнена: positive control не сработал (сканер мёртв), на входе
+      0 файлов, либо ни один входной файл не прочитан. Это не «чисто» и не
+      «упал тулинг» — это отсутствие контроля; в just-рецепте оно краснит прогон
+      ровно своим кодом (just пробрасывает rc команды — промер 1.58.0).
+
+Обход `--all` берёт файлы и без расширения (#103): у Path("justfile").suffix пусто,
+под фильтр TEXT_EXT такие файлы не попадали целиком (justfile, LICENSE, dotfiles).
 """
 from __future__ import annotations
 
@@ -152,27 +165,85 @@ def self_test() -> int:
     good = len(d_d) == 1 and not h_d and not a_d
     ok = ok and good
     print(f"CONTROL|deadallow|planted|{'caught' if good else 'MISSED'}|dead|{len(d_d)}")
+    # Инвентарь (#103): файлы без suffix — прежняя слепая зона TEXT_EXT. Контроль
+    # обязан ловить её возвращение: без этой пары строк гейт над justfile/LICENSE
+    # стал бы молча зелёным ровно в тот момент, когда из фильтра выпадает имя.
+    inventory = (("justfile", True), ("LICENSE", True), (".gitignore", True),
+                 ("docs/x.md", True), ("Cargo.lock", False), ("models/w.onnx", False))
+    bad = [n for n, want in inventory if _is_text_file(n) != want]
+    good = not bad
+    ok = ok and good
+    print(f"CONTROL|inventory|planted|{'caught' if good else 'MISSED'}|bad|{bad}")
     print(f"CONTROL|verdict|{'live' if ok else 'dead-scanner'}")
     return 0 if ok else 2
 
 
 TEXT_EXT = {".md", ".rs", ".py", ".toml", ".yml", ".yaml", ".json", ".jsonl",
             ".tsv", ".sh", ".txt"}
+# Файлы БЕЗ расширения (#103): у `Path("justfile").suffix` — пустая строка, т.е.
+# под TEXT_EXT они не видимы сканеру ЦЕЛИКОМ, а комментарии justfile читаются
+# чаще кода (прозаические хвосты их комментариев правили в #95 — сводки
+# `just --list`). Список имён явный, а не эвристика «без suffix + размер/пробник»:
+# whitelist виден в diff и не решает молча, что считать текстом. Cargo.lock тут
+# НЕТ намеренно (промер: 2 lock-файла под git, suffix `.lock`): машинный вывод
+# разрешателя — шум, а не текст, который кто-то пишет по-русски.
+TEXT_NAMES = {".gitattributes", ".gitignore", ".python-version", "Justfile",
+              "LICENSE", "Makefile", "NOTICE", "makefile", "justfile"}
+
+
+def _is_text_file(f: str) -> bool:
+    """Файл под гейт: расширение из TEXT_EXT либо имя из TEXT_NAMES (#103)."""
+    p = Path(f)
+    return p.suffix in TEXT_EXT or p.name in TEXT_NAMES
 
 
 def git_text_files() -> list[str]:
-    """Все текстовые файлы под git (дефолт `--all`: пустой список != зелёный)."""
+    """Все текстовые файлы под git (дефолт `--all`: пустой список != зелёный).
+
+    Критерий «текстовый» = расширение из TEXT_EXT либо имя из TEXT_NAMES (#103:
+    файлы без suffix иначе выпадают из инвентаря репозитория молча).
+    """
     out = subprocess.run(["git", "ls-files"], cwd=Path(__file__).resolve().parents[1],
                          capture_output=True, text=True, check=True).stdout.splitlines()
-    return [f for f in out if Path(f).suffix in TEXT_EXT]
+    return [f for f in out if _is_text_file(f)]
+
+
+RC_LEGEND = (
+    "rc-контракт (#105):\n"
+    "  0  чисто\n"
+    "  1  найдены хиты\n"
+    "  2  проверка НЕ выполнена: positive control мёртв (--self-test), на входе 0\n"
+    "     файлов (--all по дереву без текстовых = сломанный glob), ни один входной\n"
+    "     файл не прочитан (--files по несуществующим путям). 2 — не «чисто».\n"
+    "     just пробрасывает rc команды, поэтому в рецепте это красный прогон.\n")
+
+
+def _noinput(reason: str) -> int:
+    """Пустой обход = «проверка не выполнена», а не «чисто» (#105).
+
+    Реестр ложно-зелёных: «зелёный = пустое множество проверенного». Печать идёт
+    в stdout — на пути рецепта (`--self-test` первым) CONTROL-строки уже напечатаны,
+    так что в логе видно и живой контроль, и то, что проверять было нечего.
+    """
+    print(f"LANG|verdict|NOINPUT|files|0|hits|-1|reason|{reason}")
+    return 2
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--files", nargs="*", default=[])
+    ap = argparse.ArgumentParser(
+        description="Язык-гейт текста репозитория: CJK-утечки и склейка кириллицы "
+                    "с латиницей.",
+        epilog=RC_LEGEND,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--files", nargs="*", default=[],
+                    help="явный список файлов (на диффе PR); пустой список или "
+                         "сплошь nonexistent-пути = rc 2, не «чисто»")
     ap.add_argument("--all", action="store_true",
-                    help="весь текстовый tree под git (инвентарь репозитория)")
-    ap.add_argument("--self-test", action="store_true")
+                    help="весь текстовый tree под git (инвентарь репозитория; "
+                         "пустой вход = rc 2)")
+    ap.add_argument("--self-test", action="store_true",
+                    help="positive control по посаженным образцам; мёртвый "
+                         "контроль = rc 2")
     args = ap.parse_args()
     rc_control = self_test() if args.self_test else 0
     if rc_control != 0:
@@ -181,10 +252,10 @@ def main() -> int:
     if not files:
         # Пустое множество входа — не «чисто», а «проверка не выполнена»
         # (реестр ложно-зелёных: «зелёный = пустое множество проверенного»).
-        print("LANG|verdict|NOINPUT|files|0|hits|-1")
-        return 2
+        return _noinput("empty-input")
     total = 0
     n_allowed = 0
+    n_scanned = 0
     for f in files:
         p = Path(f)
         if not p.is_file():
@@ -195,6 +266,7 @@ def main() -> int:
         except (UnicodeDecodeError, OSError) as e:
             print(f"LANG|skip|{f}|{type(e).__name__}")
             continue
+        n_scanned += 1
         hits, allowed, dead = scan_lines(text)
         for ln, kind, frag in hits:
             total += 1
@@ -210,8 +282,13 @@ def main() -> int:
             n_allowed += 1
         for ln in sorted(by_line):
             print(f"LANG|allow|{f}|line|{ln}|count|{by_line[ln]}")
+    if n_scanned == 0:
+        # Все входы оказались skip'ами (путь мимо файла, бинарь не декодируется как
+        # utf-8): обход не проверил ни байта — тот же ложно-зелёный класс, что и
+        # пустой вход, поэтому и вердикт тот же: rc 2, не «чисто» (#105).
+        return _noinput("no-readable-file")
     print(f"LANG|verdict|{'clean' if total == 0 else 'DIRTY'}|files|{len(files)}"
-          f"|hits|{total}|allowed|{n_allowed}")
+          f"|scanned|{n_scanned}|hits|{total}|allowed|{n_allowed}")
     return 1 if total else 0
 
 
