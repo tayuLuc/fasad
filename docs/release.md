@@ -155,9 +155,15 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 `windows-2022` (zip через `powershell Compress-Archive`), linux-бандл и job
 `ort-dylib` получают первый живой промер сразу после слияния (первый тег либо
 `workflow_dispatch`). До слияния локально промерен только macOS-путь: бандл
-`fasad-0.1.0-aarch64-apple-darwin-cascade-0.tar.gz` (1 728 002 Б),
-`shasum -a 256 -c SHA256SUMS.txt` = OK, `scripts/verify-bundle.sh` = rc 0,
-позитивный контроль (подменённый байт в `bin/fasad`) = rc 1.
+`fasad-0.1.0-aarch64-apple-darwin-cascade-0.tar.gz`; идентификатор прогона —
+строка `SHA256SUMS.txt`:
+`854844605ad858c64e7fc1be33e4bf651192a4d0e3948eaddeb250dcde316ce9  fasad-0.1.0-aarch64-apple-darwin-cascade-0.tar.gz`.
+Размер архива фактом не подаётся (ревью #76, F6): он не воспроизводится
+байт-в-байт, gzip пишет mtime входящих файлов, и три сборки одного дерева 21.10
+дали 1 728 002 Б (прежняя запись в этом абзаце), 1 728 016 Б и 1 727 997 Б.
+`shasum -a 256 -c SHA256SUMS.txt` = OK; `scripts/verify-bundle.sh` = rc 0 (прогон
+21.10: `ANALYZE|spans=1`, `ANALYZE|inn10=ok`); позитивные контроли: подменённый
+байт в `bin/fasad` = rc 1, ИНН с битой чексуммой в проверочном запросе = rc 1.
 
 ## Лицензии (THIRD-PARTY)
 
