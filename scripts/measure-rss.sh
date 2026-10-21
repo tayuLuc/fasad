@@ -29,17 +29,39 @@
 # Вердикт считается по КОНСЕРВАТИВНОМУ пику (max по точкам), не по медиане —
 # бэджет safety-critical, см. docs/model-audit.md §5.6 п.5.
 #
+# Код возврата — часть контракта (класс false-green «print-only landing test»,
+# реестр 15/18): вердикт OVER обязан валить скрипт, а не только печататься.
+#   0 = все прогнанные контуры дали ok;
+#   1 = хотя бы один контур дал OVER (строка `BUDGET|…|OVER|…` + причина в stderr)
+#       ЛИБО отказ прогона (die);
+#   2 = метод замера не реализован на этой ОС (die, см. docs/release.md §RAM п.5).
+# Прежняя версия печатала OVER и выходила rc=0: шаг «RAM-гейт» в
+# .github/workflows/release.yml зеленел при превышении бюджета (первичка: die()
+# была единственным выходом с кодом, а verdict-строки в run_cascade0/run_full
+# уходили только через emit_line).
+#
 # use: scripts/measure-rss.sh [--cascade0] [--full] [--skip-build]
 # env: FASAD_RSS_TARGET (default target/release), ORT_DIR (default
 #      $HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0), FASAD_RSS_WARMUP
-#      (число прогревающих /v1/analyze, default 3)
+#      (число прогревающих /v1/analyze, default 3), BUDGET_MIB (default 1843.2;
+#      рычаг бюджета — нужен, чтобы зуб гейта промерялся живым прогоном:
+#      `BUDGET_MIB=0.001 … → rc=1` без изменения кода)
 
 set -euo pipefail
 
 TARGET_DIR="${FASAD_RSS_TARGET:-target/release}"
 ORT_DIR="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0}"
 WARMUP="${FASAD_RSS_WARMUP:-3}"
-BUDGET_MIB=1843.2
+# Бюджет SPEC §1: ≤1.8 ГБ = 1843.2 MiB. Рычаг из окружения оставлен не ради
+# игры цифрами, а ради промера зуба: гейт, который нельзя посадить без правки
+# кода, неотличим от гейта, у которого зуба нет (класс false-green «print-only
+# landing test», реестр 15/18). Значение по умолчанию = контракт SPEC; CI его
+# не переопределяет.
+BUDGET_MIB="${BUDGET_MIB:-1843.2}"
+# OVER ЛЮБОГО прогнанного контура = провал гейта. Флаг ставится в месте
+# вердикта, а выходит скрипт в конце: вывод всех контуров обязан остаться
+# целым (он артефакт прогона, из него генерируются --doc-rows).
+GATE_FAIL=0
 # Пул потоков орт-харнеса (рюлинг оператора 21.10: не грузить CPU ноута; spike
 # по умолчанию берёт 4, spike.rs:158). Это собственный рычаг харнеса:
 # OMP_NUM_THREADS на вендорном libonnxruntime osx-arm64 инертен (первичка
@@ -69,6 +91,22 @@ die() {
 emit_line() {
     printf '%s\n' "$1"
     printf '%s\n' "$1" >>"$ROWS_FILE"
+}
+
+# gate_fail_if_over <verdict> <контур> <peak> — ЗУБ гейта: вердикт OVER
+# поднимает GATE_FAIL, а скрипт в конце выходит rc=1 (до этой правки OVER
+# только печатался, и шаг release.yml «RAM-гейт каскада-0» зеленел при
+# превышении бюджета — класс false-green «print-only landing test», реестр
+# 15/18). Вызывается ПОСЛЕ emit_line: при провале вывод обязан быть полным
+# (строки RSS + BUDGET = артефакт прогона), rc=1 без них бесполезен для
+# разбора. Причина пишется в stderr словом OVER + числами — её нельзя спутать
+# с die-путём (там текст про бинарь/демона/прогрев, слова OVER нет).
+gate_fail_if_over() {
+    if [ "$1" = "OVER" ]; then
+        GATE_FAIL=1
+        printf 'measure-rss: ОШИБКА: RAM-гейт: контур %s OVER: peak=%s MiB > budget=%s MiB (SPEC §1 ≤1.8 ГБ)\n' \
+            "$2" "$3" "$BUDGET_MIB" >&2
+    fi
 }
 
 usage() {
@@ -291,6 +329,7 @@ run_cascade0() {
     wait "$pid" 2>/dev/null || true
     verdict="$(awk -v p="$PEAK" -v b="$BUDGET_MIB" 'BEGIN { print (p <= b) ? "ok" : "OVER" }')"
     emit_line "BUDGET|cascade0|$verdict|peak_mib=$PEAK|budget_mib=$BUDGET_MIB|tool=$RSS_TOOL"
+    gate_fail_if_over "$verdict" cascade0 "$PEAK"
     PEAK=""
 }
 
@@ -326,6 +365,7 @@ run_full() {
     emit_line "RSS|full|peak_both_models|$peak|spike task_info TASK_VM_INFO.internal (macOS) / VmRSS (Linux)"
     verdict="$(awk -v p="$peak" -v b="$BUDGET_MIB" 'BEGIN { print (p <= b) ? "ok" : "OVER" }')"
     emit_line "BUDGET|full|$verdict|peak_mib=$peak|budget_mib=$BUDGET_MIB|tool=spike METRIC (in-process)"
+    gate_fail_if_over "$verdict" full "$peak"
     rm -f "$out"
 }
 
@@ -344,6 +384,14 @@ if [ "$DOC_ROWS" -eq 1 ]; then
     printf '\nпромер: %s, ОС %s/%s, метод: %s; потоки: демон FASAD_THREADS=%s, харнес FASAD_SPIKE_THREADS=%s\n' \
         "$(date -u +%F)" "$OS" "$(uname -m)" "$RSS_TOOL" "${FASAD_THREADS:-2}" "$SPIKE_THREADS"
     printf 'профиль сборки: [profile.release] (lto=fat, codegen-units=1) — docs/model-audit.md §9 п.3\n'
+fi
+if [ "$GATE_FAIL" -ne 0 ]; then
+    # Зуб гейта: OVER = ненулевой код возврата САМОГО скрипта (шаг CI падает,
+    # а не зеленеет). Строки RSS/BUDGET уже напечатаны — провал прогона должен
+    # быть чем разбирать, в отличие от rc=1 без вывода.
+    printf 'FAIL|RAM-гейт: вердикт OVER (строка BUDGET|…|OVER|… выше, числа — в stderr)\n' >&2
+    rm -f "$ROWS_FILE"
+    exit 1
 fi
 rm -f "$ROWS_FILE"
 

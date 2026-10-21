@@ -22,10 +22,26 @@
 # Запуск (нужны веса и dylib):
 #   ORT_LIB_PATH=... DYLD_LIBRARY_PATH=... scripts/measure-daemon-rss.sh [N]
 # Вывод — METRIC-строки; из них собирается §10 docs/model-audit.md.
+#
+# Код возврата (контракт, тот же класс гейта, что scripts/measure-rss.sh):
+#   0 = вердикт ok ЛИБО пропуск замера («нет весов» = skip, а не зелёный);
+#   1 = вердикт over (бюджет превышен) ЛИБО демон не поднялся;
+#   2 = нет бинаря.
+# До этой правки вердикт over только печатался, а скрипт выходил rc=0 — тот же
+# класс false-green «print-only landing test» (реестр 15/18), что в
+# measure-rss.sh. Скрипт НЕ вызывается из CI-контура: упоминается только в
+# crates/guard-daemon/README.md (раздел про монтаж каскадов 1–2) как метод
+# промера. Но живой гейт обязан быть единым: у двух скриптов с одним вердиктом
+# должен быть один код возврата, иначе первый же вызов из CI получит зелёный
+# провал.
 
 set -euo pipefail
 
 THREADS="${FASAD_THREADS:-2}"
+# Бюджет SPEC §1 ≤1.8 ГБ = 1843.2 MiB; тот же рычаг из окружения, что в
+# measure-rss.sh, — ради промера зуба (`BUDGET_MIB=0.001 → rc=1`) без правки
+# кода. Значение по умолчанию = контракт, промеры его не меняют.
+BUDGET_MIB="${BUDGET_MIB:-1843.2}"
 REQS="${1:-5}"
 BIN="${DSH_FASAD_BIN:-target/release/fasad}"
 MODEL_DIR="${FASAD_MODEL_DIR:-$HOME/.cache/fasad-models}"
@@ -121,6 +137,17 @@ steady_median=$(tail -n "$steady_n" "$RSS_LOG" | sort -n | awk -v k="$steady_n" 
 steady_mib=$(awk -v k="$steady_median" 'BEGIN{printf "%.1f", k/1024}')
 echo "METRIC|samples|$samples|rss_peak_mib|$peak_mib"
 echo "METRIC|steady_samples|$steady_n|rss_steady_median_mib|$steady_mib|tail_fraction|$TAIL_FRACTION"
-echo "METRIC|budget|1843.2|verdict|$(awk -v p="$peak_mib" 'BEGIN{print (p<1843.2)?"ok":"over"}')"
+# Вердикт = max по всем сэмплам (консервативный пик, та же семантика, что
+# track_peak в measure-rss.sh: ok при peak <= budget, не строго «<» — 1843.2
+# есть «≤1.8 ГБ» по SPEC §1, равенство бюджету не превышение).
+verdict="$(awk -v p="$peak_mib" -v b="$BUDGET_MIB" 'BEGIN{print (p<=b)?"ok":"over"}')"
+echo "METRIC|budget|$BUDGET_MIB|verdict|$verdict"
 echo "METRIC|stage_header|${stage:-none}|cascade2_header|${c2:-none}"
 cp "$RSS_LOG" "/tmp/fasad-rss-samples.$(date +%s).txt" 2>/dev/null || true
+# Зуб: вердикт over обязан валить код возврата, а не только печататься
+# (реестр false-green 15/18). Причину пишем в stderr — METRIC-строки выше
+# остаются целым артефактом прогона.
+if [[ "$verdict" == "over" ]]; then
+  echo "measure-daemon-rss: ОШИБКА: RAM-гейт: вердикт over (peak=${peak_mib} MiB, budget=${BUDGET_MIB} MiB)" >&2
+  exit 1
+fi
