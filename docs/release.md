@@ -14,7 +14,7 @@
 2. Модельного пути спанов в демоне физически нет: `crates/guard-daemon/src/pipeline.rs`
    (заголовок модуля) — каскады 1–2 живут в харнесе `spike` (`guard-onnx`), не
    в HTTP-рантайме.
-3. `FASAD_MODEL_DIR` (`crates/guard-daemon/src/config.rs:404`) меняет только
+3. `FASAD_MODEL_DIR` (`crates/guard-daemon/src/config.rs:424`) меняет только
    метку стадии в `/health` (`"stage":"cascade-0+models"`), детекторов из
    моделей не добавляя.
 4. Проверка контура вшита в гейт: `scripts/verify-bundle.sh` требует из
@@ -63,13 +63,13 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 1. `bin/fasad` слушает `http://127.0.0.1:8765/health`; бинд строго loopback
    (`DEFAULT_BIND = 127.0.0.1`, `crates/guard-daemon/src/config.rs:28`),
    непроксируемый адрес наружу = отказ старта с именованием переменной
-   (промер тестом `config.rs:728`: `FASAD_BIND=8.8.8.8` → диагностика «loopback»).
+   (промер тестом `config.rs:756`: `FASAD_BIND=8.8.8.8` → диагностика «loopback»).
 2. `FASAD_PORT=0` = «дай свободный порт», баннер печатает фактический адрес
    (`main.rs`, `local_addr`) — на этом трюке ездят `scripts/verify-bundle.sh` и
    `scripts/measure-rss.sh`.
 3. Мусор в числовой переменной оставляет дефолт (`config.rs:15`), а откровенно
    битое значение (`FASAD_THREADS=0`, `-1`, `abc`) — отказ старта с именем
-   переменной в тексте ошибки (`config.rs:692-727`).
+   переменной в тексте ошибки (`config.rs:718-758`).
 4. Переменные (первичка — `crates/guard-daemon/src/config.rs`, строки рядом):
 
 | Переменная | Дефолт | Первичка |
@@ -77,17 +77,17 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 | `FASAD_PORT` | 8765 | config.rs:24 |
 | `FASAD_BIND` | 127.0.0.1 (только loopback) | config.rs:28 |
 | `FASAD_MAX_BODY_BYTES` | 1048576 | config.rs:33 |
-| `FASAD_THREADS` | 8 | config.rs:67 |
-| `FASAD_TIMEOUT_MS` (исходящие) | 3000 | config.rs:72 |
-| `FASAD_READ_TIMEOUT_MS` (входящее тело) | 30000 | config.rs:84 |
+| `FASAD_THREADS` | 8 | config.rs:76 |
+| `FASAD_TIMEOUT_MS` (исходящие) | 3000 | config.rs:81 |
+| `FASAD_READ_TIMEOUT_MS` (входящее тело) | 30000 | config.rs:93 |
 | `FASAD_GRAY_LO` / `FASAD_GRAY_HI` | 0.22 / 0.80 | config.rs:59, :62 |
 | `FASAD_TAU_LOW` / `FASAD_TAU_HIGH` | 0.20 / 0.80 | guard-onnx/src/routing.rs:70, :74 |
-| `FASAD_VAULT_MODE` | stateless-контур; значения `2\|3\|session\|stateless` | config.rs:326 |
-| `FASAD_MLOCK` | `strict` (`strict\|best_effort`) | config.rs:119-133 |
-| `FASAD_SCHEMA` | встроенный канон (`schema.default.json` в бандле) | config.rs:244, :405 |
-| `FASAD_MODEL_DIR` | нет = стадия `cascade-0-only` | config.rs:404 |
-| `FASAD_UPSTREAM_ALLOWLIST` | пусто = наружу ходить некуда | config.rs:252, :411 |
-| `FASAD_PROXY_LOOPBACK_HTTP` | false | config.rs:258, :412 |
+| `FASAD_VAULT_MODE` | stateless-контур; значения `2\|3\|session\|stateless` | config.rs:345 |
+| `FASAD_MLOCK` | `strict` (`strict\|best_effort`) | config.rs:128-142 |
+| `FASAD_SCHEMA` | встроенный канон (`schema.default.json` в бандле) | config.rs:263, :425 |
+| `FASAD_MODEL_DIR` | нет = стадия `cascade-0-only` | config.rs:424 |
+| `FASAD_UPSTREAM_ALLOWLIST` | пусто = наружу ходить некуда | config.rs:271, :431 |
+| `FASAD_PROXY_LOOPBACK_HTTP` | false | config.rs:277, :432 |
 
 5. Ответы: `/health` (версия, стадия контура, режим залочкивания),
    `/v1/analyze` (массив спанов, поле `entity_type` — промер живого ответа
@@ -100,13 +100,15 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 
 Скрипты RAM-гейта и гейта бандла парсят вывод демона, а в main за это время
 уехал шаг 7d (#70: метрика целостности разворота в `/health`). Проверено по
-исходникам main (`git show origin/main:<файл>`), а не «на глаз по merger'у»:
+исходникам main (`git show origin/main:<файл>`), а не «на глаз по merger'у».
+Сравнение «main против базы ветки» — исторический промер #76; номера строк ниже
+пересняты grep'ом на текущем дереве (класс #93: влитые PR сдвинули строки):
 
-1. Баннер: `main.rs:82` на main и на базе ветки — одна и та же строка
+1. Баннер: `main.rs:92` на main и на базе ветки — одна и та же строка
    «fasad {} {}, listening on http://{}/health (классов схемы: …)», значит
    регэксп порта в `scripts/measure-rss.sh` и `scripts/verify-bundle.sh`
    работает и после слияния.
-2. `/health`: на main остаются `version`, `stage` (тест http.rs:710 ждёт
+2. `/health`: на main остаются `version`, `stage` (тест http.rs:764 ждёт
    `cascade-0-only`) и `mode`; наши проверки — подстроковые, новые поля
    (метрика #70) их не ломают.
 3. Контракт прогрева `/v1/anonymize` = `{text, spans}` (main:
@@ -194,15 +196,24 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 
 1. Замеры сделаны при `FASAD_THREADS=2`, `CARGO_BUILD_JOBS=2` (рюлинг
    оператора 21.10). Рычаг потоков демона — `FASAD_THREADS`
-   (`crates/guard-daemon/src/config.rs:67`, дефолт 8); харнеса — `--threads`
-   (`spike.rs:158`, дефолт 4). `OMP_NUM_THREADS` не рычаг: вендорный
+   (`crates/guard-daemon/src/config.rs:76`, дефолт 8); харнеса — `--threads`
+   (`spike.rs:158`, дефолт 4). У рычага демона есть граница монтажа (контракт
+   AGENTS §3 п.3): на стадии `cascade-0-only` он инертен — разбор `config.rs:423`
+   кладёт значение в `cfg.threads`, а единственным потребителем поля в демоне
+   оставался тест `config.rs:638`; с монтажом каскадов 1–2 (#87) рычаг жив —
+   `cascades.rs:558` берёт `cfg.threads` в `Spec`, и он уходит в
+   `LockrExtractor::load(…, threads)` и `DecideArbiter::load(…, threads)`
+   (`cascades.rs:675,677`). Номера пересняты grep'ом на этом дереве (класс #93:
+   влитые PR сдвинули строки первички #76). `OMP_NUM_THREADS` не рычаг: вендорный
    `libonnxruntime` osx-arm64 без OpenMP, переменную не читает (первичка
    правки к рюлингу — `otool`/`strings`, ревью #73).
 2. Каскад-0 (публикуемый бинарь): пик 3.4 MiB (`ps -o rss`) / 1.6 MiB
-   (`footprint phys_footprint`) после прогрева. Число потоков контур демона не
-   затрагивает: три прогона при `FASAD_THREADS=8` дают 3.3/3.3/3.4 MiB, прогон
-   при `=2` — 3.4 MiB (N=4, 21.10; прежде здесь стояло одиночное
-   неавторитетное 2.8 — снято по ревью #76, F4). Бюджет SPEC §1 (1843.2 MiB) не
+   (`footprint phys_footprint`) после прогрева. Число потоков этому контуру не
+   фактор — по причине п.1 (стадия `cascade-0-only`, рычаг инертен): три прогона
+   при `FASAD_THREADS=8` дают 3.3/3.3/3.4 MiB, прогон при `=2` — 3.4 MiB (N=4,
+   21.10; прежде здесь стояло одиночное неавторитетное 2.8 — снято по ревью #76,
+   F4). На смонтированном пути (#87) это уже не так: там сравнение потоков —
+   отдельный промер, docs/model-audit.md §10 п.8. Бюджет SPEC §1 (1843.2 MiB) не
    задействован и на 1 %.
 3. Полный каскад 1–2 (харнес `spike`, релизный профиль, официальный dylib ORT
    1.31.0): пик двух моделей в одном процессе 976.3 MiB (`--threads 4`,
