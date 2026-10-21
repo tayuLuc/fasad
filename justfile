@@ -7,6 +7,13 @@
 _default:
     @just --list
 
+# Рычаги щадящего режима (рулинг оператора 21.10, AGENTS §3 п.3): один источник
+# для всех локальных прогонов. `CARGO_BUILD_JOBS` режет параллельную сборку,
+# `RUST_TEST_THREADS` — параллель тестов (то же, что `-- --test-threads=2`, но
+# применимо к рецепту целиком), `nice` отдаёт ядра интерактивным процессам.
+# В CI не используется: там свои ядра и свои лимиты раннера.
+CPU_CALM := "CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2 nice -n 10"
+
 # Прогнать всё, что блокирует merge: линты + тесты + аудит зависимостей + python.
 check: lint python-lint golden-verify test net-audit deny
 
@@ -53,6 +60,15 @@ test:
     # (`recall_golden`) — носитель контракта, а под фичей эти тесты не линкуются
     # на раннерах (нет dylib), поэтому проверяем только то, что от ORT не зависит.
     cargo test -p guard-onnx --examples
+
+# То же, что `test`, но в щадящем режиме CPU (рулинг 21.10): поверхность
+# применения правила, чтобы рычаги не перепечатывались в каждой сессии.
+# Набор команд идентичен `test` (весь workspace, decliner guard-vault, тесты
+# примеров guard-onnx) — отличается только окружением запуска.
+local-test:
+    {{CPU_CALM}} cargo test --workspace
+    {{CPU_CALM}} cargo test -p guard-vault --features decliner
+    {{CPU_CALM}} cargo test -p guard-onnx --examples
 
 # Аудит дерева зависимостей (bans/advisories/licenses) — deny.toml.
 deny:
