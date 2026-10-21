@@ -197,6 +197,23 @@ def run_self_test() -> int:
     return 0
 
 
+def consistency(d: dict) -> list[str]:
+    """Per-class-суммы должны совпасть с агрегатами: две независимые счётные
+    траектории харнеса (по классам и по всем спанам). Расхождение = съехавший
+    курсор парсера или потерянный класс; документ с такими числами печатать нельзя."""
+    bad: list[str] = []
+    for (thr, orc), src in sorted(d["per"].items()):
+        for agg_name, col in (("union_span", 7), ("strict_span", 8)):
+            a = agg(d, thr, orc, agg_name)
+            if a is None:
+                bad.append(f"нет агрегата {agg_name} при τ={thr} оракул {orc}")
+                continue
+            s = sum(int(f[col]) for f in src.values() if len(f) > col)
+            if s != int(g(a, "k")):
+                bad.append(f"Σ per-class({agg_name}, τ={thr}, {orc}) = {s} != k = {g(a, 'k')}")
+    return bad
+
+
 def main() -> int:  # noqa: C901, PLR0912 — линейная сборка markdown, ветвлений ради читаемости много
     if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
         return run_self_test()
@@ -207,6 +224,11 @@ def main() -> int:  # noqa: C901, PLR0912 — линейная сборка mark
         raw += [x for x in Path(sys.argv[3]).read_text(encoding="utf-8").splitlines()
                 if x.startswith("COORD|")]
     d = parse(raw)
+    for x in consistency(d):
+        print(f"CONSISTENCY|{x}", file=sys.stderr)
+    if consistency(d):
+        sys.exit("FAIL: per-class и агрегаты разошлись (см. CONSISTENCY| выше) — печатать "
+                 "такой документ нельзя: две счётные траектории харнеса не сходятся")
     v = d["verdict"][0]
     ds = d["dataset"][0]
     ng = d["N_gate"][0]
@@ -357,7 +379,13 @@ def main() -> int:  # noqa: C901, PLR0912 — линейная сборка mark
     A("## 5. Метрики")
     A("")
     for i, thr in enumerate(grid, start=1):
-        A(f"### 5.{i} Per-class, τ = {thr}, оракул byte-overlap")
+        A(f"### 5.{i} Per-class, τ = {thr}")
+        A("")
+        A("**Гейт-метрика — попадание байт-в-байт (рюлинг #77, span-уровень):**")
+        A("")
+        lines += perclass_table(d, thr, "exact")
+        A("")
+        A("**Диагностика — попадание с пересечением (язык Rust-харнеса):**")
         A("")
         lines += perclass_table(d, thr, "overlap")
         A("")
