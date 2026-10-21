@@ -14,6 +14,27 @@ _default:
 # В CI не используется: там свои ядра и свои лимиты раннера.
 CPU_CALM := "CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2 nice -n 10"
 
+# Единый источник списка шелл-скриптов для локального shellcheck-гейта (находка
+# #137): глоб, а не ручной список — новый скрипт в scripts/ или tools/verify/
+# попадает в гейт в момент появления в дереве; ручные списки дрейфуют, и CI
+# краснеет при зелёном `just lint` (класс рецидива). Фиксация расхождения:
+# MegaLinter-список статичен (lint.yml:38 ENABLE_LINTERS, файл не трогаем),
+# локальный список = glob.
+# Промер 24.10 (just 1.58): backtick-`ls …` раскрывается при определении
+# переменной и в recipe прилетает МНОГОСТРОЧНЫМ блоком — под bash-массив
+# уходит первая строка, остальные ломают синтаксис (промер: 1 файл из 7 /
+# syntax error — ложно-зелёная слепая зона). Форма `!ls …` (bang-prefix,
+# рабочая): значение = одна строка, в bash-массиве раскрывается полным
+# списком слов (промер: 7 аргументов из 7, «!ls» префиксом в ls — glob живой,
+# ls бегает рантаймом shell при каждом вызове).
+SHELL_SOURCES := "!ls scripts/*.sh tools/verify/*.sh"
+
+# Расхождение списков (промер ls vs lint.yml): в дереве 7 скриптов —
+# scripts/fetch-models.sh, make-bundle.sh, measure-daemon-rss.sh, measure-rss.sh,
+# snapshot-competitors.sh, verify-bundle.sh, tools/verify/fetch_manifest_weights.sh.
+# Ручного списка файлов в lint.yml нет (первичка файла 24.10): MegaLinter берёт
+# дерево своим глоболом (VALIDATE_ALL_CODEBASE: "true", lint.yml:36).
+
 # Прогнать всё, что блокирует merge: линты + тесты + аудит зависимостей + python.
 #
 # `lang-scan` — Python-нога (язык-гейт текста, #103/#105), в recipe её добавило
@@ -49,8 +70,12 @@ fix:
     cargo fmt --all -- --fix
     cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged
 
-# Только линтеры (fmt-проверка + clippy с deny-флагами CI).
-lint:
+# Только линтеры (fmt-проверка + clippy с deny-флагами CI + shellcheck).
+# Шелл-нога — отдельным рецептом `shellcheck` (находка #137): тело с shebang
+# обязано владеть всем recipe (промер 24.10: строки ДО `#!/usr/bin/env bash`
+# sh парсит своим доменом и падает «files[@]: unbound variable» rc=127; строки
+# ПОСЛЕ shebang становятся телом скрипта — cargo fmt/clippy вообще не бежали).
+lint: shellcheck
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used
     # Опциональные фичи в `--workspace --all-targets` НЕ попадают (не включены по
@@ -63,6 +88,22 @@ lint:
     # этой конфигурации, и ниже стоящая строка guard-onnx его поймала, а `just
     # lint` — нет, потому что путей демона с фичей в ней не было.
     cargo clippy -p guard-daemon --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
+
+# Шелл-гейт дерева (находка #137): джоба Lint = MegaLinter BASH_SHELLCHECK по
+# дереву (lint.yml:38), в локальном гейте shellcheck не было ни строки —
+# мёртвая переменная в новом скрипте краснила CI при зелёном `just lint`.
+# Формула `!ls` (bang-prefix, см. SHELL_SOURCES): bash раскрывает её в массиве
+# списком слов, артефакт «!ls» режет слайс [1:] — shellcheck получает ровно
+# 7 файлов. fail-closed по образцу `deny`: отсутствие shellcheck = rc 2, не
+# молчаливый пропуск. Промёр: green rc=0; dead var → SC2034 rc=1; shellcheck
+# вне PATH → rc=2.
+shellcheck:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck не установлен — гейт НЕИСПОЛНЕН, не провален (brew install shellcheck)"; exit 2; }
+    files=( {{SHELL_SOURCES}} )
+    files=( "${files[@]:1}" )
+    shellcheck -x "${files[@]}"
 
 # Линтер CI-тулчейном (issue #25: CI стабильно свежее локального stable —
 # assert_is_empty-класс drift'а ловится ТОЛЬКО прогоном версии CI).
