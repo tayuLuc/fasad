@@ -64,14 +64,58 @@ deny:
 # пинов). `uv run` сам синхронизирует .venv по lockfile. Требуется uv:
 # brew install uv (mac) или taiki-e/install-action в CI.
 
-# Линт Python-скриптов проекта (генератор датасета + verify-скрипты).
+# Линт Python-скриптов проекта (генератор датасета + verify/metrics-харнесы).
 python-lint:
-    uv run --locked ruff check data/golden scripts tools/verify
+    uv run --locked ruff check data/golden scripts tools/verify tools/metrics
 
 # Побайтовая воспроизводимость golden-датасета: реген + сверка с B2-константой
 # (тот же инвариант, что tests/golden_v1.rs::golden_file_sha256_matches_embedded_const).
 golden-verify:
     uv run --locked python scripts/golden_regen_verify.py
+
+# Гейт #14-B: union-recall ПОЛНОГО каскада (0∨1∨2) на golden-наборе, SPEC §5 п.6
+# (в AGENTS.md и README golden тот же пункт именуется «§5 п.7»).
+# Каскад 0 меряется продуктовым бинарём (POST /v1/analyze), каскады 1/2 —
+# runtime-квантами (lockR fp16 + Decide q4f16); декодер импортируется из
+# tools/verify/parity_golden.py, поэтому второй реализации оракула нет (рецидив
+# «три места = молча разные метрики»).
+# Щадящий режим (рюлинг оператора 21.10, AGENTS §3 п.3): nice -n 10, 2 треда
+# (intra/inter_op; OMP_NUM_THREADS на вендорном osx-arm64 инертен), один прогон
+# за раз, сетка τ последовательная. Число потоков — часть воспроизводимости.
+# Веса: scripts/fetch-models.sh; в CI не запускается (модели 879 МБ вне git),
+# промер живёт в docs/golden-report.md с sha входов.
+union-recall *ARGS:
+    cargo build --bin fasad
+    nice -n 10 env OMP_NUM_THREADS=2 uv run --isolated --python ~/.local/bin/python3.13 \
+        --with numpy --with onnxruntime --with tokenizers \
+        python tools/metrics/union_recall.py --threads 2 {{ARGS}}
+
+# docs/golden-report.md из сырого артефакта прогона: числа в документацию попадают
+# генерацией, а не переписыванием руками (правило факта «отформатированное число —
+# не факт»). Прогон меняешь — документ перегенерируется целиком. PROBE — артефакт
+# `tools/metrics/probe_coords.py` (COORD-строки, §6.4/§8.1): без него раздел о
+# направлении смещения печатает «?» и остаётся прозой без первички.
+union-report RAW OUT PROBE="":
+    uv run --locked python tools/metrics/render_report.py {{RAW}} {{OUT}} {{PROBE}}
+
+# Positive control генератора отчёта: подсаженные утечки (имя поля вместо значения,
+# плейсхолдер "? %") обязаны ловиться. Мёртвый контроль = rc=2, тот же контракт,
+# что у lang-scan: зелёная проверка без живого контроля = ничто.
+report-selftest:
+    uv run --locked python tools/metrics/render_report.py --self-test
+
+# Язык-гейт текста: CJK-утечки и склейка кириллицы с латиницей. Positive control
+# (--self-test) обязателен: зелёный сканер без контроля = ложно-зелёная проверка
+# (первый же контроль поймал мёртвый CJK-класс из начал диапазонов). BSD grep для
+# этого неприменим: классы трактует не по кодовым точкам (промер 20.10).
+# Дефолт `--all` = весь текстовый tree (инвентарь репозитория; пустой вход = rc 2,
+# не «чисто»). На диффе PR — `just lang-scan-files <файлы>`.
+lang-scan:
+    uv run --locked python scripts/scan_lang.py --self-test --all
+
+# Тот же гейт по списку файлов (на диффе PR: красный = только что добавленное).
+lang-scan-files *FILES:
+    uv run --locked python scripts/scan_lang.py --self-test --files {{FILES}}
 
 # Релизный путь ORT (issue #11): официальный dylib вместо статики pyke.
 # Каталог lib: MAC — onnxruntime-osx-arm64-1.31.0/lib release-архива
