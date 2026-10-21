@@ -318,7 +318,13 @@ impl VaultApiError {
             Self::UnknownClass(_) | Self::BadSessionId(_) | Self::SessionRequired => "bad_request",
             Self::BadSpan { .. } | Self::OverlappingSpans => "bad_span",
             Self::Unresolved { .. } => "unresolved_token",
-            Self::TooLong { .. } => "span_too_long",
+            // Одна причина на двух слоях: спан не влезает в лимит. Собственный
+            // [`Self::TooLong`] — метка/кэш (422), `TooLong` из sealing —
+            // `MAX_ORIGINAL_BYTES` (503, потолок словесных номеров #120). Код
+            // общий, различает их статус и префикс в [`Self::message`]: до
+            // правки B2 (ревью #118) второй слой схлопывался в `vault_error`,
+            // и клиент, лечивший «хранилище», чинил не то.
+            Self::TooLong { .. } | Self::Vault(VaultError::TooLong { .. }) => "span_too_long",
             Self::EmptyOriginal => "empty_span",
             Self::TooManyForms { .. } => "too_many_forms",
             Self::SessionGone => "session_gone",
@@ -348,12 +354,25 @@ impl VaultApiError {
         }
     }
 
-    /// Сообщение наружу. Для [`Self::Vault`] — только категория: варианты
-    /// `VaultError` печатают длины и состояния пула, это безопасно, но имена
-    /// внутренних модулей клиенту не нужны.
+    /// Сообщение наружу.
+    ///
+    /// Отказ хранилища обязан называть свою причину: «нет», «битый» и
+    /// «длиннее лимита» — три разных диагноза, а подставная причина отправляет
+    /// клиента чинить не то (ревью #118 B2). Поэтому [`VaultError::TooLong`]
+    /// проходит наружу со своими числами: `len` и `max` — метрики, `ПДн` в них
+    /// нет.
+    ///
+    /// Префикс `vault:` различает два слоя отказа с одним кодом: этот — «спан
+    /// не влезает в контейнер токена» (503, лимит `MAX_ORIGINAL_BYTES`), а
+    /// собственный [`Self::TooLong`] демона — «не влезла метка/кэш» (422).
+    /// Прочие варианты `VaultError` наружу идут как категория: они печатают
+    /// состояния пула и mlock, а это имена внутренних модулей, клиенту ненужные.
     #[must_use]
     pub fn message(&self) -> String {
         match self {
+            Self::Vault(VaultError::TooLong { len, max }) => {
+                format!("vault:span_too_long len={len} max={max}")
+            }
             Self::Vault(_) => "хранилище токенов отказало (fail-closed)".to_owned(),
             other => other.to_string(),
         }
@@ -1593,6 +1612,61 @@ mod tests {
             max - 2,
             "отказ не мутирует реестр"
         );
+    }
+
+    /// B2 (ревью #118): отказ «спан не влезает в контейнер токена» обязан
+    /// называть причину. До правки `VaultError::TooLong` схлопывался в
+    /// `VaultApiError::Vault` и наружу шло «хранилище токенов отказало
+    /// (fail-closed)» — клиент уходил чинить mlock/CSPRNG, а лимит 128 Б тут ни
+    /// при чём. Фикстура — словесный ИНН-10 из слоя числительных (#118): такие
+    /// спаны за порогом почти всегда, см. потолок и #120 в `docs/daemon-scope.md`.
+    #[test]
+    fn over_long_span_refusal_names_the_reason_not_the_vault() {
+        // Golden ИНН-10 2482014338 словами — ровно та фикстура, что в
+        // `cascade0::spelled_registry_numbers_fire`.
+        let words = concat!(
+            "два миллиарда четыреста восемьдесят два миллиона четырнадцать ",
+            "тысяч триста тридцать восемь"
+        );
+        let max = guard_vault::token::MAX_ORIGINAL_BYTES;
+        assert_eq!(max, 128, "порог, зафиксированный в документах");
+        assert_eq!(words.len(), 170, "промер 21.10: фикстура 170 Б");
+        let text = format!("ИНН: {words}");
+        for mode in [VaultMode::Stateless, VaultMode::Session] {
+            let session = if mode == VaultMode::Session {
+                Some("b2")
+            } else {
+                None
+            };
+            let v = vault(mode);
+            let err = v
+                .anonymize(session, &text, &[span("inn", &text, words)], &schema())
+                .expect_err("спан за лимитом не маскируется: fail-closed");
+            assert_eq!(
+                err.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{mode:?}: отказ хранилища остаётся 503"
+            );
+            assert_eq!(
+                err.code(),
+                "span_too_long",
+                "{mode:?}: код обязан называть причину"
+            );
+            let msg = err.message();
+            assert_eq!(
+                msg,
+                format!("vault:span_too_long len={} max={max}", words.len()),
+                "{mode:?}: деталь с числами, а не вслепую"
+            );
+            assert!(
+                !msg.contains("хранилище токенов отказало"),
+                "{mode:?}: подставная причина недопустима: {msg}"
+            );
+            assert!(
+                !msg.contains("два миллиарда"),
+                "{mode:?}: причина — метрики len/max, ПДн в неё не попадают"
+            );
+        }
     }
 
     /// P6: повторная анонимизация собственного выхода = отказ до первой
