@@ -17,9 +17,21 @@ name: release
 #                                    superfluous-actions + поверхность
 #                                    `contents: write`)
 #   actions/upload-artifact v7.0.2, actions/download-artifact v8.0.2
-#   Swatinem/rust-cache    v2.9.3   (в ci.yml пин v2.8.7 через ANNOTATED tag object
-#                                    — здесь plain commit, снятие zizmor unpinned-uses
-#                                    класса F3 из ci.yml)
+#   Swatinem/rust-cache    v2.9.3   (у нас plain commit = ЦЕЛЬ аннотированного
+#                                    тега v2.9.3: ref → tag-object
+#                                    2201cc584a476d1b508be977bbe4b7d1c7a52e9c →
+#                                    commit d1527c8f67ef…, промер 21.10;
+#                                    `git/tags/<sha>` требует полный sha,
+#                                    короткий отвечает 404)
+#                                    Прежняя формулировка «в ci.yml пин v2.8.7
+#                                    через ANNOTATED tag object» была ложной по
+#                                    обоим фактам (ревью #76, F2): тега v2.8.7 у
+#                                    апстрима нет (`git/ref/tags/v2.8.7` = 404,
+#                                    последний линейки 2.8.x = v2.8.2), а
+#                                    ci.yml:33 пинит plain commit 6323deb102c3…,
+#                                    озаглавленный «2.9.2», ярлыком `# v2.8.7`.
+#                                    Расхождение ярлыка и содержимого — defect
+#                                    ci.yml, чинит его владелец, не этот PR.
 #   dtolnay/rust-toolchain commit-pin (мажорных тегов нет, dep-verify-repos §1)
 # Аннотированные теги (rust-cache v2.9.3) дереференцены
 # в commit через `gh api repos/<r>/git/ref/tags/<t>` → `git/tags/<sha>` — пинить
