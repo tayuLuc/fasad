@@ -182,9 +182,15 @@ jobs:
           # давала четыре пробела, поле пути начиналось с пробела, и
           # `sha256sum -c` отвечал rc=1 («No such file or directory» на
           # существующий файл). Правка 21.10 чинила это `sed -i`, а он на BSD
-          # съедает имя файла как суффикс бэкапа (rc=1, «invalid command code») —
-          # гейт умирал ДО сверки хэша. `sed` удалён; форма каноническая, GNU и
-          # BSD читают её одинаково.
+          # съедает СЛЕДУЮЩИЙ аргумент как суффикс бэкапа: скрипт `'s/…//'`
+          # уходил в -i, а его место занималось ИМЕНЕМ ФАЙЛА — файл читался как
+          # sed-скрипт, первая строка (`хэш  путь`) ломалась на переводе строки
+          # внутри шаблона подстановки: rc=1, «unescaped newline inside
+          # substitute pattern» (промер 21.10 на BSD sed этого хоста:
+          # `sed: 1: "/tmp/…/ort.sum\n": unescaped newline inside substitute
+          # pattern`; прежняя скобка «invalid command code» была текстом чужой
+          # ошибки, ревью #76, D3). Гейт умирал ДО сверки хэша. `sed` удалён;
+          # форма каноническая, GNU и BSD читают её одинаково.
           printf '%s  %s\n' "${{ matrix.ort_sha256 }}" "$RUNNER_TEMP/ort.tgz" > "$RUNNER_TEMP/ort.sum"
           ( cd "$RUNNER_TEMP" && sha256sum -c ort.sum )
           mkdir -p "$RUNNER_TEMP/ort"
