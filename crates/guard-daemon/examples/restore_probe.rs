@@ -245,22 +245,49 @@ fn class_for(needle: &str) -> &'static str {
 /// выглядел бы как успех контроля (реестр ложно-зелёных #18).
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 struct Leaves {
+    /// Ноги «состояние»: опись подмен и протечка оригинала.
+    state: StateLegs,
+    /// Ноги «выход»: побайтовость разворота и счётчики разворота.
+    output: OutputLegs,
+}
+
+/// Ноги «состояние»: что masking выдал (опись) и что осталось в masked-тексте.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+struct StateLegs {
     manifest: bool,
     leak: bool,
+}
+
+/// Ноги «выход»: побайтовость разворота и сходимость счётчиков разворота.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+struct OutputLegs {
     bytes: bool,
     counters: bool,
 }
 
 impl Leaves {
+    #[cfg(test)]
     /// Поймал ли отказ указанный ассерт.
     #[must_use]
     fn is_caught(self, by: Check) -> bool {
         match by {
-            Check::All | Check::Manifest => self.manifest,
-            Check::Leak => self.leak,
-            Check::Bytes => self.bytes,
-            Check::Counters => self.counters,
+            Check::All | Check::Manifest => self.state.manifest,
+            Check::Leak => self.state.leak,
+            Check::Bytes => self.output.bytes,
+            Check::Counters => self.output.counters,
         }
+    }
+
+    #[cfg(test)]
+    /// Ноги, чей след в leaves непустой. Таблица ловцов пинится СПИСКОМ, а не
+    /// флагом: «краснота от ноги вне названного комплекта» = таблица врёт, и
+    /// это отдельная диагностика.
+    #[must_use]
+    fn caught(self) -> Vec<Check> {
+        [Check::Manifest, Check::Leak, Check::Bytes, Check::Counters]
+            .into_iter()
+            .filter(|c| self.is_caught(*c))
+            .collect()
     }
 }
 
@@ -284,18 +311,18 @@ struct ModeStat {
 }
 
 impl ModeStat {
-    fn leaves(self) -> Leaves {
-        self.leaves
-    }
-}
-
-impl ModeStat {
     fn merge(&mut self, other: &Self) {
         self.roundtrips += other.roundtrips;
         self.spans += other.spans;
         self.skips += other.skips;
         self.surrogate_roundtrips += other.surrogate_roundtrips;
         self.failures += other.failures;
+        // Следы ног собираются OR'ом: на уровне режима контроль «failures без
+        // следа ноги» (реестр #18/#19) обязан видеть, КТО ловил отказы.
+        self.leaves.state.manifest |= other.leaves.state.manifest;
+        self.leaves.state.leak |= other.leaves.state.leak;
+        self.leaves.output.bytes |= other.leaves.output.bytes;
+        self.leaves.output.counters |= other.leaves.output.counters;
     }
 }
 
@@ -598,19 +625,23 @@ fn run_case_checked(
             anon.items.len(),
             spans.len()
         );
-        st.leaves.manifest = true;
+        st.leaves.state.manifest = true;
         st.failures = 1;
         return st;
     }
     for needle in &case.needles {
         if !off(Check::Leak) && anon.text.contains(needle.as_str()) {
             eprintln!("ОРИГИНАЛ В MASKED-ТЕКСТЕ: {} раунд {round}", case.id);
-            st.leaves.leak = true;
+            st.leaves.state.leak = true;
             st.failures = 1;
             return st;
         }
     }
 
+    // Нога «утечка» обязана видеть ТО, что уходит наружу. Все inject-ы,
+    // меняющие вышедший текст, правят буфер `masked`, и правятся ДО копирования
+    // (`masked` копируется из `anon.text`): мера «протёк ли оригинал наружу»
+    // = вопрос к буферу выхода, а не к внутренней копии описи.
     let mut masked = anon.text.clone();
     if fault == Fault::DropMarker {
         // Маркер/метка вырезана: разворачивать нечего, разворот обязан отказать
@@ -637,12 +668,7 @@ fn run_case_checked(
         // Хвост трогать нельзя: `push('~')` measured failures = 0 — хвост
         // разворота режется по байтовым границам и лишним байтом от исходника не
         // отличается (промер 21.10).
-        let n = restored
-            .text
-            .chars()
-            .next()
-            .map(char::len_utf8)
-            .unwrap_or(0);
+        let n = restored.text.chars().next().map_or(0, char::len_utf8);
         restored.text.replace_range(0..n, "~");
     }
     if fault == Fault::SubstituteForeign && SUBSTITUTE_CASE_IDS.contains(&case.id) {
@@ -664,7 +690,7 @@ fn run_case_checked(
             restored.text.len(),
             case.text.len()
         );
-        st.leaves.bytes = true;
+        st.leaves.output.bytes = true;
         st.failures = 1;
         return st;
     }
@@ -683,7 +709,7 @@ fn run_case_checked(
             surfaces,
             spans.len()
         );
-        st.leaves.counters = true;
+        st.leaves.output.counters = true;
         st.failures = 1;
         return st;
     }
@@ -1170,6 +1196,18 @@ mod tests {
                     "{mode:?}: inject {fault:?} не пойман (failures = {}) — ассерт мёртв",
                     st.failures
                 );
+                // Число красноты обязан сопровождать СЛЕД ноги: «failures += 1»
+                // без leaves-флага = «кто поймал — неизвестно» (реестр #18),
+                // поэтому порог — непустой список словивших ног, а не только
+                // счётчик (реестр #19: ассерт обязан краснеть на выключенной
+                // ноге, а не на её числе).
+                assert!(
+                    [Check::Manifest, Check::Leak, Check::Bytes, Check::Counters]
+                        .iter()
+                        .any(|c| st.leaves.is_caught(*c)),
+                    "{mode:?}: inject {fault:?}: failures={failures} без следа ноги",
+                    failures = st.failures
+                );
                 if targets != 0 {
                     assert_eq!(
                         st.failures,
@@ -1452,65 +1490,105 @@ mod tests {
                 .expect("случай корпуса");
             run_case_checked(&vault, &schema, mode, &case, 0, false, fault, disabled)
         };
-        // Каждая пара «отказ → нога» пинится ПО ИМЕНИ НОГИ, а не по числу
-        // красных: `leaves` показывает, какая проверка поймала отказ, и
-        // контроль «нога единственная» читается как «отключил её — поймала
-        // соседняя» (промер 21.10: `LeakInMasked` ловится и ногой «утечка», и
-        // ногой «побайтовость» — разворот с развёрнутыми маркерами не равен
-        // исходнику с вырезанными; контроль обязан это называть, а не делать
-        // вид, что нога одна).
-        for (fault, cid, leg, co) in [
-            (Fault::LeakInMasked, "fio-nom", Check::Leak, Check::Bytes),
+        // Измеренная матрица 21.10 (режим 2; случай `fio-nom`, мультиымянный —
+        // для `DivergentStore`): ОТКАЗ → комплект ног, которые его ловят.
+        // Матрица снята прогоном с print-only зондом и перенесена дословно.
+        //
+        // Комплект пинится СПИСКОМ ног, и контроль требует трёх свойств:
+        //
+        // * полный прогон краснеет РОВНО ногами комплекта (след ноги «вне
+        //   таблицы» = таблица врёт о полноте, и позитивный контроль ниже
+        //   ничего не утверждает);
+        // * каждая названная нога ЖИВАЯ: выключить её, остальные ноги оставить
+        //   работающими — отказ обязан остаться красным (контроль не держится
+        //   на одном ассерте);
+        // * выключить ВЕСЬ комплект — прогон зеленеет: ловцов ровно столько,
+        //   сколько названо (реестр ложно-зелёных #18: «гейт, скоупнутый
+        //   автором»).
+        //
+        // Порядок ног в харнесе sequential (первая словившая останавливает
+        // прогон: round-trip'ы считаются по успеху), поэтому в полном прогоне
+        // видна ПЕРВАЯ нога комплекта, а живость остальных проверяется
+        // выключением: таблица начинается с той ноги, что краснеет первой,
+        // и каждый следующий элемент — это «кто ловит, когда предыдущий
+        // выключен».
+        let rows = [
             (
-                Fault::TamperRestored,
+                Fault::LeakInMasked,
                 "fio-nom",
-                Check::Bytes,
-                Check::Counters,
-            ),
-            (
-                Fault::SubstituteForeign,
-                "fio-nom",
-                Check::Bytes,
-                Check::Counters,
-            ),
-            (
-                Fault::DivergentStore,
-                "multi-name-doc",
-                Check::Bytes,
-                Check::Counters,
-            ),
-            (
-                Fault::DivergentStore,
-                "multi-name-doc",
-                Check::Counters,
-                Check::Bytes,
+                vec![Check::Leak, Check::Bytes],
             ),
             (
                 Fault::DropSubstitution,
                 "fio-nom",
-                Check::Manifest,
-                Check::Manifest,
+                vec![Check::Manifest, Check::Leak, Check::Counters],
             ),
-            (Fault::DropMarker, "fio-nom", Check::Counters, Check::Bytes),
             (
                 Fault::ShrinkManifest,
                 "fio-nom",
-                Check::Counters,
-                Check::Bytes,
+                vec![Check::Manifest, Check::Bytes, Check::Counters],
             ),
-        ] {
-            println!(
-                "PAIR {fault:?} {leg:?}+{co:?}: all={:?}",
-                runs(fault, cid, &[])
+            (
+                Fault::TamperRestored,
+                "fio-nom",
+                vec![Check::Bytes, Check::Bytes],
+            ),
+            (
+                Fault::SubstituteForeign,
+                "fio-nom",
+                vec![Check::Bytes, Check::Bytes],
+            ),
+            (
+                Fault::DivergentStore,
+                "multi-name-doc",
+                vec![Check::Bytes, Check::Counters],
+            ),
+        ];
+        for (fault, cid, legs) in rows {
+            let all = runs(fault, cid, &[]);
+            assert_eq!(
+                all.failures, 1,
+                "{fault:?}/{cid}: отказ не пойман ни одной ногой — ассерт мёртв"
             );
-            println!(
-                "  offleg={:?} sole={:?}",
-                runs(fault, cid, &[leg]),
-                runs(fault, cid, &[leg, co])
+            assert_eq!(
+                all.leaves.caught(),
+                vec![legs[0]],
+                "{fault:?}/{cid}: в полном прогоне краснеет не первая нога комплекта {legs:?}"
+            );
+            for (i, &leg) in legs.iter().enumerate() {
+                if i == 0 {
+                    // Первая нога комплекта — ловец в полном прогоне (уже
+                    // проверено выше); её живость = «без неё краснеет сосед».
+                }
+                let mut off = vec![Check::Manifest, Check::Leak, Check::Bytes, Check::Counters];
+                off.retain(|c| *c != leg);
+                let st = runs(fault, cid, &off);
+                assert_eq!(
+                    st.failures, 1,
+                    "{fault:?}/{cid}: без {leg:?} отказ не пойван — {leg:?} не живой контроль: {st:?}"
+                );
+                let extra: Vec<Check> = st
+                    .leaves
+                    .caught()
+                    .into_iter()
+                    .filter(|c| !legs.contains(c))
+                    .collect();
+                assert!(
+                    extra.is_empty(),
+                    "{fault:?}/{cid}: без {leg:?} краснота от ноги вне комплекта {extra:?}: {st:?}"
+                );
+            }
+            let bare = runs(fault, cid, &legs);
+            assert_eq!(
+                bare.failures, 0,
+                "{fault:?}/{cid}: с выключенным комплектом {legs:?} красен — ловцов больше: {bare:?}"
+            );
+            assert!(
+                bare.leaves.caught().is_empty(),
+                "{fault:?}/{cid}: с выключенным комплектом {legs:?} следы остались: {bare:?}"
             );
         }
-        let _ = 0;
-        if false {} // Зелёный прогон обязан оставаться зелёным при всех ногах (и чистый
+        // Зелёный прогон обязан оставаться зелёным при всех ногах (и чистыйЗелёный прогон обязан оставаться зелёным при всех ногах (и чистый
         // round-trip, и надпотолочный skip).
         assert_eq!(
             runs(Fault::None, "fio-nom", &[]).failures,
@@ -1585,7 +1663,7 @@ mod tests {
             assert_eq!(st_ok.roundtrips, 1, "{mode:?}: round-trip не засчитан");
 
             // Дискриминатор НАСТОЯЩЕГО bad_span (ревью #134): спан `start > end`
-            // (первичка vault.rs:543-550) — masking отказывает по `bad_span`, и
+            // (первичка crates/guard-daemon/src/vault.rs:543-550) — masking отказывает по `bad_span`, и
             // харнес обязана записать ЭТО как failure, а не как skip: ветка
             // skip живёт ровно на коде `span_too_long`, подставная причина
             // («отказ есть, назовём его потолком») здесь красная.
@@ -1655,88 +1733,5 @@ mod tests {
             "подставная причина недопустима: {}",
             err.message()
         );
-    }
-
-    #[test]
-    fn zz_diag_test() {
-        let schema = Schema::embedded().expect("с");
-        let vault = Vault::startup(VaultMode::Session, Mlock::Strict).expect("в");
-        let case = corpus()
-            .into_iter()
-            .find(|c| c.id == "fio-nom")
-            .expect("случай");
-        let st = run_case_checked(
-            &vault,
-            &schema,
-            VaultMode::Session,
-            &case,
-            0,
-            false,
-            Fault::LeakInMasked,
-            &[Check::All],
-        );
-        println!("ZZ Leak(all) -> {st:?}");
-        let st2 = run_case(
-            &vault,
-            &schema,
-            VaultMode::Session,
-            &case,
-            0,
-            false,
-            Fault::LeakInMasked,
-        );
-        println!("ZZ Leak(run_case) -> {st2:?}");
-    }
-
-    #[test]
-    fn zz_matrix() {
-        for f in [
-            ("Leak", Fault::LeakInMasked),
-            ("DropSub", Fault::DropSubstitution),
-            ("Shrink", Fault::ShrinkManifest),
-            ("Tamper", Fault::TamperRestored),
-            ("Div", Fault::DivergentStore),
-            ("Subst", Fault::SubstituteForeign),
-            ("DropMarker", Fault::DropMarker),
-            ("None", Fault::None),
-        ] {
-            let schema = Schema::embedded().expect("с");
-            let vault = Vault::startup(VaultMode::Session, Mlock::Strict).expect("в");
-            let case = corpus()
-                .into_iter()
-                .find(|c| c.id == "fio-nom")
-                .expect("случай");
-            let all = run_case_checked(
-                &vault,
-                &schema,
-                VaultMode::Session,
-                &case,
-                0,
-                false,
-                f.1,
-                &[Check::All],
-            );
-            let mut row = format!("ZZ {:10} all(fail={}) |", f.0, all.failures);
-            for (lbl, leg) in [
-                ("leak", Check::Leak),
-                ("manifest", Check::Manifest),
-                ("bytes", Check::Bytes),
-                ("counters", Check::Counters),
-            ] {
-                let v = Vault::startup(VaultMode::Session, Mlock::Strict).expect("в");
-                let st = run_case_checked(
-                    &v,
-                    &schema,
-                    VaultMode::Session,
-                    &case,
-                    0,
-                    false,
-                    f.1,
-                    &[leg],
-                );
-                row.push_str(&format!(" {lbl}={}", st.failures));
-            }
-            println!("{row}");
-        }
     }
 }
