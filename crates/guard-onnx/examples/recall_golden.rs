@@ -68,15 +68,8 @@ const CLASSES: [&str; 8] = [
 ];
 #[cfg(feature = "ort-inference")]
 const Z95: f64 = 1.959_963_984_540_054;
-#[cfg(feature = "ort-inference")]
-const PAD: usize = 256;
-#[cfg(feature = "ort-inference")]
-const N_TAGS: usize = 43;
-/// decode-контракт харнеса (parity_golden.py `LOCKR_SPECIALS`, L197): строки
-/// имён; python decode([CLS]) = '' ⇒ фильтр ЛОЖЕН на спецах (O красит argmax
-/// модели), PS-токен = '##вич' (промер 4b-3C) ⇒ НЕ O.
-#[cfg(feature = "ort-inference")]
-const LOCKR_SPECIALS: [&str; 5] = ["[CLS]", "[SEP]", "[PAD]", "[MASK]", "[UNK]"];
+// Константы decode-контракта (PAD/N_TAGS/LOCKR_SPECIALS) с 9A (#14A) живут в
+// `guard_onnx::extract` — там же, где исполняются (харнес зовёт либу).
 
 #[cfg(feature = "ort-inference")]
 #[derive(Debug)]
@@ -111,7 +104,11 @@ fn main() {
             }
         },
     };
-    if run(limit, threads, thr).is_err() {
+    // Отказ обязан назвать причину (law «a rejection must name its true
+    // reason»): раньше `is_err()` глотал сообщение, и rc=1 не отличал
+    // отсутствующий вес от кривого тензора.
+    if let Err(e) = run(limit, threads, thr) {
+        eprintln!("RECALL|error|{e}");
         std::process::exit(1);
     }
 }
@@ -192,9 +189,8 @@ fn wilson_lower(k: usize, n: usize) -> f64 {
 #[cfg(feature = "ort-inference")]
 fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std::error::Error>> {
     use guard_onnx::arbitrate::{DecideArbiter, QuestionSchema};
-    use guard_onnx::decide::{ID2LABEL, lockr_bio_group};
+    use guard_onnx::extract::LockrExtractor;
     use guard_onnx::routing::RoutingCfg;
-    use ort::value::Tensor;
 
     // 7b (#60): гейты прогона через lib-маршрутизатор. `single(thr)` —
     // вырожденная пара τ_low=τ_high=thr: полоса Mask пуста,
@@ -252,44 +248,12 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
     let ltok_path = ldir.join("tokenizer.json");
     require(&lmodel)?;
     require(&ltok_path)?;
-    let mut ltok = tokenizers::Tokenizer::from_file(&ltok_path)
-        .map_err(|e| format!("токенизатор lockR: {e}"))?;
-    ltok.with_post_processor(Option::<tokenizers::processors::template::TemplateProcessing>::None);
-    // Rust-`tokenizers` encode(true) НЕ применяет TemplateProcessing и
-    // WordPiece-декодер переписывает offsets на байтовую шкалу (промер 4b-3C)
-    // ⇒ снимаем пост-процессор ЯВНО; base = encode(false) даёт ЧАРЗ-оффсеты
-    // слов, python-форму (75/75/75, om=(0,0)+слова+(0,0)) собирает encode_plus.
-    // Контракт харнеса python `encode(add_special_tokens=True)`: ids/offsets/
-    // attention 1-в-1, om = (0,0)+слова+(0,0), ЧАРЗ-шкала (промер 4b-3C g0001:
-    // 75/75/75, om[17]=(56,63)='Ушакова'). Rust-`tokenizers` encode(true)
-    // пост-процессор НЕ применяет и WordPiece переписывает offsets на БАЙТЫ
-    // (промер: 73/73, om[17]=(87,101)) ⇒ снимаем пост-процессор ЯВНО и
-    // собираем python-форму вручную (`encode_plus`): [CLS]+слова(charz)+[SEP],
-    // спец-слоты (0,0). Индексы харнеса (i0=t0−1, om[i0][0]) дословны.
-    let cl_id = ltok
-        .get_vocab(true)
-        .get("[CLS]")
-        .copied()
-        .ok_or("vocab lockR: нет [CLS]")?;
-    let sep_id = ltok
-        .get_vocab(true)
-        .get("[SEP]")
-        .copied()
-        .ok_or("vocab lockR: нет [SEP]")?;
-    // Спец-позиции: decode-фильтр харнеса (`tok.decode([id]) in
-    // LOCKR_SPECIALS`) ЛОЖЕН на спецах — python decode ОДИНОЧНОГО спец-id =
-    // '' (WordPiece склеивает пустые; промер 4b-3C), O там красит argmax
-    // модели (O@1.0). Id-множество = эквивалент того же контракта (PS-иды
-    // decode='##вич' ∉ сете — фильтр их не трогает).
-    let lockr_special: Vec<u32> = LOCKR_SPECIALS
-        .iter()
-        .filter_map(|t| ltok.get_vocab(true).get(*t).copied())
-        .collect();
-    let pad_id = ltok.get_vocab(true).get("[PAD]").copied().unwrap_or(0);
-    let mut lsess = ort::session::Session::builder(&env)?
-        .with_intra_threads(threads)?
-        .with_optimization_level(ort::session::builder::GraphOptimizationLevel::All)?
-        .commit_from_file(&lmodel)?;
+    // 9A (#14A): decode-контракт каскада-1 вынесен в `guard_onnx::extract`
+    // (LockrExtractor) — его же вызывает продуктовый путь демона. Инвариант 7b
+    // «меряем = гоняем»: харнес и продют читают один код, расхождение
+    // «метрика vs продукт» структурно невозможно.
+    let mut lockr = LockrExtractor::load(&env, &lmodel, &ltok_path, threads)
+        .map_err(|e| format!("LockrExtractor::load: {e}"))?;
 
     // Счётчики span-level: total[class] по gold; hits по моделям.
     let mut total = [0u64; 8];
@@ -304,175 +268,33 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
         }
     }
 
-    // 3) lockR: батч-1 — decode-контракт харнеса (parity_golden.run_lockr):
-    // argmax+softmax, special-фильтр (decode ∈ LOCKR_SPECIALS), B/i-скобка,
-    // PS-хвосты не расширяют спан, om[i0] (python-форма, спец-плейсхолдеры).
+    // 3) lockR: батч-1 — decode-контракт харнеса (parity_golden.run_lockr)
+    // исполняет `guard_onnx::extract::LockrExtractor` (тот же код в демоне);
+    // здесь остаются гейт порога и оракул хита.
     let t0 = Instant::now();
     for r in &rows {
         let mut hitmask = 0u64;
-
-        // Контракт харнеса python `encode(add_special_tokens=True)` =
-        // [CLS]+слова+[SEP]; ids/offsets/attention 1-в-1, om = (0,0)+слова+
-        // (0,0) (промер 4b-3C g0001: 75/75/75, om[17]=(56,63)='Ушакова').
-        // Rust-`tokenizers` encode(true) пост-процессор НЕ применяет и
-        // WordPiece переписывает offsets в байты (промер 73/73, om[17]=
-        // (87,101)) ⇒ пост-процессор снят ЯВНО, python-форму поля собирает
-        // `encode_plus` (char-оффсеты encode(false), спец-слоты (0,0)).
-        let base = ltok
-            .encode(r.text.as_str(), false)
-            .map_err(|e| format!("encode g{}: {e}", r.id))?;
-        let mut enc = encode_plus(&base, cl_id, sep_id, "[CLS]", "[SEP]");
-        debug_assert_eq!(enc.get_ids().len(), enc.get_offsets().len());
-        let real = enc.len().min(PAD);
-        let ids_u: Vec<u32> = enc.get_ids().iter().copied().collect();
-        let offs = enc.get_offsets().to_vec();
-        let attn: Vec<i64> = enc
-            .get_attention_mask()
-            .iter()
-            .map(|&x| i64::from(x))
-            .collect();
-        // Харнес L252–257: пад-заполнение ВРУЧНУЮ (numpy zeros + срез [:ln]).
-        // `enc.pad(PAD,...)` трогает ВСЕ поля, включая offsets (+2 на [PAD]
-        // хвост, grow_offsets=false только для спец-слотов — промер 4b-3C),
-        // поэтому снимки ids_u/offs/attn берутся ДО падения.
-        enc.pad(
-            PAD,
-            pad_id,
-            0,
-            "[PAD]",
-            tokenizers::utils::padding::PaddingDirection::Right,
-        );
-        // ИНПУТ = препад-версия харнесса: ids до PAD из real-среза (срез по
-        // min(len, PAD)), пад-заполнение id PAD — L252–257 parity_golden.py
-        // (пост-пад `enc.pad` питает и `token_type_ids` нулями, и ids пад-id —
-        // харнес делает то же, типы все 0); порядок слов в реальном входе НЕ
-        // меняется, но `real` = харнесное `ln`.
-        // ИНПУТ = харнес L252–257: numpy zeros(256) + срез [:ln] ⇒ пад-id=0.
-        let mut idsv: Vec<i64> = vec![0i64; PAD];
-        for (dst, src) in idsv.iter_mut().zip(enc.get_ids().iter().take(real)) {
-            *dst = i64::from(*src);
+        // Декод — либой (см. выше); здесь только гейт порога и оракул хита
+        // (пересечение байтовых интервалов + равенство golden-класса).
+        let ex = lockr
+            .extract(r.text.as_str())
+            .map_err(|e| format!("extract g{}: {e}", r.id))?;
+        if ex.truncated {
+            // Знаменатель recall-промера = строки, влезающие в окно 256; факт
+            // среза печатаем, молча считать по неполному покрытию нельзя.
+            eprintln!("RECALL|lockr_truncated|g{}", r.id);
         }
-        let ids = idsv;
-        let mut attn = attn;
-        attn.resize(PAD, 0);
-        debug_assert_eq!(ids.len(), PAD);
-        let types = vec![0i64; PAD];
-        let out = lsess.run(vec![
-            (
-                "input_ids".to_string(),
-                Tensor::from_array(([1usize, PAD], ids.into_boxed_slice()))?.upcast(),
-            ),
-            (
-                "attention_mask".to_string(),
-                Tensor::from_array(([1usize, PAD], attn.into_boxed_slice()))?.upcast(),
-            ),
-            (
-                "token_type_ids".to_string(),
-                Tensor::from_array(([1usize, PAD], types.into_boxed_slice()))?.upcast(),
-            ),
-        ])?;
-        let (_, lg) = out["logits"].try_extract_tensor::<f32>()?;
-        // tags
-        let mut tagv: Vec<&str> = Vec::with_capacity(real);
-        let mut probv: Vec<f64> = Vec::with_capacity(real);
-        for t in 0..real {
-            let row = &lg[t * N_TAGS..(t + 1) * N_TAGS];
-            let mx = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            let sum: f64 = row.iter().map(|&x| ((x - mx) as f64).exp()).sum();
-            let mut best = 0usize;
-            let mut bv = f32::NEG_INFINITY;
-            for (i, &x) in row.iter().enumerate() {
-                if x > bv {
-                    bv = x;
-                    best = i;
-                }
-            }
-            let p = if sum > 0.0 && sum.is_finite() {
-                ((bv - mx) as f64).exp() / sum
-            } else {
-                0.0
-            };
-            // Харнес-фильтр `tok.decode([id]) in LOCKR_SPECIALS` (L210):
-            // LIVE-промер 4b-3C (uvx): decode ОДИНОЧНОГО спец-id = '' (WordPiece
-            // склеивает пустые) ⇒ фильтр ЛОЖЕН на спецах — O там красит argmax
-            // модели (O@1.0, промер логитов); decode([PS]) = '##вич' ∉ сете ⇒ PS
-            // продлевают entity (SNILS 45..52 живут). Тот же контракт = id-множество
-            // спец-id (красит только спеца, argmax и так O@1.0; PS не трогает).
-            let special = t < ids_u.len() && lockr_special.contains(&ids_u[t]);
-            // ПОРОГА В ТЕГАХ НЕТ (spans_bio_tags): thr — к conf спана после
-            // скобки (lockr_counts L410); пре-гейт рвёт I-скобки (промер).
-            tagv.push(if special { "O" } else { ID2LABEL[best] });
-            probv.push(p);
-        }
-        // Прогон по ВСЕМ B/I-группам (класс-фильтр GOLDEN_TO_BIO — в счёте
-        // хита, lockr_counts L410–412: address-спан ловится CITY/STREET/HOUSE).
-        for (cls_tok, ts, te) in lockr_bio_group(&tagv) {
-            // Оракул харнеса run_lockr (после фикса блокера №1 ревью PR#49):
-            //   i1 = min(t1, len(ids_e)) − 1
-            //   while i1 >= t0 and decode(ids[i1]).startswith('##'): i1 −= 1
-            //   i0 = t0; if i1 < i0: skip
-            //   c0 = om[i0][0]; c1 = om[min(i1, len(om) − 1)][1]
-            //   b0 = len(text[:c0].encode()); b1 = len(text[:c1].encode())
-            // om = encode_plus (python-форма 1-в-1 с ids, спец = (0,0)):
-            // промер 20.10 g0001: len(ids)=len(offs)=75, om[17]=(56,63)='Ушакова'
-            // → байт 87 = gold start_byte (двойной промер python/rust, ревьюер
-            // PR#49 + родитель). РЕЦИДИВ −1, исправлен в обоих харнесах: om[t0−1]
-            // = ':' → b0=85 — сдвиг влево, пересечение только ДОБАВЛЯЛО хиты.
-            // PS-трим харнеса `tok.decode([id]).startswith('##')`:
-            // python decode([PS]) = '##вич' ⇒ трим живой (промер 4b-3C). Rust
-            // decode ОДИНОЧНОГО PS-id ЧИСТИТ маркер ('вич') — на decode
-            // условие молча ложно, окна PS-склеек завышаются (первая 0.00).
-            // Эквивалент python-декода = vocab `id_to_token` ('##вич').
-            let mut i1 = (te - 1).min(ids_u.len() - 1);
-            while i1 >= ts
-                && ltok
-                    .id_to_token(ids_u[i1])
-                    .is_some_and(|tk| tk.starts_with("##"))
-            {
-                i1 -= 1;
-            }
-            // i0 = t0: индекс полного списка = индекс om без сдвига (см. выше).
-            let i0 = ts;
-            if i1 < i0 {
+        for sp in ex.spans {
+            // 7b: гейт = lib; эквивалент старого `if conf < thr { continue; }`
+            // включая NaN-случай (fail-closed Block тоже «extracted»).
+            if !lockr_cfg.route(sp.score).extracted() {
                 continue;
             }
-            let (o0, o1) = (offs.get(i0).copied(), offs.get(i1).copied());
-            let (Some((c0, _)), Some((_, c1))) = (o0, o1) else {
-                continue;
-            };
-            // Python `len(text[:c].encode('utf-8'))` (char→byte). Поле om =
-            // encode_plus из encode(false): промер 4b-3C показал байтовую
-            // шкалу Rust-оффсетов (b16=(87,101)) при python-char (56,63)→87 —
-            // конверсия char→byte на них = ВТОРАЯ конверсия (+53.. на
-            // кириллице, нулевой recall) ⇒ харнесная формула на Rust-поле:
-            // b = om напрямую (шкалы совпали: харнес-байт == rust-байт).
-            // ПРОМЕР 4b-3C: Rust `tokenizers` отдаёт offsets УЖЕ в байтах
-            // (encode(false) g0001: om[16]=(87,101) 'Ушакова' против python
-            // char (56,63); харнес `len(text[:56].encode())` = 87 — та же
-            // шкала). encode_plus переносит word-оффсеты 1-в-1 ⇒ харнесные
-            // b0/b1 = om напрямую; char2byte поверх = ВТОРАЯ конверсия
-            // (+53.. на кириллице, 0-hit все спаны — вторая корневая
-            // причина 4b-3C).
-            let b0 = c0;
-            let b1 = c1;
-            if b1 <= b0 {
-                continue;
-            }
-            // conf = min probs ВСЕЙ B/I-скобки (spans_grouped cur[3]); thr —
-            // при счёте хита (lockr_counts L410), НЕ в тегах (пре-гейт рвёт
-            // I-скобки SNILS/CITY — промер 4b-3C).
-            let conf = probv[ts..te].iter().copied().fold(f64::INFINITY, f64::min);
-            // 7b: гейт = lib (см. `lockr_cfg` выше); эквивалент старого
-            // `if conf < thr { continue; }` включая NaN-случай (старый
-            // оставлял спан, fail-closed Block тоже «extracted»).
-            if !lockr_cfg.route(conf).extracted() {
-                continue;
-            }
-            let Some(mapped) = bio_to_class(&cls_tok) else {
+            let Some(mapped) = sp.class else {
                 continue;
             };
             for (si, (cat, gs, ge)) in r.spans.iter().enumerate() {
-                if *cat == mapped && b0 < *ge && b1 > *gs {
+                if *cat == mapped && sp.byte_start < *ge && sp.byte_end > *gs {
                     hitmask |= 1u64 << si;
                 }
             }
@@ -485,6 +307,7 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
             }
         }
     }
+    
     println!("RECALL|lockr_ms|{:.0}", t0.elapsed().as_secs_f64() * 1000.0);
 
     // 4) Decide q4f16 (runtime арбитр, row-level per gold class): контракт B
@@ -651,59 +474,6 @@ fn question_of(c: &'static str) -> &'static str {
         "address" => "Is there a postal address ?",
         _ => "Is there a passport series and number ?",
     }
-}
-
-#[cfg(feature = "ort-inference")]
-#[must_use]
-fn bio_to_class(tag: &str) -> Option<&'static str> {
-    // `lockr_bio_group` возвращает класс БЕЗ B-/I-префикса (decide.rs L78:
-    // `tag.strip_prefix("B-")` уже внутри скобки) — префикс дропать НЕ надо.
-    let t = tag;
-    match t {
-        "FIRST_NAME" | "LAST_NAME" | "MIDDLE_NAME" => Some("person_name"),
-        "INN" => Some("inn"),
-        "SNILS" => Some("snils"),
-        "CREDIT_CARD" => Some("card_pan"),
-        "PHONE" => Some("phone"),
-        "EMAIL" => Some("email"),
-        "CITY" | "STREET" | "HOUSE" | "REGION" | "COUNTRY" => Some("address"),
-        "PASSPORT" => Some("passport"),
-        _ => None,
-    }
-}
-
-/// python-эталон `encode(text, add_special_tokens=True)` поверх Rust-`tokenizers`
-/// со снятым пост-процессором: [CLS]+слова+[SEP], offsets (0,0) на спецах,
-/// attention=1 — все поля 1-в-1 по длине (промер 4b-3C: python N+2/N+2/N+2).
-#[cfg(feature = "ort-inference")]
-#[must_use]
-fn encode_plus(
-    base: &tokenizers::Encoding,
-    cl_id: u32,
-    sep_id: u32,
-    cl_tok: &str,
-    sep_tok: &str,
-) -> tokenizers::Encoding {
-    // `Encoding::from_tokens` + `merge_with(growing_offsets=false)`: спец-слоты
-    // (0,0)/special_mask=1/attention=1 — ровно `TemplateProcessing::apply_template`
-    // (промер исходников tokenizers 0.23: там те же repeat_n(0,0)/1/1).
-    let spm1 = |id: u32, v: &str| {
-        tokenizers::Encoding::new(
-            vec![id],
-            vec![0],
-            vec![v.to_string()],
-            vec![None],
-            vec![(0, 0)],
-            vec![1],
-            vec![1],
-            vec![],
-            Default::default(),
-        )
-    };
-    let mut e = spm1(cl_id, cl_tok);
-    e.merge_with(base.clone(), false);
-    e.merge_with(spm1(sep_id, sep_tok), false);
-    e
 }
 
 #[cfg(feature = "ort-inference")]
@@ -919,11 +689,11 @@ mod recall_tests {
 
     #[test]
     fn lockr_specials_is_decode_contract_mirror() {
-        // Зеркало `LOCKR_SPECIALS` харнеса (parity_golden.py L197): строки, а
+        // Зеркало decode-контракта харнеса (parity_golden.py L197): строки, а
         // НЕ id — python decode([CLS]) = '' (промер 4b-3C) ⇒ фильтр на спецах
-        // ложь, O там красит argmax модели.
-        assert_eq!(LOCKR_SPECIALS.len(), 5);
-        assert!(LOCKR_SPECIALS.contains(&"[UNK]"));
+        // ложь, O там красит argmax модели. С 9A константа в либе (общий код).
+        assert_eq!(guard_onnx::extract::LOCKR_SPECIALS.len(), 5);
+        assert!(guard_onnx::extract::LOCKR_SPECIALS.contains(&"[UNK]"));
     }
 
     #[test]

@@ -19,6 +19,12 @@
 #[cfg(feature = "ort-inference")]
 pub mod arbitrate;
 pub mod chunker;
+/// Живой каскад 1 (lockR-экстрактор, #14A): констрэкт входа + инференция +
+/// B/I-декод в одном типе. Вынесен из `examples/recall_golden.rs`, чтобы
+/// продуктовый путь (`guard-daemon`) и харнес мерили и гоняли ОДИН код
+/// (инвариант 7b «меряем = гоняем»); харнес после выноса вызывает этот модуль.
+#[cfg(feature = "ort-inference")]
+pub mod extract;
 pub mod decide;
 pub mod merger;
 #[cfg(test)]
