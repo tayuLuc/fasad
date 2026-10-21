@@ -53,7 +53,7 @@ trap cleanup EXIT
 
 echo "METRIC|method|ps-rss-sampling-100ms|threads|$THREADS|reqs|$REQS|bin|$BIN"
 FASAD_MODEL_DIR="$MODEL_DIR" FASAD_THREADS="$THREADS" FASAD_PORT="$PORT" \
-  FASAD_BIND=127.0.0.1 FASAD_TIMEOUT_MS=30000 \
+  FASAD_BIND=127.0.0.1 FASAD_TIMEOUT_MS="${FASAD_TIMEOUT_MS:-30000}" \
   "$BIN" >"$LOG" 2>&1 &
 PID=$!
 
@@ -98,7 +98,10 @@ for i in $(seq 1 "$REQS"); do
   stage=$(tr -d '\r' <"$HEADERS" | grep -i '^x-guard-stage:' | cut -d' ' -f2 || true)
   c2=$(tr -d '\r' <"$HEADERS" | grep -i '^x-guard-cascade2:' | cut -d' ' -f2 || true)
   rss=$(ps -o rss= -p "$PID" 2>/dev/null | tr -d ' ')
-  [[ -z "$rss" ]] && rss=0
+  # `[[ -z "$rss" ]] && rss=0` под `set -e` — ловушка: когда rss НЕ пустой,
+  # список `[[ ]] && …` завершается статусом 1 и скрипт умирал на trap EXIT
+  # до печати `METRIC|req` (промер #84: 200-ответы скрипт не переживал).
+  rss=${rss:-0}
   (( rss > peak )) && peak=$rss
   echo "METRIC|req|$i|http|$code|spans|$spans|stage|${stage:-none}|cascade2|${c2:-none}|rss_kib|$rss"
 done

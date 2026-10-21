@@ -80,7 +80,9 @@
 //!    ([`extract_chunked`]'й `over_budget`), вне бюджета — `Timeout`, не
 //!    бесконечный прогон: «чанкам нужен свой бюджет, иначе таймаут становится
 //!    единственным исходом» (issue #84 п.2) закрыт формулой
-//!    `budget ≳ N_lockR × 0.3 c + N_decide × 1.2 c` (README демона).
+//!    `budget ≳ N_lockR × 0.3 с + N_decide × 8 с` при threads=2 — промер
+//!    docs/model-audit.md §11: Decide-чанк дороже предсказания в 4 раза
+//!    (README демона).
 //! 7. **Decide чанкуется** ([`guard_onnx::arbitrate::DecideArbiter::arbitrate_chunked`]
 //!    с `arb_chunk_cfg(384 + 56 ≤ 512)`), вердикт класса = **max** вероятности
 //!    по чанкам (FN фатален, тот же закон, что у `merge_arb_hits`: union, ниже
@@ -1426,8 +1428,7 @@ mod tests {
         // чанк 0 = [0,1017), чанк 1 = [888,…), хвост длиннее окна, чтобы
         // второй чанк существовал): её находят ДВАЖДЫ, отдавать обязаны один.
         let needle = "Ушакова";
-        let text =
-            format!("{}{needle} {}{}", sentences(75), "хвост.", sentences(50));
+        let text = format!("{}{needle} {}{}", sentences(75), "хвост.", sentences(50));
         let mut fake = FakeExtract::new(vec![(needle, 0.9)]);
         let out =
             extract_chunked(&text, chunk_cfg(), &mut fake.call(), &mut no_budget()).expect("окно");
