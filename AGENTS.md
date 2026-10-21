@@ -48,15 +48,16 @@
    рычагами); вручную это `CARGO_BUILD_JOBS=2`, `cargo test -- --test-threads=2`,
    у инференса потоки рычагом `--threads 2` (spike/recall_golden, дефолт 4) и
    `FASAD_THREADS=2` для демона (дефолт 8 — `config.rs:76`; `cfg.threads`
-   (`config.rs:423`) жив на смонтированном пути каскадов 1–2 — `cascades.rs:746`
+   (`config.rs:423`) жив на смонтированном пути каскадов 1–2 — `cascades.rs:750`
    уносит его в `LockrExtractor::load(…, threads)` и `DecideArbiter::load(…,
-   threads)` (`cascades.rs:863,865`, #87); на стадии `cascade-0-only` инертен —
+   threads)` (`cascades.rs:867,869`, #87); на стадии `cascade-0-only` инертен —
    единственным потребителем поля оставался тест `config.rs:638`, а потоки в
    сессию ORT идут из `guard-onnx::arbitrate` (`intra_threads`,
    `arbitrate.rs:261-276`), куда демон там не доходит (#76; номера строк #76
    сняты на `bfb0014` — `:67`/`:403`/`:610`, на этом дереве пересняты на
    `:76`/`:423`/`:638`)); `:558`/`:675,677` сняты на `bfb0014`, пересняты
-   grep'ом на `ec9a36b` — #111 сдвинул строки `cascades.rs` на +188).
+   grep'ом на этом дереве: собственный чанкинг #84 вставил в `cascades.rs`
+   выше этих мест ~+192 строк (`:750`/`:867,869`); #111 файла не трогал).
    `OMP_NUM_THREADS` на нашей сборке инертен — вендорный `libonnxruntime`
    osx-arm64 без OpenMP (промер otool/strings 21.10). `nice -n 10` на долгих
    сборках, один прогон за раз. Это

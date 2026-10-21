@@ -47,7 +47,7 @@ curl -s localhost:8765/health
 | `FASAD_BIND` | 127.0.0.1 (config.rs:28) | только loopback: на внешний адрес демон стартовать отказывается |
 | `FASAD_VAULT_MODE` | `stateless` | `stateless`/`3` = SPEC §3.3, `session`/`2` = SPEC §3.2 (таблица §3 ниже) |
 | `FASAD_VAULT_KEY` | нет (ключ эфемерный) | 64 hex-символа (32 байта); с ним обратимость переживает перезапуск (vault.rs:377) |
-| `FASAD_THREADS` | 8 (config.rs:76) | потоки инференса; **жив на смонтированном пути каскадов 1–2**: `cfg.threads` (config.rs:423) уходит в `LockrExtractor::load` и `DecideArbiter::load` (`cascades.rs:746` → `cascades.rs:863,865`) — монтаж #87, в main с `3b2d596` (первичка новой правды: AGENTS §3 п.3). На стадии `cascade-0-only` инертен: значение разбирается, а единственным потребителем поля в демоне остаётся тест config.rs:638 — до сессий ORT оно не доходит. Номера строк пересняты live-grep'ом на этом дереве (прежние `:67`/`:403`/`:610` сняты на `bfb0014`). Харнесы каскадов — рычагом `--threads 2` (рюлинг CPU, AGENTS §3) |
+| `FASAD_THREADS` | 8 (config.rs:76) | потоки инференса; **жив на смонтированном пути каскадов 1–2**: `cfg.threads` (config.rs:423) уходит в `LockrExtractor::load` и `DecideArbiter::load` (`cascades.rs:750` → `cascades.rs:867,869`) — монтаж #87, в main с `3b2d596` (первичка новой правды: AGENTS §3 п.3). На стадии `cascade-0-only` инертен: значение разбирается, а единственным потребителем поля в демоне остаётся тест config.rs:638 — до сессий ORT оно не доходит. Номера строк пересняты live-grep'ом на этом дереве (прежние `:67`/`:403`/`:610` сняты на `bfb0014`). Харнесы каскадов — рычагом `--threads 2` (рюлинг CPU, AGENTS §3) |
 | `FASAD_MLOCK` | `strict` (config.rs:411) | `strict`/`best_effort` — политика залочки буферов ПДн; деградация видна в баннере (`main.rs:91-99`), в `/health` её поля нет — там `version`/`stage`/`mode` и счётчики vault (`http.rs:157-169`) |
 | `FASAD_GRAY_LO`, `FASAD_GRAY_HI` | 0.22 / 0.80 (config.rs:59,62) | полоса неуверенности |
 | `FASAD_TAU_LOW`, `FASAD_TAU_HIGH` | 0.20 / 0.80 (guard-onnx/src/routing.rs:70,74) | пороги; инвариант `low ≤ gray_lo < gray_hi ≤ high`, рассогласование = отказ старта |
@@ -56,7 +56,7 @@ curl -s localhost:8765/health
 | `FASAD_UPSTREAM_ALLOWLIST` | пусто = прокси выключен | список `host[:port]`, куда пускать `X-Upstream-URL` |
 | `FASAD_PROXY_LOOPBACK_HTTP` | выключен | разрешить `http://` только на loopback (для локального стенда) |
 | `FASAD_SCHEMA` | нет (схема встроена) | путь к своей схеме классов; канон встроенной — `config/schema.default.json` (`schema.rs:24`), поле — config.rs:267 |
-| `FASAD_MODEL_DIR` | нет | каталог весов каскадов 1–2; **на смонтированной сборке читается**: разбор — config.rs:424, метка стадии `cascade-0+models` — `config.rs:457`. Стартовый precheck четырёх файлов (`cascades.rs:748-761`, вход — `cascades.rs:738` через `cascades.rs:634`): весов нет или бинарь собран без фичи `ort-inference` — демон не поднимается (exit 2, сокет не биндится, в stderr имя файла; промер 21.10 на пустом каталоге). Раскладка весов, команда сборки и dylib — §«Как включить монтаж каскадов 1–2» в [crates/guard-daemon/README.md](crates/guard-daemon/README.md), он владелец деталей |
+| `FASAD_MODEL_DIR` | нет | каталог весов каскадов 1–2; **на смонтированной сборке читается**: разбор — config.rs:424, метка стадии `cascade-0+models` — `config.rs:457`. Стартовый precheck четырёх файлов (`cascades.rs:752-765`, вход — `cascades.rs:742` через `cascades.rs:638`): весов нет или бинарь собран без фичи `ort-inference` — демон не поднимается (exit 2, сокет не биндится, в stderr имя файла; промер 21.10 на пустом каталоге). Раскладка весов, команда сборки и dylib — §«Как включить монтаж каскадов 1–2» в [crates/guard-daemon/README.md](crates/guard-daemon/README.md), он владелец деталей |
 
 ## 2. Три запроса, ради которых продукт ставят
 
@@ -258,13 +258,13 @@ allowlist (`https://api.openai.com/…`) этот rig отвечает `403`
    формуле `≳ N_lockR·300 + N_decide·8000` мс (README демона, §монтаж). И
    если сам чанк не влезает в окно (латинская/цифровая плотность), ответ —
    честный `502`. `x-guard-cascade2: skipped` бывает не «на любом входе с №»: Decide
-   зовётся только на серую зону (`gray_lo ≤ p1 < gray_hi`, cascades.rs:298-299), и
+   зовётся только на серую зону (`gray_lo ≤ p1 < gray_hi`, cascades.rs:302-303), и
    skipped — это случай, когда вызванный арбитр падает на контракте склейки
    (`№` = `[UNK]` в словаре Spiber, #88): вердиктов каскада 2 по запросу нет,
    серые спаны остаются на вероятности каскада 1 и не теряются
-   (cascades.rs:1058-1061; значение по умолчанию — `Ok`, cascades.rs:1040). На
+   (cascades.rs:1062-1065; значение по умолчанию — `Ok`, cascades.rs:1044). На
    входе без серой зоны Decide не зовётся вовсе, и заголовок остаётся `ok`
-   (short-circuit, cascades.rs:215-217): промер ревьюера #93 — 9 входов с `№`,
+   (short-circuit, cascades.rs:219-221): промер ревьюера #93 — 9 входов с `№`,
    все `ok`.
 5. UI-песочница (`/ui`: раскраска по confidence, редактор схемы) пришла в main с
    PR #75 (влит `bf95412`): фронт вшит в бинарь (`rust-embed`, ui.rs:23,26-28),
