@@ -81,6 +81,7 @@ const GUARD_HEADERS = [
   "X-Guard-Max-Risk",
   "X-Guard-Latency-Ms",
   "X-Guard-Stage",
+  "X-Guard-Cascade2",
   "X-Guard-Policy-Applied",
   "X-Guard-Score-Threshold",
   "X-Guard-Unresolved",

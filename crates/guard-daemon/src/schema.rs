@@ -336,6 +336,13 @@ mod tests {
     /// равенство схемы тому, на чём измеряли порядок и recall.
     const HARNESS: &str = include_str!("../../guard-onnx/examples/recall_golden.rs");
 
+    /// Владелица BIO-маппинга с шага 9A (issue #14A) — либа, а не харнес:
+    /// `tag_to_class` в `guard-onnx::extract` зовут и харнес, и демон, поэтому
+    /// якорь «тег не выдуман схемой, он из измеренного декода» переехал вместе
+    /// с владельцем маппинга. Харнес больше не держит список тегов — он их
+    /// получает из либы; якорь на источник вопросов (`HARNESS`) остаётся.
+    const EXTRACT: &str = include_str!("../../guard-onnx/src/extract.rs");
+
     fn names(v: &[String]) -> Vec<&str> {
         v.iter().map(String::as_str).collect()
     }
@@ -398,7 +405,8 @@ mod tests {
 
     #[test]
     fn lockr_tags_are_the_harness_bio_mapping() {
-        // bio_to_class() харнеса сворачивает те же теги в те же классы.
+        // tag_to_class() либы (общий для харнеса и демона) сворачивает те же
+        // теги в те же классы, что приписывает им схема.
         let s = canon();
         assert_eq!(s.lockr_class("MIDDLE_NAME"), Some("person_name"));
         assert_eq!(s.lockr_class("CREDIT_CARD"), Some("card_pan"));
@@ -417,8 +425,8 @@ mod tests {
             );
             for t in &c.lockr_tags {
                 assert!(
-                    HARNESS.contains(&format!("\"{t}\"")),
-                    "тег {t} не из харнеса"
+                    EXTRACT.contains(&format!("\"{t}\"")),
+                    "тег {t} не из измеренного BIO-маппинга"
                 );
             }
         }

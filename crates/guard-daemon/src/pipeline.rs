@@ -4,29 +4,43 @@
 //! логика вердиктов тестируется без сокета, а атом D (middleware) переиспользует
 //! [`Policy::parse`] и [`analyze`], не переписывая их.
 //!
-//! # Промеренная граница этого шага
+//! # Каскады в трубе (шаг 9A, issue #14A)
 //!
-//! На шаге 6 демон поднимает **только каскад 0**. Причина не в лени, а в API:
-//! `guard-onnx` под фичей `ort-inference` даёт сессию арбитра Decide
-//! (`arbitrate::DecideArbiter`), а сессию извлечения lockR — нет
-//! (она живёт в `crates/guard-onnx/examples/recall_golden.rs`, библиотечного
-//! интерфейса у неё нет). Decide без спанов спрашивать не о чем: он отвечает на
-//! вопрос «есть ли класс в тексте», координат не даёт. Значит модельный путь
-//! спанов в демоне физически отсутствует, и мы это честно пишем в
-//! `X-Guard-Stage: cascade-0-only` и в `/health`, а не делаем вид, что recall
-//! полный. Гейт #14 (recall ≥ 98 % по нижнему Wilson) родитель меряет харнесом
-//! на полном каскаде 0/1/2, не демоном.
+//! На шаге 6 здесь работал только каскад 0, и это была правда: у `guard-onnx`
+//! не было библиотечного интерфейса к lockR, и `X-Guard-Stage` честно говорил
+//! `cascade-0-only`. С шага 9A при заданном `FASAD_MODEL_DIR` конвейер зовёт
+//! каскад 1 (`guard_onnx::extract::LockrExtractor`) и — только для серой зоны
+//! контекстно-зависимых классов — каскад 2 (`DecideArbiter`), см.
+//! [`crate::cascades`].
+//!
+//! Три инварианта, которые держит этот файл:
+//!
+//! 1. **Fail-closed.** Сбой модельного пути = `AnalyzeError::Cascade` = 502,
+//!    запрос наружу не уходит. Молчаливого «ну ладно, посчитаем каскадом 0»
+//!    при примонтированных весах не существует.
+//! 2. **Вето чексуммы.** Скор детерминированного валидатора = 1.0, и модель
+//!    не понижает его и не перескоривает арбитражем (SPEC §2, AGENTS);
+//!    пересечения модельных и детерминированных спанов снимает
+//!    [`crate::cascades::merge_disjoint`] (SPEC §2 каскад 3).
+//! 3. **Один код с харнесом.** Порог — `RoutingCfg` из `guard-onnx`, декод —
+//!    `LockrExtractor` из `guard-onnx`: то, чем меряют recall, и то, что
+//!    обслуживает запрос, — одна функция (инвариант 7b «меряем = гоняем»).
+//!
+//! Гейт #14 (recall ≥ 98 % по нижнему Wilson) по-прежнему мерится харнесом на
+//! golden-наборе; продукт обязан совпасть с ним по составу каскадов — за это
+//! отвечает тест парности `tests/cascade_parity.rs`.
 
 use std::time::Instant;
 
 use guard_onnx::routing::{Route, RoutingCfg, ScoredSpan, route_spans};
 use guard_types::{
-    AnnotatedSpan, ClassId, DetectionSource, EntityRole, NewtypeId, ScoreError, Verdict,
+    AnnotatedSpan, ByteSpan, ClassId, DetectionSource, EntityRole, NewtypeId, ScoreError, Verdict,
 };
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::cascade0;
+use crate::cascades::{self, Cascade12, CascadeFailure, Plan};
 use crate::config::Config;
 use crate::schema::Schema;
 
@@ -89,6 +103,12 @@ pub enum AnalyzeError {
     BadThreshold(f64),
     /// Скор не прошёл контракт `AnnotatedSpan::new` (AGENTS: вето = ровно 1.0).
     Score(ScoreError),
+    /// Сбой модельного каскада (1–2) при примонтированных весах: запрос наружу
+    /// не выпускается. Единственный вариант перечисления, который становится
+    /// **5xx**: это не отвергнутый запрос клиента, а отказ конвейера
+    /// (AGENTS, Fail-Closed), и код для него — 502 `cascade_unavailable`
+    /// (`http::ApiError::from_analysis`).
+    Cascade(CascadeFailure),
 }
 
 impl std::fmt::Display for AnalyzeError {
@@ -103,11 +123,20 @@ impl std::fmt::Display for AnalyzeError {
             Self::UnknownEntity(e) => write!(f, "entities: класса {e:?} в схеме нет"),
             Self::BadThreshold(t) => write!(f, "score_threshold {t} вне [0, 1]"),
             Self::Score(e) => write!(f, "скор не прошёл контракт спана: {e:?}"),
+            Self::Cascade(e) => write!(f, "{e}"),
         }
     }
 }
 
 impl std::error::Error for AnalyzeError {}
+
+/// Сбой модельного каскада — отказ конвейера, а не отвергнутый запрос
+/// клиента, поэтому у него свой вариант, а не «подмешаем в `Score`».
+impl From<CascadeFailure> for AnalyzeError {
+    fn from(e: CascadeFailure) -> Self {
+        Self::Cascade(e)
+    }
+}
 
 /// Тело запроса `/v1/analyze` (Президио-совместимое подмножество).
 #[derive(Debug, Clone, Deserialize)]
@@ -191,6 +220,10 @@ pub struct Analysis {
     pub latency_ms: u128,
     /// Какой каскад реально работал.
     pub stage: &'static str,
+    /// Что сделал каскад 2 на ЭТОМ запросе (`X-Guard-Cascade2`): `absent` без
+    /// весов, `ok` штатно, `skipped` — лег был нужен и пропущен
+    /// (`cascades::decide_degrades`). Stage про монтаж, этот сигнал про вердикты.
+    pub cascade2: &'static str,
     /// Эффективный порог, с которым считали (эхо в заголовке — чтобы клиент не
     /// гадал, что он сам попросил).
     pub threshold: f64,
@@ -198,17 +231,113 @@ pub struct Analysis {
     pub policy: Policy,
 }
 
-/// Разобрать текст конвейером шага 6.
+/// Каскады 1–2 внутри конвейера: запрос в модельный путь, спаны — в общий
+/// список кандидатов, пересечения с каскадом 0 сняты (SPEC §2 каскад 3).
+///
+/// Отказ модельного пути возвращается ошибкой, а НЕ пустым списком: пустой
+/// ответ при примонтированных весах означает «`ПДн` не нашли» — это fail-open.
+fn model_mount(
+    req: &AnalyzeRequest,
+    schema: &Schema,
+    cfg: &Config,
+    threshold: f64,
+    mount: &dyn Cascade12,
+    cands: &mut Vec<Cand>,
+) -> Result<cascades::Cascade2, AnalyzeError> {
+    let plan = Plan::from_config(cfg, threshold);
+    let out = mount.model_spans(&req.text, schema, &plan)?;
+    for m in out.spans {
+        // Координата вне границы символа = сломанный декод модели: сдвигать её
+        // «на глаз» нельзя (маскирование встанет не на то место), значит это
+        // отказ конвейера, а не отфильтрованный кандидат.
+        let span = ByteSpan::new(&req.text, m.byte_start, m.byte_end).map_err(|e| {
+            AnalyzeError::Cascade(CascadeFailure::Inference(format!(
+                "каскад 1 вернул координату {}..{} вне границы символа: {e:?}",
+                m.byte_start, m.byte_end
+            )))
+        })?;
+        cands.push(Cand {
+            span,
+            class: ClassId::from_id(m.class),
+            score: m.score,
+            source: m.source,
+            // У модельного спана нет детерминированного валидатора:
+            // `validator: null` в ответе клиента честно читается как
+            // «гипотеза модели, чексуммой не подтверждена».
+            validator: None,
+            veto: m.source.deterministic_weight().is_some(),
+        });
+    }
+    // Слияние каскада 0 с модельным выходом: вето чексуммы не понижается и не
+    // дублируется, модельные пересечения снимаются leftmost-longest.
+    let tuples: Vec<(usize, usize, f64, bool)> = cands
+        .iter()
+        .map(|c| (c.span.start, c.span.end, c.score, c.veto))
+        .collect();
+    let mut kept = vec![false; cands.len()];
+    for i in cascades::merge_disjoint(&tuples) {
+        kept[i] = true;
+    }
+    *cands = std::mem::take(cands)
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| kept[*i])
+        .map(|(_, c)| c)
+        .collect();
+    Ok(out.cascade2)
+}
+
+/// Кандидат на выход конвейера: один спан с классом, скором и авторством.
+///
+/// Живёт внутри [`analyze_with`]: нужен слой между «детектор сказал» и
+/// «контрактный [`AnnotatedSpan`]», потому что между ними стоят слияние
+/// пересечений (SPEC §2 каскад 3) и пороговый гейт, и оба смотрят на весь
+/// набор сразу, а не на спан по одному.
+#[derive(Debug)]
+struct Cand {
+    span: ByteSpan,
+    class: ClassId,
+    score: f64,
+    source: DetectionSource,
+    validator: Option<&'static str>,
+    /// Детерминированное вето (чексумма): скор = 1.0, модель его не понижает.
+    veto: bool,
+}
+
+/// Разобрать текст конвейером: каскад 0 + примонтированные каскады 1–2.
 ///
 /// # Errors
 ///
-/// [`AnalyzeError`] — см. варианты; всё перечисленное ответом 4xx, а не 5xx:
-/// это отвергнутый запрос, а не сбой конвейера.
+/// [`AnalyzeError::UnknownPolicy`], [`AnalyzeError::UnknownEntity`],
+/// [`AnalyzeError::BadThreshold`] и [`AnalyzeError::Score`] — это отвергнутый
+/// запрос/внутренний контракт (4xx/500); [`AnalyzeError::Cascade`] — отказ
+/// модельного пути, и он answering 502: запрос наружу не уходит (fail-closed).
 pub fn analyze(
     req: &AnalyzeRequest,
     schema: &Schema,
     cfg: &Config,
     policy: Policy,
+) -> Result<Analysis, AnalyzeError> {
+    analyze_with(req, schema, cfg, policy, cascades::engine().as_deref())
+}
+
+/// [`analyze`] с внедрённым модельным путём.
+///
+/// Отдельная сигнатура — не «для красоты», а чтобы стад-машина конвейера
+/// тестировалась без весов: `mount: Some(&фейк)` прогоняет ветки «каскад 1
+/// дал спаны», «каскад 2 перескорил», «каскад упал → 502» в CI обеих ОС, где
+/// весов нет и не будет. Прод-путь приходит через [`analyze`] и читает
+/// глобальный mount, поднятый на старте ([`crate::cascades::startup`]).
+///
+/// # Errors
+///
+/// См. [`analyze`].
+pub fn analyze_with(
+    req: &AnalyzeRequest,
+    schema: &Schema,
+    cfg: &Config,
+    policy: Policy,
+    mount: Option<&dyn Cascade12>,
 ) -> Result<Analysis, AnalyzeError> {
     let started = Instant::now();
     let threshold = effective_threshold(req.score_threshold, cfg)?;
@@ -219,6 +348,30 @@ pub fn analyze(
         .transpose()?;
 
     let hits = cascade0::scan(&req.text, schema);
+    let mut cands: Vec<Cand> = hits
+        .into_iter()
+        .map(|h| {
+            // Поля читаем до переезда `class`: `ClassId` — `String`, частичный
+            // move ломает последующие заимствования хита.
+            let (span, score, source, validator) = (h.span, h.score(), h.source, h.validator);
+            Cand {
+                span,
+                class: h.class,
+                score,
+                source,
+                validator: Some(validator),
+                veto: source.deterministic_weight().is_some(),
+            }
+        })
+        .collect();
+
+    // ── каскады 1–2 (issue #14A) ────────────────────────────────────────────
+    let mut stage = cfg.stage();
+    let mut cascade2 = cascades::Cascade2::Absent;
+    if let Some(mount) = mount {
+        stage = cascades::STAGE_MOUNTED;
+        cascade2 = model_mount(req, schema, cfg, threshold, mount, &mut cands)?;
+    }
     // Пороговый гейт — общая функция харнеса, демона и прокси (мандат 7c,
     // law #53): локальная `passes` была промеренной копией вырожденной пары
     // `RoutingCfg::single` («score ≥ τ || вето» = `route(score).extracted()`),
@@ -226,47 +379,47 @@ pub fn analyze(
     let routing = RoutingCfg::single(threshold);
     // `C = &ClassId`: `ClassId` — newtype над `String`, не `Copy`, а
     // `route_spans` требует `Copy`; заимствование копируется и ничего не стоит.
-    let scored: Vec<ScoredSpan<&ClassId>> = hits
+    let scored: Vec<ScoredSpan<&ClassId>> = cands
         .iter()
-        .map(|h| ScoredSpan {
-            class: &h.class,
-            score: h.score(),
-            validator: h.source.deterministic_weight().is_some(),
+        .map(|c| ScoredSpan {
+            class: &c.class,
+            score: c.score,
+            validator: c.veto,
         })
         .collect();
     let routed_pairs = route_spans(&routing, &scored);
-    // Порядок выхода = порядок входа, поэтому маршруты зиппятся с хитами
+    // Порядок выхода = порядок входа, поэтому маршруты зиппятся с кандидатами
     // позиционно. Утверждение не вербальное: его проверяет
     // `routing::tests::route_spans_pairs_routes_with_input_order` в guard-onnx
     // (плюс позиционная проверка классов в `route_spans_vector_table`).
     let routes: Vec<Route> = routed_pairs.into_iter().map(|r| r.route).collect();
     drop(scored);
-    let mut spans = Vec::with_capacity(hits.len());
-    for (h, route) in hits.into_iter().zip(routes) {
+    let mut spans = Vec::with_capacity(cands.len());
+    for (c, route) in cands.into_iter().zip(routes) {
         if !route.extracted() {
             continue;
         }
         if let Some(want) = filter.as_deref() {
-            if !want.iter().any(|w| *w == h.class.as_str()) {
+            if !want.iter().any(|w| *w == c.class.as_str()) {
                 continue;
             }
         }
         // Поля читаем до конструктора: `class` — `String`, частичный переезд
-        // ломает последующие заимствования хита.
-        let score = h.score();
-        let validator = h.validator;
+        // ломает последующие заимствования кандидата.
+        let score = c.score;
+        let validator = c.validator;
         let span = AnnotatedSpan::new(
-            h.span,
-            h.class,
-            // Ролей на шаге 6 нет: SPEC §14 (CLIENT/VENDOR) — шаг 8, а
-            // выдумывать их из соседних слов значит генерировать факты.
+            c.span,
+            c.class,
+            // Ролей нет: SPEC §14 (CLIENT/VENDOR) — шаг 8, а выдумывать их из
+            // соседних слов значит генерировать факты.
             None,
-            h.source,
+            c.source,
             score,
             policy.verdict(),
         )
         .map_err(AnalyzeError::Score)?;
-        spans.push(AnalyzedSpan::from_annotated(&span, Some(validator)));
+        spans.push(AnalyzedSpan::from_annotated(&span, validator));
     }
 
     let max_risk = spans.iter().fold(0.0_f64, |m, s| m.max(s.score));
@@ -274,7 +427,8 @@ pub fn analyze(
         spans,
         max_risk,
         latency_ms: started.elapsed().as_millis(),
-        stage: cfg.stage(),
+        stage,
+        cascade2: cascade2.as_header(),
         threshold,
         policy,
     })
@@ -557,5 +711,358 @@ mod tests {
             obj["entity_type"], "snils",
             "entity_type = класс находки (Presidio-совместимое поле)"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // в тестах паника = канал ответа
+#[allow(clippy::float_cmp)] // скора в этих тестах — константы контракта
+/// Стад-машина каскадов 1–2 без весов.
+///
+/// Тесты гоняют `analyze_with` на фейковом [`Cascade12`]: в CI весов нет ни на
+/// одной ОС, а тест, который требует весов, — это не тест, а надежда. Фейк
+/// даёт ровно ту границу, которую должен проверять конвейер: «модель сказала»,
+/// «модель упала», «модель сказала чушь».
+mod mount_tests {
+    use super::*;
+    use crate::cascades::{Cascade12, CascadeFailure, ModelSpan, Plan};
+    use guard_types::ByteSpan;
+
+    /// Фейк модельного пути: отдаёт заготовленные спаны либо заготовленный
+    /// отказ. `calls` — счётчик вызовов (проверяет, что без mount мы в модель
+    /// не ходим и что обращение было ровно один раз на запрос).
+    struct FakeMount {
+        spans: Vec<ModelSpan>,
+        cascade2: cascades::Cascade2,
+        fail: Option<CascadeFailure>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeMount {
+        fn ok(spans: Vec<ModelSpan>) -> Self {
+            Self {
+                spans,
+                fail: None,
+                cascade2: cascades::Cascade2::Ok,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        /// Тот же фейк, но лег каскада 2 объявлен пропущенным — на нём
+        /// проверяется, что сигнал доезжает до `Analysis`, а не теряется.
+        fn skipped(spans: Vec<ModelSpan>) -> Self {
+            Self {
+                spans,
+                fail: None,
+                cascade2: cascades::Cascade2::Skipped,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        fn fail(f: CascadeFailure) -> Self {
+            Self {
+                spans: Vec::new(),
+                fail: Some(f),
+                cascade2: cascades::Cascade2::Ok,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl Cascade12 for FakeMount {
+        fn model_spans(
+            &self,
+            _text: &str,
+            _schema: &Schema,
+            _plan: &Plan,
+        ) -> Result<cascades::Outcome, CascadeFailure> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            match &self.fail {
+                Some(f) => Err(f.clone()),
+                None => Ok(cascades::Outcome {
+                    spans: self.spans.clone(),
+                    cascade2: self.cascade2,
+                }),
+            }
+        }
+    }
+
+    fn cfg() -> Config {
+        Config::from_lookup(|_| None).expect("дефолты sane")
+    }
+
+    fn schema() -> Schema {
+        Schema::embedded().expect("канон валиден")
+    }
+
+    fn req(text: &str) -> AnalyzeRequest {
+        AnalyzeRequest {
+            text: Zeroizing::new(text.to_owned()),
+            entities: None,
+            score_threshold: None,
+        }
+    }
+
+    /// Спан каскада 1, вписанный в текст по байтовым координатам подстроки.
+    fn span_of(text: &str, needle: &str, class: &str, p: f64) -> ModelSpan {
+        let start = text.find(needle).expect("подстрока в тестовом тексте есть");
+        ModelSpan {
+            byte_start: start,
+            byte_end: start + needle.len(),
+            class: class.to_owned(),
+            score: p,
+            p1: p,
+            source: DetectionSource::GlinerExtractor,
+        }
+    }
+
+    const NAME_TEXT: &str = "Иванов Пётр Сергеевич звонил";
+
+    /// Значение `stage` сверяется строкой, а не фактом «что-то поменялось»:
+    /// тест-пара имён слеп к тому, что реально читает оператор в заголовке,
+    /// поэтому здесь — точное значение гейт-строки (#87 review).
+    #[test]
+    fn skipped_cascade2_leg_is_visible_on_the_analysis() {
+        let mount = FakeMount::skipped(vec![span_of(NAME_TEXT, "Иванов", "person_name", 0.55)]);
+        let a = analyze_with(
+            &req(NAME_TEXT),
+            &schema(),
+            &cfg(),
+            Policy::Mask,
+            Some(&mount),
+        )
+        .expect("ок");
+        assert_eq!(a.stage, "cascade-0+models");
+        assert_eq!(
+            a.cascade2, "skipped",
+            "деградация легов обязана быть видна per-request"
+        );
+        assert_eq!(a.spans.len(), 1, "спан при деградации не теряется");
+    }
+
+    /// Без весов сигнал = `absent`: пустая строка читалась бы как «не
+    /// поддерживается», а не как «каскада 2 в процессе нет».
+    #[test]
+    fn unmounted_cascade2_signal_is_absent() {
+        let a = analyze_with(&req(NAME_TEXT), &schema(), &cfg(), Policy::Mask, None).expect("ок");
+        assert_eq!(a.cascade2, "absent");
+    }
+
+    #[test]
+    fn mounted_cascade_adds_model_spans_and_relabels_stage() {
+        let mount = FakeMount::ok(vec![span_of(NAME_TEXT, "Иванов", "person_name", 0.91)]);
+        let a = analyze_with(
+            &req(NAME_TEXT),
+            &schema(),
+            &cfg(),
+            Policy::Mask,
+            Some(&mount),
+        )
+        .expect("ок");
+        assert_eq!(
+            a.stage, "cascade-0+models",
+            "примонтированный путь обязан называться своим именем"
+        );
+        assert_eq!(
+            a.spans.len(),
+            1,
+            "только модельный спан: чексумм в тексте нет"
+        );
+        let s = &a.spans[0];
+        assert_eq!(s.class, "person_name");
+        assert_eq!(s.source, DetectionSource::GlinerExtractor);
+        assert!(
+            (s.score - 0.91).abs() < 1e-12,
+            "скор модели не меняется конвейером"
+        );
+        assert!(
+            s.validator.is_none(),
+            "у модели нет детерминированного валидатора"
+        );
+        assert_eq!(
+            mount.calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "один запрос = один вызов модели"
+        );
+    }
+
+    #[test]
+    fn no_mount_means_cascade0_only_and_zero_model_calls() {
+        let a = analyze(&req(NAME_TEXT), &schema(), &cfg(), Policy::Mask).expect("ок");
+        assert_eq!(a.stage, "cascade-0-only");
+        assert!(
+            a.spans.is_empty(),
+            "без каскада 1 ФИО не находится — это и есть дыра, которую закрывает #14A"
+        );
+    }
+
+    #[test]
+    fn cascade_failure_is_fail_closed_not_empty_answer() {
+        for f in [
+            CascadeFailure::Inference("орт сказал нет".to_owned()),
+            CascadeFailure::Timeout {
+                budget_ms: 3000,
+                stage: "inference",
+            },
+            CascadeFailure::Truncated { window: 256 },
+            CascadeFailure::Overloaded { depth: 8 },
+            CascadeFailure::Dead,
+        ] {
+            let mount = FakeMount::fail(f.clone());
+            let r = analyze_with(
+                &req(NAME_TEXT),
+                &schema(),
+                &cfg(),
+                Policy::Mask,
+                Some(&mount),
+            );
+            assert!(
+                matches!(r, Err(AnalyzeError::Cascade(_))),
+                "отказ каскада {f:?} обязан быть ошибкой конвейера, получено {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn checksum_veto_is_not_lowered_by_model() {
+        // Текст с валидным ИНН: каскад 0 даёт вето 1.0, модель пытается
+        // претендовать на те же байты как на «адрес» с меньшим скором.
+        let text = "ИНН 2482014338 оплата";
+        let mount = FakeMount::ok(vec![span_of(text, "2482014338", "address", 0.66)]);
+        let a =
+            analyze_with(&req(text), &schema(), &cfg(), Policy::Mask, Some(&mount)).expect("ок");
+        assert_eq!(
+            a.spans.len(),
+            1,
+            "пересечение снято слиянием, не дубликатом"
+        );
+        assert_eq!(a.spans[0].class, "inn", "вето чексуммы не понижается");
+        assert!(
+            (a.spans[0].score - 1.0).abs() < f64::EPSILON,
+            "скор чексуммы = ровно 1.0, AGENTS-инвариант"
+        );
+        assert_eq!(a.spans[0].validator, Some("inn10"));
+    }
+
+    #[test]
+    fn model_span_below_effective_threshold_is_dropped() {
+        // Пороговый гейт конвейера applies к модели так же, как к харнесу:
+        // фейк, нарушивший обещание `plan.tau`, не должен протащить спан.
+        let mount = FakeMount::ok(vec![span_of(NAME_TEXT, "Иванов", "person_name", 0.05)]);
+        let a = analyze_with(
+            &req(NAME_TEXT),
+            &schema(),
+            &cfg(),
+            Policy::Mask,
+            Some(&mount),
+        )
+        .expect("ок");
+        assert!(a.spans.is_empty(), "p1 < τ не выходит наружу");
+    }
+
+    #[test]
+    fn client_threshold_raises_model_gate_too() {
+        let mount = FakeMount::ok(vec![span_of(NAME_TEXT, "Иванов", "person_name", 0.5)]);
+        let mut r = req(NAME_TEXT);
+        r.score_threshold = Some(0.7);
+        let a = analyze_with(&r, &schema(), &cfg(), Policy::Mask, Some(&mount)).expect("ок");
+        assert!(
+            a.spans.is_empty(),
+            "клиент поднял планку до 0.7 — модельный спан 0.5 отброшен"
+        );
+        assert!((a.threshold - 0.7).abs() < 1e-12);
+    }
+
+    #[test]
+    fn entities_filter_applies_to_model_spans() {
+        let mount = FakeMount::ok(vec![
+            span_of(NAME_TEXT, "Иванов", "person_name", 0.9),
+            span_of(NAME_TEXT, "Пётр", "person_name", 0.9),
+        ]);
+        let mut r = req(NAME_TEXT);
+        r.entities = Some(vec!["phone".to_owned()]);
+        let a = analyze_with(&r, &schema(), &cfg(), Policy::AuditOnly, Some(&mount)).expect("ок");
+        assert!(a.spans.is_empty(), "фильтр классов работает и по модели");
+    }
+
+    #[test]
+    fn model_span_outside_char_boundary_is_refused_not_fixed() {
+        // Байт внутри кириллического символа: «починить» координату нельзя,
+        // маскирование встанет не на то место. Отказ конвейера = 502.
+        let text = "Иванов звонил";
+        let mount = FakeMount::ok(vec![ModelSpan {
+            byte_start: 1,
+            byte_end: 4,
+            class: "person_name".to_owned(),
+            score: 0.9,
+            p1: 0.9,
+            source: DetectionSource::GlinerExtractor,
+        }]);
+        let r = analyze_with(&req(text), &schema(), &cfg(), Policy::Mask, Some(&mount));
+        assert!(
+            matches!(r, Err(AnalyzeError::Cascade(CascadeFailure::Inference(_)))),
+            "битая координата модели = отказ, не тихая подрезка: {r:?}"
+        );
+    }
+
+    #[test]
+    fn model_score_out_of_contract_is_refused() {
+        let mount = FakeMount::ok(vec![span_of(NAME_TEXT, "Иванов", "person_name", 1.7)]);
+        let r = analyze_with(
+            &req(NAME_TEXT),
+            &schema(),
+            &cfg(),
+            Policy::Mask,
+            Some(&mount),
+        );
+        assert!(
+            matches!(r, Err(AnalyzeError::Score(_))),
+            "контракт скора един для всех источников: {r:?}"
+        );
+    }
+
+    #[test]
+    fn arbitrated_span_is_attributed_to_cascade2() {
+        let mut sp = span_of(NAME_TEXT, "Иванов", "person_name", 0.55);
+        sp.score = 0.78;
+        sp.source = DetectionSource::GlinerDecideArbitrator;
+        let mount = FakeMount::ok(vec![sp]);
+        let a = analyze_with(
+            &req(NAME_TEXT),
+            &schema(),
+            &cfg(),
+            Policy::Mask,
+            Some(&mount),
+        )
+        .expect("ок");
+        assert_eq!(a.spans[0].source, DetectionSource::GlinerDecideArbitrator);
+        assert_eq!(a.spans[0].entity_type, "person_name");
+    }
+
+    #[test]
+    fn merged_output_has_no_overlapping_spans() {
+        // Инвариант «разбиение», нужный маскированию: два модельных перекрывающихся
+        // спана (ФИО + фамилия) не выходят наружу пересечёнными.
+        let text = "Иванов Пётр Сергеевич звонил";
+        let mount = FakeMount::ok(vec![
+            span_of(text, "Иванов Пётр Сергеевич", "person_name", 0.9),
+            span_of(text, "Сергеевич звонил", "person_name", 0.6),
+        ]);
+        let a =
+            analyze_with(&req(text), &schema(), &cfg(), Policy::Mask, Some(&mount)).expect("ок");
+        assert_eq!(a.spans.len(), 1, "leftmost-longest снимает пересечение");
+        assert_eq!(a.spans[0].score, 0.9, "живёт более уверенный левый");
+    }
+
+    #[test]
+    fn byte_span_of_model_span_is_consistent() {
+        let text = "Иванов звонил";
+        let mount = FakeMount::ok(vec![span_of(text, "Иванов", "person_name", 0.9)]);
+        let a =
+            analyze_with(&req(text), &schema(), &cfg(), Policy::Mask, Some(&mount)).expect("ок");
+        let s = &a.spans[0];
+        assert_eq!(&text[s.byte_start..s.byte_end], "Иванов");
+        assert_eq!(s.start, 0, "символьные координаты считает ByteSpan");
+        assert_eq!(s.end, 6);
+        let _ = ByteSpan::new(text, s.byte_start, s.byte_end).expect("границы валидны");
     }
 }

@@ -42,6 +42,12 @@ lint:
     # default) ⇒ их пути не компилируются ни на одной ОС, и гейт ложно-зелёный
     # (ревью #54 Н3). Каждая фича — отдельной строкой здесь и в lint-ci.
     cargo clippy -p guard-vault --all-targets --features decliner -- -D warnings -D clippy::unwrap_used
+    # Шаг 9A (#14A): смонтированный путь демона (каскады 1–2) живёт под фичей
+    # `ort-inference` и по той же причине (#54 Н3) обязан быть отдельной строкой.
+    # Промёрзший пример класса: коммит 1fc5127 поймал E0252 в guard-onnx ровно на
+    # этой конфигурации, и ниже стоящая строка guard-onnx его поймала, а `just
+    # lint` — нет, потому что путей демона с фичей в ней не было.
+    cargo clippy -p guard-daemon --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
 
 # Линтер CI-тулчейном (issue #25: CI стабильно свежее локального stable —
 # assert_is_empty-класс drift'а ловится ТОЛЬКО прогоном версии CI).
@@ -53,6 +59,7 @@ lint-ci:
     rustup run 1.99.1 cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used
     rustup run 1.99.1 cargo clippy -p guard-onnx --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
     rustup run 1.99.1 cargo clippy -p guard-vault --all-targets --features decliner -- -D warnings -D clippy::unwrap_used
+    rustup run 1.99.1 cargo clippy -p guard-daemon --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
 
 # Тесты всего workspace + пути опциональных фич (та же причина, что в `lint`:
 # `--workspace` их не включает, а матрица ci.yml обязана гонять их на Linux и

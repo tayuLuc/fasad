@@ -61,6 +61,15 @@ pub const DEFAULT_GRAY_LO: f64 = 0.22;
 /// Верхняя граница серой зоны арбитража.
 pub const DEFAULT_GRAY_HI: f64 = 0.80;
 
+/// Вес `α` смешивания `S = α·p1 + (1−α)·p2` (SPEC §2 каскад 2, серая зона).
+///
+/// Числа в SPEC нет — `α` **не калибрована**, это наше решение, а не цифра
+/// транскрипта (AGENTS §Дисциплина фактов: число из SPEC без промера = `[claim]`).
+/// Взят `0.5` = равновес арбитров: он симметричен, не требует веры в один из
+/// каскадов и калибруется прогоном `#14` на golden-наборе, не правкой кода.
+/// Ручка `FASAD_ARBITER_ALPHA` заведена ровно для этого промера.
+pub const DEFAULT_ALPHA: f64 = 0.5;
+
 /// Потоки ORT по умолчанию: 8 — значение, под которым снимались первичные
 /// замеры parity/recall (`docs/quant-policy.md` §3 п.2b: дефолт 4 даёт ±1 tp на
 /// Decide, т.е. метрика становится функцией от потока).
@@ -175,6 +184,10 @@ pub struct Thresholds {
     pub gray_lo: f64,
     /// Верх серой зоны арбитра.
     pub gray_hi: f64,
+    /// Вес `α` смешивания скора в серой зоне (`FASAD_ARBITER_ALPHA`, SPEC §2).
+    /// Лежит в [`Thresholds`] рядом с границами серой зоны намеренно: `α` без
+    /// зоны бессмысленна, и валидируются они одним `is_sane`.
+    pub alpha: f64,
 }
 
 impl Thresholds {
@@ -186,6 +199,7 @@ impl Thresholds {
             tau_high: DEFAULT_TAU_HIGH,
             gray_lo: DEFAULT_GRAY_LO,
             gray_hi: DEFAULT_GRAY_HI,
+            alpha: DEFAULT_ALPHA,
         }
     }
 
@@ -218,6 +232,11 @@ impl Thresholds {
             && self.gray_lo < self.gray_hi
             && self.gray_hi <= self.tau_high
             && self.tau_low < self.gray_hi
+            // 5. `α` — вес, а не настройка «на глаз за пределами смысла»:
+            //    вне `[0, 1]` смесь `α·p1+(1−α)·p2` перестаёт быть выпуклой и
+            //    выдаёт скоры за пределами `[0, 1]`, которые контракт
+            //    `AnnotatedSpan::new` отвергает уже в конвейере.
+            && in_unit(self.alpha)
     }
 }
 
@@ -378,6 +397,7 @@ impl Config {
             tau_high: float_or(&mut lookup, "FASAD_TAU_HIGH", DEFAULT_TAU_HIGH)?,
             gray_lo: float_or(&mut lookup, "FASAD_GRAY_LO", DEFAULT_GRAY_LO)?,
             gray_hi: float_or(&mut lookup, "FASAD_GRAY_HI", DEFAULT_GRAY_HI)?,
+            alpha: float_or(&mut lookup, "FASAD_ARBITER_ALPHA", DEFAULT_ALPHA)?,
         };
         if !thresholds.is_sane() {
             return Err(ConfigError::ThresholdsInsane(thresholds));
@@ -425,6 +445,14 @@ impl Config {
     /// Краткая строка статуса в `/health`: чем крутится конвейер. Секретов и
     /// пользовательских данных тут нет, но отпечаток конфигурации светим
     /// дозированно: `/health` ответа на аутентификацию не имеет.
+    ///
+    /// С шага 9A (`#14A`) метка обязана быть **правдой про собранный бинарь**,
+    /// а не про намерение оператора: `cascade-0+models` означает, что каскады
+    /// 1–2 реально примонтированы ([`crate::cascades`]). Это держится не
+    /// вежливостью, а стартовым отказом: `model_dir` задан, а бинарь собран без
+    /// `ort-inference` (или веса не загрузились) — демон не поднимается вовсе
+    /// ([`crate::cascades::startup`]), потому что молчаливая деградация до
+    /// каскада 0 при обещанных весах = fail-open на recall.
     #[must_use]
     pub fn stage(&self) -> &'static str {
         if self.model_dir.is_some() {
