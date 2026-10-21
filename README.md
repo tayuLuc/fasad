@@ -20,11 +20,11 @@ cargo build --release -p guard-daemon
 ./target/release/fasad
 ```
 
-Баннер прогона (запуск с `FASAD_PORT=0`, то есть порт случайный и напечатан в
-самом баннере; ниже примеры на дефолтном 8765):
+Баннер прогона (запуск без единой переменной окружения, порт по умолчанию 8765;
+промер 21.10):
 
 ```
-fasad 0.1.0 cascade-0-only, listening on http://127.0.0.1:50646/health (классов схемы: 8, vault: stateless/strict, ключ: ephemeral)
+fasad 0.1.0 cascade-0-only, listening on http://127.0.0.1:8765/health (классов схемы: 8, vault: stateless/strict, ключ: ephemeral)
 ```
 
 ```sh
@@ -45,14 +45,14 @@ curl -s localhost:8765/health
 | `FASAD_VAULT_MODE` | `stateless` | `stateless`/`3` = SPEC §3.3, `session`/`2` = SPEC §3.2 (таблица §3 ниже) |
 | `FASAD_VAULT_KEY` | нет (ключ эфемерный) | 64 hex-символа (32 байта); с ним обратимость переживает перезапуск (vault.rs:377) |
 | `FASAD_THREADS` | 8 (config.rs:67) | потоки инференса; локальные прогоны — `2` (рюлинг CPU, AGENTS §3) |
-| `FASAD_MLOCK` | `strict` (config.rs:390) | `strict`/`best_effort` — политика залочки буферов ПДн; деградация видна в баннере и в `/health` |
+| `FASAD_MLOCK` | `strict` (config.rs:391) | `strict`/`best_effort` — политика залочки буферов ПДн; деградация видна в баннере (`main.rs:82-89`), в `/health` её поля нет — там `version`/`stage`/`mode` и счётчики vault (`http.rs:153-165`) |
 | `FASAD_GRAY_LO`, `FASAD_GRAY_HI` | 0.22 / 0.80 (config.rs:59,62) | полоса неуверенности |
 | `FASAD_TAU_LOW`, `FASAD_TAU_HIGH` | 0.20 / 0.80 (guard-onnx/src/routing.rs:70,74) | пороги; инвариант `low ≤ gray_lo < gray_hi ≤ high`, рассогласование = отказ старта |
 | `FASAD_MAX_BODY_BYTES` | 1048576 (config.rs:33) | лимит тела запроса |
 | `FASAD_TIMEOUT_MS`, `FASAD_READ_TIMEOUT_MS` | 3000 / 30000 (config.rs:72,84) | таймаут upstream и тишины клиента (504 и 408 — разные отказы) |
 | `FASAD_UPSTREAM_ALLOWLIST` | пусто = прокси выключен | список `host[:port]`, куда пускать `X-Upstream-URL` |
 | `FASAD_PROXY_LOOPBACK_HTTP` | выключен | разрешить `http://` только на loopback (для локального стенда) |
-| `FASAD_SCHEMA` | нет (схема встроена) | путь к своей схеме классов; канон встроенной — `config/schema.default.json` (config.rs:244) |
+| `FASAD_SCHEMA` | нет (схема встроена) | путь к своей схеме классов; канон встроенной — `config/schema.default.json` (config.rs:248) |
 | `FASAD_MODEL_DIR` | нет | каталог весов каскадов 1–2; демоном на стадии `cascade-0-only` не читается (config.rs:404) |
 
 ## 2. Три запроса, ради которых продукт ставят
@@ -108,7 +108,10 @@ curl -s -X POST localhost:8765/v1/anonymize \
 Прокси — единственная дверь наружу, и она открывается только по явному адресу
 клиента (proxy.rs, §«Две стенки»). Наружу уходит замазанный запрос, обратно —
 развёрнутый ответ; из клиентских заголовков переносятся только `authorization`
-и `x-api-key` (proxy.rs:602), ключ демона не хранит.
+и `x-api-key` (proxy.rs:602), ключ демона не хранит. Значение заголовка в примере
+— плейсхолдер `sk-REPLACE-ME`, подставьте свой: угловые скобки в значении
+заголовка недопустимы, с ними маршрут отвечает `502 upstream_protocol` (промер
+21.10 на значении `<ваш ключ…>`).
 
 ```sh
 FASAD_UPSTREAM_ALLOWLIST='api.openai.com' ./target/release/fasad
@@ -117,7 +120,7 @@ FASAD_UPSTREAM_ALLOWLIST='api.openai.com' ./target/release/fasad
 ```sh
 curl -s -X POST localhost:8765/v1/chat/completions \
   -H 'content-type: application/json' \
-  -H 'Authorization: Bearer <ваш ключ, демон его не сохраняет>' \
+  -H 'Authorization: Bearer sk-REPLACE-ME' \
   -H 'X-Upstream-URL: https://api.openai.com/v1/chat/completions' \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"ИНН 2482014338 — позвони Ушаковой Кире Саввичне"}]}'
 ```
@@ -126,7 +129,10 @@ curl -s -X POST localhost:8765/v1/chat/completions \
 `127.0.0.1:8199`, запуск с `FASAD_PROXY_LOOPBACK_HTTP=1` и
 `FASAD_UPSTREAM_ALLOWLIST='127.0.0.1:8199'`): в тексте запроса ИНН ушёл наружу
 замаркированным (`x-guard-redacted-count: 1`), в ответе разворачивается обратно,
-`finish_reason: stop`. Без allowlist маршрут отдаёт `403` (промер):
+`finish_reason: stop`. Промер 21.10 тем же curl'ом, что выше: тело, ушедшее
+upstream, содержит маркер `[[F0#…]]` и не содержит ИНН; ответ разворачивается в
+исходный текст байт-в-байт (`cmp` rc=0); заголовок `authorization` долетел
+дословно. Без allowlist маршрут отдаёт `403` (промер):
 
 ```json
 {"error":{"code":"allowlist_empty","message":"FASAD_UPSTREAM_ALLOWLIST пуст, прокси выключен"}}
@@ -177,23 +183,38 @@ curl -s -X POST localhost:8765/v1/chat/completions \
    в `/health` и в заголовке `X-Guard-Stage`
    ([docs/daemon-scope.md](docs/daemon-scope.md), §«Деградация каскада»). Монтаж
    каскадов в рантайм — отдельная задача, в main её нет.
-5. UI-песочницы (`/ui`: раскраска по confidence, редактор схемы) в main нет —
-   она идёт с PR #75.
+5. UI-песочница (`/ui`: раскраска по confidence, редактор схемы) пришла в main с
+   PR #75 (влит `bf95412`): фронт вшит в бинарь (`rust-embed`, ui.rs:25-27),
+   маршрут `GET /ui` — ui.rs:47. Промер 21.10 демоном без env: `GET /ui` = 200,
+   3313 байт HTML.
 6. Релизных бандлов и RAM-гейта по трём ОС в main тоже нет: это PR #76.
-7. Планка recall (≥98 %, нижняя граница Вилсона, N≥150) на полном каскаде не
-   закрыта — открытый трек #80; гейт-права датасета (#14) закрыты и зелёные.
+7. Трек union-recall #80 влит в main (`b5b0fe3`); планка ≥98 % (нижняя граница
+   Вилсона, N≥150) по нему не закрыта: byte-exact union 91.34 %, нижняя граница
+   87.97 % (`docs/golden-report.md:271-273`); гейт-права датасета (#14) закрыты и
+   зелёные.
 
 ## 5. Границы
 
 1. Один пользователь, одна машина: bind вне loopback запрещён самим демоном.
-2. Остаточный риск реверс-индекса назван числом в
-   [docs/daemon-scope.md](docs/daemon-scope.md) («p ≈ 2⁻⁶⁴ на одно событие
-   перенятого слота»); здесь оно не перепечатывается, ссылка — первичка.
-3. Лимиты реестра: 256 сессий (FIFO), 1024 формы на сессию; переполнение —
-   `422 too_many_forms`, а не тихая потеря формы (потерянная форма дала бы
-   partial-restore, то есть fail-open на данных).
-4. Отсутствие `X-Guard-Redacted-Count` на 2xx клиент обязан считать ошибкой:
-   демон никогда не подменяет счётчик нулём, если не знает значения.
+2. Остаточный риск реверс-индекса назван в
+   [docs/daemon-scope.md](docs/daemon-scope.md) (строка 33) — вероятность на одно
+   событие перенятого слота; формулу сюда не переносим: цитата её и есть
+   перепечатывание.
+3. Лимиты реестра: 256 сессий (FIFO, `MAX_SESSIONS`, vault.rs:114) и 1024 ФОРМ
+   СУРРОГАТОВ на сессию (`MAX_FORMS_PER_SESSION`, config.rs:46). Считаются формы
+   подмен, а не метки: одна ФИО-подмена даёт до 4 форм, то есть 1024 — это ~256
+   ФИО (config.rs:35-45). Переполнение — `422 too_many_forms` до первой подмены, а
+   не тихая потеря формы (потерянная форма дала бы partial-restore, то есть
+   fail-open на данных); закреплено тестом
+   `forms_cap_refuses_request_before_first_substitution` (`vault.rs:1530`). С этой
+   страницы (стадия `cascade-0-only`) порога не достичь: форму плодит подмена ФИО,
+   а её детектор — каскад 1, `/v1/analyze` на каскаде 0 форм не создаёт.
+4. Отсутствие `X-Guard-Redacted-Count` на 2xx-ответе маршрутов разбора и прокси
+   (`/v1/analyze`, `/v1/anonymize`, `/v1/deanonymize`, `/v1/sessions/{id}`,
+   `/v1/chat/completions` — http.rs:214-220, proxy.rs:561) клиент обязан считать
+   ошибкой: демон никогда не подменяет счётчик нулём, если не знает значения. У
+   `/health`, `/ui` и `/assets/*` этого заголовка нет по устройству — 200 без них
+   является нормой.
 5. `panic = "unwind"`: паника одного запроса не валит демон, но и не обещает
    «неубиваемости» — это контур изоляции отказа, а не отказоустойчивость.
 6. Скриншотов нет: витрина — команды и живые ответы этой страницы.
