@@ -11,7 +11,8 @@
 //! Модульный состав (перечень = `pub mod` ниже, по заголовкам самих модулей):
 //! [`config`] — env → тип с fail-closed разбором; [`schema`] — канон классов
 //! `ПДн` с валидаторами; [`cascade0`] — каскад 0: кандидаты → чексуммы схемы →
-//! классы на координатах оригинала; [`cascades`] — каскады 1–2 поверх него,
+//! классы на координатах оригинала; [`numwords`] — числительные словами → цифры,
+//! дополнение каскада 0 (issue #51 п.2); [`cascades`] — каскады 1–2 поверх него,
 //! живущие только под фичей `ort-inference`; [`pipeline`] — конвейер `/v1/analyze` над
 //! всем этим; [`vault`] — обратимое маскирование (`/v1/anonymize|deanonymize`);
 //! [`http`] — роутеры §8, сетка `X-Guard-*` и fail-closed middleware; [`sse`] —
@@ -38,6 +39,7 @@ pub mod cascade0;
 pub mod cascades;
 pub mod config;
 pub mod http;
+pub mod numwords;
 pub mod pipeline;
 pub mod proxy;
 pub mod schema;

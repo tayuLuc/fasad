@@ -87,6 +87,34 @@
 //! (JSON `base64_decode`), а не `checksum_*`: вес остаётся абсолютным вето 1.0
 //! (подтверждение то же — чексумма), но происхождение спана видно и политике,
 //! и человеку в `/ui`.
+//!
+//! # Числительные словами (атом #51 п.2)
+//!
+//! Диктуя номер, человек пишет число словами: «восемьсот двадцать пять
+//! миллиардов …» для цифрового окна — не номер, и каскад 0 такого не видел
+//! ([`crate::numwords`] собирает из слов цифры; покрытие и границы слоя — в
+//! заголовке того модуля). Кредитация — ровно тот же контур, что у
+//! base64-атома: [`validated_windows`] по собранным цифрам, спан — на
+//! исходную фразу словами ([`push_hits`], координаты через
+//! [`normalize::OffsetMap`]).
+//!
+//! 1. **Исходник — нормализованный текст, один уровень**: числительные внутри
+//!    base64-нагрузки не ищем (паритет с `base64_nesting_is_exactly_one_level`).
+//! 2. **FP-контроль общий для всех обходов**: спан появляется только если
+//!    собранное число подтвердил чексумменный валидатор схемы. Слово-число само
+//!    по себе спана не создаёт — «сто рублей», «пятьдесят процентов» тихие.
+//! 3. **Порог длины** [`MIN_SPELLED_DIGITS`] = самая короткая сущность
+//!    [`DIGIT_SPECS`] (9 цифр, `bik_format`): короткие числа в цикл валидаторов
+//!    не едут вовсе. Он же — «guard года»: четыре цифры года словами
+//!    («тысяча девятьсот семьдесят один» = 1971) подтвердить некому, спана нет
+//!    (регрессии `year_in_words_is_not_a_hit`,
+//!    `spelled_floor_is_the_shortest_digit_spec`).
+//! 4. **`source` остаётся `checksum_*`** — нового варианта `DetectionSource`
+//!    атом не заводит. Доказательство то же (чексумма), вес то же (вето 1.0), а
+//!    происхождение спана видно по самому спану: его срез — слова, в отличие от
+//!    base64, где срез токена ничего не говорит. Восьмой вариант источника =
+//!    правка вектора весов SPEC §2, а это контракт
+//!    `guard-types/tests/invariant_checksum_w.rs` — не уровень атома.
 
 use base64::Engine as _;
 use guard_detectors::checksums;
@@ -94,6 +122,7 @@ use guard_detectors::normalize;
 use guard_types::{ByteSpan, ClassId, DetectionSource, NewtypeId};
 use zeroize::Zeroizing;
 
+use crate::numwords;
 use crate::schema::{KNOWN_VALIDATORS, Schema};
 
 /// Что валидатор требует от окна.
@@ -178,6 +207,16 @@ const IBAN_SPEC: Spec = Spec {
     source: DetectionSource::ChecksumEu,
 };
 
+/// Минимальная длина числа, собранного из слов ([`crate::numwords`]).
+///
+/// Равна самой короткой сущности в [`DIGIT_SPECS`] (9 цифр — `bik_format`):
+/// окну короче нечем подтверждаться, и в цикл валидаторов оно не едет. Это же
+/// «guard года»: год словами (1971) — четыре цифры, спана не будет ни при
+/// каком совпадении. Константу сверяет с таблицей тест
+/// `spelled_floor_is_the_shortest_digit_spec` (живая связь: добавят валидатор
+/// короче девяти цифр — тест покраснеет и напомнит про годы словами).
+const MIN_SPELLED_DIGITS: usize = 9;
+
 /// Вызов валидатора по имени — единственное место, где имя из схемы становится
 /// вызовом. Неизвестное имя = `None` (схема обязана отвергнуть его на старте,
 /// [`crate::schema::SchemaError::UnknownValidator`]).
@@ -237,6 +276,12 @@ pub fn scan(text: &str, schema: &Schema) -> Vec<Hit> {
 /// на базе, в том же бинаре. Два бинаря из двух деревьев несравнимы: вклад
 /// сборки в них разный, а у двух прогонов одного кода различается ровно тот
 /// проход, который добавлен.
+///
+/// Проход числительных словами ([`scan_words`], атом #51 п.2) отдельного рычага
+/// не заводит: он есть в обеих ногах base64-замера, дельта от этого не
+/// меняется. Цену самого прохода меряет `words_hot_path_microbench`: корпус он
+/// строит сам (как `b64_corpus` у base64), и на русской прозе без числительных
+/// слой обязан стоить доли миллисекунды (префильтр кириллицы + словарь).
 fn scan_with(text: &str, schema: &Schema, with_base64: bool) -> Vec<Hit> {
     let (norm, map) = normalize::normalize(text);
     let bytes = norm.as_bytes();
@@ -246,6 +291,8 @@ fn scan_with(text: &str, schema: &Schema, with_base64: bool) -> Vec<Hit> {
     for w in validated_windows(bytes, &wanted) {
         push_hits(&mut hits, text, &map, w.range, w.spec, &wanted);
     }
+
+    scan_words(text, &norm, &map, &wanted, &mut hits);
 
     if with_base64 {
         scan_base64(text, bytes, &map, &wanted, &mut hits);
@@ -763,6 +810,37 @@ fn b64_decode(token: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
         .or_else(|_| URL_SAFE.decode(token))
         .map(Zeroizing::new)
         .ok()
+}
+
+/// Числительные словами → цифры → валидаторы схемы; спан на фразу словами.
+///
+/// Цифры, собранные [`numwords::spelled_numbers`], гоняются по тому же оконному
+/// конвейеру, что и цифры текста ([`validated_windows`]), а координаты
+/// возвращаются на исходную фразу ([`push_hits`] — тот же fail-closed на
+/// не-char-границе, что у текстового и base64-путей). Числа короче
+/// [`MIN_SPELLED_DIGITS`] в цикл валидаторов не едут вовсе (он же guard года).
+///
+/// Слой читает **нормализованный** текст и только его: числительные внутри
+/// base64-нагрузки не ищем — вложенность обходов ровно один уровень, паритет с
+/// `base64_nesting_is_exactly_one_level`.
+fn scan_words(
+    text: &str,
+    norm: &str,
+    map: &normalize::OffsetMap,
+    wanted: &[(&'static str, ClassId)],
+    hits: &mut Vec<Hit>,
+) {
+    if wanted.is_empty() {
+        return;
+    }
+    for sp in numwords::spelled_numbers(norm) {
+        if sp.digits.len() < MIN_SPELLED_DIGITS {
+            continue;
+        }
+        for w in validated_windows(&sp.digits[..], wanted) {
+            push_hits(hits, text, map, sp.range.clone(), w.spec, wanted);
+        }
+    }
 }
 
 /// Base64-обход: прогон каскада-0 по декодированной нагрузке каждого кандидата.
@@ -1682,5 +1760,310 @@ mod tests {
             text.push(' ');
         }
         (text, n)
+    }
+
+    // --- Числительные словами (атом #51 п.2) --------------------------------
+    //
+    // Значения номеров взяты из `data/golden/golden-v1.jsonl` (колонка значения,
+    // класс — из категории спана), а не пересчитаны нашим валидатором (AGENTS
+    // §Дисциплина фактов п.3). Словоформа числа задана арифметикой разрядов,
+    // она в комментарии к каждому case.
+
+    /// Живая связь порога с таблицей длин: укоротят валидатор до 8 цифр —
+    /// тест покраснеет и напомнит, что года словами тоже поедут валидироваться.
+    #[test]
+    fn spelled_floor_is_the_shortest_digit_spec() {
+        let shortest = DIGIT_SPECS
+            .iter()
+            .map(|s| s.min)
+            .min()
+            .unwrap_or(usize::MAX);
+        assert_eq!(
+            shortest, MIN_SPELLED_DIGITS,
+            "`DIGIT_SPECS` коротче ({shortest}) порога словесного слоя ({MIN_SPELLED_DIGITS}): года словами начнут кредитоваться"
+        );
+    }
+
+    /// Guard года словами: четыре цифры подтвердить некому.
+    #[test]
+    fn year_in_words_is_not_a_hit() {
+        let cases = [
+            "Клиент 1971 года, тысяча девятьсот семьдесят один в анкете",
+            "Год рождения: тысяча девятьсот семьдесят один",
+            "призван тысяча девятьсот семьдесят первый год",
+            "пятьдесят первый, тысяча девятьсот восемьдесят",
+        ];
+        for text in cases {
+            let hits = scan(text, &schema());
+            assert!(
+                hits.is_empty(),
+                "{text:?} дал {:?} (года словами)",
+                classes(&hits)
+            );
+        }
+    }
+
+    /// Золотой ИНН-12 словами: класс, валидатор и **спан на всю фразу**.
+    #[test]
+    fn spelled_inn12_fires_with_the_phrase_as_span() {
+        // 825·10⁹ + 82·10⁶ + 492·10³ + 964 = 825082492964 (golden, inn).
+        let words = "восемьсот двадцать пять миллиардов восемьдесят два миллиона \
+                     четыреста девяносто две тысячи девятьсот шестьдесят четыре";
+        let text = format!("ИНН контрагента: {words}, просим проверить");
+        let hits = scan(&text, &schema());
+        let hit = hits
+            .iter()
+            .find(|h| h.class.as_str() == "inn")
+            .unwrap_or_else(|| panic!("{text:?} дал {:?}", classes(&hits)));
+        assert_eq!(hit.validator, "inn12");
+        assert_eq!(
+            hit.source,
+            DetectionSource::ChecksumRf,
+            "подтверждение — чексумма, новый источник словесному слою не заведён"
+        );
+        assert_eq!(hit.span.slice(&text), Some(words));
+    }
+
+    /// Золотая карта словами: 16 цифр собираются вложенным масштабом
+    /// («тысячи … триллионов»), Луна подтверждает.
+    #[test]
+    fn spelled_card_pan_passes_luhn() {
+        // (4·10³ + 575)·10¹² + 503·10⁹ + 590·10⁶ + 352·10³ + 993
+        // = 4575503590352993 (golden, card_pan).
+        let words = "четыре тысячи пятьсот семьдесят пять триллионов пятьсот три \
+                     миллиарда пятьсот девяносто миллионов триста пятьдесят две \
+                     тысячи девятьсот девяносто три";
+        let text = format!("карта {words} на оплату");
+        let hits = scan(&text, &schema());
+        let hit = hits
+            .iter()
+            .find(|h| h.class.as_str() == "card_pan")
+            .unwrap_or_else(|| panic!("{text:?} дал {:?}", classes(&hits)));
+        assert_eq!(hit.validator, "luhn");
+        assert_eq!(hit.span.slice(&text), Some(words));
+    }
+
+    /// Реестровые номера словами: СНИЛС, ИНН-10, ОГРН, ОГРНИП (значения из
+    /// golden-v1.jsonl, те же, что в `golden_values_are_found`).
+    #[test]
+    fn spelled_registry_numbers_fire() {
+        let cases: [(&str, &str, &str); 4] = [
+            // 65·10⁹ + 707·10⁶ + 715·10³ + 421 = 65707715421.
+            (
+                "snils",
+                "шестьдесят пять миллиардов семьсот семь миллионов семьсот \
+                 пятнадцать тысяч четыреста двадцать один",
+                "snils",
+            ),
+            // 2·10⁹ + 482·10⁶ + 14·10³ + 338 = 2482014338.
+            (
+                "inn",
+                "два миллиарда четыреста восемьдесят два миллиона четырнадцать \
+                 тысяч триста тридцать восемь",
+                "inn",
+            ),
+            // 7·10¹² + 146·10⁹ + 617·10⁶ + 178·10³ + 591 = 7146617178591.
+            (
+                "ogrn",
+                "семь триллионов сто сорок шесть миллиардов шестьсот семнадцать \
+                 миллионов сто семьдесят восемь тысяч пятьсот девяносто один",
+                "ogrn",
+            ),
+            // 313·10¹² + 777·10⁹ + 542·10⁶ + 563·10³ + 312 = 313777542563312.
+            (
+                "ogrnip",
+                "триста тринадцать триллионов семьсот семьдесят семь миллиардов \
+                 пятьсот сорок два миллиона пятьсот шестьдесят три тысячи триста \
+                 двенадцать",
+                "ogrnip",
+            ),
+        ];
+        for (class, words, label) in cases {
+            let text = format!("реквизиты: {words} в реестре");
+            let hits = scan(&text, &schema());
+            assert!(
+                classes(&hits).contains(&class),
+                "{label} словами дал {:?}, ждали {class}",
+                classes(&hits)
+            );
+            let hit = hits
+                .iter()
+                .find(|h| h.class.as_str() == class)
+                .expect("хит класса");
+            assert_eq!(hit.span.slice(&text), Some(words), "спан {label}");
+        }
+    }
+
+    /// Спан словесного номера возвращается на **оригинальные** байты:
+    /// неразрывные пробелы внутри фразы нормализатор сводит к обычным, а
+    /// координаты остаются ширины оригинала (тот же контур, что у #94).
+    #[test]
+    fn spelled_span_survives_normalization() {
+        let nbsp = '\u{A0}';
+        // 825·10⁹ + 82·10⁶ + 492·10³ + 964 = 825082492964 (golden, inn).
+        let words = format!(
+            "восемьсот{nbsp}двадцать{nbsp}пять{nbsp}миллиардов{nbsp}восемьдесят{nbsp}два\
+             {nbsp}миллиона{nbsp}четыреста{nbsp}девяносто{nbsp}две{nbsp}тысячи{nbsp}девятьсот\
+             {nbsp}шестьдесят{nbsp}четыре"
+        );
+        let text = format!("ИНН: {words}");
+        let hits = scan(&text, &schema());
+        let hit = hits
+            .iter()
+            .find(|h| h.class.as_str() == "inn")
+            .unwrap_or_else(|| panic!("{text:?} дал {:?}", classes(&hits)));
+        assert_eq!(
+            hit.span.slice(&text),
+            Some(words.as_str()),
+            "спан словесного номера не доезжает до оригинальной ширины"
+        );
+    }
+
+    /// Слова подчиняются схеме: подтверждать некому — находки нет.
+    #[test]
+    fn spelled_hits_respect_the_schema() {
+        // 825·10⁹ + 82·10⁶ + 492·10³ + 964 = 825082492964 (golden, inn).
+        let words = "восемьсот двадцать пять миллиардов восемьдесят два миллиона \
+                     четыреста девяносто две тысячи девятьсот шестьдесят четыре";
+        let text = format!("ИНН: {words}");
+        let only_inn12 = Schema::parse(
+            r#"{"version":1,"classes":[],"validator_only":[{"id":"inn","label":"ИНН","validators":["inn12"]}]}"#,
+        )
+        .expect("минимальная схема");
+        assert_eq!(classes(&scan(&text, &only_inn12)), ["inn"]);
+        let only_ogrn = Schema::parse(
+            r#"{"version":1,"classes":[],"validator_only":[{"id":"ogrn","label":"ОГРН","validators":["ogrn13"]}]}"#,
+        )
+        .expect("минимальная схема");
+        assert!(
+            scan(&text, &only_ogrn).is_empty(),
+            "ИНН словами утёк в схему без класса inn"
+        );
+    }
+
+    /// Слова и цифры живут в одном проходе: обе находки на своих спанах.
+    #[test]
+    fn spelled_and_plain_numbers_coexist() {
+        // 2·10⁹ + 482·10⁶ + 14·10³ + 338 = 2482014338 (golden, inn).
+        let words = "восемьсот двадцать пять миллиардов восемьдесят два миллиона \
+                     четыреста девяносто две тысячи девятьсот шестьдесят четыре";
+        let text = format!("ИНН 2482014338 и {words}");
+        let hits = scan(&text, &schema());
+        let inns: Vec<&Hit> = hits.iter().filter(|h| h.class.as_str() == "inn").collect();
+        assert_eq!(inns.len(), 2, "оба ИНН: {hits:?}");
+        assert_eq!(inns[0].span.slice(&text), Some("2482014338"));
+        assert_eq!(inns[1].span.slice(&text), Some(words));
+        for h in &inns {
+            assert_eq!(h.source, DetectionSource::ChecksumRf);
+        }
+    }
+
+    /// Диктовка «цифра за цифрой» словами не склеивается: 1, 2, 3… — короткие
+    /// числа, до валидаторов не едут (п.5 не-покрытия в `numwords`).
+    #[test]
+    fn digit_by_digit_dictation_is_not_a_hit() {
+        let text = "продиктуйте код: один два три четыре пять шесть семь восемь \
+                    девять десять одиннадцать двенадцать тринадцать четырнадцать";
+        let hits = scan(text, &schema());
+        assert!(
+            hits.is_empty(),
+            "диктовка словами склеилась: {:?}",
+            classes(&hits)
+        );
+    }
+
+    /// Задокументированная цена слоя (пара к
+    /// `base64_payload_floor_is_the_documented_tradeoff`): круглые количества
+    /// вида N·10⁹ — десятизначные числа, а mod-11 у ИНН на них часто даёт
+    /// контрольную 0. «Пять миллиардов» = 5000000000: взвешенная сумма
+    /// 5·2 = 10, (10 mod 11) mod 10 = 0 = последняя цифра → ИНН подтверждён.
+    /// FP дёшев (обратимое маскирование, SPEC §2), FN фатален, поэтому слой
+    /// круглые числа не отфильтровывает — это осознанный обмен, а не oversight.
+    #[test]
+    fn spelled_round_billion_is_the_documented_tradeoff() {
+        let hits = scan("перевести пять миллиардов рублей", &schema());
+        assert_eq!(
+            classes(&hits),
+            ["inn"],
+            "круглое количество словами дало не то, что задокументировано"
+        );
+        assert_eq!(hits[0].validator, "inn10");
+        // А «пять тысяч» (4 цифры) до валидаторов не доезжает: порог работает.
+        let thin = scan("перевести пять тысяч рублей", &schema());
+        assert_eq!(
+            classes(&thin),
+            Vec::<&str>::new(),
+            "короткое слово-число проскочило MIN_SPELLED_DIGITS"
+        );
+    }
+
+    /// Числительные внутри base64-нагрузки не ищем: вложенность обходов ровно
+    /// один уровень (паритет с `base64_nesting_is_exactly_one_level`).
+    #[test]
+    fn words_inside_base64_are_not_scanned() {
+        // 825·10⁹ + 82·10⁶ + 492·10³ + 964 = 825082492964 (golden, inn).
+        let words = "восемьсот двадцать пять миллиардов восемьдесят два миллиона \
+                     четыреста девяносто две тысячи девятьсот шестьдесят четыре";
+        let token = b64(words.as_bytes());
+        let text = format!("приложение {token}");
+        let hits = scan(&text, &schema());
+        assert!(
+            hits.is_empty(),
+            "слова в нагрузке раскрутились: {:?}",
+            classes(&hits)
+        );
+    }
+
+    /// Микромера слоя числительных (метод — как у
+    /// `base64_bypass_hot_path_microbench`).
+    ///
+    /// Корпус: та же проза, что в `b64_corpus`, до 10 `КиБ`; вторая нога — тот
+    /// же корпус с одним словесным номером. Меряется **сам слой**
+    /// (`numwords::spelled_numbers`), а не `scan`: рычага «выключить слова» в
+    /// `scan_with` нет (он в обеих ногах base64-замера, его дельта от слоя не
+    /// зависит). Минимум и медиана из 500 прогонов.
+    ///
+    /// Утверждение — регрессия по верхней границе: слой на 10 `КиБ` обязан
+    /// укладываться в 2 мс (бюджет каскада 0 — <1 мс, 10 `КиБ` — худший случай
+    /// запроса; порядок, а не бенчмарк).
+    ///
+    /// Запуск: `cargo test --release -p guard-daemon --lib words_hot_path -- --ignored --test-threads=2 --nocapture`
+    /// (под `GO`, release-прогон).
+    #[test]
+    #[ignore = "микромера, не регресс: печать WORDMICRO; требует release и щадящего режима"]
+    fn words_hot_path_microbench() {
+        use std::time::Instant;
+
+        let prose =
+            "Согласно договору поставки счёт выставлен сторонам, акт приёмки подписан директором. ";
+        let number = " восемьсот двадцать пять миллиардов восемьдесят два миллиона \
+                      четыреста девяносто две тысячи девятьсот шестьдесят четыре ";
+        for (label, tail) in [("prose", ""), ("prose+number", number)] {
+            let mut text = String::new();
+            while text.len() < 10_240 {
+                text.push_str(prose);
+            }
+            text.push_str(tail);
+            let mut samples = Vec::with_capacity(500);
+            let mut found = 0usize;
+            for _ in 0..500 {
+                let t = Instant::now();
+                found = crate::numwords::spelled_numbers(&text).len();
+                samples.push(t.elapsed().as_micros());
+            }
+            samples.sort_unstable();
+            println!(
+                "WORDMICRO|{label}|bytes|{}|found|{found}|iters|500|min_us|{}|median_us|{}",
+                text.len(),
+                samples[0],
+                samples[samples.len() / 2]
+            );
+            assert!(
+                samples[0] < 2_000,
+                "слой слов на 10 КиБ стоил {} мкс — бюджет каскада 0 сломан",
+                samples[0]
+            );
+            std::hint::black_box(&samples);
+        }
     }
 }
