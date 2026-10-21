@@ -124,6 +124,21 @@ shellcheck:
     files=( "${files[@]:1}" )
     shellcheck --severity=warning -x "${files[@]}"
 
+# Трей (#128 фаза 2): feature-on линт — ОТДЕЛЬНЫЙ рецепт, не строка в `lint`.
+# Причина ровно зеркальная #54 H3: под `--workspace` фича не включается (дефолт
+# OFF), а смонтировать её в `lint` нельзя — линт бегает и на ubuntu-ноге CI, где
+# `--features tray` физически несобираем (`compile_error` tray-icon,
+# docs/dep-verify-crates.md §16): linux-нога краснела бы всегда. CI зовёт этот
+# рецепт условно (ci.yml: `if: matrix.os != 'ubuntu-24.04'`), локально он же —
+# гейт mac/windows-машины оператора.
+tray-check:
+    cargo clippy -p guard-daemon --all-targets --features tray -- -D warnings -D clippy::unwrap_used
+    cargo check -p guard-daemon --features tray
+    # Юниты модуля под фичей; живые GUI-тесты — `#[ignore]` (headless-раннер
+    # без окна краснеет на тесте, не на продукте) и промеряются руками:
+    # cargo test -p guard-daemon --features tray --test tray_live -- --ignored
+    cargo test -p guard-daemon --features tray --lib
+
 # Линтер CI-тулчейном (issue #25: CI стабильно свежее локального stable —
 # assert_is_empty-класс drift'а ловится ТОЛЬКО прогоном версии CI).
 # Версию обновлять синхронно с rustc на раннере (промер: gh run view --log).
@@ -135,6 +150,9 @@ lint-ci:
     rustup run 1.99.1 cargo clippy -p guard-onnx --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
     rustup run 1.99.1 cargo clippy -p guard-vault --all-targets --features decliner -- -D warnings -D clippy::unwrap_used
     rustup run 1.99.1 cargo clippy -p guard-daemon --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
+    # Трей под CI-тулчейном — та же ОС-обязанность, что в `tray-check`: на
+    # linux фича несобираема (§16), вызов только вне linux.
+    if [ "$(uname -s)" != "Linux" ]; then rustup run 1.99.1 cargo clippy -p guard-daemon --all-targets --features tray -- -D warnings -D clippy::unwrap_used; fi
 
 # Тесты всего workspace + пути опциональных фич (та же причина, что в `lint`:
 # `--workspace` их не включает, а матрица ci.yml обязана гонять их на Linux и
@@ -348,6 +366,14 @@ _triple:
 release-build:
     cargo build --release -p guard-daemon
 
+# Трей-бинарь win/mac (#128 фаза 2): ДРУГОЙ bin-путь → `fasad-tray` (cargo
+# пишет бинарь по [[bin]].path, отдельного флага имени нет; `[[bin]]` ниже в
+# crates/guard-daemon/Cargo.toml). Линкуется на целевой ОС билда: linux-хост
+# эту фичу не соберёт (compile_error, §16) — рецепт для win/mac-ноги и
+# локальной машины оператора.
+release-build-tray:
+    cargo build --release -p guard-daemon --features tray
+
 # Сборка харнеса полного каскада (spike) релизным профилем на официальном dylib
 # ORT: контракт docs/model-audit.md §5 п.1 + §8 (статика pyke на macOS release =
 # SIGSEGV; dylib 1.31.0 = живой прогон). Нужна для `just measure-rss --full`.
@@ -386,8 +412,20 @@ deps-licenses:
 # Девелер: dist/ в .gitignore (строка `dist/`).
 
 # Упаковка бандла (бинарь, лицензии, схема, SHA256SUMS): tar.gz на unix, zip на Windows-хосте.
-dist: release-build deps-licenses
-    bash scripts/make-bundle.sh
+# Трей-бинарь (#128): на win/mac хостах передаём `--tray-binary` (second bin
+# `fasad-tray`); linux-ветка скрипта сама кладёт systemd-юнит (#140).
+dist: release-build release-build-tray deps-licenses
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ext=""
+    case "$(uname -s)" in
+        MINGW* | MSYS* | CYGWIN*) ext=".exe" ;;
+    esac
+    if [ "$(uname -s)" = "Darwin" ] || [ -n "$ext" ]; then
+        bash scripts/make-bundle.sh --tray-binary "target/release/fasad-tray${ext}"
+    else
+        bash scripts/make-bundle.sh
+    fi
 
 # Полный релизный прогон на хосте = одна ячейка матрицы CI локально.
 release: dist

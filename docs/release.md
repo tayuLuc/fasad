@@ -37,26 +37,56 @@
 6. `SHA256SUMS.txt` — sha256 всех файлов бандла; рядом с архивом лежит
    `fasad-…-cascade-0.<ext>.sha256` (хэш самого архива).
 7. Платформенный контур запуска (решение оператора 21.10, issue #128):
-   **linux-бандл = headless-демон под systemd** (консольный запуск, юнит-файл
-   `fasad.service` в бандле, бинд loopback по дефолту — `config.rs:28`), трей
-   в linux-артефакт не входит; **win/mac-бандлы несут tray-бинарь** (feature
-   `tray` ON, иконка статуса). На стороне зависимостей это зафиксировано в
-   [dep-verify-crates.md](dep-verify-crates.md) §16: `tray-icon` берётся с
-   `default-features = false` (linux-дефолт `libappindicator` = GTK3-вес, а
-   linux-сборка трея без него физически невозможна — `compile_error` в
-   `tray-icon-0.26.1/src/lib.rs:128-138`), linux-джобы CI собирают feature-off.
-   Код-контур (сама фича, юнит-файл в `make-bundle.sh`, клик-обработчик) —
-   фаза 2, за этой строкой.
+   **linux-бандл = headless-демон под systemd** (консольный запуск, юнит
+   `contrib/systemd/fasad.service` в бандле — #140, бинд loopback по дефолту —
+   `config.rs`), трей в linux-артефакт не входит; **win/mac-бандлы несут
+   tray-бинарь** `bin/fasad-tray` (feature `tray` ON, иконка статуса — #128
+   фаза 2, PR-контур `crates/guard-daemon/src/tray.rs`: клик = открыть UI
+   браузером ОС, меню = «Выход (graceful)» = shutdown-канал демона, tooltip =
+   `fasad: <счётчик отказов> / <stage>` без ПДн). На стороне зависимостей это
+   зафиксировано в [dep-verify-crates.md](dep-verify-crates.md) §16: `tray-icon`
+   берётся с `default-features = false` (linux-дефолт `libappindicator` =
+   GTK3-вес, а linux-сборка трея без него физически невозможна — `compile_error`
+   в `tray-icon-0.26.1/src/lib.rs:128-138`), linux-джобы CI собирают
+   feature-off, win/mac-ноги проверяют feature-on (`just tray-check`).
+   Проверка контура — `scripts/verify-bundle.sh` п.5: linux-бандл обязан нести
+   юнит и НЕ нести трей-бинарь; win/mac-бандл обязан нести исполняемый
+   `bin/fasad-tray`, поднимающийся на `/health` с тем же `stage`.
+
+## Linux: установка systemd-юнита (#140)
+
+Юнит едет в linux-бандле (`contrib/systemd/fasad.service`), статический
+(без авто-`enable`). Установка из распакованного бандла (права root, путь
+`/usr/local` — не пакетный менеджер, бандл и есть менеджер):
+
+    useradd -r -s /usr/sbin/nologin -d /var/lib/fasad -m fasad
+    install -Dm755 bin/fasad /usr/local/bin/fasad
+    install -Dm644 contrib/systemd/fasad.service /etc/systemd/system/fasad.service
+    systemctl start fasad.service && systemctl status fasad.service
+
+Первичка полей юнита (не конвенция): `MemoryMax=1843M` = SPEC §1 п.3 «≤1.8 ГБ»
+(1843.2 MiB в замере `scripts/measure-rss.sh`, округление вниз);
+`LimitMEMLOCK=64K` = типичный `RLIMIT_MEMLOCK` дефолтного раннера, vault-пул
+34 KiB (`POOL_SLOTS·POOL_SLOT_BYTES` = 16·2176 Б,
+`crates/guard-vault/src/token.rs`, const-assert «пул влезает в 64 KiB» держит
+связку на компиляции); `Restart=on-failure` + `User=fasad` +
+`NoNewPrivileges` — по брифу #140. Конфиг = `EnvironmentFile=-/etc/default/fasad`
+(`FASAD_*`, первичка `crates/guard-daemon/src/config.rs`).
 
 ## Матрица сборки
 
 `.github/workflows/release.yml`, job `dist` (матрица `include`, `fail-fast: false`):
 
-| runner | triple | архив |
-| --- | --- | --- |
-| ubuntu-24.04 | x86_64-unknown-linux-gnu | tar.gz |
-| windows-2022 | x86_64-pc-windows-msvc | zip |
-| macos-14 | aarch64-apple-darwin | tar.gz |
+| runner | triple | архив | контур |
+| --- | --- | --- | --- |
+| ubuntu-24.04 | x86_64-unknown-linux-gnu | tar.gz | headless + systemd-юнит (#140) |
+| windows-2022 | x86_64-pc-windows-msvc | zip | + `bin/fasad-tray.exe` (#128) |
+| macos-14 | aarch64-apple-darwin | tar.gz | + `bin/fasad-tray` (#128) |
+
+win/mac-ячейки собирают второй бинарь шагом `just release-build-tray`
+(фича `tray`); linux-ячейка его не собирает физически (§16) и несёт
+`contrib/systemd/fasad.service`; зуб «бандл несёт контур своей ОС» —
+`scripts/verify-bundle.sh` п.5.
 
 Отличие от SPEC §9 (ubuntu-22.04, две ОС): раннер Linux поднят до 24.04 по
 постановке задачи шага 9, macOS-14 добавлен как третья платформа (issue #31).

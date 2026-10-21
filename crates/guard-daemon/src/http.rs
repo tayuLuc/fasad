@@ -75,12 +75,24 @@ pub struct AppState {
     inner: Arc<Inner>,
 }
 
-struct Inner {
+/// Внутреннее состояние за `Arc`: видно крейту (модуль `tray` держит общий
+/// `Arc` через [`AppState::inner_arc`], #128), поля остаются приватными
+/// модуля `http`.
+pub struct Inner {
     cfg: Config,
     schema: Schema,
     health: Health,
     vault: Vault,
     client: crate::proxy::Client,
+}
+
+impl Inner {
+    /// Хранилище для держателя общего `Arc` (модуль `tray`, #128): те же
+    /// счётчики, что читает `health_handler`, — один объект, расхождения
+    /// tooltip ↔ `/health` не существует по построению.
+    pub fn vault(&self) -> &Vault {
+        &self.vault
+    }
 }
 
 impl AppState {
@@ -124,6 +136,18 @@ impl AppState {
     #[must_use]
     pub fn vault(&self) -> &Vault {
         &self.inner.vault
+    }
+
+    /// Общее владение состоянием роутера — для **главного потока трея** (#128
+    /// фаза 2).
+    ///
+    /// Отдаётся весь `Arc<Inner>`, а не второй `Arc<Vault>`: трей читает те же
+    /// счётчики, что `/health` (`vault()`), и обязан видеть тот же объект —
+    /// две копии сошлись бы враньём в tooltip. Публичного `Arc`-доступа к
+    /// роутеру это не открывает: поле `inner` приватно, accessor `pub(crate)`.
+    #[must_use]
+    pub fn inner_arc(&self) -> Arc<Inner> {
+        Arc::clone(&self.inner)
     }
 
     /// Пул клиентов прокси (`/v1/chat/completions`).

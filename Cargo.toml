@@ -35,7 +35,14 @@ pedantic          = { level = "warn", priority = -1 }
 [workspace.package]
 version      = "0.1.0"
 edition      = "2024"
-rust-version = "1.85"
+# MSRV-канон 1.85 → 1.90 (#128, решение оператора в комментарии к issue цитатой:
+# «tray-icon (0.26.1, MIT/Apache-2.0, rust-version 1.90 — MSRV-bump канона
+# 1.85→1.90 решение оператора здесь же)»). Паттерн формы — keyring §12:228-230
+# («bump MSRV = отдельное решение»): здесь оно принято. Первичка пина:
+# docs/dep-verify-crates.md §16 — MSRV 1.90 задают ДВА крейта (tray-icon 0.26.1
+# и транзитив muda 0.21.x), toolchain-пин rust-toolchain.toml = 1.99.1 не
+# двигается: собирается на нём, канон — заявленный пол.
+rust-version = "1.90"
 license      = "Apache-2.0"
 repository   = "https://github.com/tayuLuc/fasad"
 authors      = ["fasad contributors"]

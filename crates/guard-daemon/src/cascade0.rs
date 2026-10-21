@@ -760,7 +760,7 @@ fn b64_tokens(bytes: &[u8]) -> Vec<(usize, usize)> {
 /// (`DecodePaddingMode::RequireCanonical`) и не терпят лишних битов, так что
 /// здесь только то, что декодер по своим правилам не отвергает.
 fn b64_shape_ok(tok: &[u8]) -> bool {
-    if tok.len() < B64_MIN_TOKEN_BYTES || tok.len() % 4 != 0 {
+    if tok.len() < B64_MIN_TOKEN_BYTES || !tok.len().is_multiple_of(4) {
         return false;
     }
     let mut pads = 0usize;

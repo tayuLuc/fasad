@@ -7,8 +7,9 @@ Issue #56; контракты — SPEC §8 (HTTP-API), §3 (режимы хра�
 
 1. исходящей сети — вообще, см. [docs/daemon-scope.md §Сеть](../../docs/daemon-scope.md);
 2. каскадов 1+ (`X-Guard-Stage: cascade-0-only`) — см. там же, §Деградация каскада;
-3. `/v1/chat/completions`, `PUT /v1/sessions/{id}`-аутентификация, tray, `/ui` —
-   шаги 7–8;
+3. `PUT /v1/sessions/{id}`-аутентификация — не аутентифицирована;
+   `/v1/chat/completions` и `/ui` закрыты шагами 7c/8; tray закрыт #128
+   фаза 2 (win/mac, фича `tray` — см. src/tray.rs);
 4. мьютекса «одна сессия = один пользователь»: `X-Session-ID` не аутентифицирован.
 
 ## Быстрый старт

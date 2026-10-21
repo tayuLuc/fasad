@@ -287,6 +287,57 @@ fn dependency_tree_carries_the_one_client_and_no_second_one() {
     }
 }
 
+/// Факт пятый (#128 фаза 2): граф фичи `tray` не тащит браузер-крейт и не
+/// двигает клиентский граф. Проверка на **linux-таргете** намеренна и
+/// безотказна на всех трёх ОС матрицы: `cargo tree` = разрешение графа, а не
+/// сборка — `compile_error` tray-icon (§16) живёт в компиляции lib, на дерево
+/// он не влияет (промер PR: `cargo tree --features tray --target
+/// x86_64-unknown-linux-gnu` зелёный, GTK-кластера в нём нет — muda
+/// пинится `default-features = false` в манифесте самого tray-icon,
+/// первичка `.crate` 0.26.1).
+#[test]
+fn tray_feature_tree_carries_no_browser_stack_and_no_gtk() {
+    let out = run_tree_features("tray", &["--target", "x86_64-unknown-linux-gnu"]);
+    assert!(
+        out.status.success(),
+        "`cargo tree --features tray` развалился: {}
+{}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout),
+    );
+    let tree = String::from_utf8_lossy(&out.stdout);
+    for token in ["tray-icon", "muda"] {
+        assert!(
+            tree.contains(token),
+            "фича tray не притащила {token}: фича рассоединена (объявление и              гейт cfg разъехались)",
+        );
+    }
+    // Отрицательная половина — без неё проверка зелёная на пустом дереве.
+    for token in ["gtk", "webkit", "reqwest", "tauri"] {
+        assert!(
+            !tree.contains(token),
+            "граф фичи tray тащит {token}: браузерная/GTK-поверхность              протекла в дерево (обещание §16: linux-дефолты гасятся              default-features = false)",
+        );
+    }
+}
+
+/// `cargo tree -p guard-daemon --features <f> --offline [доп. аргументы]`.
+fn run_tree_features(feature: &str, extra: &[&str]) -> std::process::Output {
+    let mut cmd = Command::new(env!("CARGO"));
+    cmd.args([
+        "tree",
+        "-p",
+        "guard-daemon",
+        "--features",
+        feature,
+        "--offline",
+    ]);
+    cmd.args(extra);
+    cmd.current_dir(manifest_dir())
+        .output()
+        .expect("cargo tree запускается")
+}
+
 /// `cargo tree -p guard-daemon -i <token> --offline`.
 fn run_tree(token: &str) -> std::process::Output {
     Command::new(env!("CARGO"))

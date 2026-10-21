@@ -129,6 +129,12 @@ cleanup() {
         kill "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
     fi
+    # Трей-бинарь (#128) поднимается после п.3: на любом раннем отказе ветки
+    # трея (die между его стартом и kill) cleanup обязан убрать и его.
+    if [ -n "${tray_pid:-}" ]; then
+        kill "$tray_pid" 2>/dev/null || true
+        wait "$tray_pid" 2>/dev/null || true
+    fi
     if [ "$KEEP" -eq 0 ]; then
         rm -rf "$tmp"
     else
@@ -298,6 +304,62 @@ printf 'ANALYZE|inn10=ok\n'
 
 kill "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true
+
+# 5. Платформенный контур (#128/#140): бандл обязан нести ровно то, что
+#    обещает его ОС. Развилка — ОС ХОСТА ПРОВЕРКИ (бандл проверяется на своей
+#    ячейке матрицы; cross-check чужого архива = проверка чужого раннера).
+os="$(uname -s)"
+case "$os" in
+    Linux)
+        # linux-бандл = systemd-контур: юнит обязан быть, трей — не может
+        # (фича физически несобираема, §16): её наличие в архиве = кто-то
+        # собрал linux-бинарь с чужими фичами.
+        [ -f "$stage/contrib/systemd/fasad.service" ] \
+            || die "linux-бандл без contrib/systemd/fasad.service (#140)"
+        grep -q "MemoryMax=1843M" "$stage/contrib/systemd/fasad.service" \
+            || die "юнит без MemoryMax=1843M (SPEC §1 ≤1.8 ГБ)"
+        grep -q "LimitMEMLOCK=64K" "$stage/contrib/systemd/fasad.service" \
+            || die "юнит без LimitMEMLOCK=64K (vault-пул 34 KiB, token.rs)"
+        grep -q "Restart=on-failure" "$stage/contrib/systemd/fasad.service" \
+            || die "юнит без Restart=on-failure"
+        printf 'UNIT|ok|contrib/systemd/fasad.service\n'
+        [ ! -e "$stage/bin/fasad-tray" ] \
+            || die "linux-бандл нёс трей-бинарь: linux-сборка фичи tray невозможна (§16)"
+        ;;
+    Darwin | MINGW* | MSYS* | CYGWIN*)
+        # win/mac-бандл = трей: бинарь обязан быть, исполняемым, запускаться
+        # и отвечать (headless-бинарь проверяется п.3; этот = витрина).
+        tray_bin="$stage/bin/fasad-tray"
+        [ "$os" = Darwin ] || tray_bin="$stage/bin/fasad-tray.exe"
+        [ -x "$tray_bin" ] || {
+            [ -x "$stage/bin/fasad-tray.exe" ] || die "win/mac-бандл без bin/fasad-tray (#128)"
+            tray_bin="$stage/bin/fasad-tray.exe"
+        }
+        tray_log="$(mktemp)"
+        FASAD_PORT=0 "$tray_bin" >"$tray_log" 2>&1 &
+        tray_pid="$!"
+        tray_port=""
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            tray_port="$(sed -n 's#.*listening on http://127\.0\.0\.1:\([0-9]*\)/health.*#\1#p' "$tray_log" | head -1)"
+            [ -n "$tray_port" ] && break
+            sleep 0.3
+        done
+        [ -n "$tray_port" ] && [ "$tray_port" != "0" ] || {
+            printf 'verify-bundle: ОШИБКА: трей-бинарь не поднялся, banner:\n' >&2
+            cat "$tray_log" >&2
+            exit 1
+        }
+        tray_health="$(curl -sS --fail --max-time 5 "http://127.0.0.1:${tray_port}/health")" || {
+            die "трей-бинарь не ответил на /health (порт $tray_port)"
+        }
+        printf '%s' "$tray_health" | grep -q '"stage":"cascade-0-only"' || {
+            die "трей-бинарь: /health не подтверждает cascade-0-only: $tray_health"
+        }
+        printf 'TRAY|ok|port=%s\n' "$tray_port"
+        kill "$tray_pid" 2>/dev/null || true
+        wait "$tray_pid" 2>/dev/null || true
+        ;;
+esac
 rm -f "$log"
 printf 'verify-bundle ok: бандл %s распакован, хэши совпали, демон отвечает (version=%s)\n' \
     "$(basename "$arch")" "$ver_health"
