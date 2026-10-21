@@ -50,10 +50,6 @@ crate = "tower-http@0.6.11"
 reason = "транзитив reqwest 0.13.5 при нашем пине 0.7.1 (breaky-бамп 18.10)"
 
 [[bans.skip]]
-crate = "hashbrown"
-reason = "разные версии у tokio/moka/rustls-графов — транзитивный выбор не наш"
-
-[[bans.skip]]
 crate = "syn"
 reason = "1.x и 2.x живут в proc-macro-графе — транзитивный выбор не наш"
 

@@ -270,6 +270,11 @@ fn asset_names_outside_the_allow_list_are_refused() {
         "/assets/app.css%2f%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fconfig%2fkeys",
         "/assets/",
         "/assets/index.html",
+        // Канарейка: реальный файл из `config/`, который не должен попадать ни
+        // в сборку, ни наружу. Схема отдаётся константой `DEFAULT_SCHEMA_JSON`,
+        // папку `config/` демон не шьёт целиком.
+        "/assets/embed-probe.md",
+        "/assets/schema.default.json",
     ] {
         let r = call(&d.addr, "GET", path, &[], b"");
         assert_eq!(r.status, 404, "{path} отдали: {}", r.text());

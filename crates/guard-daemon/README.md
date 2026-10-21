@@ -124,7 +124,7 @@ fasad 0.1.0 cascade-0-only, listening on http://127.0.0.1:8765/health (клас�
 
 ## Песочница `/ui`
 
-Открыть в браузере `http://127.0.0.1:8123/ui` (порт — из баннера запуска).
+Открыть в браузере `http://127.0.0.1:8765/ui` (порт — из баннера запуска; `DEFAULT_PORT`, `src/config.rs:24`).
 Страница зашита в бинарник (`rust-embed`), отдельного фронтенда не ставим:
 адрес наружу песочница не берёт ни один, `Content-Security-Policy` на ответах
 статики — `default-src 'none'` плюс `'self'` по script/style/img/connect, и в

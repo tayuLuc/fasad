@@ -27,15 +27,8 @@ use rust_embed::Embed;
 #[folder = "ui"]
 pub struct Asset;
 
-/// Рабочая схема: тот же файл, что демон вшивает в себя через
-/// `schema::DEFAULT_SCHEMA_JSON`. Отдаём его же байты, а не копию, — иначе
-/// песочница начала бы расходиться с демоном на первой правке схемы.
-#[derive(Embed)]
-#[folder = "../../config"]
-pub struct SchemaAsset;
-
-/// Имя файла схемы внутри `SchemaAsset`. Наружу отдаётся под коротким именем.
-const SCHEMA_FILE: &str = "schema.default.json";
+/// Имя, под которым песочница видит рабочую схему (`/assets/schema.json`).
+pub const SCHEMA_FILE: &str = "schema.json";
 
 /// Политика для статики. Разрешает ровно то, чем пользуется фронт, и больше
 /// ничего: ни чужих origin, ни `inline`, ни `data:`.
@@ -63,9 +56,32 @@ async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Respon
     match name.as_str() {
         "app.css" => serve::<Asset>("app.css"),
         "app.js" => serve::<Asset>("app.js"),
-        "schema.json" => serve::<SchemaAsset>(SCHEMA_FILE),
+        SCHEMA_FILE => serve_schema(),
         _ => not_found(),
     }
+}
+
+/// Схема для песочницы — тот же массив байт, что демон вшил в себя как
+/// [`crate::schema::DEFAULT_SCHEMA_JSON`], без второй вшивки папки `config/`.
+///
+/// Так расхождение «песочница показывает не ту схему, по которой работает
+/// демон» невозможно физически: источник один. Побочный эффект важен не меньше:
+/// `rust-embed` с `#[folder = "../../config"]` шил бы **всю** папку
+/// конфигурации, а это каталог пользователя (локальные override-файлы), —
+/// чужой файл уезжал бы в наружный артефакт. Здесь такой поверхности нет
+/// вовсе; канарейка `config/embed-probe.md` проверяется на проводе
+/// (`asset_names_outside_the_allow_list_are_refused`).
+fn serve_schema() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CONTENT_SECURITY_POLICY, CSP),
+        ],
+        crate::schema::DEFAULT_SCHEMA_JSON,
+    )
+        .into_response()
 }
 
 /// Ответ по одному имени из белого списка. Отсутствующий файл — `404` без
