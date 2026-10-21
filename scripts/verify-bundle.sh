@@ -15,7 +15,17 @@
 #   SHA256SUMS.txt → хэши всех файлов бандла, формат sha256sum -c
 #              (scripts/make-bundle.sh)
 #
-# use: scripts/verify-bundle.sh [--dist DIR] [--keep]
+# use: scripts/verify-bundle.sh [--dist DIR] [--keep] [--expect-version ТЕГ]
+#
+# --expect-version (он же env FASAD_EXPECT_VERSION) — зуб «тег == версия»
+# (класс print-only-гейта без зуба в контуре публикации, находка ревью 21.10): в CI в
+# job `dist` сюда приходит github.ref_name, и релиз v9.9.9 поверх
+# [workspace.package] version = 0.1.0 краснеет ЗДЕСЬ, до публикации. До правки
+# контур сверял архив↔демона (блок ver_archive/ver_health ниже) и тег↔коммит
+# (`gh release create --verify-tag` в job `release`), а тег↔версию — никто:
+# зелёный релиз с ассетами fasad-0.1.0-* под тегом v9.9.9 проходил весь контур.
+# Локально аргумента нет → проверка ПЕЧАТАЕТ SKIPPED, а не молчит: молчаливый
+# пропуск неотличим от выполненной проверки (тот же класс).
 
 set -euo pipefail
 
@@ -24,6 +34,11 @@ cd "$ROOT"
 
 DIST="dist"
 KEEP=0
+# Ожидание «тег == версия»: аргумент --expect-version ИЛИ env
+# FASAD_EXPECT_VERSION (в CI job `dist` выставляет github.ref_name, и только
+# на тег-триггере: на workflow_dispatch ref_name = имя ветки, не тег).
+# Пусто = проверки нет, и это печатается строкой SKIPPED (см. ниже).
+EXPECT_VERSION="${FASAD_EXPECT_VERSION:-}"
 
 die() {
     # Контракт: die принимает ГОТОВУЮ строку. `printf '…%s\n' "$*"` форматирует
@@ -46,8 +61,13 @@ while [ "$#" -gt 0 ]; do
             KEEP=1
             shift
             ;;
+        --expect-version)
+            [ "$#" -ge 2 ] || die "--expect-version требует аргумент (имя тега, v0.1.0, или версия 0.1.0)"
+            EXPECT_VERSION="$2"
+            shift 2
+            ;;
         -h | --help)
-            echo "использование: scripts/verify-bundle.sh [--dist DIR] [--keep]"
+            echo "использование: scripts/verify-bundle.sh [--dist DIR] [--keep] [--expect-version ТЕГ]"
             exit 0
             ;;
         *)
@@ -56,6 +76,32 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+# ── зуб «тег == версия» ──────────────────────────────────────────────────────
+# Первичка версии — `[workspace.package] version` в Cargo.toml: из неё делают
+# имя архива (scripts/make-bundle.sh) и версию в /health (crate-версия демона).
+# Поэтому точка сверки одна, а обязана она ровно одному числу: тег, имя
+# ассета и то, что печатает демон. Проверка идёт ДО распаковки и запуска
+# демона: несоответствие тегов — это не вопрос бандла, его видно по метаданным
+# за миллисекунды, и платить за отказ минутой прогона незачем.
+if [ -n "$EXPECT_VERSION" ]; then
+    cargo_ver="$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+        | sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    [ -n "$cargo_ver" ] || die "не извлёк версию из [workspace.package] в Cargo.toml"
+    exp="${EXPECT_VERSION#v}"
+    if [ "$exp" != "$cargo_ver" ]; then
+        printf 'verify-bundle: ОШИБКА: тег %s (версия %s) ≠ [workspace.package] version = %s\n' \
+            "$EXPECT_VERSION" "$exp" "$cargo_ver" >&2
+        printf 'verify-bundle: ОШИБКА: ассеты выйдут fasad-%s-…, а релиз публикуется под %s. Поднимите версию в Cargo.toml (единый источник) или двигайте тег на коммит с этим подъёмом.\n' \
+            "$cargo_ver" "$EXPECT_VERSION" >&2
+        exit 1
+    fi
+    printf 'VERSION|ok|ref=%s|workspace.package=%s\n' "$EXPECT_VERSION" "$cargo_ver"
+else
+    # Пустое ожидание = проверки НЕТ. Печатается явно, молча не пропускается:
+    # тишина неотличима от выполненной проверки (класс false-green, реестр).
+    printf 'VERSION|SKIPPED|сверка тег↔версия не запрошена: передайте --expect-version ТЕГ (в CI её включает FASAD_EXPECT_VERSION=github.ref_name на тег-триггере)\n'
+fi
 
 # Архив ровно один: два архива в dist/ = два кандидата на релиз, и проверка
 # не скажет, какой из них публикуется.
@@ -207,6 +253,15 @@ ver_health="$(printf '%s' "$health" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
         "$ver_archive" "$ver_health" >&2
     exit 1
 }
+if [ -n "$EXPECT_VERSION" ]; then
+    # Третья точка того же ожидания: версия, вкомпилированная в бинарь из
+    # архива (crate-версия guard-daemon). Тег обязан совпасть и с ней, иначе
+    # «Cargo.toml подняли после сборки» даёт свежий тег над старым бинарём.
+    [ "$exp" = "$ver_health" ] || {
+        die "тег $EXPECT_VERSION (версия $exp) ≠ версия демона в бандле $ver_health"
+    }
+    printf 'VERSION|ok|ref=%s|daemon=%s\n' "$EXPECT_VERSION" "$ver_health"
+fi
 
 # 4. Анализ прогона: спаны возвращаются, policy-заголовок живёт. Поле спана —
 #    `entity_type` (промер живого ответа /v1/analyze 21.10:
