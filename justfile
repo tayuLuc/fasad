@@ -49,6 +49,13 @@ SHELL_SOURCES := "!ls scripts/*.sh tools/verify/*.sh"
 # в `.github/` тоже ноль, а джоба `Lint` (lint.yml:21) = MegaLinter по Actions YAML
 # и shell, где Python-гейты не бегут. Итог: `just check` — ЛОКАЛЬНЫЙ полный гейт
 # перед push (плюс ручной `just lang-scan`), в CI язык-гейт НЕ смонтирован.
+#
+# Канон гейта #60 п.3 — python-метрика `just restore-integrity` (HTTP-контур,
+# golden-датасет N=150, Wilson; PR #139), её монтаж в `check` — в том PR.
+# `restore_probe` (#141) — DEV-слой: modes session/stateless, которых
+# python-нога не покрывает; он живёт тестами (`cargo test -p guard-daemon
+# --examples` в `local-test`) и ЛОКАЛЬНЫМ recipe `restore-integrity-probe`
+# ниже — в `check` НЕ смонтирован, чтобы не плодить две canonical-ноги.
 
 # Прогнать всё, что блокирует merge: линты (Rust + Python) + язык-гейт + тесты + аудит.
 # `restore-integrity` (#60 п.3) — локальная нога по образцу union-recall: поднимает
@@ -159,6 +166,11 @@ local-test:
     {{CPU_CALM}} cargo test --workspace
     {{CPU_CALM}} cargo test -p guard-vault --features decliner
     {{CPU_CALM}} cargo test -p guard-onnx --examples
+    # Тесты харнеса гейта #60 п.3 (#134): контракт формата `RESTORE|verdict` и
+    # positive control'ы живости ног. Тот же носитель контракта, что у строки
+    # `guard-onnx --examples` выше: тестов примеров не видно ни в
+    # `cargo test --workspace`, ни в CI, если их не звать явно.
+    {{CPU_CALM}} cargo test -p guard-daemon --examples
 
 # Аудит дерева зависимостей (bans/advisories/licenses) — deny.toml.
 deny:
@@ -180,6 +192,40 @@ python-lint:
 # Побайтовая воспроизводимость golden-датасета (реген + сверка с B2).
 golden-verify:
     uv run --locked python scripts/golden_regen_verify.py
+
+# Dev-нога #134 (НЕ канон гейта — канон python-метрика #139 в `check`):
+# целостность разворота продуктового пути in-process, оба режима хранилища.
+#
+# Харнес `crates/guard-daemon/examples/restore_probe.rs` гоняет
+# `Vault::anonymize → deanonymize` — ровно тот код, что вызывают
+# `POST /v1/anonymize` / `POST /v1/deanonymize`, — на фикстурах ФОРМ входа
+# (кириллица, ФИО в падежах, мультиымянный документ, base64, числа словами, спан
+# ровно на потолке `MAX_ORIGINAL_BYTES` и за ним), в обоих режимах хранилища и в
+# двух раундах (чистый + после снятия записей `invalidate`, то есть так, как
+# запись выглядит для движка после idle-лимита).
+# `guard-vault/examples/pool_probe -- integrity` остаётся промером ПУЛА
+# суррогатов (выдача формы токену и её индивидуальный разворот); этот харнес —
+# целостность round-trip'а документа целиком.
+#
+# Контракт stdout — строки `RESTORE|…` парами «ключ|значение», как
+# `GOLDEN|verdict` в `recall_golden`: per-mode, per-case (с `--echo`), счётчики
+# деградации и
+#   RESTORE|verdict|ok|roundtrips|<k>|spans|<n>|skips|<s>|failures|0|modes|session|stateless|
+# Строка печатается ФАКТИЧЕСКИМИ числами прогона; вердикт краснеет и при нулевом
+# покрытии суррогатов (`no_surrogate_coverage`): «не измерено» и «измерено чисто»
+# различаются кодом выхода — 0 ok, 1 целостность нарушена, 2 не измерено (тот же
+# rc-контракт, что у `lang-scan`).
+#
+# rc берётся ОТ ПРОВЕРЯЮЩЕЙ КОМАНДЫ (`just` его пробрасывает, промер 1.58.0), а
+# не из `grep`-хвоста: конвейер `… | grep RESTORE` заглушил бы rc и дал
+# ложно-зелёный прогон (реестр ложно-зелёных: exit code с конвейера).
+#
+# Щадящий режим (рюлинг 21.10): те же рычаги, что у `local-test` (в тексте
+# рецептов `{{…}}` раскрывается, в комментариях — нет, поэтому сюда он не
+# подставлялся). Промер 21.10: инкрементальный прогон 2.3 с, сборка с нуля
+# ~1 м 40 с (числа — в теле PR).
+restore-integrity-probe:
+    {{CPU_CALM}} cargo run -p guard-daemon --example restore_probe
 
 # Гейт #14-B: union-recall ПОЛНОГО каскада (0∨1∨2) на golden-наборе, SPEC §5 п.6
 # (в AGENTS.md и README golden тот же пункт именуется «§5 п.7»).
