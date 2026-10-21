@@ -51,7 +51,10 @@ SHELL_SOURCES := "!ls scripts/*.sh tools/verify/*.sh"
 # перед push (плюс ручной `just lang-scan`), в CI язык-гейт НЕ смонтирован.
 
 # Прогнать всё, что блокирует merge: линты (Rust + Python) + язык-гейт + тесты + аудит.
-check: lint shellcheck python-lint lang-scan golden-verify test net-audit deny
+# `restore-integrity` (#60 п.3) — локальная нога по образцу union-recall: поднимает
+# живой демон на recall-сплите, в CI не монтируется (там модели 879 МБ вне git и
+# union-recall не смонтирован — grep `.github/` union-recall, ноль).
+check: lint shellcheck python-lint lang-scan golden-verify test net-audit deny restore-integrity
 
 # Гейт «демон не тащит сеть» (#56 п.5). Исполняется как обычный интеграционный
 # тест `crates/guard-daemon/tests/net_audit.rs`, а не grep-рецептом: `just` на
@@ -196,6 +199,37 @@ union-recall *ARGS:
     nice -n 10 env OMP_NUM_THREADS=2 uv run --isolated --python ~/.local/bin/python3.13 \
         --with numpy --with onnxruntime --with tokenizers \
         python tools/metrics/union_recall.py --threads 2 {{ ARGS }}
+
+# Гейт #60 п.3: restoration-integrity — доля побайтовых возвратов исходнику на
+# ПОЛНОГО контура демона (analyze → anonymize → deanonymize, режим хранилища 2)
+# на текстах golden-v1. Рядом с recall (#14): recall мерит детект, эта метрика
+# мерит обратный ход (реверс-индекс + разворот, шаг 7d #70); `pool_probe
+# -- integrity` мерит движок guard-vault на 27 ФИО, эта нога — продуктовый HTTP
+# на recall-сплите. Positive control (clean/sabotage) обязан быть живым:
+# мёртвый контроль = rc=2, метрика не засчитывается (доктрина ложно-зелёного).
+# Щадящий режим (рюлинг 21.10): nice -n 10, демон на 2 треда (FASAD_THREADS),
+# один прогон за раз. Датасет только читается; B2-хэш проверяется на входе
+# харнеса, гейт правок остаётся `just golden-verify`.
+# В CI не монтируется по образцу union-recall (тяжёлый контур с живым демоном;
+# grep .github union-recall — ноль): локальная нога, в `just check`.
+
+# Restoration-integrity полного контура демона (vault=session) — гейт #60 п.3.
+restore-integrity *ARGS:
+    cargo build --bin fasad
+    nice -n 10 env FASAD_THREADS=2 python3 tools/metrics/restore_integrity.py {{ ARGS }}
+
+# Та же метрика на смонтированном весе (каскады 1–2 маскируют детектом):
+# сборка демона под ort-inference на официальном dylib (контраонта
+# crates/guard-daemon/README.md §«Как включить монтаж»; macOS: без env-префикса
+# линковка краснеет, docs/model-audit §5 п.2), веса FASAD_MODEL_DIR, бюджет
+# запроса 10 с (дефолт 3000 мс на смонтированном пути не вмещает Decide-чанк —
+# README §env, промер ревью #97). Стадия проверяется харнесом по /health.
+restore-integrity-full *ARGS:
+    ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib}" \
+        CARGO_BUILD_JOBS=2 nice -n 10 cargo build --features guard-daemon/ort-inference --bin fasad
+    nice -n 10 env FASAD_THREADS=2 FASAD_MODEL_DIR="${HOME}/.cache/fasad-models" \
+        FASAD_TIMEOUT_MS=10000 \
+        python3 tools/metrics/restore_integrity.py --daemon target/debug/fasad {{ ARGS }}
 
 # docs/golden-report.md из сырого артефакта прогона: числа в документацию попадают
 # генерацией, а не переписыванием руками (правило факта «отформатированное число —
