@@ -64,13 +64,28 @@ fi
 arch="$(printf '%s\n' "$arch" | sed '/^$/d')"
 
 tmp="$(mktemp -d)"
+# Уборка за собой на ЛЮБОМ выходе — и на die, и на раннем отказе вне die (`set -e`
+# на команде, которой нет в PATH, сигнал, таймаут): демон, поднятый скриптом, не
+# имеет права пережить скрипт (осиротевший слушает порт, следующий прогон ловит
+# AddrInUse), и убитый фон надо дожать, иначе зомби.
+#
+# Ловушка ОДНА: в bash второй `trap … EXIT` заменяет первый, а не дополняет —
+# до ревью #76 (F6) здесь был trap, убирающий только $tmp, а демона убивал
+# каждый die-путь сам (пять копий `kill "$pid"`), поэтому unplanned-отказ
+# оставлял демон живым. Функция идемпотентна: двойной kill/wait безопасен.
 cleanup() {
+    if [ -n "${pid:-}" ]; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    fi
     if [ "$KEEP" -eq 0 ]; then
         rm -rf "$tmp"
     else
         printf 'verify-bundle: бандл оставлен в %s\n' "$tmp" >&2
     fi
+    return 0
 }
+# shellcheck disable=SC2329 # вызывается ловушкой EXIT, а не из тела скрипта
 trap cleanup EXIT
 
 printf 'verify-bundle: архив %s\n' "$arch"
@@ -167,10 +182,9 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
     [ -n "$port" ] && break
     sleep 0.3
 done
-[ -n "$port" ] || {
+[ -n "$port" ] && [ "$port" != "0" ] || {
     printf 'verify-bundle: ОШИБКА: демон не поднялся, banner:\n' >&2
     cat "$log" >&2
-    kill "$pid" 2>/dev/null || true
     exit 1
 }
 
@@ -179,16 +193,13 @@ printf 'HEALTH|%s\n' "$health"
 # Контур бандла метится в двух местах: имя артефакта (-cascade-0) и /health.
 # Расхождение = бандл подписан не тем, чем является.
 printf '%s' "$health" | grep -q '"stage":"cascade-0-only"' || {
-    printf 'verify-bundle: ОШИБКА: /health не подтверждает контур cascade-0-only\n' >&2
-    kill "$pid" 2>/dev/null || true
-    exit 1
+    die "/health не подтверждает контур cascade-0-only"
 }
 ver_archive="$(printf '%s' "$(basename "$arch")" | sed -n 's/^fasad-\([0-9][0-9.]*\)-.*/\1/p')"
 ver_health="$(printf '%s' "$health" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
 [ "$ver_archive" = "$ver_health" ] || {
     printf 'verify-bundle: ОШИБКА: версия архива %s ≠ версия демона %s\n' \
         "$ver_archive" "$ver_health" >&2
-    kill "$pid" 2>/dev/null || true
     exit 1
 }
 
@@ -202,9 +213,7 @@ req='{"text":"ИНН 7707083893, телефон +79161234567, паспорт 45 
 # что у счётчика спанов ниже). Причина отказа обязана называться самим скриптом.
 analyze="$(curl -sS --fail --max-time 10 -H 'content-type: application/json' \
     -H 'x-guard-policy: mask' -X POST "http://127.0.0.1:${port}/v1/analyze" -d "$req")" || {
-    printf 'verify-bundle: ОШИБКА: /v1/analyze от бандла не ответил (HTTP-ошибка или таймаут), порт %s\n' "$port" >&2
-    kill "$pid" 2>/dev/null || true
-    exit 1
+    die "/v1/analyze от бандла не ответил (HTTP-ошибка или таймаут), порт %s" "$port"
 }
 # Голый `grep -o` без совпадения возвращается 1 и под pipefail убивает скрипт на
 # присваивании: при нуле спанов собственное сообщение «вернул пустой список
@@ -213,23 +222,17 @@ analyze="$(curl -sS --fail --max-time 10 -H 'content-type: application/json' \
 spans="$(printf '%s' "$analyze" | { grep -o '"entity_type"' || true; } | wc -l | tr -d ' ')"
 printf 'ANALYZE|spans=%s\n' "$spans"
 [ "$spans" -ge 1 ] || {
-    printf 'verify-bundle: ОШИБКА: /v1/analyze вернул пустой список спанов: %s\n' "$analyze" >&2
-    kill "$pid" 2>/dev/null || true
-    exit 1
+    die "/v1/analyze вернул пустой список спанов: %s" "$analyze"
 }
 # Счётчик спанов сам по себе слаб (ревью #76, F5): зелёным остаётся любой
 # мусорный спан, а регресс ИНН-валидатора — главного цифрового класса нашей
 # схемы — прошёл бы незамеченным. Требуем конкретный спан на заведомо валидном
 # номере: класс inn И источник checksum_rf через валидатор inn10.
 printf '%s' "$analyze" | grep -q '"entity_type":"inn"' || {
-    printf 'verify-bundle: ОШИБКА: ИНН 7707083893 (валидный inn10) не найден бандлом: %s\n' "$analyze" >&2
-    kill "$pid" 2>/dev/null || true
-    exit 1
+    die "ИНН 7707083893 (валидный inn10) не найден бандлом: %s" "$analyze"
 }
 printf '%s' "$analyze" | grep -q '"validator":"inn10"' || {
-    printf 'verify-bundle: ОШИБКА: inn-спан найден не чексумма-валидатором inn10: %s\n' "$analyze" >&2
-    kill "$pid" 2>/dev/null || true
-    exit 1
+    die "inn-спан найден не чексумма-валидатором inn10: %s" "$analyze"
 }
 printf 'ANALYZE|inn10=ok\n'
 

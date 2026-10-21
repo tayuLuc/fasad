@@ -203,14 +203,22 @@ run_cascade0() {
     FASAD_PORT=0 FASAD_VAULT_MODE=stateless FASAD_THREADS="${FASAD_THREADS:-2}" \
         "$bin" >"$log" 2>&1 &
     pid="$!"
+    # Ловушка одна и на EXIT: демон обязана убивать любая ветка выхода (die,
+    # set -e, сигнал), иначе осиротевший процесс слушает порт и следующий прогон
+    # ловит AddrInUse; wait дожимает убитый фон, не оставляя зомби (ревью #76, F6;
+    # промер: контроль с осознанным провалом гейта leaving-демона не даёт —
+    # `Terminated: 15` в логе прогона).
     # shellcheck disable=SC2064
-    trap "kill '$pid' 2>/dev/null || true; rm -f '$log'" EXIT
+    trap "kill '$pid' 2>/dev/null || true; wait '$pid' 2>/dev/null || true; rm -f '$log'" EXIT
 
     port=""
     i=0
     while [ "$i" -lt 100 ]; do
         port="$(sed -n 's#.*listening on http://127.0.0.1:\([0-9]*\)/health.*#\1#p' "$log" | head -1)"
-        [ -n "$port" ] && break
+        # «0» = запрос свободного порта (FASAD_PORT=0), не адрес: баннер с нулём
+        # readiness не даёт. Промер 21.10: ноль принимался, curl уходил в rc=7
+        # (connect refused), `set -e` ронял скрипт без единой строки причины.
+        [ -n "$port" ] && [ "$port" != "0" ] && break
         kill -0 "$pid" 2>/dev/null || die "демон умер на старте: $(cat "$log")"
         i=$((i + 1))
         sleep 0.1
@@ -251,7 +259,8 @@ run_cascade0() {
     i=0
     while [ "$i" -lt "$WARMUP" ]; do
         spans="$(curl -s -X POST -H 'content-type: application/json' -H 'x-guard-policy: mask' \
-            --data-binary "$payload" "http://127.0.0.1:$port/v1/analyze")"
+            --data-binary "$payload" "http://127.0.0.1:$port/v1/analyze")" \
+            || die "прогрев /v1/analyze не ответил (порт $port): curl rc=$?"
         [ -n "$spans" ] || die "прогрев /v1/analyze вернул пустое тело"
         case "$spans" in
             '['*) ;;
