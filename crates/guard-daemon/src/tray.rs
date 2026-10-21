@@ -62,6 +62,12 @@ pub const TRAY_GUID: u128 = 0x0f5a_d17e_5f72_4b1f_9a44_c3d2_8e01_7002;
 /// Меню-пункт «Открыть fasad UI»: id, по которому цикл различает пункты.
 pub const MENU_ID_OPEN: &str = "open-ui";
 
+/// Меню-пункт «Выход (graceful)»: свой `MenuItem` с id — НЕ `PredefinedMenuItem::quit`
+/// (тот не шлёт `MenuEvent`: win `PostQuitMessage(0)` / mac `terminate:`, первичка muda
+/// 0.21.2 — нить #151 M1). Обработчик — `poll_once`: по этому id поднимает
+/// `Shutdown`-флаг, serve-контур завершается graceful.
+pub const MENU_ID_QUIT: &str = "quit";
+
 /// Иконка «всё чисто»: отказов хранилища нет.
 pub const ICON_STATE_OK: u8 = 0;
 
@@ -334,6 +340,25 @@ pub fn run(vault: &Arc<Inner>, stage: &'static str, port: u16, shutdown: &Shutdo
     drop(icon);
 }
 
+/// Разбор `MenuEvent`: открыть UI или поднять `Shutdown`. Чистая функция — тест
+/// промеряет её напрямую (`poll_once` требует живого `TrayIcon`, headless-тест
+/// его не строит); `poll_once` вызывает её из цикла.
+///
+/// Возврат: `true` = событие обработано (Open/Quit), `false` = неизвестный id.
+/// Иных пунктов меню нет (первичка `build_tray`); ложный quit дороже ложного
+/// пропуска — неизвестный id не убивает демон с незаписанным vault.
+fn handle_menu_event(ev: &MenuEvent, port: u16, shutdown: &Shutdown) -> bool {
+    if ev.id.as_ref() == MENU_ID_OPEN {
+        open_ui(port);
+        true
+    } else if ev.id.as_ref() == MENU_ID_QUIT {
+        shutdown.trigger();
+        true
+    } else {
+        false
+    }
+}
+
 /// Один шаг цикла событий: прочитать каналы с таймаутом [`TICK_SECS`] и
 /// обновить подпись по шагу. Возвращает `false`, если канал событий закрыт
 /// (процесс уходит, цикл не нужен) — вызывающий завершает [`run`].
@@ -368,12 +393,9 @@ pub fn poll_once(
         }
     }
     while let Ok(ev) = MenuEvent::receiver().try_recv() {
-        if ev.id.as_ref() == MENU_ID_OPEN {
-            open_ui(port);
-        } else {
-            // Единственный иной активный пункт — Quit.
-            shutdown.trigger();
-        }
+        // Разбор — чистая функция `handle_menu_event` (тестуется без живого трея,
+        // промер `tray_quit_event_triggers_shutdown`).
+        let _ = handle_menu_event(&ev, port, shutdown);
     }
     if last_tick.elapsed() >= Duration::from_secs(TICK_SECS) {
         *last_tick = Instant::now();
@@ -394,7 +416,16 @@ fn build_tray(
     menu.append_items(&[
         &MenuItem::with_id(MENU_ID_OPEN, "Открыть fasad UI", true, None),
         &PredefinedMenuItem::separator(),
-        &PredefinedMenuItem::quit(Some("Выход (graceful)")),
+        // Свой пункт с id, а не `PredefinedMenuItem::quit`: первичка muda 0.21.2 —
+        // predefined Quit не шлёт MenuEvent (windows: `PostQuitMessage(0)`,
+        // `platform_impl/windows/mod.rs:1142`; macOS: selector `terminate:`,
+        // `platform_impl/macos/mod.rs:972`) = жёсткая смерть процесса мимо
+        // `with_graceful_shutdown`-дозаписи. Свой id проходит через
+        // `MenuEvent::receiver()` (у обычных `MenuItem` мунда шлёт событие на
+        // обеих ОС: win `platform_impl/windows/mod.rs:1098/1108`, mac
+        // `platform_impl/macos/mod.rs:855/865` = `MenuEvent::send`) и гасится
+        // поллингом в `shutdown.trigger()`.
+        &MenuItem::with_id(MENU_ID_QUIT, "Выход (graceful)", true, None),
     ])?;
     let tray = TrayIconBuilder::new()
         .with_id(tray_icon::TrayIconId::new("fasad"))
@@ -596,6 +627,43 @@ mod tests {
             tray_icon::MouseButton::Middle,
             tray_icon::MouseButtonState::Up
         ));
+    }
+
+    #[test]
+    fn tray_quit_event_triggers_shutdown() {
+        // Промер M1 (#151): quit-пункт = свой MenuItem с id (build_tray), событие
+        // по каналу MenuEvent доходит до `handle_menu_event` и поднимает Shutdown.
+        // PredefinedMenuItem::quit так не работает (первичка muda: win
+        // `PostQuitMessage(0)`, mac `terminate:` — MenuEvent не шлётся).
+        use tray_icon::menu::MenuId;
+        let sd = Shutdown::new();
+        assert!(!sd.triggered());
+        let quit = MenuEvent {
+            id: MenuId::new(MENU_ID_QUIT),
+        };
+        assert!(
+            handle_menu_event(&quit, 8765, &sd),
+            "quit-id обязан распознаваться (иначе else-ветка мертва, как с predefined)"
+        );
+        assert!(sd.triggered(), "quit обязан поднять graceful shutdown");
+        // Unknown id: распознан не быть не должен, shutdown не трогать.
+        let sd2 = Shutdown::new();
+        let bogus = MenuEvent {
+            id: MenuId::new("не-наш-пункт"),
+        };
+        assert!(
+            !handle_menu_event(&bogus, 8765, &sd2),
+            "чужой id не имеет права убивать демон"
+        );
+        assert!(!sd2.triggered());
+    }
+
+    #[test]
+    fn menu_ids_are_distinct() {
+        // Промер M1 (#151): quit = свой id, а не PredefinedMenuItem::quit (тот не
+        // шлёт MenuEvent — первичка muda 0.21.2). Различимые id = два обработчика
+        // на одном канале.
+        assert_ne!(MENU_ID_OPEN, MENU_ID_QUIT);
     }
 
     #[test]

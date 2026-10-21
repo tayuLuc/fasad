@@ -8,7 +8,10 @@
 > (§7 в файле не было, §8–§10 остались на своих местах): внешние ссылки
 > «model-audit §8/§9/§10» в CI, скриптах и релизных доках не тронуты.
 > **Карта шва (для чужих ссылок):** «model-audit §4/§5/§6» (любой, в т.ч. §5.6, §5.7,
-> §5 п.N) ищутся здесь: §4 → §W1, §5 → §W2, §6 → §W3.
+> §5 п.N) ищутся здесь: §4 → §W1, §5 → §W2, §6 → §W3; §5 п.N → §W2 п.N,
+> §5.6 → §W2.6, §5.7 → §W2.7. §5.1–§5.5 как ПОДРАЗДЕЛОВ не существовало
+> (§5 нумеровал п.1–п.4): ссылка «§5.N» от #133 — описка формы «п.N», лечится
+> в §W2 п.N (#136).
 
 ## Оглавление (компас)
 
@@ -37,13 +40,13 @@
    орт-инициализации (после `rss_mib_baseline`). Воспроизведено: `cargo run
    --release --features ort-inference --example spike -- --arb --lockr` (и с
    `MACOSX_DEPLOYMENT_TARGET=26.0`). Dev-профиль стабилен. Кандидат причины:
-   `-Wl,-undefined,dynamic_lookup` (нужен из-за §W2.2) + `-lSystem` порядок в
+   `-Wl,-undefined,dynamic_lookup` (нужен из-за §W2 п.2) + `-lSystem` порядок в
    release. НЕ правим: `[profile.release]` workspace (запрет родителя); чинить
    заменой линк-стратегии (ORT dylib/`load-dynamic` фича) в шаге 4.
    **РЕШЕНО 19.10 06:34 (промеры release, issue #11):** официальный dylib-путь
    `ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=… -Wl,-rpath,…`: 1.20.1/1.23.0/1.24.4/
    1.26.0 — не крашатся (мягкий exit 101 «api-31 → supported [1,NN]», NN=минор);
-   **1.31.0 — прогон живой**: exit 1 (GatherElements §W2.3, ожидаемо до шага 4),
+   **1.31.0 — прогон живой**: exit 1 (GatherElements §W2 п.3, ожидаемо до шага 4),
    `env_init_ms|40.3`, `rss_mib_after_load_arbiter|387.4` (сырые /tmp/mg43-45.out).
    Дефект = статик-линковка pyke-сборки (min=11.0 × chained fixups → unresolved
    helper = прыжок в 0x0, см. crash-reports). Релизный путь model-audit.md §9 везёт dylib anyway;
@@ -83,7 +86,7 @@ Addendum 20.10 (4b-2a, issue #23, живой прогон `spike --arb` с жи�
    (`scoring.py` `embs[1:]`) — не конфликтует: Decide-граф собирает hidden на
    `[L]`-позициях (первички сходятся: карточка §W2 п.2 [бывш. §Graph], `export_onnx.py`,
    `verify_parity.py` L34-37).
-2. **§W2.3 воспроизведён И исправлен одновременно.** Точная ошибка ORT на OOB
+2. **§W2 п.3 воспроизведён И исправлен одновременно.** Точная ошибка ORT на OOB
    индексе зафиксирована в том же прогоне дословно:
    `Non-zero status code … GatherElements node. Name:'node_gather_48' …
    Out of range value in index tensor` (`MARKER|arb|trap=ort_error`).
@@ -227,15 +230,15 @@ Addendum 20.10 (4b-2a, issue #23, живой прогон `spike --arb` с жи�
 > хиты ⇒ абсолютные recall были завышены; Δ-паритет почти не тронут (смещение
 > одинаково у fp32 и кванта). Оба харнеса исправлены (d6a9f45), все числа ниже —
 > **перепрогон после фикса**; первичка: `/tmp/parityB_{lockr,decide}_fixed.txt`,
-> `/tmp/recall_fixed2.txt` (debug, profile-контракт §W2.1 — release-SIGSEGV
+> `/tmp/recall_fixed2.txt` (debug, profile-контракт §W2 п.1 — release-SIGSEGV
 > воспроизвёлся на 06:07, crash-report `.ips`). Раунд-2 ревью добавил второй
 > перезамер: B-decide перевыпущен в **рантайм-порядке блока схем**
 > (`/tmp/parityB_decide_ro.txt`, байт-в-байт с независимым прогоном ревьюера
 > `/tmp/r2_pyB_rustorder.txt`); алфавитные числа отозваны. Release-оговорка
-> §W2.1 ослаблена ревьюером (его релизный прогон exit 0, бит-в-бит с
+> §W2 п.1 ослаблена ревьюером (его релизный прогон exit 0, бит-в-бит с
 > debug-первичкой; родитель повторить не смог — 139 и при rm-dylib-контракте,
 > и при dylib рядом с бинарём; вывод: профиль на числа не влияет,
-> воспроизводимость падения = открытый хвост §W2.1).
+> воспроизводимость падения = открытый хвост §W2 п.1).
 
 Профиль: **debug** (см. релиз-оговорку выше), threads=8 (recall) / 4 (парити), macOS
 arm64, ORT 1.31.0 dylib. Датасет: golden-v1.1 (204 ряда, split=recall 150, sha

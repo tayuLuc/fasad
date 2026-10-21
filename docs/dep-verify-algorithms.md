@@ -578,7 +578,7 @@ valid ⟺ int(n) % 97 == 1
 До шага 9 в `checksums::IBAN_REGISTRY` лежало шесть стран — ровно те, что
 закрыты эталонными векторами §6. Остальные 83 давали `None` («неизвестная
 страна»), и на golden-наборе это стоило 21 промаха из 27 span'ов IBAN
-(`docs/golden-report.md` §6.3). Таблица расширена до **89 стран**.
+(`docs/golden-report.md` §6 п.3). Таблица расширена до **89 стран**.
 
 Первичка — **IBAN REGISTRY** (Registration Authority for ISO 13616 — SWIFT SCRL),
 табличные колонки «IBAN length», «IBAN structure», «IBAN print format example»,

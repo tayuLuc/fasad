@@ -76,7 +76,10 @@ tray-icon = { version = "0.26.1", default-features = false, optional = true }
 # деградации до каскада 0 не существует.
 ort-inference = ["guard-onnx/ort-inference"]
 # Иконка трея (#128 фаза 2): default OFF — CI-матрица трёх ОС не трогается,
-# feature-off = обычные ноги, релизный headless-бинарь не линкует GUI.
+# feature-off = обычные ноги; релизный headless-бинарь (`just release-build`
+# без фичи, #76/#128) не линкует GUI. Сузление нити #151 M2: локальная
+# `cargo build --features tray` собирает ОБЕ цели bin (`fasad` + `fasad-tray`,
+# features пер-крейт) — в on-сборке код трея есть и в `fasad`.
 #
 # Linux: фича ФИЗИЧЕСКИ недоступна. При `tray-icon` с `default-features = false`
 # крейт красит `compile_error!("either the `libappindicator` or `ksni` feature
