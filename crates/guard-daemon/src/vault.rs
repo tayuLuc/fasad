@@ -984,12 +984,12 @@ impl Vault {
         class: &str,
         pending: &mut PendingForms,
     ) -> Result<(String, &'static str), VaultApiError> {
-        if class == "person_name" && self.mode == VaultMode::Session {
-            if let Some(srg) =
+        if class == "person_name"
+            && self.mode == VaultMode::Session
+            && let Some(srg) =
                 self.surrogate_span(session.unwrap_or_default(), original, pending)?
-            {
-                return Ok((srg, OP_REPLACE));
-            }
+        {
+            return Ok((srg, OP_REPLACE));
         }
         let sealed =
             VaultToken::seal_with(self.engine.key(), original.as_bytes(), self.mlock.policy())

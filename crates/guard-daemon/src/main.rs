@@ -15,7 +15,6 @@
 
 use guard_daemon::Health;
 use guard_daemon::config::Config;
-use guard_daemon::http::AppState;
 use guard_daemon::schema::Schema;
 use guard_daemon::vault::Vault;
 
@@ -66,9 +65,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Loopback обязателен и проверен на разборе: гард не сетевой сервис
     // (SPEC §1 п.6), и `0.0.0.0` сюда протаскивается только через эту стену.
+    let tray_stage = cfg.stage();
     let health = Health {
         version: env!("CARGO_PKG_VERSION"),
-        stage: cfg.stage(),
+        stage: tray_stage,
         mode: cfg.vault_mode.as_str(),
     };
     // Хранилище поднимается до сокета по той же причине, что и схема: режим 2/3
@@ -80,7 +80,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     let vault_key_source = vault.key_source().as_str();
     let classes = schema.classes.len();
-    let app = guard_daemon::http::router(AppState::new(cfg.clone(), schema, health, vault));
+    // Состояние — общим `Arc`ом (`inner_arc`): на него смотрит роутер, и на
+    // том же объекте трей читает счётчики деградации (метрика tooltip'а обязана
+    // сходиться с `/health`, две копии сошлись бы враньём — #128).
+    let state = guard_daemon::http::AppState::new(cfg.clone(), schema, health, vault);
+    let app = guard_daemon::http::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
     // Порт в баннере — фактически занятый, а не запрошенный: `FASAD_PORT=0`
@@ -98,8 +102,81 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         cfg.mlock.as_str(),
         vault_key_source,
     );
-    axum::serve(listener, app).await?;
-    Ok(())
+
+    // Трей (#128 фаза 2, win/mac). Первичка docs крейта: на macOS иконка и меню
+    // живут только на главном потоке с крутящимся event loop'ом
+    // (`tray-icon/src/lib.rs`, «Platform-specific notes»; `muda/src/lib.rs`:
+    // «most functionality will panic if you try to use it from any other
+    // thread») — значит главный поток отдаётся циклу трея, а serving переезжает
+    // на рабочий поток с собственным рантаймом ([`serve_on_worker`]). Без фичи
+    // — ровно прежний `axum::serve` в этом потоке: feature-off = headless-
+    // бинарь бандла, ноль новых строк в рантайме и ноль новых нитей.
+    #[cfg(all(feature = "tray", any(target_os = "windows", target_os = "macos")))]
+    {
+        let port = addr.port();
+        let shutdown = guard_daemon::tray::Shutdown::new();
+        // Serving стартует первым: к моменту первого клика по иконке порт уже
+        // слушает (иначе «Открыть UI» открывал бы страницу отказа).
+        serve_on_worker(listener, app, shutdown.clone());
+        guard_daemon::tray::run(&state.inner_arc(), tray_stage, port, &shutdown);
+        // Выход из цикла трея = Quit из меню: serve-контур уже сворачивается по
+        // флагу (`with_graceful_shutdown`), остаётся завершить процесс.
+        Ok(())
+    }
+    #[cfg(not(all(feature = "tray", any(target_os = "windows", target_os = "macos"))))]
+    {
+        axum::serve(listener, app).await?;
+        Ok(())
+    }
+}
+
+/// Serving на выделенном потоке с собственным tokio-рантаймом (только ветка
+/// фичи `tray`, см. комментарий в [`main`]).
+///
+/// Завершение graceful: `with_graceful_shutdown` по флагу
+/// `tray::Shutdown` — Quit из меню = SIGTERM-эквивалент для трей-сценария
+/// (linux-контур живёт под systemd, #140; там фичи нет и этот путь не
+/// компилируется).
+#[cfg(all(feature = "tray", any(target_os = "windows", target_os = "macos")))]
+fn serve_on_worker(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    shutdown: guard_daemon::tray::Shutdown,
+) {
+    let worker = std::thread::Builder::new().name("fasad-serve".to_owned());
+    let spawned = worker.spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                // Serving не поднялся = продукта нет: это не cosmetic-сбой, а
+                // отказ (причина в stderr, ненулевой код — systemd/супервизор
+                // видят смерть, молчаливой витрины без HTTP нет).
+                eprintln!("fasad: рантайм serving не поднят: {e}");
+                std::process::exit(3);
+            }
+        };
+        rt.block_on(async move {
+            let flag = shutdown.flag();
+            let watch = async move {
+                while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            };
+            if let Err(e) = axum::serve(listener, app)
+                .with_graceful_shutdown(watch)
+                .await
+            {
+                eprintln!("fasad: serving завершился с ошибкой: {e}");
+            }
+        });
+    });
+    if let Err(e) = spawned {
+        eprintln!("fasad: поток serving не поднят: {e}");
+        std::process::exit(3);
+    }
 }
 
 /// Отказ на старте (конфиг или схема): причина в stderr, сокет не поднимается.

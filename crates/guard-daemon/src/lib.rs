@@ -44,6 +44,10 @@ pub mod pipeline;
 pub mod proxy;
 pub mod schema;
 pub mod sse;
+// Иконка трея win/mac (#128 фаза 2): модуль целиком под cfg фичи + ОС-мишени;
+// на linux фича недоступна (compile_error крейта — см. заголовок [`tray`]).
+#[cfg(all(feature = "tray", any(target_os = "windows", target_os = "macos")))]
+pub mod tray;
 pub mod ui;
 pub mod vault;
 

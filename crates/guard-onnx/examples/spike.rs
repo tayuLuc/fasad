@@ -857,37 +857,38 @@ fn measure_arbiter(
     println!("MARKER|arb|run=ok|markers={m}");
     // (4) Выход: форма (1,M) = по логиту на маркер + softmax по меткам каждой
     //     группы — первый шаг содержательной сверки контракта logits↔маркеры.
-    if let Ok(outputs) = session.run(inputs.clone()) {
-        if let Some((_, v)) = outputs.iter().next() {
-            if let Ok((shape, data)) = v.try_extract_tensor::<f32>() {
-                let m = i64::try_from(m).unwrap_or(-1);
+    // Let-chain (MSRV 1.90, #128): те же проверки, тем же порядком — clippy
+    // `collapsible_if` просит свёртку, поведение не двигается.
+    if let Ok(outputs) = session.run(inputs.clone())
+        && let Some((_, v)) = outputs.iter().next()
+        && let Ok((shape, data)) = v.try_extract_tensor::<f32>()
+    {
+        let m = i64::try_from(m).unwrap_or(-1);
+        println!(
+            "MARKER|arb|logits|shape={:?}|ok={}",
+            shape,
+            **shape == [1, m] && data.len() == usize::try_from(m).unwrap_or(0)
+        );
+        if **shape == [1, m] {
+            // marker_positions = concat(групп), логит-слайс группы gi =
+            // [off, off+n), n = число маркеров группы; softmax внутри —
+            // контракт «softmax within each question's markers».
+            inline_logits = Some(data.to_vec());
+            let mut off = 0usize;
+            for (gi, (first, ps)) in groups.iter().enumerate() {
+                let hi = (off + ps.len()).min(data.len());
+                let probs = softmax(&data[off..hi]);
+                inline_probs.push(probs.first().copied().unwrap_or(0.0));
+                off = hi;
+                let joined = probs
+                    .iter()
+                    .map(|x| format!("{x:.4}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
                 println!(
-                    "MARKER|arb|logits|shape={:?}|ok={}",
-                    shape,
-                    **shape == [1, m] && data.len() == usize::try_from(m).unwrap_or(0)
+                    "MARKER|arb|softmax|group={gi}|first={first}|n={}|probs={joined}",
+                    ps.len()
                 );
-                if **shape == [1, m] {
-                    // marker_positions = concat(групп), логит-слайс группы gi =
-                    // [off, off+n), n = число маркеров группы; softmax внутри —
-                    // контракт «softmax within each question's markers».
-                    inline_logits = Some(data.to_vec());
-                    let mut off = 0usize;
-                    for (gi, (first, ps)) in groups.iter().enumerate() {
-                        let hi = (off + ps.len()).min(data.len());
-                        let probs = softmax(&data[off..hi]);
-                        inline_probs.push(probs.first().copied().unwrap_or(0.0));
-                        off = hi;
-                        let joined = probs
-                            .iter()
-                            .map(|x| format!("{x:.4}"))
-                            .collect::<Vec<_>>()
-                            .join(",");
-                        println!(
-                            "MARKER|arb|softmax|group={gi}|first={first}|n={}|probs={joined}",
-                            ps.len()
-                        );
-                    }
-                }
             }
         }
     }

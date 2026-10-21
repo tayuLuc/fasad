@@ -258,7 +258,7 @@ fn luhn_valid(d: &[u8]) -> bool {
         }
         sum += x;
     }
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 // §6b IBAN: mod-97 piecewise (ISO 7064), длины по реестру (DE22 FR27 RU33 BE16 NL18 GB22 ES24).
