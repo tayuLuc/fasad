@@ -323,7 +323,7 @@ allowlist (`https://api.openai.com/…`) этот rig отвечает `403`
 
 | Задача | Команда |
 | --- | --- |
-| Полный гейт перед push | `just check` (lint, python-lint, golden-verify, test, net-audit, deny) |
+| Полный гейт перед push (локально) | `just check` (lint, python-lint, lang-scan, golden-verify, test, net-audit, deny) — локальный гейт, целиком в CI не вызывается: там рецепты идут поштучно (`just lint`/`test`/`deny`, джоба `python-golden`) |
 | Линты Rust | `just lint` (fmt --check + clippy `-D warnings -D clippy::unwrap_used`) |
 | Тесты | `just test` |
 | Датасет | `just golden-verify` (uv, побайтовая сверка `golden-v1.jsonl`) |
@@ -331,7 +331,7 @@ allowlist (`https://api.openai.com/…`) этот rig отвечает `403`
 | Зависимости | `just deny` (cargo-deny: advisories/bans/licenses/sources) |
 | Харнес каскадов | `just spike-dylib` (нужен dylib ORT 1.31.0, пути — docs/model-audit.md §8) |
 | Тесты щадяще CPU | `just local-test` (тот же набор, что `just test`, под рычагами) |
-| Язык текста | `just lang-scan` (self-test + весь текстовый tree), на диффе PR — `just lang-scan-files <файлы>` |
+| Язык текста | `just lang-scan` (self-test + весь текстовый tree), на диффе PR — `just lang-scan-files <файлы>`; нога `just check`, в CI не смонтирована (grep `.github/` — ноль ссылок; джоба `Lint` = MegaLinter по Actions YAML и shell) |
 
 Тяжёлые локальные прогоны — в щадящем режиме CPU (AGENTS §3, рюлинг оператора
 21.10): `CARGO_BUILD_JOBS=2`, `cargo test -- --test-threads=2`, у харнесов

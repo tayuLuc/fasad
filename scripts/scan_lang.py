@@ -47,14 +47,19 @@ Control-строки собраны из escape-последовательнос
   # `--self-test` БЕЗ входных файлов даёт rc 2 (проверка текста не выполнена) —
   # это намеренно: control жив, но обход не проверял ни одного файла (промер 21.10:
   # так же и на main, и после #105).
+  # `--all` вместе с `--files`: выигрывает `--all`, список `--files` игнорируется
+  # (строка о приоритете — в `--help` у обоих флагов, поведение не менялось).
 
 rc-контракт (#105; та же легенда печатается в `--help`, текст — константа RC_LEGEND):
   0 = чисто.
   1 = найдены хиты.
   2 = проверка НЕ выполнена: positive control не сработал (сканер мёртв), на входе
-      0 файлов, либо ни один входной файл не прочитан. Это не «чисто» и не
-      «упал тулинг» — это отсутствие контроля; в just-рецепте оно краснит прогон
+      0 файлов, ни один входной файл не прочитан, либо git-инвентарь недоступен
+      (`--all` в дереве без `.git` / без бинаря git — #116 F5). Это не «чисто» и
+      не «упал тулинг» — это отсутствие контроля; в just-рецепте оно краснит прогон
       ровно своим кодом (just пробрасывает rc команды — промер 1.58.0).
+      Доводить «дерево не под git» до rc 1 нельзя: rc 1 значит «найдены хиты», а
+      здесь не найдено ничего — это ложь о причине отказа (#116 F5).
 
 Обход `--all` берёт файлы и без расширения (#103): у Path("justfile").suffix пусто,
 под фильтр TEXT_EXT такие файлы не попадали целиком (justfile, LICENSE, dotfiles).
@@ -174,6 +179,20 @@ def self_test() -> int:
     good = not bad
     ok = ok and good
     print(f"CONTROL|inventory|planted|{'caught' if good else 'MISSED'}|bad|{bad}")
+    # Обход (#116 F2): тот же состав обязан пройти через СТРОКУ ФИЛЬТРА внутри
+    # git_text_files, а не только через предикат выше. Мутация call-site (фильтр
+    # сведён к `suffix in TEXT_EXT`, предикат цел) ноги `inventory` не касается:
+    # она печатала «caught» и `verdict|live`, пока обход терял файлы без suffix и
+    # глушил посаженный CJK в justfile (промер ревью: files 141 → 134, clean, rc=0).
+    # Пара «имя без suffix + lock» бьёт ровно по этой границе.
+    try:
+        traversal = git_text_files(["justfile", "Cargo.lock"])
+        good = "justfile" in traversal and "Cargo.lock" not in traversal
+    except Exception as e:  # широкий except: control обязан погаснуть, а не упасть
+        traversal, good = f"исключение|{type(e).__name__}", False
+    ok = ok and good
+    print(f"CONTROL|traversal|planted|{'caught' if good else 'MISSED'}"
+          f"|in|justfile,Cargo.lock|out|{traversal}")
     print(f"CONTROL|verdict|{'live' if ok else 'dead-scanner'}")
     return 0 if ok else 2
 
@@ -185,8 +204,9 @@ TEXT_EXT = {".md", ".rs", ".py", ".toml", ".yml", ".yaml", ".json", ".jsonl",
 # чаще кода (прозаические хвосты их комментариев правили в #95 — сводки
 # `just --list`). Список имён явный, а не эвристика «без suffix + размер/пробник»:
 # whitelist виден в diff и не решает молча, что считать текстом. Cargo.lock тут
-# НЕТ намеренно (промер: 2 lock-файла под git, suffix `.lock`): машинный вывод
-# разрешателя — шум, а не текст, который кто-то пишет по-русски.
+# НЕТ намеренно (промер #116: 3 lock-файла под git — `Cargo.lock`, `fuzz/Cargo.lock`,
+# `uv.lock`; suffix `.lock`): машинный вывод разрешателя — шум, а не текст, который
+# кто-то пишет по-русски.
 TEXT_NAMES = {".gitattributes", ".gitignore", ".python-version", "Justfile",
               "LICENSE", "Makefile", "NOTICE", "makefile", "justfile"}
 
@@ -197,25 +217,68 @@ def _is_text_file(f: str) -> bool:
     return p.suffix in TEXT_EXT or p.name in TEXT_NAMES
 
 
-def git_text_files() -> list[str]:
-    """Все текстовые файлы под git (дефолт `--all`: пустой список != зелёный).
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+class GitInventoryError(RuntimeError):
+    """git-инвентарь недоступен: дерево без `.git` либо нет бинаря git (#116 F5)."""
+
+
+def _git_ls_files() -> list[str]:
+    """Файлы репозитория (`git ls-files` из корня дерева этого скрипта).
+
+    Без обёртки `check=True` бросает `CalledProcessError` (rc 128), процесс
+    выходит с rc 1, а rc 1 в контракте сканера значит «НАЙДЕНЫ ХИТЫ»: распакованный
+    тарбол без `.git` выглядел бы как найденная CJK-утечка — ложь о причине отказа
+    (absent, corrupt и «найдено» — три разных диагноза). Вызывающий переводит это в
+    NOINPUT reason|no-git (rc 2 = «проверка не выполнена»), тип причины — в
+    отдельную строку `LANG|git|…`, чтобы «нет бинаря» и «не git-дерево» не были
+    одним словом.
+    """
+    try:
+        out = subprocess.run(["git", "ls-files"], cwd=REPO_ROOT,
+                             capture_output=True, text=True, check=True)
+    except FileNotFoundError as e:
+        raise GitInventoryError("binary|git-not-found") from e
+    except subprocess.CalledProcessError as e:
+        first = (e.stderr or "").strip().splitlines()
+        detail = first[0] if first else "нет stderr"
+        raise GitInventoryError(f"not-a-git-repo|rc{e.returncode}|{detail}") from e
+    return out.stdout.splitlines()
+
+
+def git_text_files(paths: list[str] | None = None) -> list[str]:
+    """Текстовые файлы обхода: из git-инвентаря (дефолт `--all`) либо из `paths`.
 
     Критерий «текстовый» = расширение из TEXT_EXT либо имя из TEXT_NAMES (#103:
     файлы без suffix иначе выпадают из инвентаря репозитория молча).
+
+    Инъекция `paths` нужна не для удобства: positive control обязан прогонять
+    СТРОКУ ФИЛЬТРА здесь (call-site), а не только предикат `_is_text_file` (#116 F2).
+    До правки контроль мерил предикат, и мутация фильтра до `suffix in TEXT_EXT`
+    (предикат цел!) роняла обход 141 → 134 файлов и глушила посаженный CJK в
+    justfile: `CONTROL|verdict|live` + `LANG|verdict|clean` при живой утечке —
+    ровно тот ложно-зелёный класс, ради которого делался #103. Пара
+    `["justfile", "Cargo.lock"]` бьёт по границе списка: имя без suffix обязано
+    войти, lock — не войти.
     """
-    out = subprocess.run(["git", "ls-files"], cwd=Path(__file__).resolve().parents[1],
-                         capture_output=True, text=True, check=True).stdout.splitlines()
-    return [f for f in out if _is_text_file(f)]
+    if paths is None:
+        paths = _git_ls_files()
+    return [f for f in paths if _is_text_file(f)]
 
 
 RC_LEGEND = (
-    "rc-контракт (#105):\n"
+    "rc-контракт (#105, #116 F5):\n"
     "  0  чисто\n"
     "  1  найдены хиты\n"
     "  2  проверка НЕ выполнена: positive control мёртв (--self-test), на входе 0\n"
     "     файлов (--all по дереву без текстовых = сломанный glob), ни один входной\n"
-    "     файл не прочитан (--files по несуществующим путям). 2 — не «чисто».\n"
-    "     just пробрасывает rc команды, поэтому в рецепте это красный прогон.\n")
+    "     файл не прочитан (--files по несуществующим путям), git-инвентарь\n"
+    "     недоступен (--all в дереве без .git / без бинаря git) = reason|no-git.\n"
+    "     2 — не «чисто» и не «найдены хиты» (это 1).\n"
+    "     just пробрасывает rc команды, поэтому в рецепте это красный прогон.\n"
+    "Флаги входа: --all выигрывает у --files (вместе = обход git-инвентаря,\n"
+    "  список --files игнорируется).\n")
 
 
 def _noinput(reason: str) -> int:
@@ -224,6 +287,9 @@ def _noinput(reason: str) -> int:
     Реестр ложно-зелёных: «зелёный = пустое множество проверенного». Печать идёт
     в stdout — на пути рецепта (`--self-test` первым) CONTROL-строки уже напечатаны,
     так что в логе видно и живой контроль, и то, что проверять было нечего.
+    `reason|no-git` (#116 F5): git-инвентарь не собран (дерево без `.git`, бинарь
+    git отсутствует) — обход не начинался, это тот же класс «нечего проверять»,
+    поэтому код 2, а не 1 («найдены хиты») и не traceback.
     """
     print(f"LANG|verdict|NOINPUT|files|0|hits|-1|reason|{reason}")
     return 2
@@ -237,10 +303,12 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--files", nargs="*", default=[],
                     help="явный список файлов (на диффе PR); пустой список или "
-                         "сплошь nonexistent-пути = rc 2, не «чисто»")
+                         "сплошь nonexistent-пути = rc 2, не «чисто»; вместе с "
+                         "--all не применяется: --all выигрывает")
     ap.add_argument("--all", action="store_true",
                     help="весь текстовый tree под git (инвентарь репозитория; "
-                         "пустой вход = rc 2)")
+                         "пустой вход = rc 2; дерево без .git = rc 2 reason|no-git); "
+                         "вместе с --files выигрывает: список --files игнорируется")
     ap.add_argument("--self-test", action="store_true",
                     help="positive control по посаженным образцам; мёртвый "
                          "контроль = rc 2")
@@ -248,7 +316,19 @@ def main() -> int:
     rc_control = self_test() if args.self_test else 0
     if rc_control != 0:
         return rc_control
-    files = git_text_files() if args.all else list(args.files)
+    if args.all:
+        # --all выигрывает у --files: список `--files` при `--all` игнорируется
+        # (задокументировано в --help, поведение не менялось).
+        try:
+            files = git_text_files()
+        except GitInventoryError as e:
+            # Инвентаря нет (дерево без .git / бинарь git отсутствует) — обход не
+            # начинался. Не rc 1 («хиты», как было до #116 F5: traceback
+            # CalledProcessError) и не «чисто»: NOINPUT reason|no-git, rc 2.
+            print(f"LANG|git|no-inventory|{e}")
+            return _noinput("no-git")
+    else:
+        files = list(args.files)
     if not files:
         # Пустое множество входа — не «чисто», а «проверка не выполнена»
         # (реестр ложно-зелёных: «зелёный = пустое множество проверенного»).
