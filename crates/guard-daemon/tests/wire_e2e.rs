@@ -34,6 +34,21 @@ impl Daemon {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fasad"));
         cmd.env("FASAD_BIND", "127.0.0.1")
             .env("FASAD_PORT", "0")
+            // Тестовый демон поднимается БЕЗ весов и без чужих ручек окружения.
+            // Причина (ревью #87, воспроизведено на этом дереве): в
+            // feature-сборке унаследованный `FASAD_MODEL_DIR` монтирует каскады
+            // 1-2 в каждый e2e-прогон — `wire_e2e` даёт 22 passed / 3 failed
+            // (`stateless_roundtrip_survives_a_real_socket`,
+            // `session_mode_roundtrips_survives_a_real_socket`,
+            // `proxy_mask_matches_the_analyze_api_span_for_span`: модельные
+            // спаны `person_name` ломают ожидания каскада 0) и 103.72 с
+            // против 3.37 с на тот же файл без env. У ревьюера на этом же
+            // месте `ui_sandbox` даёт ещё и 8/1.
+            // «В CI же чисто» гейт не чинит: он обязан быть воспроизводимым на
+            // машине с весами, поэтому remove явный, а не молчаливый дефолт.
+            .env_remove("FASAD_MODEL_DIR")
+            .env_remove("FASAD_THREADS")
+            .env_remove("FASAD_TIMEOUT_MS")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -532,6 +547,10 @@ fn bad_vault_key_refuses_to_start_before_binding() {
         .env("FASAD_BIND", "127.0.0.1")
         .env("FASAD_PORT", "0")
         .env("FASAD_VAULT_KEY", "не-шестнадцатеричный")
+        // Причина отказа обязана быть про ключ, а не про веса: на машине с
+        // `FASAD_MODEL_DIR` каскадный старт проверяется раньше и перехватил бы
+        // первую строку stderr.
+        .env_remove("FASAD_MODEL_DIR")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

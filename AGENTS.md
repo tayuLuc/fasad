@@ -47,11 +47,18 @@
    применения правила — `just local-test` (тот же набор, что `just test`, под
    рычагами); вручную это `CARGO_BUILD_JOBS=2`, `cargo test -- --test-threads=2`,
    у инференса потоки рычагом `--threads 2` (spike/recall_golden, дефолт 4) и
-   `FASAD_THREADS=2` для демона (дефолт 8 — `config.rs:67`; рычаг вступит в силу
-   с монтажа каскадов #87: на b5b0fe3 `cfg.threads` разбирается из окружения и до
-   сессии ORT не доходит — промер grep по `crates/`). `OMP_NUM_THREADS` на нашей
-   сборке инертен — вендорный `libonnxruntime` osx-arm64 без OpenMP (промер
-   otool/strings 21.10). `nice -n 10` на долгих сборках, один прогон за раз. Это
+   `FASAD_THREADS=2` для демона (дефолт 8 — `config.rs:76`; `cfg.threads`
+   (`config.rs:423`) жив на смонтированном пути каскадов 1–2 — `cascades.rs:558`
+   уносит его в `LockrExtractor::load(…, threads)` и `DecideArbiter::load(…,
+   threads)` (`cascades.rs:675,677`, #87); на стадии `cascade-0-only` инертен —
+   единственным потребителем поля оставался тест `config.rs:638`, а потоки в
+   сессию ORT идут из `guard-onnx::arbitrate` (`intra_threads`,
+   `arbitrate.rs:261-276`), куда демон там не доходит (#76; номера строк #76
+   сняты на `bfb0014` — `:67`/`:403`/`:610`, на этом дереве пересняты на
+   `:76`/`:423`/`:638`)).
+   `OMP_NUM_THREADS` на нашей сборке инертен — вендорный `libonnxruntime`
+   osx-arm64 без OpenMP (промер otool/strings 21.10). `nice -n 10` на долгих
+   сборках, один прогон за раз. Это
    про локальные прогоны на машине оператора, НЕ про CI (там свои ядра). Числа
    потоков инференса писать в метод замера.
 4. `unwrap()` в prod-коде запрещён линтом (`-D clippy::unwrap_used`).
