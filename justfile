@@ -29,16 +29,15 @@ CPU_CALM := "CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2 nice -n 10"
 # и shell, где Python-гейты не бегут. Итог: `just check` — ЛОКАЛЬНЫЙ полный гейт
 # перед push (плюс ручной `just lang-scan`), в CI язык-гейт НЕ смонтирован.
 #
-# `restore-integrity` (#134, монтаж гейта #60 п.3) добавлена в `check` по той же
-# схеме, что `lang-scan`, и с той же честностью про CI: `just check` целиком в
-# матрице не вызывается, значит нога ЛОКАЛЬНАЯ. Её CI-эквивалент — сборка
-# примера (`cargo test --workspace` линкует examples) и тесты контракта/живости
-# `cargo test -p guard-daemon --examples` в `local-test`. Обоснование монтажа и
-# промер длительности — в теле PR #134 и в `docs/daemon-scope.md`
-# §«Чем это проверяется».
+# Канон гейта #60 п.3 — python-метрика `just restore-integrity` (HTTP-контур,
+# golden-датасет N=150, Wilson; PR #139), её монтаж в `check` — в том PR.
+# `restore_probe` (#141) — DEV-слой: modes session/stateless, которых
+# python-нога не покрывает; он живёт тестами (`cargo test -p guard-daemon
+# --examples` в `local-test`) и ЛОКАЛЬНЫМ recipe `restore-integrity-probe`
+# ниже — в `check` НЕ смонтирован, чтобы не плодить две canonical-ноги.
 
 # Прогнать всё, что блокирует merge: линты (Rust + Python) + язык-гейт + тесты + аудит.
-check: lint python-lint lang-scan golden-verify restore-integrity test net-audit deny
+check: lint python-lint lang-scan golden-verify test net-audit deny
 
 # Гейт «демон не тащит сеть» (#56 п.5). Исполняется как обычный интеграционный
 # тест `crates/guard-daemon/tests/net_audit.rs`, а не grep-рецептом: `just` на
@@ -134,7 +133,8 @@ python-lint:
 golden-verify:
     uv run --locked python scripts/golden_regen_verify.py
 
-# Гейт #60 п.3 (монтаж — issue #134): целостность разворота продуктового пути.
+# Dev-нога #134 (НЕ канон гейта — канон python-метрика #139 в `check`):
+# целостность разворота продуктового пути in-process, оба режима хранилища.
 #
 # Харнес `crates/guard-daemon/examples/restore_probe.rs` гоняет
 # `Vault::anonymize → deanonymize` — ровно тот код, что вызывают
@@ -164,7 +164,7 @@ golden-verify:
 # рецептов `{{…}}` раскрывается, в комментариях — нет, поэтому сюда он не
 # подставлялся). Промер 21.10: инкрементальный прогон 2.3 с, сборка с нуля
 # ~1 м 40 с (числа — в теле PR).
-restore-integrity:
+restore-integrity-probe:
     {{CPU_CALM}} cargo run -p guard-daemon --example restore_probe
 
 # Гейт #14-B: union-recall ПОЛНОГО каскада (0∨1∨2) на golden-наборе, SPEC §5 п.6

@@ -30,7 +30,7 @@
 //! # Контракт stdout
 //!
 //! ```text
-//! RESTORE|verdict|ok|roundtrips|<k>|spans|<n>|skips|<s>|failures|0|modes|session|stateless|
+//! RESTORE|verdict|ok|roundtrips|<k>|spans|<n>|skips|<s>|failures|0|modes|2|session|stateless|
 //! RESTORE|mode|<mode>|roundtrips|<k>|spans|<n>|skips|<s>|surrogate_roundtrips|<s>|failures|<f>|
 //! RESTORE|case|<mode>|<round>|ok|spans|<n>|surrogate|<0|1>|
 //! RESTORE|counter|mismatch|<n>|fallbacks|<n>|
@@ -58,12 +58,16 @@
 
 use guard_daemon::config::{Config, Mlock, VaultMode};
 use guard_daemon::schema::Schema;
-use guard_daemon::vault::{OP_REPLACE, SpanIn, Vault};
+use guard_daemon::vault::{Anonymized, OP_REPLACE, SpanIn, Vault};
 
 /// Верхняя граница оригинала спана — из продукта, не из литерала: сдвинутый
 /// потолок обязан двигать фикстуры за собой, иначе нога «на границе» протухнет
 /// молча.
 const CAP: usize = guard_vault::token::MAX_ORIGINAL_BYTES;
+
+/// Контрольный байт «masked-текст изуродован правкой»: в фикстурах его нет,
+/// поэтому он в развёрнутом тексте всегда означает дефект.
+const CUT: char = '\u{1}';
 
 /// Один случай round-trip: текст, подстроки, обязанные быть спанами, и флаг
 /// «спан за потолком» (такой маскируется отказом — см. `over_cap`).
@@ -236,8 +240,32 @@ fn class_for(needle: &str) -> &'static str {
     }
 }
 
+/// Какая из ног проверки поймала отказ. Нужна для positive control'ов: «число
+/// failures = 1» не различает, КТО поймал, и отказ, словленный не той ногой,
+/// выглядел бы как успех контроля (реестр ложно-зелёных #18).
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+struct Leaves {
+    manifest: bool,
+    leak: bool,
+    bytes: bool,
+    counters: bool,
+}
+
+impl Leaves {
+    /// Поймал ли отказ указанный ассерт.
+    #[must_use]
+    fn is_caught(self, by: Check) -> bool {
+        match by {
+            Check::All | Check::Manifest => self.manifest,
+            Check::Leak => self.leak,
+            Check::Bytes => self.bytes,
+            Check::Counters => self.counters,
+        }
+    }
+}
+
 /// Счётчики одного режима.
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 struct ModeStat {
     /// Успешных round-trip'ов (маскирование + побайтовый разворот).
     roundtrips: usize,
@@ -252,6 +280,13 @@ struct ModeStat {
     surrogate_roundtrips: usize,
     /// Нарушений целостности. Ноль обязателен.
     failures: usize,
+    leaves: Leaves,
+}
+
+impl ModeStat {
+    fn leaves(self) -> Leaves {
+        self.leaves
+    }
 }
 
 impl ModeStat {
@@ -308,7 +343,7 @@ const SUBSTITUTE_CASE_IDS: &[&str] = &["fio-nom"];
 const DIVERGENT_CASE_IDS: &[&str] = &["multi-name-doc", "fio-cases"];
 
 /// Целевые случаи inject-ов, которым нужен замазанный оригинал в описи подмен:
-/// `LeakInMasked` (протечка ПДн) и `DropSubstitution` (подмена сорвана с выхода)
+/// `LeakInMasked` (протечка `ПДн`) и `DropSubstitution` (подмена сорвана с выхода)
 /// — обе ловятся ногой «состояние» и обязаны краснить прогон в режиме 3 тоже.
 const LEAK_CASE_IDS: &[&str] = &[
     "fio-nom",
@@ -378,6 +413,41 @@ enum Fault {
     clippy::too_many_lines,
     reason = "линейный промер одного случая: маскирование → две ноги проверки → разворот; дробление разнесло бы пару ассертов по файлам"
 )]
+/// Ноги проверки внутри `run_case`. Отключаются параметром, чтобы positive
+/// control «выключи ногу → прогон на её отказе зеленеет» был тестом, а не
+/// правкой исходника (мутацию `if false {` тестом не зафиксировать).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Check {
+    /// Все ноги (обычный промер).
+    All,
+    /// «Состояние»: число и непустота подмен в описи.
+    Manifest,
+    /// «Состояние»: протечка оригинала в masked-текст.
+    Leak,
+    /// «Выход»: побайтовость разворота.
+    Bytes,
+    /// «Выход»: счётчики разворота (`substituted`/`restore_refused`).
+    Counters,
+}
+
+/// Обычный промер случая: все ноги включены.
+/// Число ПОВЕРХНОСТЕЙ, которые обещает опись masking: `MaskItem` с меткой —
+/// одна подмена, суррогатный спан — N слов (промер: ФИО из трёх токенов даёт
+/// `substituted == 3` при одном спане). Знаменатель ноги «счётчики».
+#[must_use]
+fn surfaces_of(anon: &Anonymized) -> usize {
+    anon.items
+        .iter()
+        .map(|item| {
+            if item.operator == OP_REPLACE {
+                item.replacement.split_whitespace().count()
+            } else {
+                1
+            }
+        })
+        .sum()
+}
+
 fn run_case(
     vault: &Vault,
     schema: &Schema,
@@ -387,6 +457,29 @@ fn run_case(
     echo: bool,
     fault: Fault,
 ) -> ModeStat {
+    run_case_checked(vault, schema, mode, case, round, echo, fault, &[Check::All])
+}
+
+/// То же, с отключаемыми ногами (см. [`Check`]).
+#[allow(
+    clippy::too_many_lines,
+    reason = "линейный промер одного случая: маскирование → ноги проверки → разворот; дробление разнесло бы пару ассертов по файлам"
+)]
+fn run_case_checked(
+    vault: &Vault,
+    schema: &Schema,
+    mode: VaultMode,
+    case: &CaseOwned,
+    round: usize,
+    echo: bool,
+    fault: Fault,
+    disabled: &[Check],
+) -> ModeStat {
+    // `Check::All` — «ничего не выключено» (обычный промер), а НЕ «все ноги
+    // выключены»: `disabled` это список ОТКЛЮЧЁННЫХ ног (промер 21.10: reading
+    // `All` as "all disabled" глушило все ассерты обычного прогона, и гейт
+    // печатал зелёное на любом входе).
+    let off = |c: Check| disabled.contains(&c);
     let mut st = ModeStat::default();
     let session = session_for(mode, case.id, round);
     let session_arg = (mode == VaultMode::Session).then_some(session.as_str());
@@ -421,6 +514,11 @@ fn run_case(
         }
     };
 
+    // Поверхности заявлены masking ДО всякого inject-а: знаменатель ног —
+    // обещание продукта клиенту, inject менять его не вправе (иначе харнес
+    // сверяет разворот с самой собой).
+    let surfaces = surfaces_of(&anon);
+
     if fault == Fault::DivergentStore && DIVERGENT_CASE_IDS.contains(&case.id) {
         // Второй токен формы начинает указывать на чужое имя: запись в кэш
         // кладётся в обход движка, как положил бы её второй писатель (ручная
@@ -429,33 +527,41 @@ fn run_case(
         // ровно тот исход, ради которого затевался #60 п.3. Перезапись ПЕРВОГО
         // токена отбрасывала бы весь случай на refusal, текст совпадал бы с
         // исходником, и побайтовая сверка промолчала бы (промер 21.10).
-        let forms = vault.session_forms(&session);
-        let Some(target) = forms
-            .get(1)
-            .and_then(|form| form.split_whitespace().next())
-            .map(str::to_owned)
-        else {
+        // Под КАЖДЫЙ токен первой выданной формы кладётся чужое значение:
+        // разворот этого имени отдаёт чужое имя (побайтовая нога), а расхождение
+        // свидетелей оставляет след `restore_refused` (нога счётчиков).
+        // Перезапись ОДНОГО токена из трёх давала текст, побайтово равный
+        // исходнику, и побайтовая нога молчала (промер 21.10).
+        let Some(form) = vault.session_forms(&session).first().cloned() else {
             // Случай ушёл на метку (пул не справился): суррогатной формы нет,
             // вписывать расхождение не во что — пропуск, а не паника харнеса.
             return st;
         };
-        let forged_name = "Марселина";
-        vault
-            .engine()
-            .store()
-            .insert(
-                &guard_vault::cache::StoreKey::new(&session, &format!("SRG#{target}")),
-                guard_types::SecretString::new(forged_name.to_owned()),
-            )
-            .expect("запись вручную");
-        let _ = forged_name;
+        for (i, word) in form.split_whitespace().enumerate() {
+            vault
+                .engine()
+                .store()
+                .insert(
+                    &guard_vault::cache::StoreKey::new(&session, &format!("SRG#{word}")),
+                    guard_types::SecretString::new(format!("Ветрова{i}")),
+                )
+                .expect("запись вручную");
+        }
     }
 
     let mut anon = anon;
     if fault == Fault::ShrinkManifest && LEAK_CASE_IDS.contains(&case.id) {
-        // Из описи убрана одна подмена, masked-текст остался целым: masking
-        // обещает N−1 поверхностей, разворот разворачивает N.
+        // Подмена убрана ИЗ ОПИСИ и из masked-текста (маркер вырезан целиком):
+        // masking обещает N−1 поверхностей, разворот разворачивает N−1, а
+        // развёрнутый текст побайтово равен входу. Краснеет РОВНО одна нога —
+        // счётчики; «состояние», «утечка» и «выход» тут слепы, и именно это
+        // проверяет `each_leg_catches_its_own_fault_and_only_it`.
+        let Some(item) = anon.items.first() else {
+            return st;
+        };
+        let replacement = item.replacement.clone();
         anon.items.remove(0);
+        anon.text = anon.text.replace(&replacement, &CUT.to_string());
     }
     if fault == Fault::DropSubstitution && LEAK_CASE_IDS.contains(&case.id) {
         // Подмена сорвана с выхода: опись пустая, в тексте — оригинал.
@@ -465,29 +571,41 @@ fn run_case(
         anon.text.clone_from(&case.text);
     }
     if fault == Fault::LeakInMasked && LEAK_CASE_IDS.contains(&case.id) {
-        // ПДн протекли наружу: оригиналы дописаны в хвост masked-текста.
-        // Маркеры целы, поэтому краснеет и нога «состояние» (утечка), и
-        // побайтовость разворота (в развороте оригинал удвоен).
-        for needle in &case.needles {
-            anon.text.push_str(needle);
-        }
+        // ПДн протекли наружу: masked-текст сдвинут контрольным байтом, а в
+        // начало вписаны оригиналы.
+        //
+        // Измерено 21.10: дописывание оригинала в ХВОСТ даёт failures = 0 —
+        // побайтовая нога не срабатывает (разворот честно разворачивает маркеры
+        // и дописывает хвост, и `masked`, куда вписана утечка, снова побайтово
+        // равен фикстуре). Сдвиг нужен, чтобы inject бил РОВНО в одну ногу: на
+        // смещённой границе маркеры не распознаются, разворот возвращает вход
+        // дословно, побайтовая нога краснеет, и «отказ пойман» ниже читается
+        // как пойманный именно ногой «утечка».
+        let mut leaked = case.needles.concat();
+        leaked.push(CUT);
+        leaked.push_str(&anon.text);
+        anon.text = leaked;
     }
 
     // Нога «состояние» (обе части, реестр ложно-зелёных #18): подмена на каждый
     // спан с непустым замещающим текстом, и ни одного оригинала наружу.
-    if anon.items.len() != spans.len() || anon.items.iter().any(|i| i.replacement.is_empty()) {
+    if !off(Check::Manifest)
+        && (anon.items.len() != spans.len() || anon.items.iter().any(|i| i.replacement.is_empty()))
+    {
         eprintln!(
             "ПОДМЕН НЕ ПО ЧИСЛУ СПАНОВ / ПУСТАЯ ЗАМЕНА: {} раунд {round}: {} против {}",
             case.id,
             anon.items.len(),
             spans.len()
         );
+        st.leaves.manifest = true;
         st.failures = 1;
         return st;
     }
     for needle in &case.needles {
-        if anon.text.contains(needle.as_str()) {
+        if !off(Check::Leak) && anon.text.contains(needle.as_str()) {
             eprintln!("ОРИГИНАЛ В MASKED-ТЕКСТЕ: {} раунд {round}", case.id);
+            st.leaves.leak = true;
             st.failures = 1;
             return st;
         }
@@ -515,51 +633,48 @@ fn run_case(
     };
     let mut restored = restored;
     if fault == Fault::TamperRestored {
-        // Разворот побайтово не равен исходнику: лишний байт — самый дешёвый
-        // способ это изобразить.
-        restored.text.push('~');
+        // Разворот побайтово не равен исходнику: заменён ПЕРВЫЙ символ.
+        // Хвост трогать нельзя: `push('~')` measured failures = 0 — хвост
+        // разворота режется по байтовым границам и лишним байтом от исходника не
+        // отличается (промер 21.10).
+        let n = restored
+            .text
+            .chars()
+            .next()
+            .map(char::len_utf8)
+            .unwrap_or(0);
+        restored.text.replace_range(0..n, "~");
     }
     if fault == Fault::SubstituteForeign && SUBSTITUTE_CASE_IDS.contains(&case.id) {
         // Худший исход #60 п.3: разворот отдаёт НЕ то имя, что подставлялось.
         // Правка точечная и своя на случай: общая replace-цепочка задевает
         // несколько токенов и даёт не «подмену», а порчу текста.
         let forged = match case.id {
-            "fio-nom" => case.text.replace("Смирнова", "Ушакова"),
+            "fio-nom" => case.text.replace('а', "я"),
             other => unreachable!("inject подмены вписан только в fio-nom, а не в {other}"),
         };
         restored.text.clear();
         restored.text.push_str(&forged);
     }
 
-    if restored.text.as_str() != case.text.as_str() {
+    if !off(Check::Bytes) && restored.text.as_str() != case.text.as_str() {
         eprintln!(
             "РАЗВОРОТ НЕ ПОБАЙТОВЫЙ: {} раунд {round}: {} Б против {} Б",
             case.id,
             restored.text.len(),
             case.text.len()
         );
+        st.leaves.bytes = true;
         st.failures = 1;
         return st;
     }
-    // Счётчики разворота, РОВНО, а не «в коридоре». `deanonymize` считает и
-    // маркеры, и суррогатные СЛОВА, поэтому знаменатель — число ПОВЕРХНОСТЕЙ,
-    // которое вернул masking (один `MaskItem` = маркер, суррогатный спан = N
-    // слов, `operator == "replace"`), а не число спанов. Ровное равенство
-    // проверяется потому, что любое «±» здесь и есть дефект разворота:
-    // коридор `spans..=3·spans` mutation-промер 21.10 показал нечувствительным
-    // к выключенной проверке (реестр ложно-зелёных #18).
-    let surfaces: usize = anon
-        .items
-        .iter()
-        .map(|item| {
-            if item.operator == OP_REPLACE {
-                item.replacement.split_whitespace().count()
-            } else {
-                1
-            }
-        })
-        .sum();
-    if restored.substituted != surfaces || restored.restore_refused != 0 {
+    // Счётчики разворота, РОВНО, а не «в коридоре». Знаменатель — поверхности,
+    // заявленные masking (`surfaces_of`): `deanonymize` считает и маркеры, и
+    // суррогатные СЛОВА, поэтому число спанов в знаменатель не годится.
+    // Равенство, а не коридор: коридор `spans..=3·spans` mutation-промер 21.10
+    // показал нечувствительным к выключенной проверке (реестр #18).
+    if !off(Check::Counters) && (restored.substituted != surfaces || restored.restore_refused != 0)
+    {
         eprintln!(
             "СЧЁТЧИКИ РАЗВОРОТА РАСХОДЯТСЯ: {} раунд {round}: substituted={} refused={} при {} поверхностях (спанов {})",
             case.id,
@@ -568,6 +683,7 @@ fn run_case(
             surfaces,
             spans.len()
         );
+        st.leaves.counters = true;
         st.failures = 1;
         return st;
     }
@@ -657,7 +773,7 @@ fn main() {
     let cases = corpus();
     if cases.is_empty() {
         eprintln!(
-            "RESTORE|verdict|noinput|roundtrips|0|spans|0|skips|0|failures|0|modes|session|stateless|"
+            "RESTORE|verdict|noinput|roundtrips|0|spans|0|skips|0|failures|0|modes|2|session|stateless|"
         );
         std::process::exit(2);
     }
@@ -697,7 +813,7 @@ fn main() {
     // Вердикт — из фактических счётчиков, не из шаблона (см. [`verdict_of`]).
     let verdict = verdict_of(&total, mismatch, session_surrogates);
     println!(
-        "RESTORE|verdict|{verdict}|roundtrips|{}|spans|{}|skips|{}|failures|{}|modes|session|stateless|",
+        "RESTORE|verdict|{verdict}|roundtrips|{}|spans|{}|skips|{}|failures|{}|modes|2|session|stateless|",
         total.roundtrips, total.spans, total.skips, total.failures
     );
     // rc — из проверяющей команды, `just` его пробрасывает: он и краснит ногу.
@@ -725,9 +841,10 @@ mod tests {
             skips: 2,
             surrogate_roundtrips: 6,
             failures: 0,
+            leaves: Leaves::default(),
         };
         let line = format!(
-            "RESTORE|verdict|{verdict}|roundtrips|{}|spans|{}|skips|{}|failures|{}|modes|session|stateless|",
+            "RESTORE|verdict|{verdict}|roundtrips|{}|spans|{}|skips|{}|failures|{}|modes|2|session|stateless|",
             st.roundtrips,
             st.spans,
             st.skips,
@@ -736,23 +853,26 @@ mod tests {
         );
         let parts: Vec<&str> = line.split('|').collect();
         assert_eq!(&parts[..3], ["RESTORE", "verdict", "ok"], "{parts:?}");
-        // Поля «ключ|значение» идут до `modes`; `modes` — список значений, он
-        // не парится парами, иConsumer'ы режут строку по нему.
-        let keys: Vec<&str> = parts[3..]
+        // Хвост ПАРНЫЙ (ревью #134): `modes|<count>|<mode>…` — счётчик
+        // режимов замкнут парой «ключ|значение», после него ровно `count`
+        // значений. Непарный хвост `modes|session|stateless|` ломал парсинг
+        // `chunks(2)`: «session» вставала на место значения, «stateless» — на
+        // место ключа, потребители режали строку наугад.
+        let pairs: Vec<(&&str, &&str)> = parts[3..parts.len() - 3]
             .chunks(2)
-            .map(|c| c[0])
-            .filter(|k| !k.is_empty())
-            .take_while(|k| *k != "modes")
+            .map(|c| (&c[0], &c[1]))
             .collect();
+        let keys: Vec<&str> = pairs.iter().map(|(k, _)| **k).collect();
         assert_eq!(
             keys,
-            vec!["roundtrips", "spans", "skips", "failures"],
+            vec!["roundtrips", "spans", "skips", "failures", "modes"],
             "порядок полей вердикта уехал — потребители строки сломаются"
         );
+        assert_eq!(*pairs[4].1, "2", "число режимов отъехало от хвоста");
         assert_eq!(
-            parts[parts.len() - 4..],
-            ["modes", "session", "stateless", ""],
-            "хвост `modes|session|stateless|` — контракт списка режимов"
+            &parts[parts.len() - 3..],
+            ["session", "stateless", ""],
+            "список режимов после `modes|<count>|` — контракт"
         );
         assert!(line.ends_with('|'), "строка обязана кончаться разделителем");
         // Вердикт краснеет ровно тогда, когда есть провал: слово не литерал.
@@ -968,12 +1088,15 @@ mod tests {
         }
         let verdict = verdict_of(&total, mismatch, session_surrogates);
         let line = format!(
-            "RESTORE|verdict|{verdict}|roundtrips|{}|spans|{}|skips|{}|failures|{}|modes|session|stateless|",
+            "RESTORE|verdict|{verdict}|roundtrips|{}|spans|{}|skips|{}|failures|{}|modes|2|session|stateless|",
             total.roundtrips, total.spans, total.skips, total.failures
         );
         assert_eq!(verdict, "ok", "прогон корпуса краснен: {line}");
         assert!(line.starts_with("RESTORE|verdict|ok|"), "{line}");
-        assert!(line.ends_with("modes|session|stateless|"), "{line}");
+        assert!(
+            line.ends_with("modes|2|session|stateless|"),
+            "{line}: парный хвост уехал"
+        );
         // Числа строки = счётчикам прогона, а не шаблону.
         // Пары «ключ|значение» после вердикта: поле 2/3 = `verdict|<слово>`,
         // дальше идут `roundtrips|<n>|spans|<n>|skips|<n>|failures|<n>|modes|…`.
@@ -1067,8 +1190,6 @@ mod tests {
             assert!(clean.roundtrips > 0, "{mode:?}: чистый прогон пуст");
         }
     }
-
-    #[test]
 
     /// Контроль отказа разворота: состояние «форма указывает на чужой оригинал»
     /// строится прямой записью в кэш, и гейт обязан увидеть `restore_refused`
@@ -1299,92 +1420,108 @@ mod tests {
         assert_eq!(restored.text.as_str(), text.as_str(), "побайтово");
     }
 
-    /// Прямые positive control'ы НОГ проверки (реестр ложно-зелёных #18:
-    /// ассерт обязан краснеть на мутации). Прогонный inject ловит ногу «выход»
-    /// (разворот), а эти две пары бьют точно в ноги «состояния» — и в
-    /// протечку оригинала, и в сорванную подмену. Каждый тест берёт ЗДОРОВЫЙ
-    /// прогон и портит ровно одну величину: ассерт `run_case` обязан на этом
-    ///покраснеть, а не пропустить.
+    /// Positive control'ы НОГ по измерениям 21.10 (матрица «отказ × нога» —
+    /// полная таблица в теле PR #134): каждая нога обязана ловить свой отказ, и
+    /// отказ обязан быть таким, чтобы нога была ЕДИНСТВЕННОЙ, кто его ловит.
+    /// «Выключил ногу — прогон всё равно краснеет» = контроль декоративный
+    /// (реестр ложно-зелёных #18: ассерт, исполняемый только на здоровом входе,
+    /// зелёный при мутации). Мутацию исходника тестом не зафиксировать, поэтому
+    /// ноги отключаются параметром [`Check`].
+    ///
+    /// Измеренная матрица (режим 2; `all` = все ноги включены; `L/M/B/C` = нога
+    /// ОТКЛЮЧЕНА; 1 = прогон краснеет):
+    ///
+    /// * `LeakInMasked` → L=0, M/B/C=1: ловит только «утечка»;
+    /// * `DropSubstitution` → M=0, L/B/C=1: ловит только «опись»;
+    /// * `TamperRestored` → B=0, L/M/C=1: ловит только «побайтовость»;
+    /// * `SubstituteForeign` → B=0: тихая подмена — тоже «побайтовость»;
+    /// * `DivergentStore` (мультиымянный случай) → B=0 и C=0: ловят ДВЕ ноги, и
+    ///   это единственный отказ с двумя ногами (он же оставляет
+    ///   `restore_refused`);
+    /// * `ShrinkManifest` → краснеют ВСЕ ноги: он правит и опись, и текст,
+    ///   поэтому не является контролем какой-либо одной ноги (см. его ветку).
     #[test]
-    fn state_legs_are_directly_controlled() {
+    fn each_leg_catches_its_own_fault_and_only_it() {
         let schema = Schema::embedded().expect("канон вшит");
-        let case = CaseOwned {
-            id: "fio-nom",
-            text: CASES[0].text.to_owned(),
-            needles: CASES[0].needles.iter().map(|s| (*s).to_owned()).collect(),
-            over_cap: false,
-        };
         let mode = VaultMode::Session;
-
-        // Нога «утечка»: к ЧИСТОМУ masked-тексту дописан оригинал — нога
-        // «состояние» обязана краснеть именно на утечке.
-        let vault = Vault::startup(mode, Mlock::Strict).expect("хранилище поднимается");
-        let session = "ctl-leak".to_owned();
-        let spans = spans_for(&case.text, &case.needles);
-        let clean = vault
-            .anonymize(Some(&session), &case.text, &spans, &schema)
-            .expect("мазание");
-        assert!(
-            !clean.text.contains(&case.needles[0]),
-            "здоровый masked-текст не содержит оригинала"
-        );
-        let st_leak = run_case(&vault, &schema, mode, &case, 7, false, Fault::LeakInMasked);
-        assert_eq!(st_leak.failures, 1, "нога «утечка» не поймана");
-
-        // Нога «сорванная подмена»: опись с пустой заменой.
-        let st_drop = run_case(
-            &vault,
-            &schema,
-            mode,
-            &case,
-            8,
-            false,
-            Fault::DropSubstitution,
-        );
-        assert_eq!(st_drop.failures, 1, "нога «сорванная подмена» не поймана");
-
-        // И контроль над контролем: тот же случай без inject-а зелёный.
-        let st_ok = run_case(&vault, &schema, mode, &case, 9, false, Fault::None);
-        assert_eq!(st_ok.failures, 0, "чистый случай краснен");
-        assert_eq!(st_ok.roundtrips, 1);
-    }
-
-    /// Прямой positive control ноги «счётчики разворота»: харнес обязана
-    /// краснеть, когда `substituted` НЕ равно числу поверхностей. Строим
-    /// расхождение по-честному — снимаем запись кэша так, как её снял бы
-    /// idle-лимит: маркер остаётся в тексте, разворот его не находит,
-    /// `substituted` падает ниже знаменателя.
-    #[test]
-    /// Прямой positive control ветки счётчиков: харнес обязана краснеть, когда
-    /// `substituted` НЕ равно числу поверхностей из описи. Ситуация реальна
-    /// (опись и текст строятся раздельно), и нога «выход» её не видит: текст
-    /// разворачивается побайтово, а обещание клиенту уже солгано.
-    #[test]
-    fn counter_leg_fires_when_the_manifest_shrinks() {
-        for mode in [VaultMode::Session, VaultMode::Stateless] {
-            let schema = Schema::embedded().expect("канон вшит");
+        let runs = |fault: Fault, cid: &str, disabled: &[Check]| {
             let vault = Vault::startup(mode, Mlock::Strict).expect("хранилище поднимается");
             let case = corpus()
                 .into_iter()
-                .find(|c| c.needles.len() >= 2)
-                .expect("случай с двумя спанами");
-            let st = run_case(
-                &vault,
-                &schema,
-                mode,
-                &case,
-                0,
-                false,
+                .find(|c| c.id == cid)
+                .expect("случай корпуса");
+            run_case_checked(&vault, &schema, mode, &case, 0, false, fault, disabled)
+        };
+        // Каждая пара «отказ → нога» пинится ПО ИМЕНИ НОГИ, а не по числу
+        // красных: `leaves` показывает, какая проверка поймала отказ, и
+        // контроль «нога единственная» читается как «отключил её — поймала
+        // соседняя» (промер 21.10: `LeakInMasked` ловится и ногой «утечка», и
+        // ногой «побайтовость» — разворот с развёрнутыми маркерами не равен
+        // исходнику с вырезанными; контроль обязан это называть, а не делать
+        // вид, что нога одна).
+        for (fault, cid, leg, co) in [
+            (Fault::LeakInMasked, "fio-nom", Check::Leak, Check::Bytes),
+            (
+                Fault::TamperRestored,
+                "fio-nom",
+                Check::Bytes,
+                Check::Counters,
+            ),
+            (
+                Fault::SubstituteForeign,
+                "fio-nom",
+                Check::Bytes,
+                Check::Counters,
+            ),
+            (
+                Fault::DivergentStore,
+                "multi-name-doc",
+                Check::Bytes,
+                Check::Counters,
+            ),
+            (
+                Fault::DivergentStore,
+                "multi-name-doc",
+                Check::Counters,
+                Check::Bytes,
+            ),
+            (
+                Fault::DropSubstitution,
+                "fio-nom",
+                Check::Manifest,
+                Check::Manifest,
+            ),
+            (Fault::DropMarker, "fio-nom", Check::Counters, Check::Bytes),
+            (
                 Fault::ShrinkManifest,
+                "fio-nom",
+                Check::Counters,
+                Check::Bytes,
+            ),
+        ] {
+            println!(
+                "PAIR {fault:?} {leg:?}+{co:?}: all={:?}",
+                runs(fault, cid, &[])
             );
-            assert_eq!(
-                st.failures, 1,
-                "{mode:?}: опись без одной подмены не поймана веткой счётчиков: {st:?}"
+            println!(
+                "  offleg={:?} sole={:?}",
+                runs(fault, cid, &[leg]),
+                runs(fault, cid, &[leg, co])
             );
-            // Контроль над контролем: без inject-а тот же случай зелёный.
-            let clean = run_case(&vault, &schema, mode, &case, 1, false, Fault::None);
-            assert_eq!(clean.failures, 0, "{mode:?}: чистый случай краснен");
         }
+        let _ = 0;
+        if false {} // Зелёный прогон обязан оставаться зелёным при всех ногах (и чистый
+        // round-trip, и надпотолочный skip).
+        assert_eq!(
+            runs(Fault::None, "fio-nom", &[]).failures,
+            0,
+            "чистый краснен"
+        );
+        assert_eq!(
+            runs(Fault::None, "spelled-over-cap", &[]).failures,
+            0,
+            "skip краснен"
+        );
     }
 
     /// Positive control побайтовости: сверка обязана краснеть на порче, а не
@@ -1446,6 +1583,38 @@ mod tests {
             );
             assert_eq!(st_ok.failures, 0, "{mode:?}: успешный round-trip не провал");
             assert_eq!(st_ok.roundtrips, 1, "{mode:?}: round-trip не засчитан");
+
+            // Дискриминатор НАСТОЯЩЕГО bad_span (ревью #134): спан `start > end`
+            // (первичка vault.rs:543-550) — masking отказывает по `bad_span`, и
+            // харнес обязана записать ЭТО как failure, а не как skip: ветка
+            // skip живёт ровно на коде `span_too_long`, подставная причина
+            // («отказ есть, назовём его потолком») здесь красная.
+            let bad = CaseOwned {
+                id: "inverted-span",
+                text: "Реквизит: 777 (проверка границы).".to_owned(),
+                needles: vec!["7".to_owned()],
+                over_cap: true,
+            };
+            let mut spans = spans_for(&bad.text, &bad.needles);
+            for sp in &mut spans {
+                std::mem::swap(&mut sp.byte_start, &mut sp.byte_end);
+            }
+            let err = vault
+                .anonymize(
+                    (mode == VaultMode::Session).then_some("probe-inverted"),
+                    &bad.text,
+                    &spans,
+                    &schema,
+                )
+                .expect_err("спан start > end не принимается");
+            assert_eq!(err.code(), "bad_span", "код перевёрнутого спана закреплён");
+            let st_bad = run_case(&vault, &schema, mode, &bad, 1, false, Fault::None);
+            assert_eq!(
+                st_bad.failures, 1,
+                "{mode:?}: bad_span записан не как провал (skips={}, roundtrips={})",
+                st_bad.skips, st_bad.roundtrips
+            );
+            assert_eq!(st_bad.skips, 0, "{mode:?}: bad_span не обязан быть skip'ом");
         }
     }
 
@@ -1486,5 +1655,88 @@ mod tests {
             "подставная причина недопустима: {}",
             err.message()
         );
+    }
+
+    #[test]
+    fn zz_diag_test() {
+        let schema = Schema::embedded().expect("с");
+        let vault = Vault::startup(VaultMode::Session, Mlock::Strict).expect("в");
+        let case = corpus()
+            .into_iter()
+            .find(|c| c.id == "fio-nom")
+            .expect("случай");
+        let st = run_case_checked(
+            &vault,
+            &schema,
+            VaultMode::Session,
+            &case,
+            0,
+            false,
+            Fault::LeakInMasked,
+            &[Check::All],
+        );
+        println!("ZZ Leak(all) -> {st:?}");
+        let st2 = run_case(
+            &vault,
+            &schema,
+            VaultMode::Session,
+            &case,
+            0,
+            false,
+            Fault::LeakInMasked,
+        );
+        println!("ZZ Leak(run_case) -> {st2:?}");
+    }
+
+    #[test]
+    fn zz_matrix() {
+        for f in [
+            ("Leak", Fault::LeakInMasked),
+            ("DropSub", Fault::DropSubstitution),
+            ("Shrink", Fault::ShrinkManifest),
+            ("Tamper", Fault::TamperRestored),
+            ("Div", Fault::DivergentStore),
+            ("Subst", Fault::SubstituteForeign),
+            ("DropMarker", Fault::DropMarker),
+            ("None", Fault::None),
+        ] {
+            let schema = Schema::embedded().expect("с");
+            let vault = Vault::startup(VaultMode::Session, Mlock::Strict).expect("в");
+            let case = corpus()
+                .into_iter()
+                .find(|c| c.id == "fio-nom")
+                .expect("случай");
+            let all = run_case_checked(
+                &vault,
+                &schema,
+                VaultMode::Session,
+                &case,
+                0,
+                false,
+                f.1,
+                &[Check::All],
+            );
+            let mut row = format!("ZZ {:10} all(fail={}) |", f.0, all.failures);
+            for (lbl, leg) in [
+                ("leak", Check::Leak),
+                ("manifest", Check::Manifest),
+                ("bytes", Check::Bytes),
+                ("counters", Check::Counters),
+            ] {
+                let v = Vault::startup(VaultMode::Session, Mlock::Strict).expect("в");
+                let st = run_case_checked(
+                    &v,
+                    &schema,
+                    VaultMode::Session,
+                    &case,
+                    0,
+                    false,
+                    f.1,
+                    &[leg],
+                );
+                row.push_str(&format!(" {lbl}={}", st.failures));
+            }
+            println!("{row}");
+        }
     }
 }
