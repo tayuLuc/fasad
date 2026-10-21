@@ -40,7 +40,7 @@ impl Daemon {
         for (k, v) in env {
             cmd.env(k, v);
         }
-        let mut child = cmd.spawn().expect("бинарь фасадa запускается");
+        let mut child = cmd.spawn().expect("бинарь фасада запускается");
         let stdout = child.stdout.take().expect("stdout перехвачен");
         // Читатель в отдельном потоке и с `recv_timeout`: блокирующий `read_line`
         // на трубке CHILD'а, который умер до баннера, вешает тест на неопределённо

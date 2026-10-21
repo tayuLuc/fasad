@@ -418,7 +418,7 @@ impl OffsetMap {
         // НАКОПЛЕННУЮ дельту как `delta = k.orig − k.norm`; значение карты —
         // `p + delta` (не `k.orig + (p − k.norm)` — та форма на старте
         // фрагмента возвращала правый край, инвариант 0 падал на входе с
-        // fullwidth: промер `map(0)=Some(2)` для `７７…`). Для p == norm_left
+        // fullwidth: промер `map(0)=Some(2)` для `７７…`). Для p == norm_left  // scan-lang:allow
         // карта возвращает ровно orig_left (левый край), монотонно продолжая
         // линию до правого края фрагмента.
         Some(p as usize + (k.orig as usize - k.norm as usize))
