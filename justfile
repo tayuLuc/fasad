@@ -51,7 +51,7 @@ SHELL_SOURCES := "!ls scripts/*.sh tools/verify/*.sh"
 # перед push (плюс ручной `just lang-scan`), в CI язык-гейт НЕ смонтирован.
 
 # Прогнать всё, что блокирует merge: линты (Rust + Python) + язык-гейт + тесты + аудит.
-check: lint python-lint lang-scan golden-verify test net-audit deny
+check: lint shellcheck python-lint lang-scan golden-verify test net-audit deny
 
 # Гейт «демон не тащит сеть» (#56 п.5). Исполняется как обычный интеграционный
 # тест `crates/guard-daemon/tests/net_audit.rs`, а не grep-рецептом: `just` на
@@ -70,12 +70,16 @@ fix:
     cargo fmt --all -- --fix
     cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged
 
-# Только линтеры (fmt-проверка + clippy с deny-флагами CI + shellcheck).
-# Шелл-нога — отдельным рецептом `shellcheck` (находка #137): тело с shebang
-# обязано владеть всем recipe (промер 24.10: строки ДО `#!/usr/bin/env bash`
-# sh парсит своим доменом и падает «files[@]: unbound variable» rc=127; строки
-# ПОСЛЕ shebang становятся телом скрипта — cargo fmt/clippy вообще не бежали).
-lint: shellcheck
+# Только линтеры (fmt-проверка + clippy с deny-флагами CI).
+# Шелл-нога — ОТДЕЛЬНЫЙ рецепт `shellcheck` (находка #137), в `lint` НЕ
+# монтируется: recipe обязана владеть shebang-блоком целиком (промер 24.10:
+# строки ДО `#!/usr/bin/env bash` sh парсит своим доменом, после — тело
+# скрипта), а раннеры build-test (macos/windows) бинаря shellcheck не имеют —
+# fail-closed recipe валила ci.yml rc=2 (промер runs 39625561652/39628047538),
+# ci.yml трогать нельзя (контракт микро-атома). Вешать бинарь на 3 раннера =
+# правка ci.yml = отдельный атом. check (локальный полный гейт) монтирует её
+# сам; на CI шелл-контур = MegaLinter в lint.yml.
+lint:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used
     # Опциональные фичи в `--workspace --all-targets` НЕ попадают (не включены по
@@ -94,23 +98,25 @@ lint: shellcheck
 # мёртвая переменная в новом скрипте краснила CI при зелёном `just lint`.
 # Формула `!ls` (bang-prefix, см. SHELL_SOURCES): bash раскрывает её в массиве
 # списком слов, артефакт «!ls» режет слайс [1:] — shellcheck получает ровно
-# 7 файлов. fail-closed по образцу `deny`: отсутствие shellcheck = rc 2, не
-# молчаливый пропуск.
-# --severity=warning — граница MegaLinter: descriptor BASH_SHELLCHECK не
-# передаёт severity (промер megalinter v9.6.0 bash.megalinter-descriptor.yml:
-# cli_lint_extra_args = --color=auto --external-sources; pin shellcheck
-# v0.11.0), у бинаря дефолт = warning. Severity-skew между CI-контейнером и
-# локальным brew-бинарём (класс issue #25) промёрзан на merge-дереве PR:
-# 0.10.0 (podman koalaman/shellcheck:v0.10.0) печатает SC2015-info, 0.11.0 —
-# нет (5 info в логе run 39625561652 при пине 0.11.0 = сигнал, что контейнер
-# на прогоне печатал info; версии не сверяем — warning-срез идентичен на
-# обеих, мёртвый код краснеет на обеих границах).
+# 7 файлов.
+# Граница = warning (явно, не дефолтом): descriptor BASH_SHELLCHECK severity
+# не передаёт (промер megalinter v9.6.0 bash.megalinter-descriptor.yml,
+# cli_lint_extra_args = --color=auto --external-sources), у бинаря дефолт
+# warning. Версия CI-контейнера локальной не равна (класс issue #25): в логе
+# run 39625561652 SC2015-info печатались при пине v0.11.0, а podman-промер
+# koalaman/shellcheck:v0.10.0 на merge-дереве даёт РОВНО эти 5 info, v0.11.0 —
+# ноль: контейнер CI на прогоне печатал ниже warning. warning-срез идентичен
+# на обеих версиях (промер обеих на merge-дереве) — явный флаг делает skew
+# безвредным, дефолт 0.10-контейнера красил бы CI зелёным-локальным-красным.
+# fail-closed по образцу `deny`: бинарь вне PATH = rc 2 с сообщением
+# (brew install shellcheck / apt-get install shellcheck / choco install
+# shellcheck — по ОС раннера).
 # Промёр: green rc=0; dead var → SC2034 (warning) rc=1; shellcheck вне PATH
 # → rc=2.
 shellcheck:
     #!/usr/bin/env bash
     set -euo pipefail
-    command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck не установлен — гейт НЕИСПОЛНЕН, не провален (brew install shellcheck)"; exit 2; }
+    command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck не установлен — гейт НЕИСПОЛНЕН, не провален (brew install shellcheck / apt-get install shellcheck / choco install shellcheck)"; exit 2; }
     files=( {{SHELL_SOURCES}} )
     files=( "${files[@]:1}" )
     shellcheck --severity=warning -x "${files[@]}"
