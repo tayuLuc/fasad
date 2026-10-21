@@ -563,6 +563,20 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // Серверный отказ оставляет след в stderr с ПРИЧИНОЙ, а не фактом
+        // отказа: оператор, разбирающий 503 в логе, должен видеть то же, что
+        // видит клиент (ревью #118 B2 — «ложь о причине» лечится в одном месте,
+        // через который проходят все отказы). ПДн в строке нет по построению
+        // поля `message` (см. его док-строку); `span_too_long` несёт метрики
+        // `len`/`max`. Конвенция префикса — `fasad:` (см. cascades.rs).
+        if self.status.is_server_error() {
+            eprintln!(
+                "fasad: отказ {} code={} detail={}",
+                self.status.as_u16(),
+                self.code,
+                self.message
+            );
+        }
         let body = serde_json::json!({
             "error": {"code": self.code, "message": self.message},
         });
