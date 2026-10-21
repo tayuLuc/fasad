@@ -20,7 +20,17 @@
 # архиватор = powershell Compress-Archive).
 #
 # use: scripts/make-bundle.sh [--binary PATH] [--licenses PATH] [--out DIR]
-#                          [--label cascade-0]
+#                          [--label cascade-0] [--tray-binary PATH]
+#
+# Платформенный контур (#128 фаза 2, решение оператора: linux = systemd-юнит,
+# win/mac = трей):
+#   linux   → `contrib/systemd/fasad.service` в бандл (headless-бинарь, трея
+#             физически нет: compile_error, docs/dep-verify-crates.md §16);
+#   win/mac → второй бинарь `bin/fasad-tray[.exe]` (сборка с `--features tray`,
+#             `--tray-binary`) рядом с headless: пользователь выбирает витрину,
+#             автоматика (systemd-класса) — headless.
+# Метка контура `-cascade-0` в имени НЕ двигается: трей не модельный путь,
+# каскады 1–2 в обоих бинарях выключены (docs/release.md §«Что в бандле»).
 #
 # Метка контура в имени артефакта (`-cascade-0`) обязательна: бандл НЕ содержит
 # модельного пути (каскады 1–2), и «просто fasad» читался бы как полный гард.
@@ -32,6 +42,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 BIN=""
+TRAY_BIN=""
 LICENSES="dist/THIRD-PARTY-LICENSES.txt"
 OUT="dist"
 LABEL="cascade-0"
@@ -46,6 +57,11 @@ while [ "$#" -gt 0 ]; do
         --binary)
             [ "$#" -ge 2 ] || die "--binary требует аргумент"
             BIN="$2"
+            shift 2
+            ;;
+        --tray-binary)
+            [ "$#" -ge 2 ] || die "--tray-binary требует аргумент"
+            TRAY_BIN="$2"
             shift 2
             ;;
         --licenses)
@@ -92,10 +108,32 @@ esac
 [ -x "$BIN" ] || die "нет бинаря $BIN — сначала cargo build --release -p guard-daemon (just release-build)"
 [ -f "$LICENSES" ] || die "нет $LICENSES — сначала just deps-licenses"
 
+# Контур платформы (см. usage). Окончание `.exe` общее (`ext`), путь — общий.
+os="$(uname -s)"
+is_win=0
+case "$os" in
+    MINGW* | MSYS* | CYGWIN*) is_win=1 ;;
+esac
+if [ "$is_win" -eq 0 ] && [ "$os" != "Darwin" ]; then
+    # linux-бандл: systemd-юнит обязателен (headless-контур #140).
+    [ -f "contrib/systemd/fasad.service" ]         || die "нет contrib/systemd/fasad.service — linux-бандл без юнита обещает контур, которого нет"
+fi
+
 stage="$OUT/fasad-$version-$triple-$LABEL"
 rm -rf "$stage"
 mkdir -p "$stage/bin"
 cp "$BIN" "$stage/bin/"
+if [ -n "$TRAY_BIN" ]; then
+    # Второй бинарь: то же имя + суффикс `-tray` (`fasad-tray[.exe]`): суффикс
+    # в ИМЕНИ ФАЙЛА — единственный носитель «собран с фичей», в метке архива
+    # её нет (-cascade-0 про контур детекции, не про GUI).
+    [ -x "$TRAY_BIN" ] || die "нет бинаря $TRAY_BIN — сначала cargo build --release -p guard-daemon --features tray --target-triple (just release-build-tray)"
+    cp "$TRAY_BIN" "$stage/bin/fasad-tray$ext"
+fi
+if [ "$is_win" -eq 0 ] && [ "$os" != "Darwin" ]; then
+    mkdir -p "$stage/contrib/systemd"
+    cp contrib/systemd/fasad.service "$stage/contrib/systemd/fasad.service"
+fi
 cp LICENSE "$stage/LICENSE"
 cp config/schema.default.json "$stage/schema.default.json"
 cp "$LICENSES" "$stage/THIRD-PARTY-LICENSES.txt"
@@ -104,6 +142,11 @@ cp "$LICENSES" "$stage/THIRD-PARTY-LICENSES.txt"
 # fact, а не витрина: бинарь собирается без `ort-inference` (её нет у
 # guard-daemon: crates/guard-daemon/Cargo.toml), модельного пути спанов в
 # демоне нет (crates/guard-daemon/src/pipeline.rs, заголовок модуля).
+# README = базовый блок (общий) + блоки по ОС (отдельные heredoc-и, `>>`):
+# mac/win несут второй бинарь `fasad-tray`, linux — systemd-юнит (#128/#140).
+# Вложенные `$( ... <<X )` внутрь heredoc не класть: кавычки/подстановки
+# считаются по правилам внешней оболочки и печатаются литералами (обожглось
+# на этом PR).
 cat > "$stage/README.md" <<EOF
 # fasad $version ($triple, контур: $LABEL)
 
@@ -131,6 +174,41 @@ docs/release.md §«Что в бандле».
 - \`THIRD-PARTY-LICENSES.txt\` — сторонние лицензии (сгенерировано cargo-about)
 - \`schema.default.json\` — канон схемы классов (\`FASAD_SCHEMA\`)
 - \`SHA256SUMS.txt\` — sha256 всех файлов бандла
+EOF
+
+if [ "$is_win" -eq 1 ] || [ "$os" = "Darwin" ]; then
+    cat >>"$stage/README.md" <<EOF
+- \`bin/fasad-tray${ext}\` — тот же демон с иконкой трея (#128): клик
+  открывает \`http://127.0.0.1:<порт>/ui\` в браузере, меню = «Выход
+  (graceful)». Headless \`bin/fasad\` — дефолт, трей = витрина рабочего стола.
+EOF
+else
+    cat >>"$stage/README.md" <<'EOF'
+- `contrib/systemd/fasad.service` — юнит linux-контура (#140): Static,
+  `Restart=on-failure`, `MemoryMax=1843M` (SPEC §1 ≤1.8 ГБ),
+  `LimitMEMLOCK=64K` (vault-пул 34 KiB), `User=fasad`, `NoNewPrivileges`.
+EOF
+fi
+
+if [ "$is_win" -eq 0 ] && [ "$os" != "Darwin" ]; then
+    cat >>"$stage/README.md" <<'EOF'
+
+## Linux: systemd
+
+Трея в linux-артефакте нет физически (`docs/dep-verify-crates.md` §16);
+контур — консольный демон под systemd:
+
+    useradd -r -s /usr/sbin/nologin -d /var/lib/fasad -m fasad
+    install -Dm755 bin/fasad /usr/local/bin/fasad
+    install -Dm644 contrib/systemd/fasad.service /etc/systemd/system/fasad.service
+    systemctl start fasad.service
+
+Конфиг юнита — `/etc/default/fasad` (`EnvironmentFile=-`, `FASAD_*`-переменные).
+Юнит статический: `systemctl enable` — решение оператора машины.
+EOF
+fi
+
+cat >>"$stage/README.md" <<EOF
 
 ## Исходники и документация
 

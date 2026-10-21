@@ -106,6 +106,18 @@ jobs:
           tool: just, cargo-about
       - name: "Релизный бинарь (каскад-0, профиль release: lto=fat, strip)"
         run: just release-build
+      - name: "Трей-бинарь win/mac (feature tray, #128)"
+        # Linux пропускает: фича физически несобираема на linux
+        # (compile_error в tray-icon без libappindicator/ksni —
+        # docs/dep-verify-crates.md §16), linux-контур = systemd (#140).
+        if: matrix.os != 'ubuntu-24.04'
+        run: just release-build-tray
+      - name: "Linux-бандл: systemd-юнит (#140)"
+        # Кладём юнит в dist/ — make-bundle.sh берёт его с дерева (linux-ветка
+        # требует contrib/systemd/fasad.service), этот шаг — явная запись
+        # контура в воркфлоу: юнит едет в бандл, а не в air.
+        if: matrix.os == 'ubuntu-24.04'
+        run: ls -la contrib/systemd/fasad.service
       - name: RAM-гейт каскада-0 (SPEC §10 п.9, метод в выводе)
         # Windows-ветки метода замера (PowerShell Get-Process) не реализовано:
         # scripts/measure-rss.sh на неизмеренной ОС падает с exit 2 и явной

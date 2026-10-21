@@ -16,7 +16,18 @@ MASK/KEEP, обратимо подменяет секретные спаны, п
 
 ## 1. Рамки (constraints)
 
-1. Язык ядра: **Rust**, Cargo workspace, edition 2024, MSRV 1.85+ `[decided]`
+1. Язык ядра: **Rust**, Cargo workspace, edition 2024, MSRV 1.90+ `[decided]`
+   — **бамп 1.85→1.90, issue #128 (решение оператора, 21.10)**: `tray-icon
+   0.26.1` и пинимый им транзитив `muda 0.21.x` имеют `rust-version = "1.90"`
+   (промер `docs/dep-verify-crates.md` §16); паттерн формы — keyring §12
+   («bump MSRV = отдельное решение»), здесь решение принято. Toolchain-пин
+   (`rust-toolchain.toml` = 1.99.1) не двигается: собирается на нём,
+   двигается заявленный пол. Побочный эффект (промер PR #143): clippy 1.99
+   MSRV-aware, и с полем 1.90 в гейт включаются `collapsible_if`/
+   `manual_is_multiple_of` — лет-чейны и `u*::is_multiple_of` (стабилизированы
+   1.88/1.31) — по всему дереву; десять мест сведены механически тем же PR.
+   Поля SPEC §11 (1.85 у кандидатов прошлых шагов) — исторические промеры,
+   не канал: первичка канона = `[workspace.package] rust-version` (Cargo.toml).
 2. Целевые triple: `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc` `[decided]`
 3. Память: все модели resident, суммарно ≤1.8 ГБ; без поочерёдной выгрузки — cold
    reload стоит 300–1500 мс на запрос `[claim]`

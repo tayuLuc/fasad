@@ -20,17 +20,21 @@ fn main() {
     // в PE не кладёт: Windows-доставка = copy-dylibs (ort `copy-dylibs` фича,
     // promer: build/dynamic_link.rs Windows-ветка копирует onnxruntime.dll в
     // target-каталог) + WindowsLoader-поиск рядом с exe.
-    if std::env::var("ORT_PREFER_DYNAMIC_LINK").is_ok() {
-        if let Ok(dir) =
+    // `if … && let` (let-chains, стабилизированы в Rust 1.88) — MSRV-канон 1.90
+    // (#128: tray-icon/muda 1.90) их разрешает; до бампа clippy 1.99 просил
+    // `collapsible_if`, а сворачивания на уровне синтаксиса для пары
+    // `if + if let` не существовало (let-chains были nightly).
+    // Функция идентична: порядок и короткое замыкание те же.
+    if std::env::var("ORT_PREFER_DYNAMIC_LINK").is_ok()
+        && let Ok(dir) =
             std::env::var("ORT_LIB_PATH").or_else(|_| std::env::var("ORT_LIB_LOCATION"))
-        {
-            let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-            // unix (macOS/linux): -Wl,-rpath; windows: RUNPATH в PE нет,
-            // поиск .lib через /LIBPATH делает ort-sys по ORT_LIB_PATH, а
-            // onnxruntime.dll в каталог бинаря кладёт фича `copy-dylibs`.
-            if matches!(os.as_str(), "macos" | "linux") {
-                println!("cargo:rustc-link-arg-examples=-Wl,-rpath,{dir}");
-            }
+    {
+        let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+        // unix (macOS/linux): -Wl,-rpath; windows: RUNPATH в PE нет,
+        // поиск .lib через /LIBPATH делает ort-sys по ORT_LIB_PATH, а
+        // onnxruntime.dll в каталог бинаря кладёт фича `copy-dylibs`.
+        if matches!(os.as_str(), "macos" | "linux") {
+            println!("cargo:rustc-link-arg-examples=-Wl,-rpath,{dir}");
         }
     }
     let target = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();

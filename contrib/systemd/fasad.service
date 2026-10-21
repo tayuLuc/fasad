@@ -1,0 +1,53 @@
+# /usr/lib/systemd/system/fasad.service — linux-контур запуска демона (#140,
+# решение оператора к #128: «Linux-сервер = systemd-юнит (консольный демон, без
+# трея)»). Едет в linux-бандле (scripts/make-bundle.sh), трей в linux-артефакт
+# не входит физически (docs/dep-verify-crates.md §16).
+#
+# Static-юнит: без [Install] — включается явным `systemctl start fasad.service`
+# (юнит не «сам по себе», пользователь бандла решает, когда гард жив).
+#
+# Установка (docs/release.md §Linux: systemd-юнит):
+#   useradd -r -s /usr/sbin/nologin -d /var/lib/fasad -m fasad
+#   install -Dm755 bin/fasad /usr/local/bin/fasad
+#   install -Dm644 contrib/systemd/fasad.service /etc/systemd/system/fasad.service
+#   systemctl start fasad.service && systemctl status fasad.service
+
+[Unit]
+Description=fasad — локальный AI-гард (стендэлон-демон, каскад-0)
+Documentation=https://github.com/tayuLuc/fasad
+After=network-local.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/fasad
+# Один источник конфигурации: FASAD_*-переменные (первичка env-контракта —
+# crates/guard-daemon/src/config.rs; бинд строго loopback, §1 п.6). Файл
+# опционален: «-» = отсутствие не считается ошибкой старта.
+EnvironmentFile=-/etc/default/fasad
+WorkingDirectory=/var/lib/fasad
+
+# Ресурсный потолок = SPEC §1 п.3 («суммарно ≤1.8 ГБ»): 1.8 ГиБ = 1843.2 MiB,
+# округление вниз (1843M) — юнит не имеет права быть шире бюджета продукта.
+# Замер факта — scripts/measure-rss.sh (тот же бюджет, тот же метод).
+MemoryMax=1843M
+# Квота залочиваемой памяти: vault-пул = POOL_SLOTS·POOL_SLOT_BYTES =
+# 16·2176 Б = 34 KiB (первичка crates/guard-vault/src/token.rs, константы +
+# const-assert «пул влезает в 64 KiB»), типичный RLIMIT_MEMLOCK раннера =
+# 64 KiB — юнит не двигает квоту, только явно фиксирует её достаточность.
+LimitMEMLOCK=64K
+
+# Права: демон не имеет права быть root (локальный гард, секция = изоляция).
+# User создаётся инструкцией установки выше; HomeDirectory требует
+# DynamicUser/StateDirectory-машинерии — остаёмся на явном пользователе и
+# WorkingDirectory.
+User=fasad
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Паника одного запроса не валит демон (workspace panic=unwind); смерть
+# процесса = баг, и перезапуск с backoff уместен.
+Restart=on-failure
+RestartSec=3
+
+# Статика юнита = контракт (рубрика оператора #140): `enable`/`disable` юниту
+# не нужны, автозапуск = решение пользователя бандла, выносимое в свой drop-in.
