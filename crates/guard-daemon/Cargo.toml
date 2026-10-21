@@ -38,6 +38,22 @@ ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 # `tokio-stream` не берём: этот крейт уже в дереве через axum, lock не двигается.
 futures-core = { version = "0.3", default-features = false }
 
+[features]
+# Монтаж каскадов 1–2 (issue #14A, SPEC §2): модельный путь демона — lockR
+# (`guard_onnx::extract`) + арбитр Decide (`guard_onnx::arbitrate`).
+#
+# Выключена по умолчанию осознанно:
+# 1. `ort` rc.14 + `tokenizers` тяжёлые, и продакшн-сборка с весами собирается
+#    явно (`--features guard-daemon/ort-inference`, см. release-контур #76);
+# 2. CI-матрица (build-test, linux+windows) обязана оставаться зелёной и без
+#    весов: юнит-тесты стад-машины гоняют [`cascades::Cascade12`] на фейке;
+# 3. сетевых крейтов фича не добавляет — `ort` приходит транзитивно из
+#    `guard-onnx`, в манифесте демона его имени нет (`just net-audit`).
+# С включённой фичей и заданным `FASAD_MODEL_DIR` демон поднимает каскады на
+# старте; не поднялись — старт отказывает (`cascades::startup`), молчаливой
+# деградации до каскада 0 не существует.
+ort-inference = ["guard-onnx/ort-inference"]
+
 [dev-dependencies]
 # ServiceExt::oneshot для тестов роутера без поднятия сокета.
 tower = { version = "0.5", features = ["util"] }

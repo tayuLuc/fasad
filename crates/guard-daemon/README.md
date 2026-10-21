@@ -48,6 +48,67 @@ fasad 0.1.0 cascade-0-only, listening on http://127.0.0.1:8765/health (клас�
 | `FASAD_UPSTREAM_ALLOWLIST` | пусто | Список `host[:port]` через запятую, на которые разрешён прокси. Пусто = прокси выключен (`403 allowlist_empty`) |
 | `FASAD_PROXY_LOOPBACK_HTTP` | `0` | Разрешить `http://` на loopback-адрес upstream. Нужен тестам и локальным шлюзам; в бою держать `0` |
 
+## Как включить монтаж каскадов 1–2 (шаг 9B, issue #14A)
+
+По умолчанию демон собирается и работает каскадом 0: модельного пути в бинаре
+нет, стадия `cascade-0-only`. Чтобы каскады 1–2 были примонтированы, нужны три
+вещи разом — фича сборки, веса и библиотека исполнения.
+
+1. Сборка с фичей (она выключена по умолчанию, и в CI не собирается):
+
+   ```sh
+   ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=/path/to/onnxruntime/lib \
+     cargo build --release --features guard-daemon/ort-inference
+   ```
+
+2. Веса по раскладке `scripts/fetch-models.sh` (манифест `models/manifest.md`,
+   ~880 МиБ, в git не тащим):
+
+   ```
+   $FASAD_MODEL_DIR/lockR/rubert-base-pii-ner-onnx/{model.optimized.fp16.onnx,tokenizer.json}
+   $FASAD_MODEL_DIR/onnx-community/GLiNER2.5-Decide-ONNX/onnx/{model_q4f16.onnx,model_q4f16.onnx_data}
+   $FASAD_MODEL_DIR/onnx-community/GLiNER2.5-Decide-ONNX/tokenizer.json
+   ```
+
+   Путь в кеше = `<repo>/<путь-файла-в-репозитории>` (контракт
+   `scripts/fetch-models.sh`, шапка «кеш»), у Decide токенизатор лежит в корне
+   репозитория, а модели — в `onnx/`; раскладку читает код
+   (`cascades.rs:553-557`), промер кэша подтверждает.
+   
+
+3. `FASAD_MODEL_DIR` указывает на этот каталог. Не задан — конвейер каскада 0
+   (это легальный режим, не деградация). Задан, а модель не загрузилась —
+   демон **не стартует**: `fasad: старт невозможен: модельный каскад не загружен:
+   нет файла …`, код выхода 2, сокет не биндится. Молча откатиться на каскад 0
+   при названных весах = fail-open, его не будет.
+
+Переменные, которые с 9B задействованы модельным путём: `FASAD_THREADS` (потоки
+инференса lockR и Decide, рюлинг 21.10 для локальных прогонов = 2),
+`FASAD_TIMEOUT_MS` (бюджет одного запроса конвейера; выход = `502
+cascade_unavailable`), `FASAD_ARBITER_ALPHA` (вес `α` арбитража серой зоны,
+по умолчанию 0.5 — не откалиброван, `[claim]`, calibration = issue #85).
+
+Проверка, что монтаж действительно есть (по заголовкам, а не по «вроде
+отвечает»):
+
+```sh
+curl -s -D - -o /dev/null -X POST -H 'content-type: application/json' \
+  -d '{"text":"Иванов Пётр Сергеевич, ИНН 2482014338"}' \
+  http://127.0.0.1:8080/v1/analyze | tr -d '\r' | grep -i '^x-guard-'
+# x-guard-stage: cascade-0+models   ← модели примонтированы
+# x-guard-cascade2: ok              ← лег каскада 2 отработал на этом запросе
+```
+
+`X-Guard-Cascade2` = `skipped` означает, что Decide пропущен на входе, который
+ломает контракт склейки (в словаре модели `№` = `[UNK]`, issue #88): серые спаны
+остаются на вероятности каскада 1 и не теряются, вердиктов каскада 2 по этому
+запросу нет.
+
+Что монтаж не делает: не чинит окно в 256 токенов (текст длиннее = `502
+truncated`, чанкинг = issue #84), не даёт координат каскаду 2 (вердикт
+уровня строки, issue #41) и не измеряет себя: бюджет RAM <2 ГиБ проверяется
+`scripts/measure-daemon-rss.sh`, цифры — §10 `docs/model-audit.md`.
+
 ## Контракт эндпоинтов
 
 | Метод | Путь | Тело запроса | Ответ |

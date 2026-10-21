@@ -54,6 +54,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err(e) => refuse_startup(&e),
     };
 
+    // Монтаж каскадов 1–2 (#14A) — ДО подъёма сокета. Две причины не откладывать:
+    // 1. веса грузятся секунды, и оператор обязан увидеть причину отказа в
+    //    stderr при старте, а не получать 502 на первом запросе;
+    // 2. `/health` обязан родиться с честным `stage`: `model_dir` назван, а
+    //    каскады не поднялись — это отказ старта, а не «cascade-0+models» на
+    //    пустых весах (fail-closed, AGENTS).
+    if let Err(e) = guard_daemon::cascades::startup(&cfg) {
+        refuse_startup(&e);
+    }
+
     // Loopback обязателен и проверен на разборе: гард не сетевой сервис
     // (SPEC §1 п.6), и `0.0.0.0` сюда протаскивается только через эту стену.
     let health = Health {
