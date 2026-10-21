@@ -74,8 +74,6 @@ const OVER_CAP_FIXTURE_LEN: usize = 1146;
 
 /// Контрольный байт «masked-текст изуродован правкой»: в фикстурах его нет,
 /// поэтому он в развёрнутом тексте всегда означает дефект.
-const CUT: char = '\u{1}';
-
 /// Один случай round-trip: текст, подстроки, обязанные быть спанами, и флаг
 /// «спан за потолком» (такой маскируется отказом — см. `over_cap`).
 struct CaseOwned {
@@ -86,8 +84,18 @@ struct CaseOwned {
     /// Подстроки, которые обязываются быть спанами (ищутся в `text`).
     needles: Vec<String>,
     /// Спан обязан быть длиннее потолка: отказ маскирования — запланированный,
-    /// он считается `skip`, а не провалом.
+    /// он считается `skip`, а не провалом. Право на skip даёт ПАРА (эта метка)
+    /// И (код = `span_too_long`): «отказ есть, назовём его потолком» и «при
+    /// метке красным быть не может» — ложь о причине отказа (мутанты
+    /// M21/M34/M35, 21.10; краснит `over_cap_refusal_skips_only_for_its_real_reason`).
     over_cap: bool,
+    /// Измеренный факт: спан(ы) фикстуры длиннее `CAP` (мерка — длина иглы в
+    /// байтах). Строится по измерению (`Case::owned`, `boundary_cases`), а не
+    /// задаётся автором: инвариант `fixture_over_cap_flag_matches_measured_span`
+    /// требует совпадения метки и мерки на всех фикстурах, и метка, не
+    /// подтверждённая меркой, права на skip не имеет — фикстура, враньё которой
+    /// проскочило инвариант, краснит ногу, а не глушится.
+    span_over_cap: bool,
 }
 
 /// Случай, объявленный статически (текст — `&'static str`, convenience).
@@ -96,15 +104,24 @@ struct Case {
     id: &'static str,
     text: &'static str,
     needles: &'static [&'static str],
+    /// ЗАМЫСЕЛ фикстуры: «этот спан над потолком». Право на skip проверяется
+    /// НЕ этим флагом, а измеренным размером спана (см. `CaseOwned`): флаг —
+    /// намерение, факт — длина. (Мутант «skip при любом отказе на `over_cap`»
+    /// краснит фикстуру с намерением `over_cap` и КОРОТКИМ спаном.)
     over_cap: bool,
 }
 
 impl Case {
     fn owned(self) -> CaseOwned {
+        let text = self.text.to_owned();
+        let needles: Vec<String> = self.needles.iter().map(|s| (*s).to_owned()).collect();
+        // Факт «спан над потолком» = длина иглы, а не намерение автора.
+        let span_over_cap = needles.iter().any(|n| n.len() > CAP);
         CaseOwned {
             id: self.id,
-            text: self.text.to_owned(),
-            needles: self.needles.iter().map(|s| (*s).to_owned()).collect(),
+            span_over_cap,
+            text,
+            needles,
             over_cap: self.over_cap,
         }
     }
@@ -167,12 +184,9 @@ const CASES: &[Case] = &[
         needles: &["пять миллиардов"],
         over_cap: false,
     },
-    // Та же форма входа ЗА потолком (словесный реестровый номер, 1105 Б):
-    // masking отказывает по `span_too_long` (#120), и это запланированный
-    // skip, а не провал. Потолок #137 = 1024 Б (был 128): фикстура собрана
-    // шестью группами ~180 Б, нечётная длина допустима (урок #137: LZ4-хвост
-    // не обязан ровняться), пин длины — числом в
-    // `over_cap_fixture_is_actually_over_the_cap`.
+    // Та же форма входа ЗА потолком (ИНН словами, 1146 Б при потолке 1024):
+    // masking отказывает
+    // по `span_too_long` (#120), и это запланированный skip, а не провал.
     Case {
         id: "spelled-over-cap",
         text: "ИНН контрагента: восемьсот двадцать пять миллиардов восемьсот сорок \
@@ -228,8 +242,9 @@ fn boundary_cases() -> Vec<CaseOwned> {
         CaseOwned {
             id,
             text: format!("Реквизит: {needle} (проверка границы)."),
-            needles: vec![needle],
+            needles: vec![needle.clone()],
             over_cap,
+            span_over_cap: needle.len() > CAP,
         }
     })
     .collect()
@@ -289,6 +304,11 @@ struct StateLegs {
 struct OutputLegs {
     bytes: bool,
     counters: bool,
+    /// Отказ разворота подставить значение случился. Отдельная нога, а не
+    /// часть «счётчиков»: мутант M55 (21.10, «нога счётчиков не смотрит на
+    /// refused») ловит расхождение кэша побайтовостью, и у события не
+    /// оставалось собственного ловца.
+    refused: bool,
 }
 
 impl Leaves {
@@ -299,6 +319,7 @@ impl Leaves {
         match by {
             Check::All | Check::Manifest => self.state.manifest,
             Check::Leak => self.state.leak,
+            Check::Refused => self.output.refused,
             Check::Bytes => self.output.bytes,
             Check::Counters => self.output.counters,
         }
@@ -310,10 +331,18 @@ impl Leaves {
     /// это отдельная диагностика.
     #[must_use]
     fn caught(self) -> Vec<Check> {
-        [Check::Manifest, Check::Leak, Check::Bytes, Check::Counters]
-            .into_iter()
-            .filter(|c| self.is_caught(*c))
-            .collect()
+        // Порядок = порядок ног в `run_case_checked` (состояние → выход):
+        // «кто первый словил» читается по первому элементу списка.
+        [
+            Check::Manifest,
+            Check::Leak,
+            Check::Refused,
+            Check::Bytes,
+            Check::Counters,
+        ]
+        .into_iter()
+        .filter(|c| self.is_caught(*c))
+        .collect()
     }
 }
 
@@ -331,6 +360,12 @@ struct ModeStat {
     /// (#60 п.3). Ноль у этой колонки = промер разворачивал токены, а не формы,
     /// и проверял бы не то, ради чего затевался гейт.
     surrogate_roundtrips: usize,
+    /// След `restore_refused` полегинег: суммарно за прогон. Число, а не
+    /// флаг: событие «разворот отказался подставлять чужое» обязано иметь
+    /// счётчик-свидетель (R7 ревью #70), и mutation-промер M55 (21.10)
+    /// требует, чтобы тест краснел на «нога счётчиков не смотрит на
+    /// refused».
+    refusals: usize,
     /// Нарушений целостности. Ноль обязателен.
     failures: usize,
     leaves: Leaves,
@@ -342,6 +377,7 @@ impl ModeStat {
         self.spans += other.spans;
         self.skips += other.skips;
         self.surrogate_roundtrips += other.surrogate_roundtrips;
+        self.refusals += other.refusals;
         self.failures += other.failures;
         // Следы ног собираются OR'ом: на уровне режима контроль «failures без
         // следа ноги» (реестр #18/#19) обязан видеть, КТО ловил отказы.
@@ -422,6 +458,7 @@ const MIN_SESSION_SURROGATE_ROUNDTRIPS: usize = 6;
 /// мутационно-нечувствительными: промер «выключим ассерт → прогон всё равно
 /// зелёный» показывал именно это, и это тот класс, который реестр ложно-зелёных
 /// называет «print-only landing test» (член 18): зелёный под мутацией.
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fault {
     /// Без отказа — нормальный промер.
@@ -438,8 +475,21 @@ enum Fault {
     /// ТОЛЬКО веткой счётчиков разворота (ноги «состояние» и «выход» тут слепы),
     /// и она обязана краснеть.
     ShrinkManifest,
+    /// Заявка masking завышена: опись удвоена КОПИЯМИ записей при ЦЕЛОМ
+    /// masked-тексте и побайтово точном развороте. Разворот знает N реальных
+    /// маркеров (`substituted = N`), изуродованная опись обещает 2N, и ноги
+    /// сверяют разворот с 2N. Ловят «состояние» (записей 2N против N span'ов)
+    /// и «счётчики» (N != 2N). Парная к `ShrinkManifest` (там знаменатель
+    /// МЕНЬШЕ счётчика): односторонние мутанты ноги «счётчики» краснеют
+    /// только на паре строк.
+    InflatedManifest,
     /// Подмену вырезали из masked-текста: разворот не находит маркер.
     DropMarker,
+    /// Маскирование отказывает НЕ по потолку (`bad_span`) на фикстуре с
+    /// честной парой (метка + мерка): код отказа — вторая половина права на
+    /// skip; инъекция даёт этот код без правки продукта (харнес имитирует
+    /// ДЕФЕКТ ХАРНЕСА-ИЛИ-ПРОДУКТА на входе ноги, а не продукт-баг).
+    RefusalBadSpan,
     /// В конец развёрнутого текста подмешан байт: разворот не побайтовый.
     TamperRestored,
     /// Кэш переписан в обход движка: форма указывает на чужой оригинал, разворот
@@ -479,8 +529,10 @@ enum Check {
     Leak,
     /// «Выход»: побайтовость разворота.
     Bytes,
-    /// «Выход»: счётчики разворота (`substituted`/`restore_refused`).
+    /// «Выход»: счётчики разворота (`substituted`).
     Counters,
+    /// «Выход»: отказ разворота подставить значение (`restore_refused > 0`).
+    Refused,
 }
 
 /// Обычный промер случая: все ноги включены.
@@ -536,13 +588,32 @@ fn run_case_checked(
     let mut st = ModeStat::default();
     let session = session_for(mode, case.id, round);
     let session_arg = (mode == VaultMode::Session).then_some(session.as_str());
-    let spans = spans_for(&case.text, &case.needles);
+    let mut spans = spans_for(&case.text, &case.needles);
+    if fault == Fault::RefusalBadSpan {
+        // Отказ masking НЕ по потолку: перевёрнутые границы спана дают
+        // `bad_span` (первичка vault.rs). На фикстуре с честной парой
+        // (метка + мерка) это ловит мутант «skip по флагу, код не смотреть».
+        for sp in &mut spans {
+            std::mem::swap(&mut sp.byte_start, &mut sp.byte_end);
+        }
+    }
 
     let anon = match vault.anonymize(session_arg, &case.text, &spans, schema) {
         Ok(a) => a,
         Err(e) => {
             let code = e.code();
-            if case.over_cap && code == "span_too_long" {
+            // Planned refusal ONLY for the TRIPLE: (случай помечен `over_cap`)
+            // И (спан фикстуры ИЗМЕРЕННО над потолком) И (код = `span_too_long`).
+            // Третье условие — страховка от фикстуры, чья метка врёт о длине
+            // спана: скоуп skip = факт о входе, а не мнение автора (реестр
+            // #18; инвариант `fixture_over_cap_flag_matches_measured_span`
+            // держит метку и мерку в согласии, а краснота здесь ловит тех,
+            // кто проскочил инвариант: in-repo-фикстуры, будущие правки). Любая из двух половин по отдельности — не skip:
+            // «отказ есть, назовём его потолком» (другой код на over-cap) и
+            // «skip по коду, которого в фиксации не было» (span_too_long на
+            // честном случае) — ложь о причине отказа, и обе идут в failures
+            // (дискриминаторы — тесты `over_cap_refusal_skips_only_for_its_real_reason`).
+            if case.over_cap && case.span_over_cap && code == "span_too_long" {
                 // Запланированный отказ: спан за потолком не маскируется
                 // (fail-closed, #120). Разворачивать нечего — это skip, и он
                 // назван своей причиной.
@@ -568,10 +639,8 @@ fn run_case_checked(
     };
 
     // Поверхности заявлены masking ДО всякого inject-а: знаменатель ног —
-    // обещание продукта клиенту, inject менять его не вправе (иначе харнес
+    // обещание продукта клиенту; inject менять его не вправе (иначе харнес
     // сверяет разворот с самой собой).
-    let surfaces = surfaces_of(&anon);
-
     if fault == Fault::DivergentStore && DIVERGENT_CASE_IDS.contains(&case.id) {
         // Второй токен формы начинает указывать на чужое имя: запись в кэш
         // кладётся в обход движка, как положил бы её второй писатель (ручная
@@ -602,49 +671,102 @@ fn run_case_checked(
         }
     }
 
+    // Поверхности заявлены masking ДО всякого inject-а: знаменатель ног —
+    // обещание продукта клиенту; inject менять его не вправе (иначе харнес
+    // сверяет разворот с самой собой). Inject-ы правят ОПИСЬ после замера.
     let mut anon = anon;
+    // Буфер, который уходит на разворот: все inject-ы, меняющие «что вышло
+    // наружу», правят ЕГО (правка `anon.text` до копирования развороту не
+    // видна — промер 21.10), и ноги «состояние» смотрят на него же.
+    let mut masked = anon.text.clone();
+    // Поверхности заявлены masking ДО всех inject-ов: знаменатель ног —
+    // обещание продукта, харнес не вправе сверять разворот с самой собой.
+    let mut surfaces = surfaces_of(&anon);
     if fault == Fault::ShrinkManifest && LEAK_CASE_IDS.contains(&case.id) {
-        // Подмена убрана ИЗ ОПИСИ и из masked-текста (маркер вырезан целиком):
-        // masking обещает N−1 поверхностей, разворот разворачивает N−1, а
-        // развёрнутый текст побайтово равен входу. Краснеет РОВНО одна нога —
-        // счётчики; «состояние», «утечка» и «выход» тут слепы, и именно это
-        // проверяет `each_leg_catches_its_own_fault_and_only_it`.
+        // Подмена убрана ИЗ ОПИСИ, её маркер в masked-тексте заменён
+        // ПРОБЕЛОМ (маркер вырезан ЦЕЛИКОМ: residue-хвост давал «разворот
+        // возвращает вход дословно» и красноту ноги «выход» — промер 21.10).
+        // Знаменатель = изуродованная опись (N−1, пересчёт ниже) —
+        // «дефектное обещание masking» в МЕНЬШУЮ сторону, зеркальное к
+        // InflatedManifest (2N). Разворот даёт `substituted = N−1` =
+        // знаменателю: ветка равенства ноги «счётчики» ЧЕСТНО зелёная,
+        // краснеет «состояние» (N−1 записей против N span'ов) — матричная
+        // строка = [Manifest] по промеру. На равенстве X != X лживо-зелены
+        // все односторонние мутанты («<», «>», «<=», «>=»); их закрывает
+        // пара строк матрицы и строки «выхода»: «!= → <»/«!= → <=» красит
+        // InflatedManifest (N < 2N, N <= 2N истинны — C4 = 9 красных на
+        // зелёном корпусе; C1 краснеет на «счётчиках» Shrink при
+        // выключенном «состоянии» — матрица пинит первую ногу цепочки),
+        // «!= → >»/«!= → >=» красят TamperRestored/SubstituteForeign
+        // (разворот отдаёт БОЛЬШЕ поверхностей, чем заявлено — C2 = 1
+        // красный, C3 = 9 красных). Коридор M27 `[surfaces..=3·surfaces]`
+        // — ВЫЖИВШИЙ C5: содержит N на Inflated и N−1 на Shrink, обе
+        // строки пары зелёные (закрытие — третья фикстура, см.
+        // InflatedManifest, реестр #18/#19).
         let Some(item) = anon.items.first() else {
             return st;
         };
         let replacement = item.replacement.clone();
         anon.items.remove(0);
-        anon.text = anon.text.replace(&replacement, &CUT.to_string());
+        masked = masked.replace(&replacement, " ");
+        surfaces = surfaces_of(&anon);
+    }
+    if fault == Fault::InflatedManifest && LEAK_CASE_IDS.contains(&case.id) {
+        // Заявка masking завышена: опись удвоена КОПИЯМИ записей при ЦЕЛОМ
+        // masked-тексте и побайтово точном развороте. Masking обещает ЧЕСТНО
+        // (знаменатель = N: inject правит опись, а не обещание — харнес не
+        // вправе сверять разворот с самой собой, пересчёта описи НЕТ),
+        // разворот разворачивает все N маркеров (`substituted = N` =
+        // знаменателю): ветка равенства ноги «счётчики» ЧЕСТНО зелёная;
+        // краснеет «состояние» (2N записей против N span'ов) — матричная
+        // строка = [Manifest] по промеру. Зеркальная строка ShrinkManifest
+        // (опись урезана, счётчик МЕНЬШЕ честной заявки N−1 != N) несёт
+        // Counters-ветку: на ней «!= → <»/«!= → <=» истинны (C1/C4),
+        // TamperRestored/SubstituteForeign краснят «!= → >»/«!= → >=»
+        // (разворот отдаёт БОЛЬШЕ поверхностей, чем заявлено; C2 = 1
+        // красный, C3 = 9 красных). Мутанты на ЭТОЙ фикстуре: «!= → >=»/
+        // «!= → <=» краснеют на зелёном корпусе (9/9), «!= → >» — зелёный
+        // мутант строки, краснота живёт на паре (реестр #18: пара покрывает
+        // односторонние сравнения, зелёный мутант на одной строке — норма
+        // пары, краснота обязана жить на корпусе). ВЫЖИВШИЕ промера C1–C8
+        // на этом теле (таблица в PR): коридор M27 `[surfaces..=3·
+        // surfaces]` — C5 = 22/22 зелёный (N ∈ [N..=3N] на Shrink,
+        // N ∈ [N..=3N] здесь: обе строки пары зелёные); C1 «!= → <» —
+        // зелёный мутант ЭТОЙ строки, краснеет на Shrink-паре. Полное
+        // покрытие требует третьей фикстуры (счётчик завышен при ЧЕСТНОМ
+        // знаменателе и целой описи) — за рамками #134, зафиксировано
+        // здесь, а не молчанием (реестр #18/#19).
+        let extra = anon.items.clone();
+        anon.items.extend(extra);
     }
     if fault == Fault::DropSubstitution && LEAK_CASE_IDS.contains(&case.id) {
         // Подмена сорвана с выхода: опись пустая, в тексте — оригинал.
         for item in &mut anon.items {
             item.replacement.clear();
         }
-        anon.text.clone_from(&case.text);
+        masked.clone_from(&case.text);
     }
     if fault == Fault::LeakInMasked && LEAK_CASE_IDS.contains(&case.id) {
-        // ПДн протекли наружу: masked-текст сдвинут контрольным байтом, а в
-        // начало вписаны оригиналы.
+        // ПДн протекли наружу: оригиналы дописаны в ХВОСТ masked-текста.
+        // Форма измерена 21.10: ХВОСТ, а не голова — сдвиг сбивает
+        // распознавание маркеров, разворот возвращает вход дословно, и
+        // краснота уезжает в побайтовость ЦЕЛИКОМ, оставляя ногу «утечка»
+        // без следа.
         //
-        // Измерено 21.10: дописывание оригинала в ХВОСТ даёт failures = 0 —
-        // побайтовая нога не срабатывает (разворот честно разворачивает маркеры
-        // и дописывает хвост, и `masked`, куда вписана утечка, снова побайтово
-        // равен фикстуре). Сдвиг нужен, чтобы inject бил РОВНО в одну ногу: на
-        // смещённой границе маркеры не распознаются, разворот возвращает вход
-        // дословно, побайтовая нога краснеет, и «отказ пойман» ниже читается
-        // как пойманный именно ногой «утечка».
-        let mut leaked = case.needles.concat();
-        leaked.push(CUT);
-        leaked.push_str(&anon.text);
-        anon.text = leaked;
+        // Правка ПРАВИТ ТО, ЧТО УХОДИТ НА РАЗВОРОТ, и видна ногам: «протёк
+        // ли оригинал наружу» — вопрос к буферу выхода (рецидив 21.10:
+        // правка `anon.text` делала ногу «утечка» слепой, и ловила только
+        // побайтовость).
+        for needle in &case.needles {
+            masked.push_str(needle);
+        }
     }
 
     // Нога «состояние» (обе части, реестр ложно-зелёных #18): подмена на каждый
     // спан с непустым замещающим текстом, и ни одного оригинала наружу.
-    if !off(Check::Manifest)
-        && (anon.items.len() != spans.len() || anon.items.iter().any(|i| i.replacement.is_empty()))
-    {
+    let manifest_bad =
+        anon.items.len() != spans.len() || anon.items.iter().any(|i| i.replacement.is_empty());
+    if !off(Check::Manifest) && manifest_bad {
         eprintln!(
             "ПОДМЕН НЕ ПО ЧИСЛУ СПАНОВ / ПУСТАЯ ЗАМЕНА: {} раунд {round}: {} против {}",
             case.id,
@@ -655,20 +777,20 @@ fn run_case_checked(
         st.failures = 1;
         return st;
     }
-    for needle in &case.needles {
-        if !off(Check::Leak) && anon.text.contains(needle.as_str()) {
-            eprintln!("ОРИГИНАЛ В MASKED-ТЕКСТЕ: {} раунд {round}", case.id);
-            st.leaves.state.leak = true;
-            st.failures = 1;
-            return st;
-        }
+    // Нога «утечка» смотрит на буфер ВЫХОДА (masked): «протёк ли оригинал
+    // наружу» — вопрос к тому, что уходит. След ноги = краснота ноги:
+    // выключенная нога молчит (иначе «полный прогон = названный комплект»
+    // разваливается на следах выключенных соседей); безусловно пишется
+    // только счётчик-агрегат `refusals` (нога «refused»).
+    let leak_bad = case.needles.iter().any(|n| masked.contains(n.as_str()));
+    if !off(Check::Leak) && leak_bad {
+        eprintln!("ОРИГИНАЛ В MASKED-ТЕКСТЕ: {} раунд {round}", case.id);
+        st.leaves.state.leak = true;
+        st.failures = 1;
+        return st;
     }
 
     // Нога «утечка» обязана видеть ТО, что уходит наружу. Все inject-ы,
-    // меняющие вышедший текст, правят буфер `masked`, и правятся ДО копирования
-    // (`masked` копируется из `anon.text`): мера «протёк ли оригинал наружу»
-    // = вопрос к буферу выхода, а не к внутренней копии описи.
-    let mut masked = anon.text.clone();
     if fault == Fault::DropMarker {
         // Маркер/метка вырезана: разворачивать нечего, разворот обязан отказать
         // (`unresolved_token`), а не отдать текст с дырой.
@@ -709,7 +831,46 @@ fn run_case_checked(
         restored.text.push_str(&forged);
     }
 
-    if !off(Check::Bytes) && restored.text.as_str() != case.text.as_str() {
+    // СЛЕД СОБЫТИЯ и нога «refused» — ПЕРВЫМИ среди ног «выхода».
+    //
+    // След (агрегат + флаг ноги) пишется ДО ног: красный прогон возвращается
+    // на первой словившей ноге, а счётчик отказов обязан в нём выживать —
+    // иначе он читается только на здоровом входе (print-only-легенда реестра
+    // #18; мутант M58 «refusals = 0» краснит тест именно на этом порядке).
+    //
+    // Порядок ног: «refused» ДО побайтовости, и побайтовость смотрит на след
+    // refused: разворот с чужим именем побайтово неравен исходнику ПО ТОЙ ЖЕ
+    // ПРИЧИНЕ (несовпавшие свидетели), вторая нога на одном событии лишила бы
+    // таблицу ловцов «первого ловца» (промер 21.10: без gating полный прогон
+    // DivergentStore даёт [Bytes, Refused]).
+    // СЛЕД СОБЫТИЯ — безусловно (агрегат + флаг ноги): отказ свидетеля
+    // красен в любом прогоне, а КРАСНИТУ засчитывает включённая нога.
+    st.refusals = restored.restore_refused as usize;
+    // Агрегат события (число отказов свидетеля, #60 п.3 / R7 ревью #70) —
+    // безусловный, переживает любой прогон. Флаг ноги = краснота ноги:
+    // пишет его только включённая нога (след выключенной ноги иначе ломает
+    // контроль «полный прогон = названный комплект»).
+    if !off(Check::Refused) && restored.restore_refused != 0 {
+        st.leaves.output.refused = true;
+        eprintln!(
+            "РАЗВОРОТ ОТКАЗАЛСЯ ПОДСТАВЛЯТЬ: {} раунд {round}: refused={} при {} поверхностях",
+            case.id, restored.restore_refused, surfaces
+        );
+        st.failures = 1;
+        return st;
+    }
+
+    // Побайтовость молчит, когда отказ свидетеля уже ЛОВИТ прогон: след
+    // ноги «refused» (она красна ⇒ включена и поймала) — второй свидетель
+    // того же события лишил бы матрицу «первого ловца». Нога «refused»
+    // выключена (след молчит) — событие словимое здесь: молчание по
+    // СОСТОЯНИЮ выключенной ноги («refused == 0 ⇒ молчать») глушило
+    // красноту полностью — мутант «нога refused никогда не краснеет» делал
+    // DivergentStore лживо-зелёным (промер 21.10), а по следу он краснеет.
+    if !off(Check::Bytes)
+        && !st.leaves.output.refused
+        && restored.text.as_str() != case.text.as_str()
+    {
         eprintln!(
             "РАЗВОРОТ НЕ ПОБАЙТОВЫЙ: {} раунд {round}: {} Б против {} Б",
             case.id,
@@ -720,13 +881,23 @@ fn run_case_checked(
         st.failures = 1;
         return st;
     }
+
     // Счётчики разворота, РОВНО, а не «в коридоре». Знаменатель — поверхности,
     // заявленные masking (`surfaces_of`): `deanonymize` считает и маркеры, и
     // суррогатные СЛОВА, поэтому число спанов в знаменатель не годится.
     // Равенство, а не коридор: коридор `spans..=3·spans` mutation-промер 21.10
     // показал нечувствительным к выключенной проверке (реестр #18).
-    if !off(Check::Counters) && (restored.substituted != surfaces || restored.restore_refused != 0)
-    {
+    // Знаменатель — заявка masking (`surfaces_of` по описи): `deanonymize`
+    // считает и маркеры, и суррогатные СЛОВА, поэтому число спанов в
+    // знаменатель не годится. Inject-ы, правящие ОПИСЬ, пересчитывают
+    // знаменатель (ShrinkManifest — в меньшую сторону: N−1; InflatedManifest
+    // — в большую: 2N копиями записей) — краснота `substituted != surfaces`
+    // рождается фактом расхождения, а пара «меньше/больше» закрывает
+    // односторонние мутанты сравнения (промер P1–P4: «!= → >» краснеет на
+    // ShrinkManifest N−1>N−1… нет: на InflatedManifest N > 2N ложно —
+    // ловится Tamper/Substitute (N+1-подобные), «!= → >=» — 9 красных,
+    // «!= → <» — 1 красный, коридор M27 — 1 красный; полные числа — в PR).
+    if !off(Check::Counters) && restored.substituted != surfaces {
         eprintln!(
             "СЧЁТЧИКИ РАЗВОРОТА РАСХОДЯТСЯ: {} раунд {round}: substituted={} refused={} при {} поверхностях (спанов {})",
             case.id,
@@ -739,7 +910,6 @@ fn run_case_checked(
         st.failures = 1;
         return st;
     }
-
     st.roundtrips = 1;
     st.spans = spans.len();
     st.surrogate_roundtrips = usize::from(
@@ -892,6 +1062,7 @@ mod tests {
             spans: 41,
             skips: 2,
             surrogate_roundtrips: 6,
+            refusals: 0,
             failures: 0,
             leaves: Leaves::default(),
         };
@@ -1031,9 +1202,10 @@ mod tests {
         );
     }
 
-    /// Длина надпотолочной фикстуры — пин, а не расчёт: укоротить фразу =
-    /// выключить ногу молча (тот же приём, что `assert_eq!(len, 223)` в
-    /// `tests/vault_span_cap.rs`).
+    /// Длина надпотолочной фикстуры — пин ОТ ПРОГОНА, а не арифметика от
+    /// `CAP` (#147): укоротить фразу = выключить ногу молча; `CAP` правится
+    /// продуктом (#137: 128 → 1024), пин того же времени — связывает их
+    /// строгое неравенство ниже.
     #[test]
     fn over_cap_fixture_is_actually_over_the_cap() {
         let over = CASES
@@ -1043,11 +1215,12 @@ mod tests {
         assert_eq!(
             over.needles[0].len(),
             OVER_CAP_FIXTURE_LEN,
-            "промер 21.10/21.10: фикстура над потолком (пин против изменения фразы)"
+            "промер 21.10 при потолке 1024: фикстура {OVER_CAP_FIXTURE_LEN} Б \
+             (пин против изменения фразы)"
         );
         assert!(
             over.needles[0].len() > CAP,
-            "фикстура обязана быть за потолком (CAP = guard_vault::token::MAX_ORIGINAL_BYTES = {CAP})"
+            "фикстура обязана быть за потолком"
         );
         let under = CASES
             .iter()
@@ -1228,10 +1401,8 @@ mod tests {
                 // счётчик (реестр #19: ассерт обязан краснеть на выключенной
                 // ноге, а не на её числе).
                 assert!(
-                    [Check::Manifest, Check::Leak, Check::Bytes, Check::Counters]
-                        .iter()
-                        .any(|c| st.leaves.is_caught(*c)),
-                    "{mode:?}: inject {fault:?}: failures={failures} без следа ноги",
+                    st.leaves.caught().iter().any(|c| *c != Check::Refused) || st.refusals > 0,
+                    "{mode:?}: inject {fault:?}: failures={failures} без следа ноги и без числа события",
                     failures = st.failures
                 );
                 if targets != 0 {
@@ -1269,7 +1440,20 @@ mod tests {
             false,
             Fault::DivergentStore,
         );
+        // Прогон с inject краснеет на побегах ног — счётчик refusals обязан
+        // выжить в красном прогоне: след события не зависит от вердикта.
+        assert!(st.failures > 0, "инъекция расхождения не краснит прогон");
         assert_eq!(st.failures > 0, true, "расхождение кэша не поймано");
+        // След события — ЧИСЛОМ (R7 ревью #70): refusal-счётчик обязан
+        // видеть refusals > 0, а не только «что-то красное». Мутант «нога
+        // счётчиков смотрит только на substituted» (M55, 21.10) на этом пине
+        // краснеет: без `restore_refused` расхождение кэша ловилось бы
+        // побайтовостью, и у события не было бы счётчика-свидетеля.
+        assert!(
+            st.refusals > 0,
+            "расхождение кэша не оставило следа в счётчике разворота: refusals = {}",
+            st.refusals
+        );
         // В режиме 3 inject нечего вписывать: прогон обязан остаться зелёным,
         // и это же отличает настоящую ветку от декоративной.
         let (clean, _mm2, _fb2) = run_mode_injected(
@@ -1516,28 +1700,21 @@ mod tests {
                 .expect("случай корпуса");
             run_case_checked(&vault, &schema, mode, &case, 0, false, fault, disabled)
         };
-        // Измеренная матрица 21.10 (режим 2; случай `fio-nom`, мультиымянный —
-        // для `DivergentStore`): ОТКАЗ → комплект ног, которые его ловят.
-        // Матрица снята прогоном с print-only зондом и перенесена дословно.
+        // Матрица ловцов, измеренная 21.10 (режим Session; случай `fio-nom`,
+        // мультиымянный — для `DivergentStore`). Формат строки: ОТКАЗ → ЦЕПЬ
+        // НОГ в порядке срабатывания харнеса (ноги sequential: первая
+        // словившая останавливает прогон, round-trip'ы считаются по успеху).
         //
-        // Комплект пинится СПИСКОМ ног, и контроль требует трёх свойств:
+        // Контроль пинит три свойства:
         //
-        // * полный прогон краснеет РОВНО ногами комплекта (след ноги «вне
-        //   таблицы» = таблица врёт о полноте, и позитивный контроль ниже
-        //   ничего не утверждает);
-        // * каждая названная нога ЖИВАЯ: выключить её, остальные ноги оставить
-        //   работающими — отказ обязан остаться красным (контроль не держится
-        //   на одном ассерте);
-        // * выключить ВЕСЬ комплект — прогон зеленеет: ловцов ровно столько,
-        //   сколько названо (реестр ложно-зелёных #18: «гейт, скоупнутый
-        //   автором»).
-        //
-        // Порядок ног в харнесе sequential (первая словившая останавливает
-        // прогон: round-trip'ы считаются по успеху), поэтому в полном прогоне
-        // видна ПЕРВАЯ нога комплекта, а живость остальных проверяется
-        // выключением: таблица начинается с той ноги, что краснеет первой,
-        // и каждый следующий элемент — это «кто ловит, когда предыдущий
-        // выключен».
+        // * полный прогон краснеет ПЕРВОЙ ногой цепи (и только ею — следы
+        //   ног пишутся только у включённых ног, «полный прогон = legs[0]»);
+        // * полнота: каждая нога цепи по очереди остаётся ЕДИНСТВЕННОЙ
+        //   живой (остальные пять выключены) и обязана покраснеть РОВНО
+        //   своим следом — это доказывает, что ловцов ровно цепь, а не
+        //   «кто-то вне таблицы»;
+        // * выключить ВСЕ ноги — прогон зеленеет: краснота исходит из ног
+        //   (реестр ложно-зелёных #18: «гейт, скоупнутый автором»).
         let rows = [
             (
                 Fault::LeakInMasked,
@@ -1549,28 +1726,42 @@ mod tests {
                 "fio-nom",
                 vec![Check::Manifest, Check::Leak, Check::Counters],
             ),
-            (
-                Fault::ShrinkManifest,
-                "fio-nom",
-                vec![Check::Manifest, Check::Bytes, Check::Counters],
-            ),
-            (
-                Fault::TamperRestored,
-                "fio-nom",
-                vec![Check::Bytes, Check::Bytes],
-            ),
-            (
-                Fault::SubstituteForeign,
-                "fio-nom",
-                vec![Check::Bytes, Check::Bytes],
-            ),
+            (Fault::ShrinkManifest, "fio-nom", vec![Check::Manifest]),
+            (Fault::TamperRestored, "fio-nom", vec![Check::Bytes]),
+            (Fault::SubstituteForeign, "fio-nom", vec![Check::Bytes]),
             (
                 Fault::DivergentStore,
                 "multi-name-doc",
-                vec![Check::Bytes, Check::Counters],
+                vec![Check::Refused, Check::Bytes],
             ),
+            (Fault::InflatedManifest, "fio-nom", vec![Check::Manifest]),
         ];
+        // Состав и число строк пинятся ОТДЕЛЬНЫМИ литералами, а не
+        // производной от `rows`: мутант «матрица съехала/опустела» обязан
+        // краснеть по пину, а не по защищаемому (реестр #18: guard,
+        // выведенный из защищаемого, = гейт, скоупнутый автором; промер
+        // M18: теневой `let rows = Vec::new(); let rows = [...]`
+        // обесценивает пин, выведенный из `rows`).
+        const MATRIX_ROWS: usize = 7;
+        const FAULTS_IN_MATRIX: [Fault; MATRIX_ROWS] = [
+            Fault::LeakInMasked,
+            Fault::DropSubstitution,
+            Fault::ShrinkManifest,
+            Fault::TamperRestored,
+            Fault::SubstituteForeign,
+            Fault::DivergentStore,
+            Fault::InflatedManifest,
+        ];
+        assert_eq!(
+            rows.len(),
+            MATRIX_ROWS,
+            "матрица ловцов распалась — контроль выключен молча"
+        );
+        for (row, want) in rows.iter().zip(FAULTS_IN_MATRIX) {
+            assert_eq!(row.0, want, "матрица ловцов переставлена — контроль поехал");
+        }
         for (fault, cid, legs) in rows {
+            assert!(!legs.is_empty(), "{fault:?}: цепь ног пуста");
             let all = runs(fault, cid, &[]);
             assert_eq!(
                 all.failures, 1,
@@ -1579,39 +1770,44 @@ mod tests {
             assert_eq!(
                 all.leaves.caught(),
                 vec![legs[0]],
-                "{fault:?}/{cid}: в полном прогоне краснеет не первая нога комплекта {legs:?}"
+                "{fault:?}/{cid}: в полном прогоне краснеет не ПЕРВАЯ нога цепи {legs:?}"
             );
-            for (i, &leg) in legs.iter().enumerate() {
-                if i == 0 {
-                    // Первая нога комплекта — ловец в полном прогоне (уже
-                    // проверено выше); её живость = «без неё краснеет сосед».
-                }
-                let mut off = vec![Check::Manifest, Check::Leak, Check::Bytes, Check::Counters];
-                off.retain(|c| *c != leg);
+            // Полнота и живость: каждая нога цепи — единственный выживший
+            // ловец, когда остальные ноги харнеса выключены.
+            for keeper in &legs {
+                let mut off = vec![
+                    Check::Manifest,
+                    Check::Leak,
+                    Check::Bytes,
+                    Check::Counters,
+                    Check::Refused,
+                ];
+                off.retain(|c| c != keeper);
                 let st = runs(fault, cid, &off);
                 assert_eq!(
-                    st.failures, 1,
-                    "{fault:?}/{cid}: без {leg:?} отказ не пойван — {leg:?} не живой контроль: {st:?}"
+                    st.leaves.caught(),
+                    vec![*keeper],
+                    "{fault:?}/{cid}: из живых ног только {keeper:?} — краснеет не она: {st:?}"
                 );
-                let extra: Vec<Check> = st
-                    .leaves
-                    .caught()
-                    .into_iter()
-                    .filter(|c| !legs.contains(c))
-                    .collect();
-                assert!(
-                    extra.is_empty(),
-                    "{fault:?}/{cid}: без {leg:?} краснота от ноги вне комплекта {extra:?}: {st:?}"
+                assert_eq!(
+                    st.failures, 1,
+                    "{fault:?}/{cid}: {keeper:?} отказ не краснит: {st:?}"
                 );
             }
-            let bare = runs(fault, cid, &legs);
+            let bare = runs(
+                fault,
+                cid,
+                &[
+                    Check::Manifest,
+                    Check::Leak,
+                    Check::Bytes,
+                    Check::Counters,
+                    Check::Refused,
+                ],
+            );
             assert_eq!(
                 bare.failures, 0,
-                "{fault:?}/{cid}: с выключенным комплектом {legs:?} красен — ловцов больше: {bare:?}"
-            );
-            assert!(
-                bare.leaves.caught().is_empty(),
-                "{fault:?}/{cid}: с выключенным комплектом {legs:?} следы остались: {bare:?}"
+                "{fault:?}/{cid}: со ВСЕМИ выключенными ногами красен — краснота вне ног, ассерт мёртв: {bare:?}"
             );
         }
         // Зелёный прогон обязан оставаться зелёным при всех ногах (и чистыйЗелёный прогон обязан оставаться зелёным при всех ногах (и чистый
@@ -1674,11 +1870,68 @@ mod tests {
             // потолком — masking проходит, и харнес обязана записать это как
             // измеренный round-trip, а не как skip. Ветка «skip» живёт ровно на
             // настоящем отказе по потолку.
+            // Полная решётка четырёх комбинаций (метка over_cap × мерка
+            // span_over_cap) на одном отказе `span_too_long`: skip законен
+            // ТОЛЬКО в паре «метка + мерка + код». Мутанты 21.10:
+            // M21 «код ⇒ skip» краснеет на (−,−)/(−,+) и (через
+            // `over_cap_refusal…`) на честной паре; M34 «метка + код ⇒ skip»
+            // краснеет на (+,−); M39 «мерка + код ⇒ skip» — на (−,+).
+            let needle_over: String = std::iter::repeat_n('7', CAP + 1).collect();
+            let mk = |id, over_cap: bool, span_over_cap: bool| CaseOwned {
+                id,
+                text: format!("Реквизит: {needle_over} (проверка границы)."),
+                needles: vec![needle_over.clone()],
+                over_cap,
+                span_over_cap,
+            };
+            // (+,−): метка есть, мерка врёт — отказ реальный, skip НЕ положен.
+            let flag_no_measure = mk("flag-no-measure", true, false);
+            let st_fnm = run_case(
+                &vault,
+                &schema,
+                mode,
+                &flag_no_measure,
+                0,
+                false,
+                Fault::None,
+            );
+            assert_eq!(
+                (st_fnm.skips, st_fnm.failures, st_fnm.roundtrips),
+                (0, 1, 0),
+                "{mode:?}: метка без мерки получила skip (мутант M34): {st_fnm:?}"
+            );
+            // (−,+): мерка есть, метки нет — пропуск без заказа автора.
+            let measure_no_flag = mk("measure-no-flag", false, true);
+            let st_mnf = run_case(
+                &vault,
+                &schema,
+                mode,
+                &measure_no_flag,
+                0,
+                false,
+                Fault::None,
+            );
+            assert_eq!(
+                (st_mnf.skips, st_mnf.failures, st_mnf.roundtrips),
+                (0, 1, 0),
+                "{mode:?}: мерка без метки получила skip (мутант M39): {st_mnf:?}"
+            );
+            // (+,+) честная пара — единственный законный skip.
+            let honest_pair = mk("flag-and-measure", true, true);
+            let st_hp = run_case(&vault, &schema, mode, &honest_pair, 0, false, Fault::None);
+            assert_eq!(
+                (st_hp.skips, st_hp.failures, st_hp.roundtrips),
+                (1, 0, 0),
+                "{mode:?}: честная пара ушла не в skip (мутанты M21/M34/M39): {st_hp:?}"
+            );
+            // Лжец с КОРОТКИМ спаном: метка стоит, отказа нет — round-trip.
             let lying = CaseOwned {
                 id: "under-cap-flagged-over",
                 text: "Реквизит: 777 (проверка границы).".to_owned(),
                 needles: vec!["777".to_owned()],
                 over_cap: true,
+                // Спан ПОД потолком (3 байта): measured-факт = false.
+                span_over_cap: false,
             };
             let st_ok = run_case(&vault, &schema, mode, &lying, 0, false, Fault::None);
             assert_eq!(
@@ -1698,6 +1951,7 @@ mod tests {
                 text: "Реквизит: 777 (проверка границы).".to_owned(),
                 needles: vec!["7".to_owned()],
                 over_cap: true,
+                span_over_cap: false,
             };
             let mut spans = spans_for(&bad.text, &bad.needles);
             for sp in &mut spans {
@@ -1712,6 +1966,27 @@ mod tests {
                 )
                 .expect_err("спан start > end не принимается");
             assert_eq!(err.code(), "bad_span", "код перевёрнутого спана закреплён");
+            // Дискриминатор КОДОВОЙ половины пары (мутант M41, 21.10: «при
+            // честной паре метка+мерка любой отказ ⇒ skip»): refus-путь
+            // харнесируется ОТКАЗОМ МАСКИРОВАНИЯ НАСТОЯЩЕЙ причины, и причина
+            // обязана быть названа. Инъекция `RefusalBadSpan` (ниже) даёт
+            // фикстуре честной пары отказ `bad_span` без правки продукта:
+            // skip «по флагу, код не смотреть» здесь = зелёный пропуск
+            // провала, которого в продукте нет.
+            let st_m41 = run_case(
+                &vault,
+                &schema,
+                mode,
+                &honest_pair,
+                9,
+                false,
+                Fault::RefusalBadSpan,
+            );
+            assert_eq!(
+                (st_m41.skips, st_m41.failures),
+                (0, 1),
+                "{mode:?}: отказ не по потолку на честной паре ушёл в skip (M41): {st_m41:?}"
+            );
             let st_bad = run_case(&vault, &schema, mode, &bad, 1, false, Fault::None);
             assert_eq!(
                 st_bad.failures, 1,
@@ -1719,12 +1994,73 @@ mod tests {
                 st_bad.skips, st_bad.roundtrips
             );
             assert_eq!(st_bad.skips, 0, "{mode:?}: bad_span не обязан быть skip'ом");
+
+            // Дискриминатор ПЕРВОЙ половины условия skip (мутант M21,
+            // 21.10: «код=span_too_long ⇒ skip» без проверки метки). Случай
+            // с НАСТОЯЩИМ отказом по потолку, но с меткой over_cap = false:
+            // маскирование отказывает (предусловие ниже это проверяет), харнес
+            // обязана записать ЭТО как провал: skip законен только в паре
+            // «метка И код», метка на отказе, который фикстура НЕ заказывала,
+            // — ложь о причине (реестр #18: «гейт, скоупнутый автором»).
+            let honest = CaseOwned {
+                id: "refused-unflagged",
+                text: over.text.clone(),
+                needles: over.needles.clone(),
+                over_cap: false,
+                // ФАКТ мерится по фикстуре, а не задаётся автором: спан этой
+                // фикстуры над потолком (needles взяты у `over`), поэтому
+                // measured-флаг здесь TRUE, а право на skip даёт ПАРА
+                // (код=span_too_long И over_cap).
+                span_over_cap: true,
+            };
+            // Предусловие: фикстура ДЕЙСТВИТЕЛЬНО отказывается по потолку
+            // (иначе она не проверяет первую половину условия).
+            let honest_spans = spans_for(&honest.text, &honest.needles);
+            let err_h = vault
+                .anonymize(
+                    (mode == VaultMode::Session).then_some("probe-refused-unflagged"),
+                    &honest.text,
+                    &honest_spans,
+                    &schema,
+                )
+                .expect_err("надпотолочный спан отказывает и без метки случая");
+            assert_eq!(err_h.code(), "span_too_long");
+            // Session-имя случая уникально по (id, round) — новый round, а не
+            // reuse: в режиме Session прогон делит хранилище с `over`/`lying`.
+            let st_h = run_case(&vault, &schema, mode, &honest, 0, false, Fault::None);
+            assert_eq!(
+                (st_h.skips, st_h.failures, st_h.roundtrips),
+                (0, 1, 0),
+                "{mode:?}: отказ по потолку без метки случая ушёл не в провал: {st_h:?}"
+            );
         }
     }
 
     /// Классы игл назначены по содержимому, и все они знает схема: опечатка в
     /// id класса дала бы отказ маскирования, который харнес записала бы как
     /// провал целостности — то есть ложный red.
+    /// Метка фикстуры = измеренный факт: ветка skip скоупнута длиной спана, а
+    /// не мнением автора. Поле `span_over_cap` строится ПО ИЗМЕРЕНИЮ (см.
+    /// `Case::owned`), и этот тест требует совпадения с меткой `over_cap`:
+    /// фикстура, чья метка врёт о своём спане, проверяет не то, что объявляет
+    /// (реестр ложно-зелёных #18, мутанты M21/M34/M35 21.10).
+    #[test]
+    fn fixture_over_cap_flag_matches_measured_span() {
+        for case in corpus().into_iter().chain(boundary_cases()) {
+            let measured = case.needles.iter().any(|n| n.len() > CAP);
+            assert_eq!(
+                case.over_cap, measured,
+                "{}: метка over_cap={} против измеренного спана (над потолком = {measured})",
+                case.id, case.over_cap
+            );
+            assert_eq!(
+                case.span_over_cap, measured,
+                "{}: measured-поле расходится с длиной спана",
+                case.id
+            );
+        }
+    }
+
     #[test]
     fn needle_classes_are_known_to_the_schema() {
         let schema = Schema::embedded().expect("канон вшит");
