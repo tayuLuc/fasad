@@ -11,7 +11,9 @@
 `FASAD_THREADS=2`); промер смонтированного конвейера в §4 п.4 — на бинаре той же
 сборки с фичей `ort-inference` (команда — §«Как включить монтаж каскадов 1–2» в
 [crates/guard-daemon/README.md](crates/guard-daemon/README.md)); ответы приведены
-дословно, без правок.
+дословно, без правок. Исключение — значения, которые даёт только что запущенный
+процесс (`<маркер N>` в §2, `<nonce>` в §3): они обозваны плейсхолдерами, и
+единственный источник значения — вывод предыдущего шага того же прогона.
 
 ## 1. Быстрый старт
 
@@ -46,7 +48,7 @@ curl -s localhost:8765/health
 | `FASAD_PORT` | 8765 (config.rs:24) | порт; `0` = случайный порт, он печатается в баннере |
 | `FASAD_BIND` | 127.0.0.1 (config.rs:28) | только loopback: на внешний адрес демон стартовать отказывается |
 | `FASAD_VAULT_MODE` | `stateless` | `stateless`/`3` = SPEC §3.3, `session`/`2` = SPEC §3.2 (таблица §3 ниже) |
-| `FASAD_VAULT_KEY` | нет (ключ эфемерный) | 64 hex-символа (32 байта); с ним обратимость переживает перезапуск (vault.rs:377) |
+| `FASAD_VAULT_KEY` | нет (ключ эфемерный) | 64 hex-символа (32 байта); с ним обратимость переживает перезапуск (vault.rs:406) |
 | `FASAD_THREADS` | 8 (config.rs:76) | потоки инференса; **жив на смонтированном пути каскадов 1–2**: `cfg.threads` (config.rs:423) уходит в `LockrExtractor::load` и `DecideArbiter::load` (`cascades.rs:750` → `cascades.rs:867,869`) — монтаж #87, в main с `3b2d596` (первичка новой правды: AGENTS §3 п.3). На стадии `cascade-0-only` инертен: значение разбирается, а единственным потребителем поля в демоне остаётся тест config.rs:638 — до сессий ORT оно не доходит. Номера строк пересняты live-grep'ом на этом дереве (прежние `:67`/`:403`/`:610` сняты на `bfb0014`). Харнесы каскадов — рычагом `--threads 2` (рюлинг CPU, AGENTS §3) |
 | `FASAD_MLOCK` | `strict` (config.rs:411) | `strict`/`best_effort` — политика залочки буферов ПДн; деградация видна в баннере (`main.rs:91-99`), в `/health` её поля нет — там `version`/`stage`/`mode` и счётчики vault (`http.rs:157-169`) |
 | `FASAD_GRAY_LO`, `FASAD_GRAY_HI` | 0.22 / 0.80 (config.rs:59,62) | полоса неуверенности |
@@ -80,14 +82,14 @@ curl -s -X POST localhost:8765/v1/analyze \
 `x-guard-cascade2: absent`, `x-guard-policy-applied: mask`,
 `x-guard-score-threshold: 0.2`.
 `X-Guard-Cascade2` — лег каскада 2 на ЭТОМ запросе (`ok` / `skipped` / `absent`;
-имя — `http.rs:56`, сетка — SPEC §8:342-347, `docs/daemon-scope.md:16`):
+имя — `http.rs:56`, сетка — SPEC §8:384-387, `docs/daemon-scope.md:16`):
 `absent` = каскада 2 в процессе нет. Тот же запрос на смонтированном весе даёт
 `ok` и три спана ФИО — промер в §4 п.4.
 Имени человека в ответе нет намеренно — см. §4 п.2.
 
 ### anonymize и deanonymize
 
-Спан для маскирования передаётся байтовыми координатами из `analyze`
+Спан для маскирования (п.1) передаётся байтовыми координатами из `analyze`
 (`entity_type` + `byte_start` + `byte_end`; символьные в запросе не принимаются,
 vault.rs:126-137):
 
@@ -99,17 +101,34 @@ curl -s -X POST localhost:8765/v1/anonymize \
                 {"entity_type":"snils","byte_start":72,"byte_end":83}]}'
 ```
 
-Ответ (режим `stateless`, маркер = AES-256-GCM, на покое ноль байт):
+Ответ п.1 (режим `stateless`, маркер = AES-256-GCM, на покое ноль байт).
+Маркеры этого прогона обозваны `<маркер 1>` и `<маркер 2>`: значение даёт только
+этот ответ, из документации его не берут:
 
 ```json
-{"text":"Ушакова Кира Саввична, ИНН [[F0#HqAw2LFptJ2LOBJpuX9KZKaZinWe3IW3pJ5kCyrTwySNzBaYUXwLIaPcRAw6KHtnbijtvPNQPg]], СНИЛС [[F0#9lSANes6Q7Jd-iIJmgqqdoaPQ0cSSHtn1BZlRPKsqaKE3NL72UTPjY8kU7PTaLriOyhVMAgVyYg]]","items":[{"entity_type":"inn","start":27,"end":37,"byte_start":49,"byte_end":59,"replacement":"[[F0#HqAw2LFptJ2LOBJpuX9KZKaZinWe3IW3pJ5kCyrTwySNzBaYUXwLIaPcRAw6KHtnbijtvPNQPg]]","operator":"mask"},{"entity_type":"snils","start":45,"end":56,"byte_start":72,"byte_end":83,"replacement":"[[F0#9lSANes6Q7Jd-iIJmgqqdoaPQ0cSSHtn1BZlRPKsqaKE3NL72UTPjY8kU7PTaLriOyhVMAgVyYg]]","operator":"mask"}]}
+{"text":"Ушакова Кира Саввична, ИНН [[F0#<маркер 1>]], СНИЛС [[F0#<маркер 2>]]","items":[{"entity_type":"inn","start":27,"end":37,"byte_start":49,"byte_end":59,"replacement":"[[F0#<маркер 1>]]","operator":"mask"},{"entity_type":"snils","start":45,"end":56,"byte_start":72,"byte_end":83,"replacement":"[[F0#<маркер 2>]]","operator":"mask"}]}
 ```
 
-Обратный ход тем же запросом к `/v1/deanonymize` (`{"text": "<замазанное>"}`):
+Обратный ход — п.2, `POST /v1/deanonymize` телом `{"text": "<замазанное>"}`, где
+`<замазанное>` — поле `text` из вывода п.1 **того же запущенного процесса**, с теми
+же `<маркер 1>`/`<маркер 2>`:
 
 ```json
 {"text":"Ушакова Кира Саввична, ИНН 2482014338, СНИЛС 65707715421","substituted":2,"restore_refused":0}
 ```
+
+Почему маркеры — плейсхолдеры, а не литералы: без `FASAD_VAULT_KEY` ключ
+AES-256-GCM генерируется из CSPRNG на старт процесса (`vault.rs:474-478`, в баннере
+`ключ: ephemeral`) и живёт до рестарта — разворачивает только тот процесс, который
+маркер выдал. Литералы этого блока до правки #115 — маркеры процесса, которого больше
+нет, их копипаст отвечает
+`422 {"error":{"code":"unresolved_token","message":"не развернулось маркеров: 2 — отдаём отказ, а не partial-restore"}}`
+(промер 21.10 на релизном бинаре, два независимых процесса); маркеры своего прогона
+разворачиваются в исходный текст байт-в-байт, `substituted: 2` (п.2). Угловые скобки
+`<маркер N>` не входят в алфавит тела маркера — `A-Za-z0-9-_` (`rewriter.rs:102`), —
+и демон их не разворачивает и нерезолвнутым не считает: `substituted: 0`, текст
+проходит нетронутым. Обратимость, переживающая перезапуск, — `FASAD_VAULT_KEY`
+(§1, §3).
 
 ### proxy
 
