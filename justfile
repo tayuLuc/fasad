@@ -99,8 +99,9 @@ union-report RAW OUT PROBE="":
     uv run --locked python tools/metrics/render_report.py {{RAW}} {{OUT}} {{PROBE}}
 
 # Positive control генератора отчёта: подсаженные утечки (имя поля вместо значения,
-# плейсхолдер "? %") обязаны ловиться. Мёртвый контроль = rc=2, тот же контракт,
-# что у lang-scan: зелёная проверка без живого контроля = ничто.
+# плейсхолдер "? %", значение = имя поля, вердикт о планке вразрез с числом)
+# обязаны ловиться. Мёртвый контроль = rc=2, тот же контракт, что у lang-scan:
+# зелёная проверка без живого контроля = ничто.
 report-selftest:
     uv run --locked python tools/metrics/render_report.py --self-test
 

@@ -381,6 +381,31 @@ fn ui_payload_is_inside_the_binary() {
     }
 }
 
+/// Зеркало `ui_payload_is_inside_the_binary`: канарейка из `config/` обязана НЕ
+/// попадать в бинарь. Положительная сторона доказывает, что `rust-embed` шьёт
+/// статику; эта — что фильтр `include` не снят. Снятие фильтра уезжает в
+/// наружный артефакт всей папкой: локальные оверрайды, служебные дампы, чужая
+/// схема. Маршрут `/assets/embed-probe.md` при этом может остаться 404 (роутер
+/// белым списком закрыт), и тест на отказ маршрута ничего не увидит — поэтому
+/// проверка на уровне байтов сборки, а не запроса.
+#[test]
+fn probe_file_stays_out_of_the_binary() {
+    let exe = std::fs::read(env!("CARGO_BIN_EXE_fasad")).expect("бинарь читается");
+    let body = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../config/embed-probe.md"
+    ))
+    .expect("канарейка читается");
+    let head = &body[..body.len().min(64)];
+    for marker in [b"embed-probe.md".as_slice(), head] {
+        assert!(
+            !exe.windows(marker.len()).any(|w| w == marker),
+            "в бинаре найдено «{}»: фильтр `include` у rust-embed снят, папка config/ шьётся наружу",
+            String::from_utf8_lossy(marker)
+        );
+    }
+}
+
 /// Сетка служебных заголовков, которую фронт показывает под форме, обязана
 /// совпадать с сеткой SPEC §8. Тест-пара к `header_table_in_docs_matches_emitted_names`
 /// из `http.rs`: тот держит равенство «эмиссия = док», этот — «док = фронт».
