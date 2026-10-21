@@ -197,9 +197,20 @@ ver_health="$(printf '%s' "$health" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
 #    `[{"entity_type":"inn","start":…,"score":1.0,"class":"inn","source":"checksum_rf",
 #       "verdict":"mask_surrogate","validator":"inn10"}]`), а не `category`/`span_id`.
 req='{"text":"ИНН 7707083893, телефон +79161234567, паспорт 45 09 123456"}'
+# `curl --fail` при HTTP-ошибке возвращается 22, а под `set -euo pipefail` это
+# обрывает скрипт на присваивании без единой строки диагностики (тот же класс,
+# что у счётчика спанов ниже). Причина отказа обязана называться самим скриптом.
 analyze="$(curl -sS --fail --max-time 10 -H 'content-type: application/json' \
-    -H 'x-guard-policy: mask' -X POST "http://127.0.0.1:${port}/v1/analyze" -d "$req")"
-spans="$(printf '%s' "$analyze" | grep -o '"entity_type"' | wc -l | tr -d ' ')"
+    -H 'x-guard-policy: mask' -X POST "http://127.0.0.1:${port}/v1/analyze" -d "$req")" || {
+    printf 'verify-bundle: ОШИБКА: /v1/analyze от бандла не ответил (HTTP-ошибка или таймаут), порт %s\n' "$port" >&2
+    kill "$pid" 2>/dev/null || true
+    exit 1
+}
+# Голый `grep -o` без совпадения возвращается 1 и под pipefail убивает скрипт на
+# присваивании: при нуле спанов собственное сообщение «вернул пустой список
+# спанов» не печаталось (позитивный контроль 21.10 — ИНН с битой чексуммой,
+# rc=1 без диагностики). Ноль — законное значение счётчика.
+spans="$(printf '%s' "$analyze" | { grep -o '"entity_type"' || true; } | wc -l | tr -d ' ')"
 printf 'ANALYZE|spans=%s\n' "$spans"
 [ "$spans" -ge 1 ] || {
     printf 'verify-bundle: ОШИБКА: /v1/analyze вернул пустой список спанов: %s\n' "$analyze" >&2
