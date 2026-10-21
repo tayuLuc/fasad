@@ -214,6 +214,16 @@ jobs:
     name: GitHub Release
     needs: dist
     if: startsWith(github.ref, 'refs/tags/v')
+    # Job-level concurrency: публикация не отменяется на лету. На уровне
+    # воркфлоу стоит cancel-in-progress: true — смысл в том, чтобы пуш в ту же
+    # ветку не жёг раннёры на сборке матрицы. Для публикующего job то же правило
+    # опасно интервалом: между `gh release create` и загрузкой ассетов новый раннер
+    # убил бы процесс с УЖЕ СОЗДАННЫМ релизом и не догруженными ассетами
+    # (ревью #76, F6). Здесь новый прогон становится в очередь, а не отменяет
+    # идущий.
+    concurrency:
+      group: fasad-release-publish
+      cancel-in-progress: false
     permissions:
       # Единственный job с записью: публикация релиза. `contents: write` узок по
       # объёму (релиз + ассеты) и не даёт ни PR, ни пакетов (zizmor
@@ -224,6 +234,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Полная история нужна гарду «нет новых коммитов»: `git rev-list
+          # prev..TAG` на chekaut'e глубиной 1 слепнет (тегов в дереве нет).
+          fetch-depth: 0
       - name: Скачать бандлы матрицы
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -235,6 +248,26 @@ jobs:
           set -euo pipefail
           ls -la artifacts
           ( cd artifacts && for f in *.sha256; do sha256sum -c "$f"; done )
+      - name: "Гард --fail-on-no-commits: между релизами есть коммиты"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Релиз-пустышка = тег на том же коммите, что предыдущий релиз: ассеты
+          # байт-в-байт те же, notes те же, в списке релизов строка-дубль.
+          prev="$(gh release list --limit 1 --json tagName --jq '.[0].tagName // ""')"
+          if [ -z "$prev" ]; then
+              printf 'Первый релиз в репозитории: сравнивать не с чем, гард не применим\n'
+              exit 0
+          fi
+          n="$(git rev-list --count "${prev}..${TAG}")"
+          printf 'Коммитов между %s и %s: %s\n' "$prev" "$TAG" "$n"
+          if [ "$n" -eq 0 ]; then
+              printf 'ОШИБКА: тег %s указывает на тот же коммит, что %s: релиз-пустышка.\n' "$TAG" "$prev" >&2
+              printf 'ОШИБКА: сдвиньте тег на коммит с изменениями или удалите черновик (gh release delete).\n' >&2
+              exit 1
+          fi
       - name: Опубликовать релиз
         # Публикация — `gh release` в скрипте, а не third-party action: zizmor
         # `superfluous-actions` (confidence High) на softprops/action-gh-release
