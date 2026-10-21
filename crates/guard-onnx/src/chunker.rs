@@ -363,7 +363,7 @@ impl ChunkCfg {
 /// минус `overlap_bytes`, опушенный до UTF-8-границы, с потолком по фактическому
 /// `end` (покрытие сильнее перекрытия: рез, уехавший из окна дальше stride, не
 /// должен открыть дыру). Хвост — окно, накрывшее остаток текста, — один финальный
-/// чанк до конца текста, без резa по предложениям.
+/// чанк до конца текста, без реза по предложениям.
 ///
 /// Якорь на фактическом `end` (прежняя геометрия) при «прилипшем» конце —
 /// последняя граница предложения в окне стоит у его старта — прижимал
@@ -1025,17 +1025,23 @@ mod tests {
     /// конец diagnosis'а), дальше — хвост без разделителей.
     fn head_fill(base: &str, head_len: usize) -> String {
         assert!(
-            !base.bytes().any(|b| b == b'.' || b == b'!' || b == b'?' || b == b'\n'),
+            !base
+                .bytes()
+                .any(|b| b == b'.' || b == b'!' || b == b'?' || b == b'\n'),
             "голова не должна содержать границ до финальной точки"
         );
-        assert!(base.len() + 1 < head_len, "база {base:?} не влезает в {head_len}");
+        assert!(
+            base.len() + 1 < head_len,
+            "база {base:?} не влезает в {head_len}"
+        );
         format!("{}{}.", base, " ".repeat(head_len - base.len() - 1))
     }
 
     /// Хвост фикстуры: `s` без `.!?` и переводов строк, добит пробелами до `n`.
     fn tail_fill(s: &str, n: usize) -> String {
         assert!(
-            !s.bytes().any(|b| b == b'.' || b == b'!' || b == b'?' || b == b'\n'),
+            !s.bytes()
+                .any(|b| b == b'.' || b == b'!' || b == b'?' || b == b'\n'),
             "хвост не должен содержать границ"
         );
         assert!(s.len() <= n);
@@ -1173,7 +1179,8 @@ mod tests {
         // тождественный тексту.
         let rows = golden_rows();
         assert!(
-            rows.iter().all(|r| r.len() <= window_bytes(WINDOW_TOKENS_MIN)),
+            rows.iter()
+                .all(|r| r.len() <= window_bytes(WINDOW_TOKENS_MIN)),
             "все golden-строки ≤ min-окна: фикстуры showcase не поедут"
         );
         let mut named = vec![fixture_email44(), fixture_gray283()];
@@ -1215,7 +1222,10 @@ mod tests {
                     cs.len(),
                     t.len()
                 );
-                assert!(cs.len() <= stride_bound, "{name}/{cn}: сверх-stride всплеск");
+                assert!(
+                    cs.len() <= stride_bound,
+                    "{name}/{cn}: сверх-stride всплеск"
+                );
             }
         }
     }
@@ -1227,7 +1237,10 @@ mod tests {
         for (name, t) in all_forms() {
             for (cn, cfg) in probe_cfgs() {
                 let cs = chunk(&t, cfg);
-                assert!(!cs.is_empty(), "{name}/{cn}: пустой список на непустом входе");
+                assert!(
+                    !cs.is_empty(),
+                    "{name}/{cn}: пустой список на непустом входе"
+                );
                 assert_eq!(cs[0].span.start, 0, "{name}/{cn}: не с нуля");
                 assert_eq!(
                     cs.last().unwrap().span.end,
@@ -1262,7 +1275,10 @@ mod tests {
         let cfg = ChunkCfg::new(256, 32).unwrap();
         let cs = chunk(&t, cfg);
         assert_eq!(cs[0].span.start, 0);
-        assert_eq!(cs[0].span.end, 128, "рез по границе головы (прилипший хвост)");
+        assert_eq!(
+            cs[0].span.end, 128,
+            "рез по границе головы (прилипший хвост)"
+        );
         assert_eq!(cs[1].span.start, 128, "потолок-покрытие: сосед с 128");
         assert_eq!(cs.last().unwrap().span.end, 2133);
         for c in &cs {
@@ -1298,7 +1314,10 @@ mod tests {
             .iter()
             .filter(|c| c.span.start <= off && off + 19 <= c.span.end)
             .count();
-        assert!(covering >= 1, "ИНН на {off} не накрыт целиком ни одним чанком");
+        assert!(
+            covering >= 1,
+            "ИНН на {off} не накрыт целиком ни одним чанком"
+        );
     }
 
     #[test]

@@ -37,7 +37,9 @@ fn stride_bytes(cfg: ChunkCfg) -> usize {
 /// предложения стоит на байте `head_len` («прилипший» конец diagnosis'а).
 fn head_fill(base: &str, head_len: usize) -> String {
     assert!(
-        !base.bytes().any(|b| b == b'.' || b == b'!' || b == b'?' || b == b'\n'),
+        !base
+            .bytes()
+            .any(|b| b == b'.' || b == b'!' || b == b'?' || b == b'\n'),
         "голова не должна содержать границ до финальной точки"
     );
     format!("{}{}.", base, " ".repeat(head_len - base.len() - 1))
@@ -46,7 +48,8 @@ fn head_fill(base: &str, head_len: usize) -> String {
 /// Хвост фикстуры: `s` без `.!?` и переводов строк, добит пробелами до `n`.
 fn tail_fill(s: &str, n: usize) -> String {
     assert!(
-        !s.bytes().any(|b| b == b'.' || b == b'!' || b == b'?' || b == b'\n'),
+        !s.bytes()
+            .any(|b| b == b'.' || b == b'!' || b == b'?' || b == b'\n'),
         "хвост не должен содержать границ"
     );
     s.to_owned() + &" ".repeat(n - s.len())
@@ -86,7 +89,7 @@ fn fixture_tail2133() -> String {
     t
 }
 
-/// Поле `text` всех строк golden-v1.jsonl (N=204, AGENTS §4) через serde_json.
+/// Поле `text` всех строк golden-v1.jsonl (N=204, AGENTS §4) через `serde_json`.
 fn golden_rows() -> Vec<String> {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -98,7 +101,8 @@ fn golden_rows() -> Vec<String> {
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
-            let v: serde_json::Value = serde_json::from_str(l).expect("строка golden — валидный JSON");
+            let v: serde_json::Value =
+                serde_json::from_str(l).expect("строка golden — валидный JSON");
             v.get("text")
                 .and_then(|t| t.as_str())
                 .expect("в golden-строке есть поле text:string")
@@ -110,7 +114,7 @@ fn golden_rows() -> Vec<String> {
     rows
 }
 
-/// 1. Регресс diagnosis'а: 44-байтовый email — хвост накрывается одним окном,
+/// Регресс 1 — diagnosis'а: 44-байтовый email — хвост накрывается одним окном,
 /// форс-шагового слайдинга нет. На старой end-якорной геометрии — 23 чанка.
 #[test]
 fn email44_regression_single_chunk() {
@@ -127,20 +131,25 @@ fn email44_regression_single_chunk() {
     }
 }
 
-/// 2. gray283: та же форма (граница у 88-го байта, хвост 195 Б без границ) —
+/// Регресс 2 — gray283: та же форма (граница у 88-го байта, хвост 195 Б без границ) —
 /// документ накрывается окном целиком, один чанк [0, 283).
 #[test]
 fn gray283_no_tail_sliding() {
     let t = fixture_gray283();
     for (cn, cfg) in probe_cfgs() {
         let cs = chunk(&t, cfg);
-        assert_eq!(cs.len(), 1, "{cn}: gray283 дал {} чанков, ждали 1", cs.len());
+        assert_eq!(
+            cs.len(),
+            1,
+            "{cn}: gray283 дал {} чанков, ждали 1",
+            cs.len()
+        );
         assert_eq!((cs[0].span.start, cs[0].span.end), (0, 283));
         assert_eq!(cs[0].span.slice(&t), Some(&t[..]));
     }
 }
 
-/// 3. tail2133 (первое окно не накрывает текст): число чанков ограничено
+/// Регресс 3 — tail2133 (первое окно не накрывает текст): число чанков ограничено
 /// `ceil(len / window_bytes) + 1` — инвариант 3 дока `chunk` для форм, где
 /// резы попадают на край окна. На старой геометрии — 87–88 чанков.
 #[test]
@@ -161,13 +170,14 @@ fn tail2133_count_bounded_by_window_plus_one() {
     }
 }
 
-/// 4. Проперти golden: каждая из 204 строк короче min-окна (промер: max 392 Б),
+/// Регресс 4 — Проперти golden: каждая из 204 строк короче min-окна (промер: max 392 Б),
 /// значит каждая — РОВНО один чанк [0, len), тождественный тексту. На старой
 /// геометрии фикстура g0001 (358 Б) давала 89 чанков.
 #[test]
 fn golden_rows_single_chunk_identity() {
     let rows = golden_rows();
-    let win_min = usize::try_from(guard_onnx::chunker::WINDOW_TOKENS_MIN).unwrap() * BYTES_PER_TOKEN_U;
+    let win_min =
+        usize::try_from(guard_onnx::chunker::WINDOW_TOKENS_MIN).unwrap() * BYTES_PER_TOKEN_U;
     assert!(
         rows.iter().all(|r| r.len() <= win_min),
         "все golden-строки ≤ min-окна {win_min} Б: showcase-форма не поедет"
@@ -175,7 +185,13 @@ fn golden_rows_single_chunk_identity() {
     for (cn, cfg) in probe_cfgs() {
         for (i, t) in rows.iter().enumerate() {
             let cs = chunk(t, cfg);
-            assert_eq!(cs.len(), 1, "{cn}: golden_row_{i:03} (len {}) дал {} чанков", t.len(), cs.len());
+            assert_eq!(
+                cs.len(),
+                1,
+                "{cn}: golden_row_{i:03} (len {}) дал {} чанков",
+                t.len(),
+                cs.len()
+            );
             assert_eq!(cs[0].span.start, 0, "golden_row_{i:03}/{cn}");
             assert_eq!(cs[0].span.end, t.len(), "golden_row_{i:03}/{cn}");
             assert_eq!(cs[0].span.slice(t), Some(&t[..]), "golden_row_{i:03}/{cn}");
@@ -183,7 +199,7 @@ fn golden_rows_single_chunk_identity() {
     }
 }
 
-/// 5. Проперти golden-потока (204 строки через \n, ~37 KB — текст длиннее окна):
+/// Регресс 5 — Проперти golden-потока (204 строки через \n, ~37 KB — текст длиннее окна):
 /// побайтовое покрытие без дыр, строгая монотонность стартов, шаг ≥ stride,
 /// чанк ≤ окна, хвост до конца, n ≤ ceil(len/stride)+1 (инвариант 3 дока).
 #[test]
@@ -193,7 +209,11 @@ fn golden_stream_invariants() {
         let cs = chunk(&t, cfg);
         assert!(!cs.is_empty(), "{cn}: пустой список на непустом входе");
         assert_eq!(cs[0].span.start, 0, "{cn}: не с нуля");
-        assert_eq!(cs.last().unwrap().span.end, t.len(), "{cn}: хвост не покрыт");
+        assert_eq!(
+            cs.last().unwrap().span.end,
+            t.len(),
+            "{cn}: хвост не покрыт"
+        );
         let bound = t.len().div_ceil(stride_bytes(cfg)) + 1;
         assert!(
             cs.len() <= bound,
@@ -246,8 +266,8 @@ fn golden_stream_invariants() {
     }
 }
 
-/// 6. Координатная точность на фикстурах: спан побайтово равен срезу оригинала,
-/// token_lo/hi = ceil(start/4)/ceil(end/4); в tail2133 старт соседа примотан к
+/// Регресс 6 — Координатная точность на фикстурах: спан побайтово равен срезу оригинала,
+/// `token_lo/hi` = ceil(start/4)/ceil(end/4); в tail2133 старт соседа примотан к
 /// потолку-покрытию (128), а первый ИНН (байт 248) накрыт целиком одним чанком.
 #[test]
 fn reviewer_forms_spans_are_exact() {
@@ -276,7 +296,10 @@ fn reviewer_forms_spans_are_exact() {
     let t = fixture_tail2133();
     let cfg = ChunkCfg::new(256, 32).unwrap();
     let cs = chunk(&t, cfg);
-    assert_eq!(cs[0].span.end, 128, "рез по границе шапки (прилипший хвост)");
+    assert_eq!(
+        cs[0].span.end, 128,
+        "рез по границе шапки (прилипший хвост)"
+    );
     assert_eq!(cs[1].span.start, 128, "потолок-покрытие: сосед с 128");
     let off = t.find("ИНН 770000000001").expect("первый ИНН в фикстуре");
     assert_eq!(off, 248, "офсет зафиксирован формой фикстуры");

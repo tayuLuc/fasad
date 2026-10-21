@@ -192,9 +192,7 @@ fn prop_chunker_count_bounded_by_stride() {
         )
         .unwrap_or(usize::MAX))
             * BYTES_PER_TOKEN_U;
-        let bound = text
-            .len()
-            .div_ceil(stride.saturating_sub(3).max(1))
+        let bound = text.len().div_ceil(stride.saturating_sub(3).max(1))
             + sentence_boundaries_upper_bound(&text)
             + 2;
         assert!(
