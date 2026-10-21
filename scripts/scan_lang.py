@@ -21,6 +21,20 @@ python, и явные числовые диапазоны.
            слитное написание кириллической основы с латинской — нет. Примеры дефекта
            намеренно не приводятся литералом: документация о детекторе не должна
            сама быть его срабатыванием (иначе гейт краснеет на себе).
+3. arabic / hebrew / devanagari (#121) — символы Arabic U+0600-U+06FF, Hebrew
+           U+0590-U+05FF, Devanagari U+0900-U+097F. Тот же каркас, что у cjk:
+           «в корпусе такой графики нет ни одной» — промер по дереву перед правкой:
+           0 символов трёх диапазонов в 148 файлах под гейтом, значит любое её
+           появление = утечка, а не текст.
+
+Чего гейт НЕ красит (важно, #121 про это спрашивают): чистую кириллицу — нигде.
+Правило про «случайную утечку в технические артефакты» (иероглиф, склейка
+кириллицы с латиницей, арабский токен в доке), а не про язык prose: русские
+UI-тексты (`ui/app.js` 1554, `about.hbs` 581, `index.html` 428, `ui/app.css` 118
+кирилличных символов), `rss_mach.c` (569) и любой `.md` про русский — хитов не
+дают (промер: hits=0 во всех пяти файлах, суффиксы которых добавлены в #119).
+Разрешать их allow-директивой нечего: директива на строке/в файле без хита =
+мёртвое исключение, та самая ложно-зелёная дыра, ради которой гейт и писался.
 
 Исключение (минимальный механизм, #90): директива `scan-lang:` + `allow` (пишется
 слитно) в той же строке, где легальный хит: полноширинные цифры в тесте, цитата
@@ -35,7 +49,9 @@ python, и явные числовые диапазоны.
 
 Positive control (обязателен, иначе зелёное = ничто): `--self-test` прогоняет
 детекторы по посаженным образцам, включая пару «директива с хитом» / «директива
-без хита».
+без хита», посад каждой из трёх новых график (#121), чистую кириллицу — как
+чистую (#121: гейт про арабицу/иврит/деванагари, не про кириллицу в .md) и пару
+инвентаря «app.js/.css/.html/.hbs/.c входят, .wasm/.onnx не входят» (#119).
 
 Control-строки собраны из escape-последовательностей, поэтому самого себя сканер
 не пачкает: CJK-литералов в исходнике нет (иначе сканер был бы глух к собственному
@@ -54,8 +70,11 @@ rc-контракт (#105; та же легенда печатается в `--h
   0 = чисто.
   1 = найдены хиты.
   2 = проверка НЕ выполнена: positive control не сработал (сканер мёртв), на входе
-      0 файлов, ни один входной файл не прочитан, либо git-инвентарь недоступен
-      (`--all` в дереве без `.git` / без бинаря git — #116 F5). Это не «чисто» и
+      0 файлов, ни один входной файл не прочитан, git-инвентарь недоступен
+      (`--all` в дереве без `.git` / без бинаря git — #116 F5), либо `--all` запущен
+      не из корня репозитория (#116 N2: инвентарь строится от REPO_ROOT, пути обхода
+      читаются относительно cwd → из подкаталога 143 skip'а и
+      reason|no-readable-file; теперь reason|cwd-not-repo-root). Это не «чисто» и
       не «упал тулинг» — это отсутствие контроля; в just-рецепте оно краснит прогон
       ровно своим кодом (just пробрасывает rc команды — промер 1.58.0).
       Доводить «дерево не под git» до rc 1 нельзя: rc 1 значит «найдены хиты», а
@@ -63,6 +82,9 @@ rc-контракт (#105; та же легенда печатается в `--h
 
 Обход `--all` берёт файлы и без расширения (#103): у Path("justfile").suffix пусто,
 под фильтр TEXT_EXT такие файлы не попадали целиком (justfile, LICENSE, dotfiles).
+Тот же класс слепой зоны закрыт в #119 суффиксами .js/.css/.html/.hbs/.c: под git
+5 таких файлов (промер `git ls-files | grep -E '[.](js|css|html|hbs|c)$' | wc -l`),
+обход вырос 143 → 148.
 """
 from __future__ import annotations
 
@@ -77,6 +99,17 @@ LATIN_RUN = re.compile(r"[A-Za-z]")
 CYR_RUN = re.compile("[\u0400-\u04FF]")
 CJK_RANGES = ((0x3040, 0x30FF), (0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xAC00, 0xD7AF),
               (0xF900, 0xFAFF), (0xFF00, 0xFFEF), (0x20000, 0x2FA1F))
+# #121: три новые графики (Arabic/Hebrew/Devanagari); в корпусе такой графики нет
+# ни одной (промер перед правкой: 0 символов во всех 148 файлах под гейтом), значит
+# её появление в файле = утечка. Тот же каркас, что CJK_RANGES, kind = имя диапазона
+# (arabic/hebrew/devanagari). Границы — ровно свои Unicode-блоки (U+0600-U+06FF,
+# U+0590-U+05FF, U+0900-U+097F: буквы, знаки препинания и цифры этих блоков), соседи
+# за краем не трогаются. Литералов этих график в этом файле нет намеренно: строка
+# с символом из диапазона была бы хитом на самом себе (доктрина control-строк) —
+# образцы для контроля собраны из escape-последовательностей ниже. Кириллицу
+# (CYR_RANGE) правило НЕ красит: она легальна в prose и в UI, #121 — не про неё.
+SCRIPT_RANGES = (("arabic", 0x0600, 0x06FF), ("hebrew", 0x0590, 0x05FF),
+                 ("devanagari", 0x0900, 0x097F))
 WORD_RE = re.compile(r"[0-9A-Za-z\u0400-\u04FF]+")
 # Литерал токена собран конкатенацией: строка с ним в этом файле была бы
 # «мёртвой директивой» (красный прогон), а документация о директиве обязана её
@@ -112,8 +145,16 @@ def scan_lines(text: str) -> tuple[list, list, list]:
     for ln, line in enumerate(ESC_RE.sub(" ", text).splitlines(), start=1):
         row: list[tuple[int, str, str]] = []
         for ch in line:
+            code = ord(ch)
             if any(_in(ch, lo, hi) for lo, hi in CJK_RANGES):
-                row.append((ln, "cjk", f"U+{ord(ch):04X}"))
+                row.append((ln, "cjk", f"U+{code:04X}"))
+                continue
+            # #121: тот же каркас для Arabic/Hebrew/Devanagari, один хит на символ.
+            # Блоки не пересекаются с CJK, поэтому `continue` выше безопасен.
+            for kind, lo, hi in SCRIPT_RANGES:
+                if lo <= code <= hi:
+                    row.append((ln, kind, f"U+{code:04X}"))
+                    break
         for w in WORD_RE.findall(line):
             # Дефис/подчёркивание НЕ входят в токен ⇒ `fp16-квант` = два слова
             # (чисто), а слитная склейка график — один токен с двумя скриптами.
@@ -143,6 +184,8 @@ def scan_text(text: str) -> list[tuple[int, str, str]]:
 
 def self_test() -> int:
     """Positive control: посаженные образцы обязаны быть пойманы, чистые — нет."""
+    # Образцы посажены эскейпами: литералом такой символ в этом файле был бы хитом
+    # на самом себе (доктрина control-строк).
     dirty_cjk = "проверка " + "\u6d4b\u8bd5" + " текста"  # 2 иероглифа, собранных из escapes
     dirty_mixed = "квант" + "fp16" + " без пробела"
     clean = ["fp16-квант через дефис", "golden-набор, onnxruntime 1.31.0",
@@ -153,6 +196,26 @@ def self_test() -> int:
         good = want in kinds
         ok = ok and good
         print(f"CONTROL|{name}|planted|{'caught' if good else 'MISSED'}|kinds|{sorted(kinds)}")
+    # #121: посад каждого нового диапазона ОБЯЗАН дать ровно свой kind (сравнение
+    # множества целиком, а не «want in kinds»: мутация, которая заводит араба в
+    # CJK-ветку, дала бы «caught» и осталась зелёной).
+    for name, token in (("arabic", "\u0637\u0628\u0643\u0627"),
+                        ("hebrew", "\u05e9\u05dc\u05d5\u05dd"),
+                        ("devanagari", "\u0928\u092e\u0938\u094d\u0924\u0947")):
+        text = "русская строка " + token + " и конец строки"
+        kinds = {k for _, k, _ in scan_text(text)}
+        good = kinds == {name}
+        ok = ok and good
+        print(f"CONTROL|{name}|planted|{'caught' if good else 'MISSED'}|kinds|{sorted(kinds)}")
+    # #121 не про это, но проверяем ровно эту границу: чистая кириллица обязана
+    # оставаться чистой (гейт ловит утечку в технические артефакты, а не язык prose).
+    # Мутация «красить кириллицу» (CYR_RANGE в hit-правило) гасит этот контроль и
+    # весь русскоязычный корпус разом.
+    cyr_only = "полностью русская строка без латиницы: квант, чексумма, датасет"
+    got_cyr = scan_text(cyr_only)
+    good = not got_cyr
+    ok = ok and good
+    print(f"CONTROL|cyrillic-only|clean|{'ok' if good else 'FALSE-POSITIVE'}|hits|{len(got_cyr)}")
     for text in clean:
         got = scan_text(text)
         if got:
@@ -174,7 +237,14 @@ def self_test() -> int:
     # обязан ловить её возвращение: без этой пары строк гейт над justfile/LICENSE
     # стал бы молча зелёным ровно в тот момент, когда из фильтра выпадает имя.
     inventory = (("justfile", True), ("LICENSE", True), (".gitignore", True),
-                 ("docs/x.md", True), ("Cargo.lock", False), ("models/w.onnx", False))
+                 ("docs/x.md", True), ("Cargo.lock", False), ("models/w.onnx", False),
+                 # #119: прежняя слепая зона whole-tree — суффиксы UI-каталога и
+                 # C-харнеса. Пара из issue: app.js входит, бинарь .wasm — нет.
+                 ("crates/guard-daemon/ui/app.js", True),
+                 ("crates/guard-daemon/ui/app.css", True),
+                 ("crates/guard-daemon/ui/index.html", True),
+                 ("about.hbs", True), ("crates/guard-onnx/spike/rss_mach.c", True),
+                 ("crates/guard-daemon/ui/model.wasm", False))
     bad = [n for n, want in inventory if _is_text_file(n) != want]
     good = not bad
     ok = ok and good
@@ -186,19 +256,42 @@ def self_test() -> int:
     # глушил посаженный CJK в justfile (промер ревью: files 141 → 134, clean, rc=0).
     # Пара «имя без suffix + lock» бьёт ровно по этой границе.
     try:
-        traversal = git_text_files(["justfile", "Cargo.lock"])
-        good = "justfile" in traversal and "Cargo.lock" not in traversal
+        want_in = ("justfile", "crates/guard-daemon/ui/app.js")
+        traversal = git_text_files(list(want_in) + ["Cargo.lock"])
+        good = all(w in traversal for w in want_in) and "Cargo.lock" not in traversal
     except Exception as e:  # широкий except: control обязан погаснуть, а не упасть
         traversal, good = f"исключение|{type(e).__name__}", False
     ok = ok and good
     print(f"CONTROL|traversal|planted|{'caught' if good else 'MISSED'}"
-          f"|in|justfile,Cargo.lock|out|{traversal}")
+          f"|in|justfile,app.js,Cargo.lock|out|{traversal}")
+    # N2 (#116): обход читает пути относительно cwd, а инвентарь строит от REPO_ROOT;
+    # из подкаталога это давало 148 skip'ов и rc 2 no-readable-file — правда о
+    # результате, ложь о причине. Предикат корня проверяется на паре путей, чтобы
+    # мутация (`return True`) гасила контроль, а не делала ветку мёртвой.
+    root_cases = ((REPO_ROOT, True), (REPO_ROOT / "docs", False), (Path("/"), False))
+    bad_root = [str(c) for c, want in root_cases if _cwd_is_repo_root(c) != want]
+    good = not bad_root
+    ok = ok and good
+    print(f"CONTROL|cwd-root|planted|{'caught' if good else 'MISSED'}|bad|{bad_root}")
     print(f"CONTROL|verdict|{'live' if ok else 'dead-scanner'}")
     return 0 if ok else 2
 
 
 TEXT_EXT = {".md", ".rs", ".py", ".toml", ".yml", ".yaml", ".json", ".jsonl",
-            ".tsv", ".sh", ".txt"}
+            ".tsv", ".sh", ".txt",
+            # #119: слепая зона whole-tree — 5 файлов под git не попадали в обход
+            # ни по суффиксу, ни по имени (промер `git ls-files | grep -E
+            # '\.(js|css|html|hbs|c)$' | wc -l` = 5, ровно те, что названы в issue:
+            # ui/app.js, ui/app.css, ui/index.html, about.hbs, spike/rss_mach.c).
+            # Живая кириллица в них (1554/118/428/581/569 символов) — легальна:
+            # hit-правило красит CJK, три новые графики и склейку кириллицы с
+            # латиницей, а чистую кириллицу — нет (промер: hits=0 во всех пяти).
+            # Значит allow-директивы им НЕ нужны: директива без хита = мёртвое
+            # исключение, т.е. осознанно ослеплённый гейт на файлах, ради которых
+            # покрытие и затевалось. `.c` проверен на «не бинарь-шум»: rss_mach.c =
+            # C-исходник, декодируется как utf-8, 569 кирилличных символов в
+            # комментариях харнеса.
+            ".js", ".css", ".html", ".hbs", ".c"}
 # Файлы БЕЗ расширения (#103): у `Path("justfile").suffix` — пустая строка, т.е.
 # под TEXT_EXT они не видимы сканеру ЦЕЛИКОМ, а комментарии justfile читаются
 # чаще кода (прозаические хвосты их комментариев правили в #95 — сводки
@@ -218,6 +311,24 @@ def _is_text_file(f: str) -> bool:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _cwd_is_repo_root(cwd: Path) -> bool:
+    """Корень ли репозитория — единственный валидный cwd для `--all` (N2 #116).
+
+    Инвентарь (`git ls-files`) собирается от REPO_ROOT, а файлы обходятся путями
+    ОТНОСИТЕЛЬНО cwd: промер до правки — запуск из `docs/` печатал 143 строки
+    `LANG|skip|...|нет файла` и `rc 2 reason|no-readable-file`. Код верный
+    (проверка не выполнена), а причина — ложь: её читают как «в дереве нет
+    текстовых файлов», тогда как дерево целое,
+    просто запущено не оттуда. Отдельный reason называет причину; сравнение
+    `resolve()`-путей, а не «внутри ли REPO_ROOT»: из подкаталога относительные
+    пути инвентаря всё равно не читаются.
+    """
+    try:
+        return cwd.resolve() == REPO_ROOT
+    except OSError:  # нечитаемый cwd (удалённый каталог) = не корень, не traceback
+        return False
 
 
 class GitInventoryError(RuntimeError):
@@ -274,7 +385,11 @@ RC_LEGEND = (
     "  2  проверка НЕ выполнена: positive control мёртв (--self-test), на входе 0\n"
     "     файлов (--all по дереву без текстовых = сломанный glob), ни один входной\n"
     "     файл не прочитан (--files по несуществующим путям), git-инвентарь\n"
-    "     недоступен (--all в дереве без .git / без бинаря git) = reason|no-git.\n"
+    "     недоступен (--all в дереве без .git / без бинаря git) = reason|no-git,\n"
+    "     запуск `--all` НЕ из корня репозитория = reason|cwd-not-repo-root (N2\n"
+    "     #116: инвентарь строится от корня, пути читаются относительно cwd; до\n"
+    "     правки случай давал reason|no-readable-file — правда о результате, ложь\n"
+    "     о причине).\n"
     "     2 — не «чисто» и не «найдены хиты» (это 1).\n"
     "     just пробрасывает rc команды, поэтому в рецепте это красный прогон.\n"
     "Флаги входа: --all выигрывает у --files (вместе = обход git-инвентаря,\n"
@@ -297,8 +412,8 @@ def _noinput(reason: str) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Язык-гейт текста репозитория: CJK-утечки и склейка кириллицы "
-                    "с латиницей.",
+        description="Язык-гейт текста репозитория: CJK/арабица/иврит/деванагари и "
+                    "склейка кириллицы с латиницей.",
         epilog=RC_LEGEND,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--files", nargs="*", default=[],
@@ -307,7 +422,8 @@ def main() -> int:
                          "--all не применяется: --all выигрывает")
     ap.add_argument("--all", action="store_true",
                     help="весь текстовый tree под git (инвентарь репозитория; "
-                         "пустой вход = rc 2; дерево без .git = rc 2 reason|no-git); "
+                         "пустой вход = rc 2; дерево без .git = rc 2 reason|no-git; "
+                         "запуск не из корня = rc 2 reason|cwd-not-repo-root); "
                          "вместе с --files выигрывает: список --files игнорируется")
     ap.add_argument("--self-test", action="store_true",
                     help="positive control по посаженным образцам; мёртвый "
@@ -319,6 +435,12 @@ def main() -> int:
     if args.all:
         # --all выигрывает у --files: список `--files` при `--all` игнорируется
         # (задокументировано в --help, поведение не менялось).
+        if not _cwd_is_repo_root(Path.cwd()):
+            # N2 (#116): раньше этот случай тонул в no-readable-file (инвентарь
+            # собрался, все пути дали skip). Причина не «нет файлов», а запуск не из
+            # корня: обход читает пути относительно cwd, а инвентарь строит от корня.
+            print(f"LANG|cwd|not-repo-root|cwd|{Path.cwd()}|repo|{REPO_ROOT}")
+            return _noinput("cwd-not-repo-root")
         try:
             files = git_text_files()
         except GitInventoryError as e:
