@@ -67,12 +67,22 @@ pub struct Grammar {
 impl Grammar {
     /// Inline-токен формата F0: `[[F0#<base64url>]]`.
     ///
-    /// Budget = [`token::MAX_MARKER_BYTES`] = 279 байт, а не 32 из SPEC §8:
+    /// Budget = [`token::MAX_MARKER_BYTES`] = 1594 байта, а не 32 из SPEC §8:
     /// §8 говорит о короткой метке `[PERSON_1]` (это [`Grammar::LABEL`]),
-    /// тогда как stateless-токен несёт нонсу 24 Б + тег 16 Б + LZ4-блок, и для
-    /// промеренного максимального спана (109 Б) даёт 272 символа base64url.
-    /// Расхождение зафиксировано тестом `lookahead_budget_matches_grammar` и
-    /// продублировано в рапорте по атому A/B.
+    /// тогда как stateless-токен несёт нонсу 24 Б + тег 16 Б + LZ4-блок. С
+    /// потолком оригинала 128 Б это было 279 байт (272 символа base64url для
+    /// промеренного максимума спана 109 Б); с потолком 1024 Б (#120) токен
+    /// вырастает до 1587 символов, а окно — до 1594.
+    ///
+    /// Цена поднятия потолка ложится на **stateless-режим**: в нём маркер несёт
+    /// оригинал в себе, поэтому (а) в выходном тексте словесный реестровый
+    /// номер заменяется полторакилобайтным маркером вместо 279-байтного, и
+    /// (б) look-ahead машины держит 1594 байта кандидата. В session-режиме
+    /// (`FASAD_VAULT_MODE=2`) окно остаётся `Grammar::LABEL` = 34 Б — там
+    /// ничего не меняется, и именно session-режим несёт обратный ход по
+    /// реестру форм. Расхождение с §8 зафиксировано тестом
+    /// `lookahead_budget_matches_grammar` и продублировано в рапорте по атому
+    /// A/B; число окна пинится там же.
     pub const F0_INLINE: Self = Self {
         prefix: token::MARKER_PREFIX.as_bytes(),
         suffix: token::MARKER_SUFFIX.as_bytes(),
@@ -883,7 +893,10 @@ mod tests {
     #[test]
     fn lookahead_budget_matches_grammar() {
         assert_eq!(Grammar::F0_INLINE.window(), token::MAX_MARKER_BYTES);
-        assert_eq!(Grammar::F0_INLINE.window(), 5 + 272 + 2);
+        // Окно = 5 (`[[F0#`) + 1587 (base64url худшего контейнера при потолке
+        // 1024 Б, было 272 при 128 Б) + 2 (`]]`). Число пинится: потолок
+        // переехал в #120, и молча разъехаться окно не должно.
+        assert_eq!(Grammar::F0_INLINE.window(), 5 + 1587 + 2);
         assert_eq!(Grammar::LABEL.window(), 34);
         // Худший случай F0: тело длиной в потолок обязано распознаваться.
         let body = "A".repeat(Grammar::F0_INLINE.max_body);
