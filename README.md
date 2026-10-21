@@ -129,8 +129,13 @@ curl -s -X POST localhost:8765/v1/chat/completions \
 `127.0.0.1:8199`, запуск с `FASAD_PROXY_LOOPBACK_HTTP=1` и
 `FASAD_UPSTREAM_ALLOWLIST='127.0.0.1:8199'`): в тексте запроса ИНН ушёл наружу
 замаркированным (`x-guard-redacted-count: 1`), в ответе разворачивается обратно,
-`finish_reason: stop`. Промер 21.10 тем же curl'ом, что выше: тело, ушедшее
-upstream, содержит маркер `[[F0#…]]` и не содержит ИНН; ответ разворачивается в
+`finish_reason: stop`. Промер 21.10 тем же curl'ом, что выше, но с
+`X-Upstream-URL: http://127.0.0.1:8199/v1/chat/completions` — на адрес вне
+allowlist (`https://api.openai.com/…`) этот rig отвечает `403`
+`allowlist_denied`, а `FASAD_PROXY_LOOPBACK_HTTP=1` ничего не переадресует: он
+разрешает http только на loopback (proxy.rs:373) и снимает `https_only` с
+агента (proxy.rs:473). На loopback-URL: тело, ушедшее upstream, содержит
+маркер `[[F0#…]]` и не содержит ИНН; ответ разворачивается в
 исходный текст байт-в-байт (`cmp` rc=0); заголовок `authorization` долетел
 дословно. Без allowlist маршрут отдаёт `403` (промер):
 
@@ -202,7 +207,11 @@ upstream, содержит маркер `[[F0#…]]` и не содержит И
    PR #75 (влит `bf95412`): фронт вшит в бинарь (`rust-embed`, ui.rs:25-27),
    маршрут `GET /ui` — ui.rs:47. Промер 21.10 демоном без env: `GET /ui` = 200,
    3313 байт HTML.
-6. Релизных бандлов и RAM-гейта по трём ОС в main тоже нет: это PR #76.
+6. Релизный контур пришёл в main с PR #76 (squash `94fecdb`, 21.10):
+   `release.yml` с матрицей трёх ОС (ubuntu-24.04, windows-2022, macos-14),
+   RSS-гейтом, проверкой бандлов и лицензионным инвентарём. Самих релизов на
+   GitHub ещё нет (`gh api releases` = 0, промер 21.10): контур стартует
+   пуллом тега, маршрут описан в `docs/release.md`.
 7. Трек union-recall #80 влит в main (`b5b0fe3`), терпимость к разделителям и
    полная таблица IBAN дошли с #86 (`bfb0014`). Планка ≥98 % (рюлинг #77: нижняя
    граница Вилсона, span-уровень, byte-exact) ЗАКРЫТА: union 99.72 % при
@@ -250,8 +259,9 @@ upstream, содержит маркер `[[F0#…]]` и не содержит И
    `OK: golden-v1.jsonl воспроизводится байт-в-байт (N=204 строк)`.
 2. Метрики прогона каскадов (RSS, латентность, dev-профиль, threads=4):
    [docs/model-audit.md](docs/model-audit.md) §2 — сырые `METRIC`-строки.
-3. RAM релизного контура: docs/model-audit.md §9 «Release RSS» (секция придёт с
-   PR #76; цифры там генерируются `just measure-rss --doc-rows`, не с клавиатуры).
+3. RAM релизного контура: docs/model-audit.md §9 «Release RSS» (секция пришла с
+   PR #76, squash `94fecdb`; цифры там генерируются `just measure-rss --doc-rows`,
+   не с клавиатуры).
 4. Латентность отдельного запроса — в заголовке `X-Guard-Latency-Ms` каждого
    ответа (в промерах §2 каскад 0 на loopback укладывается в 0 мс).
 
