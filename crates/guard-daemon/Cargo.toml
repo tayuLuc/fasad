@@ -24,7 +24,7 @@ http-body-util = { workspace = true }
 tower-http = { workspace = true }
 rust-embed = { workspace = true }
 zeroize    = { workspace = true }
-# Base64-обход каскада-0 (issue #51 п.3): декод кандидатов `base64(ПДн)` двумя
+# Base64-обход каскада-0 (PR #94): декод кандидатов `base64(ПДн)` двумя
 # алфавитами. Тот же workspace-пин, что у vault (0.23.1, `alloc`-only, без std,
 # без сетей — `just net-audit` крейт не в чёрном списке).
 base64            = { workspace = true }
