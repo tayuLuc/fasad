@@ -23,6 +23,8 @@ check: lint python-lint golden-verify test net-audit deny
 # grep-версия к тому же не попадала в CI-матрицу (джобы зовут lint/test/deny
 # поштучно) — т.е. стена была ложно-зелёной на обеих ОС. Три проверки (манифест,
 # исходники, `cargo tree -i`) живут в тесте и бегут в `cargo test --workspace`.
+
+# Гейт «демон не тащит сеть»: интеграционный тест net_audit.
 net-audit:
     cargo test -p guard-daemon --test net_audit
     @echo "net-audit ok: манифест, исходники и дерево зависимостей демона чисты от сети"
@@ -44,6 +46,8 @@ lint:
 # Линтер CI-тулчейном (issue #25: CI стабильно свежее локального stable —
 # assert_is_empty-класс drift'а ловится ТОЛЬКО прогоном версии CI).
 # Версию обновлять синхронно с rustc на раннере (промер: gh run view --log).
+
+# Линтер CI-тулчейном 1.99.1 (ловит drift локального stable).
 lint-ci:
     rustup run 1.99.1 cargo fmt --all -- --check
     rustup run 1.99.1 cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used
@@ -53,6 +57,8 @@ lint-ci:
 # Тесты всего workspace + пути опциональных фич (та же причина, что в `lint`:
 # `--workspace` их не включает, а матрица ci.yml обязана гонять их на Linux и
 # Windows, иначе гейт #50 не живой).
+
+# Тесты workspace + опциональные фичи отдельными прогонами.
 test:
     cargo test --workspace
     cargo test -p guard-vault --features decliner
@@ -86,6 +92,8 @@ python-lint:
 
 # Побайтовая воспроизводимость golden-датасета: реген + сверка с B2-константой
 # (тот же инвариант, что tests/golden_v1.rs::golden_file_sha256_matches_embedded_const).
+
+# Побайтовая воспроизводимость golden-датасета (реген + сверка с B2).
 golden-verify:
     uv run --locked python scripts/golden_regen_verify.py
 
@@ -143,11 +151,16 @@ lang-scan-files *FILES:
 # Релизный путь ORT (issue #11): официальный dylib вместо статики pyke.
 # Каталог lib: MAC — onnxruntime-osx-arm64-1.31.0/lib release-архива
 # (docs/model-audit.md §8), Linux — onnxruntime-linux-x64-1.31.0/lib.
-# ORT_DIR переопределяется окружением.
+# ORT_DIR переопределяется окружением. Две строки этого блока раньше были
+# ТЕЛОМ рецепта (Just их пропускает, но читать recipe body ради прозы нечего).
+#
+# Формат док-комментария в этом файле: смежной с рецептом обязана быть КОРОТКАЯ
+# сводка, длинная проза отделяется пустой строкой — `just --list` показывает
+# последнюю строку блока комментариев (промер до правки: хвосты предложений у 10
+# рецептов из 17, ревью #76 F6).
 
+# Сборка/прогон с динамическим ORT (rpath прописывает build.rs).
 ort-dylib *ARGS:
-    # Собирает/гоняет с динамическим ORT: rpath прописывает build.rs (guard-onnx),
-    # окружение — два обязательных env. Пример: just ort-dylib -- --arb --lockr
     ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib}" {{ ARGS }}
 
 # Полный spike-прогон релиза на dylib (issue #11 гейт): сборка release + --arb --lockr.
@@ -156,6 +169,8 @@ ort-dylib *ARGS:
 # copy-dylibs кладёт шейды libonnxruntime*.dylib рядом с бинарём → plain-run
 # бинаря, линкованного на 1.31 = SIGSEGV (промер ревью #32; снятие:
 # rm target/release/examples/libonnxruntime*.dylib или rebuild с env).
+
+# Полный spike-прогон релиза на dylib (issue #11 гейт).
 spike-dylib:
     ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib}" cargo build --release --features ort-inference --example spike
     ORT_PREFER_DYNAMIC_LINK=1 target/release/examples/spike --arb --lockr
@@ -183,12 +198,16 @@ _triple:
 # не включается — модельного пути спанов в демоне физически нет
 # (crates/guard-daemon/src/pipeline.rs, заголовок модуля). Артефакт метится
 # честно, см. docs/release.md §«Что в бандле».
+
+# Релизный бинарь guard-daemon (контур = каскад-0).
 release-build:
     cargo build --release -p guard-daemon
 
 # Сборка харнеса полного каскада (spike) релизным профилем на официальном dylib
 # ORT: контракт docs/model-audit.md §5 п.1 + §8 (статика pyke на macOS release =
 # SIGSEGV; dylib 1.31.0 = живой прогон). Нужна для `just measure-rss --full`.
+
+# Харнес полного каскада (spike) релизным профилем на dylib ORT.
 build-ort:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -203,6 +222,8 @@ build-ort:
 # сборка релиза); `--fail`: нераспознанная лицензия = красный гейт, а не дырка в
 # бандле (первичка generate/README.md: «Exits with a non-zero exit code if any
 # crate's license cannot be reasonably determined»).
+
+# THIRD-PARTY-LICENSES.txt по about.toml + about.hbs.
 deps-licenses:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -213,6 +234,8 @@ deps-licenses:
 
 # Упаковка бандла (бинарь + LICENSE + README-ссылка + схема + лицензии +
 # SHA256SUMS) в tar.gz/zip. Девелер: dist/ в .gitignore (строка `dist/`).
+
+# Упаковка бандла (бинарь, лицензии, схема, SHA256SUMS) в tar.gz/zip.
 dist: release-build deps-licenses
     bash scripts/make-bundle.sh
 
@@ -224,7 +247,9 @@ release: dist
 # footprint/ps с методом в выводе) + опция --full (харнес spike, орт-сессии
 # lockR+Decide). Числа идут в docs/model-audit.md §9 «Release RSS».
 # Примеры: just measure-rss ; just measure-rss --full ; just measure-rss --full --skip-build
+
+# RAM-гейт SPEC §10 п.9: каскад-0, опция --full — харнес.
 measure-rss *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
-    bash scripts/measure-rss.sh {{ARGS}}
+    bash scripts/measure-rss.sh {{ ARGS }}
