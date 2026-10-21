@@ -216,21 +216,19 @@ run_mode() {
   samples=$(wc -l <"$rsslog" | tr -d ' ')
   max_sampl=$(sort -n "$rsslog" | tail -1)
   peak_mib=$(awk -v k="$max_sampl" 'BEGIN{printf "%.1f", k/1024}')
-  local tail_fraction=0.2
-  steady_n=$(awk -v n="$samples" 'BEGIN{k=int(n*0.25); if(k<15)k=15; if(k>n)k=n; print k}')
+  local tail_fraction=0.25
+  steady_n=$(awk -v n="$samples" -v f="$tail_fraction" 'BEGIN{k=int(n*f); if(k<15)k=15; if(k>n)k=n; print k}')
   steady_median=$(tail -n "$steady_n" "$rsslog" | sort -n | awk -v k="$steady_n" '{a[NR]=$1} END{printf "%d", (k%2) ? a[(k+1)/2] : (a[k/2]+a[k/2+1])/2}')
   steady_mib=$(awk -v k="$steady_median" 'BEGIN{printf "%.1f", k/1024}')
   echo "METRIC|mode|$mode|sessions|$SESSIONS|reqs_total|$((SESSIONS*REQS))|ok|$ok|refused_503|$refused|other|$other"
-  echo "METRIC|mode|$mode|samples|$samples|rss_peak_mib|$peak_mib|rss_steady_median_mib|$steady_mib"
+  echo "METRIC|mode|$mode|samples|$samples|rss_peak_mib|$peak_mib|rss_steady_median_mib|$steady_mib|tail_fraction|$tail_fraction"
   cp "$rsslog" "/tmp/fasad-vaultcap-$mode-samples.txt" 2>/dev/null || true
   rm -f "$log" "$rsslog"
   PEAK_OUT="$peak_mib"
-  MODE_OUT="$mode"
 }
 
 echo "METRIC|method|ps-rss-sampling-100ms|threads|$THREADS|bin|$BIN"
 echo "METRIC|fixture|spans|6|original_bytes|$SPAN_BYTES|max_span|280|body_bytes|$(printf '%s' "$BODY" | wc -c | tr -d ' ')"
-SESSIONS="$SESSIONS" REQS="$REQS"
 
 peak_session=0
 peak_stateless=0
