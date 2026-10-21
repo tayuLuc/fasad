@@ -7,8 +7,12 @@
 re-count by machine). Прогон меняешь — документ перегенерируется целиком; секции не
 расходятся с `UNION|`-строками.
 
-Запуск:
-  uv run --locked python tools/metrics/render_report.py /tmp/union_r1.jsonl docs/golden-report.md
+Запуск (третий аргумент необязателен — COORD-промер направлений, §6.4/§8.1):
+  uv run --locked python tools/metrics/render_report.py /tmp/union_r1.jsonl \
+      docs/golden-report.md [/tmp/probe_coords.out]
+
+Без промера §6.4 печатает «?»: направление смещения — отдельный промер
+(`tools/metrics/probe_coords.py`), и врать про него документ отказывается.
 """
 from __future__ import annotations
 
@@ -29,10 +33,13 @@ def parse(lines: list[str]) -> dict:
     заголовками (промер первой версии парсера).
     """
     d: dict = {"raw": [row for row in lines if row.startswith(RAW_HEAD)], "per": {}, "overall": [],
-               "negative": [], "sweep": [], "sha": {}, "env": {}, "support": {}}
+               "negative": [], "sweep": [], "sha": {}, "env": {}, "support": {}, "probe": []}
     cur: tuple[str, str] | None = None
     for row in lines:
         f = row.split("|")
+        if f[0] == "COORD":
+            d["probe"].append(f)
+            continue
         if f[0] != "UNION" and f[0] != "TIME":
             continue
         if f[0] == "TIME":
@@ -67,6 +74,14 @@ def g(fields: list[str], key: str, default: str = "?") -> str:
     return fields[fields.index(key) + 1] if key in fields else default
 
 
+def gp(d: dict, key: str, field: str = "", default: str = "?") -> str:
+    """Значение из COORD|-промера (§6.4). Промёр, а не написан: нет строки = "?"."""
+    for f in d.get("probe", []):
+        if f[1] == key:
+            return g(f, field) if field else (f[2] if len(f) > 2 else default)
+    return default
+
+
 def agg(d: dict, thr: str, oracle: str, name: str) -> list[str] | None:
     for f in d["overall"]:
         if f[3] == thr and f[5] == oracle and f[7] == name:
@@ -94,16 +109,19 @@ def overall_table(d: dict, thr: str) -> list[str]:
     for f in d["overall"]:
         if f[3] != thr:
             continue
-        bold = "**" if (f[5], f[7]) == ("overlap", "union_span") else ""
+        bold = "**" if (f[5], f[7]) == ("exact", "union_span") else ""
         out.append(f"| {f[5]} | `{f[7]}` | {f[9]} | {f[11]} | {bold}{f[13]} %{bold} | "
                    f"{bold}{f[15]} %{bold} | {f[17]} % |")
     return out
 
 
 def main() -> int:  # noqa: C901, PLR0912 — линейная сборка markdown, ветвлений ради читаемости много
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 4):
         sys.exit(__doc__)
     raw = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+    if len(sys.argv) == 4:
+        raw += [x for x in Path(sys.argv[3]).read_text(encoding="utf-8").splitlines()
+                if x.startswith("COORD|")]
     d = parse(raw)
     v = d["verdict"][0]
     ds = d["dataset"][0]
@@ -132,9 +150,12 @@ def main() -> int:  # noqa: C901, PLR0912 — линейная сборка mark
     A("- Формула — Wilson interval, z = 1.959963984540054. Харнес на старте сверяет три")
     A("  anchor-строки §8 (48/50, 49/50, 50/50) и падает при расхождении > 0.01 %:")
     A("  зелёный CI без этого self-теста = ничто (реестр ложно-зелёных).")
-    A("- SPEC не уточнил, точка это или нижняя граница CI; за SPEC решение не принимаем.")
-    A("  Вердикт ниже — по **нижней границе**, как делает Rust-харнес (`wilson_lower`);")
-    A("  точечная оценка печатается рядом всегда.")
+    A("- **Рюлинг оператора 21.10 (записан в issue #77):** планка = **нижняя граница Wilson")
+    A("  ≥ 98 %** на **span-уровне**, определение попадания = **byte-exact** (контракт")
+    A("  `data/golden/README.md`). Значит **гейт-метрика этого документа = `exact /")
+    A("  union_span`** (число в §5.5); overlap остаётся диагностикой — он язык Rust-харнеса")
+    A("  (`recall_golden.rs`, `wilson_lower`), расхождение меряется в §6.4. Text SPEC и")
+    A("  абзац README правит владелец файла (#77); здесь метрика уже считается по рюлингу.")
     A("")
     A("## 2. Знаменатель (N-гейт)")
     A("")
@@ -150,7 +171,11 @@ def main() -> int:  # noqa: C901, PLR0912 — линейная сборка mark
     A("- По уровням планка проверяема по-разному (`UNION|ci_probe` — минимум k, при котором")
     A("  нижняя граница Wilson уже ≥ 98 %):")
     for f in d["ci_probe"]:
-        A(f"  - n = {f[2]}: нужно k ≥ {f[4]};")
+        n_i, k_i, def_i = int(f[3]), int(f[5]), int(f[7])
+        if def_i < 0:
+            A(f"  - n = {n_i}: нужно k ≥ {k_i} > n ⇒ планка **непроверяема ни при каком k**;")
+        else:
+            A(f"  - n = {n_i}: нужно k ≥ {k_i} ⇒ допуск ровно {def_i} промах на {n_i};")
     A("  Итог: на уровне **класса** (support 16–56) планка 98 % непроверяема — это и есть")
     A("  следствие §8; метрика уровня гейта = union по всем gold-спанам recall-выборки,")
     A("  где n ≥ 150 выполняется.")
@@ -161,12 +186,14 @@ def main() -> int:  # noqa: C901, PLR0912 — линейная сборка mark
     A("  | знаменатель | n | lo Wilson при k = n | планка 98 % проверяема? |")
     A("  |---|---|---|---|")
     A("  | recall-строки | 150 | 97.503 % | **нет**: k ≥ 151 недостижимо; min n = 189 |")
-    A("  | recall-спанов | 358 | 98.938 % | **да**, но только при нуле промахов (k = 358) |")
+    A("  | recall-спанов | 358 | 98.938 % | **да**: k ≥ 357, допуск ровно 1 промах |")
     A("  | уровень класса | 16–56 | ≤ 93.581 % (при n = 56) | нет ни при каком k |")
     A("")
     A("  Формулировка гейта «N ≥ 150» выполнена и на строках, и на спанах; статистически")
-    A("  планка проверяема **только по спанам** и с нулевым допуском. Это арифметика §8")
-    A("  (там же N ≈ 140 при p̂ = 98 % и N ≈ 176 при p̂ = 99 % — меньшие n потому, что p̂ < 100 %).")
+    A("  планка проверяема **только по спанам** и с допуском ровно в один промах (k ≥ 357,")
+    A("  lo(357,358) = 98.4350 %). Это арифметика §8")
+    A("  (там же N ≈ 140 при p̂ = 98 % и N ≈ 176 при p̂ = 99 % — меньшие n потому, что")
+    A("  p̂ < 100 %).")
     A("- 73 из gold-спанов (iban 27, ogrn 25, ogrnip 21) — классы с чексуммой, вне ONNX-")
     A("  инвентаря моделей: в `docs/model-audit.md` §5.7 C они **исключены из знаменателя**")
     A("  (285 из 358). Здесь знаменатель = все 358: union-каскад обязан накрывать и их,")
@@ -273,7 +300,7 @@ def main() -> int:  # noqa: C901, PLR0912 — линейная сборка mark
     A("| τ | union | union lo | строгий | строгий lo | row-level | FP-спанов union |")
     A("|---|---|---|---|---|---|---|")
     for f in d["sweep"]:
-        A(f"| {f[1]} | {f[2]} % | {f[3]} % | {f[4]} % | {f[5]} % | {f[6]} % | {f[7]} |")
+        A(f"| {f[2]} | {f[3]} % | {f[4]} % | {f[5]} % | {f[6]} % | {f[7]} % | {f[8]} |")
     if opt:
         A("")
         A("Оптимум сетки (lexicographic: union → строгий → меньше FP → меньше τ):")
@@ -292,8 +319,16 @@ def main() -> int:  # noqa: C901, PLR0912 — линейная сборка mark
     A(f"  row-level {g(v, 'row')} %.")
     A(f"- Чтобы нижняя граница стала ≥ 98 % при n = {g(v, 'union_n')}, нужно k ≥")
     A(f"  {g(v, 'k_for_bar')} — дефицит **{g(v, 'deficit_spans')} span'ов**.")
+    exg = agg(d, thr0, "exact", "union_span")
+    A(f"- **Гейт-метрика по рюлингу #77 (byte-exact, span-уровень): union {g(exg, 'recall')} %**")
+    A(f"  (k = {g(exg, 'k')} из {g(exg, 'n')}), нижняя граница Wilson")
+    A(f"  **{g(exg, 'wilson95_lo')} %** — планка 98 % **не закрыта**. Строгая координатная")
+    A(f"  мера тем же оракулом: {g(agg(d, thr0, 'exact', 'strict_span'), 'recall')} %")
+    A(f"  (lo {g(agg(d, thr0, 'exact', 'strict_span'), 'wilson95_lo')} %). Overlap-диагностика")
+    A(f"  той же сетки: union {g(v, 'union')} % (lo {g(v, 'union_wilson_lo')} %).")
     A("- Статус гейта #14B: **не закрыт** (`known-below-bar` печатается из фактических")
-    A("  чисел харнесом, не из шаблона).")
+    A("  чисел харнесом, не из шаблона; `deficit_spans` — расстояние до k_for_bar,")
+    A("  который посчитан для overlap-знаменателя харнесом).")
     A("- Сравнение с базлайнами §5.7 C (τ = 0.25, знаменатель 285 = только 8 модельных")
     A("  классов, span-level): lockR fp16 86.67 (lo 82.23, k 247), Decide q4f16 92.98")
     A("  (lo 89.41, k 265). Union на полном знаменателе 358 добавляет валидаторные классы")
@@ -326,14 +361,35 @@ def main() -> int:  # noqa: C901, PLR0912 — линейная сборка mark
     A("   перепроверка, не оракул ожидаемого значения). Каскад 0 накрывает 6, хвост")
     A("   закрывается не моделью: нормализация (#51) + покрытие длин/стран в валидаторе")
     A("   (таблица счетов первичкой не закрыта: SPEC §11 п.6, AGENTS §Дисциплина п.3).")
-    A("4. **Расхождение оракулов** — метрика чувствительна к определению попадания:")
+    A("4. **Расхождение оракулов и направление смещения координат** — метрика чувствительна")
+    A("   к определению попадания; направление смещения померено отдельно, не угадано:")
     if ex and ov:
         A(f"   при τ = {thr0} тот же прогон даёт union {g(ov, 'recall')} % по overlap и")
         A(f"   {g(ex, 'recall')} % по byte-exact (k {g(ex, 'k')}/{g(ex, 'n')} против")
-        A(f"   {g(ov, 'k')}/{g(ov, 'n')}). Координаты lockR систематически шире gold-границ")
-        A("   (PS-хвосты, `##`-трим, токены через границу слова). Владелец определения")
-        A("   попадания должен быть один файл: README golden говорит «exact», Rust-харнес —")
-        A("   «overlap». Это дефект определения метрики, не модели — заведён в **#77**.")
+        A(f"   {g(ov, 'k')}/{g(ov, 'n')}); по строгой координатной мере разрыв")
+        A(f"   {g(agg(d, thr0, 'overlap', 'strict_span'), 'recall')} % (overlap) против")
+        A(f"   {g(agg(d, thr0, 'exact', 'strict_span'), 'recall')} % (exact).")
+    if d.get("probe"):
+        A("   Промер `tools/metrics/probe_coords.py` (τ = 0.20, lockR fp16, 2 треда, артефакт")
+        A(f"   в §8.1): из {int(gp(d, 'relations', 'exact')) + int(gp(d, 'relations', 'subset_of_gold'))}")
+        A(f"   перекрывающихся пар предсказание/gold — {gp(d, 'relations', 'subset_of_gold')}")
+        A(f"   лежат **целиком внутри** gold-границ, {gp(d, 'relations', 'exact')} точных,")
+        A(f"   superset = {gp(d, 'relations', 'superset')}, partial = {gp(d, 'relations', 'partial')}.")
+        A("   Направление: **модель недо-сегментирует (режет хвосты)**, а не «шире» gold:")
+        A(f"   d_start медиана {gp(d, 'd_start', 'median')} (min {gp(d, 'd_start', 'min')} — начало")
+        A(f"   никогда левее gold, max {gp(d, 'd_start', 'max')}), d_end медиана {gp(d, 'd_end', 'median')}")
+        A(f"   (max {gp(d, 'd_end', 'max')} — конец никогда правее gold; в {gp(d, 'd_end_neg_share')} %")
+        A(f"   случаев конец обрезан). Медианная длина: gold {gp(d, 'len_gold_median')} байт,")
+        A(f"   предсказание {gp(d, 'len_gold_median', 'len_pred_median')}. Механизм — сужение")
+        A("   хвостовых `##`-токенов в декодере (`run_lockr`) плюс конец на границе слова:")
+        A("   усечённый спан лежит")
+        A("   внутри gold ⇒ по overlap зачёт идёт, по byte-exact — нет.")
+        A("   Первая версия абзаца утверждала обратное («координаты шире gold-границ»);")
+        A("   перевёрнутое направление поймано ревью #80, перемерено первичкой и исправлено")
+        A("   в генераторе, а не в тексте (иначе следующая генерация вернула бы ошибку).")
+    A("   Владелец определения попадания должен быть один файл: README golden говорит")
+    A("   «exact», Rust-харнес — «overlap». Это дефект определения метрики, не модели —")
+    A("   заведён в **#77**; рюлинг 21.10 выбрал byte-exact (см. §1, §5.5).")
     A("5. **Row-level кредит Decide** (§3) завышает `union_span` над `strict_span`:")
     if st and ov:
         A(f"   при τ = {thr0} это {g(ov, 'recall')} % против {g(st, 'recall')} %")
@@ -373,8 +429,13 @@ def main() -> int:  # noqa: C901, PLR0912 — линейная сборка mark
     A("   (команда в §4) = пусто, промер 21.10, артефакты r1/r2 по 100 строк.")
     A("1. Смонтировать каскады 1/2 в продуктовый конвейер — иначе гейт меряет харнес, а не")
     A("   продукт (#14 часть A, `pipeline.rs`).")
-    A("2. Поднять `strict_span` до уровня `union_span`: чинить границы span'ов (оракул exact),")
-    A("   а не полагаться на row-level кредит.")
+    A("2. Поднять `strict_span` до уровня `union_span`: чинить **усечение** границ (оракул")
+    A("   exact), а не полагаться на row-level кредит. Направление правки задаёт промер §6.4:")
+    A("   предсказание никогда не выходит за gold (superset 0), весь разрыв exact-vs-overlap")
+    A("   = обрезанные хвосты (медиана d_end −8 байт) и сдвинутые начала (d_start +5).")
+    A("   Значит задача — **восстанавливать** границы (отменять `##`-трим хвостов, добирать")
+    A("   токены в начале до границы слова), а не обрезать: план ревью остаётся валидным,")
+    A("   меняется только направление правки.")
     A("3. Закрыть дефицит арифметически, без моделей. Дефицит = 27 span'ов, аддитивно")
     A("   по классам: `iban` 21 + `snils` 6 (сверка: 358 − 331 = 27 ✓). План:")
     A("   - нормализация разделителей в каскаде 0 (issue #51) возвращает 18 IBAN и")
@@ -404,6 +465,18 @@ def main() -> int:  # noqa: C901, PLR0912 — линейная сборка mark
         A(row)
     A("```")
     A("")
+    if d.get("probe"):
+        A("### 8.1 Промер направлений (к §6.4)")
+        A("")
+        A("Команда — в docstring `tools/metrics/probe_coords.py` (2 треда, `nice 10`, тот же")
+        A("интерпретатор, что у харнеса). Артефакт `/tmp/probe_coords.out`; цифры §6.4 — из")
+        A("этих строк, проза о направлении без промера не печатается.")
+        A("")
+        A("```text")
+        for row in d["probe"]:
+            A("|".join(row))
+        A("```")
+        A("")
     Path(sys.argv[2]).write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"WROTE|{sys.argv[2]}|lines|{len(lines)}")
     return 0
