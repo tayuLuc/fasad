@@ -237,6 +237,11 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    https://ort.pyke.io/setup/linking: compile-time dynamic = `ORT_LIB_PATH` +
    `ORT_PREFER_DYNAMIC_LINK=1`; рантайм-поиск на macOS — rpath `@loader_path`
    либо каталог рядом с бинарём).
+   Голое `cargo build --release --features ort-inference` (без env-префикса) на
+   чистой macOS не линкуется: `___isPlatformVersionAtLeast` undefined, CoreML-
+   хелпер из pyke-статики (docs/model-audit.md §5 п.2; промер ревью #97, 2-й
+   раунд). Команды сборки в этой ветке пишутся с префиксом — рецепт
+   §«Как включить монтаж каскадов 1–2» п.1 в `crates/guard-daemon/README.md`.
 2. Фактическая сборка промерена 21.10 на macOS arm64 (rustc 1.99.1):
    `ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib cargo build --release --features ort-inference --example spike`
    = exit 0 за 4m05s, линкуется на `libonnxruntime.1.31.0.dylib`, полный
