@@ -164,11 +164,17 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
    `cascade0.rs:1983`); обмен FN→FP работает в пользу нахождения.
 7. LUHN-подтверждение словами: `spelled_card_pan_passes_luhn` (`:1830`),
    реестровые — `spelled_registry_numbers_fire` (`:1849`).
-8. Потолок спана — КАКОЙ СЕЙЧАС по head: `MAX_ORIGINAL_BYTES = 128`
-   (`crates/guard-vault/src/token.rs:53`, переснято grep'ом) — фраза словами
-   длиннее 128 Б даёт `TooLong` → `503 span_too_long` (fail-closed); пинит
-   `crates/guard-daemon/tests/vault_span_cap.rs` (`:138` отказ, `:182` маска
-   ниже потолка). Решение по потолку — issue #120, слоем не реализуется.
+8. Потолок спана — `MAX_ORIGINAL_BYTES`
+   (`crates/guard-vault/src/token.rs`, переснято grep'ом): 128 — снимок этого
+   пункта ДО #120; с #120 = 1024 Б, round-trip словесных номеров цел, за
+   потолком по-прежнему `TooLong` → `503 span_too_long` (fail-closed). Число и
+   номер строки не пиним: их меняет PR #137 (объявление едет `:53` → `:72`),
+   значение носит ссылка на #137. Ребейз через #137: брать ЭТУ версию пункта,
+   число 128 оставлять только как отметку «до #120». Контракт — по имени теста в
+   `crates/guard-daemon/tests/vault_span_cap.rs` (после #137 —
+   `cap_is_the_documented_1024`; в базе — отказ
+   `spelled_registry_number_over_the_cap_is_refused_with_its_reason` и маска
+   ниже потолка `spelled_phrase_under_the_cap_masks_normally`).
 9. Вложенность: числительные внутри base64-нагрузки не ищем (`scan_words`
    читает нормализованный текст; `words_inside_base64_are_not_scanned`
    `cascade0.rs:2003`).
@@ -234,7 +240,7 @@ anti-FP-классы `word_skiff_and_skincare_not_format_openai`,
 | #26 (OPEN) | чексумма-совпала ⇒ маркер не обязателен (FN-хвост golden) | хвост покрытия golden-v1, `docs/golden-report.md`; гейт recall меряет его родителю |
 | #72 (OPEN) | опознавание владельца регистрозависимо (одна фамилия в двух регистрах) | не каскад 0, смежный слой vault/morph (`guard-vault/src/morph.rs`); в инвентаре как граница «что детерминированный путь не чинит» |
 | #65 (OPEN) | PendingForms: ключение владельца поверхностью токена | движок `crates/guard-vault/src/morph.rs` (`MorphTable` `:360`); SPEC §3 ссылка «открытая задача #65» (`SPEC.md:156`) |
-| #120 (OPEN) | vault-потолок 128 Б × словесные номера = вечный 503 | `token.rs:53`; контракт `vault_span_cap.rs`; слоем не решается (§2.1 п.8) |
+| #120 (закрыт #137: 1024 Б, head 5a45d79, влит 21.10 15:09Z в ff1ff91) | vault-потолок спана × словесные номера = вечный 503 | потолок `MAX_ORIGINAL_BYTES` поднимают 128 → 1024 в PR #137 (head `5a45d79`, влит): с #120 = 1024 Б, round-trip словесных номеров цел, за потолком `503 span_too_long`; контракт `vault_span_cap.rs`; §2.1 п.8 — ссылкой, не литералом. Директива ревью #137: контракт §2.1 п.8 = wire 1190/B64 1587 (MAX_TOKEN_B64_LEN, MAX_WIRE_BYTES по #137), не «вписывается в 128» |
 | — (монтаж) | secrets/dictionary live в библиотеке, в демон не вызваны | §1.6/§1.7; атом SPEC §10 п.3 |
 | — (диктовка) | «цифра за цифрой» не склеивается | numwords док `:40–42`, `digits_never_concatenate_across_a_break` |
 | — (словами) | БИК и 20-значный счёт словами недостижимы (ведущие нули) | numwords док `:44–45` |
