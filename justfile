@@ -23,6 +23,8 @@ check: lint python-lint golden-verify test net-audit deny
 # grep-версия к тому же не попадала в CI-матрицу (джобы зовут lint/test/deny
 # поштучно) — т.е. стена была ложно-зелёной на обеих ОС. Три проверки (манифест,
 # исходники, `cargo tree -i`) живут в тесте и бегут в `cargo test --workspace`.
+
+# Гейт «демон не тащит сеть»: интеграционный тест net_audit.
 net-audit:
     cargo test -p guard-daemon --test net_audit
     @echo "net-audit ok: манифест, исходники и дерево зависимостей демона чисты от сети"
@@ -44,6 +46,8 @@ lint:
 # Линтер CI-тулчейном (issue #25: CI стабильно свежее локального stable —
 # assert_is_empty-класс drift'а ловится ТОЛЬКО прогоном версии CI).
 # Версию обновлять синхронно с rustc на раннере (промер: gh run view --log).
+
+# Линтер CI-тулчейном 1.99.1 (ловит drift локального stable).
 lint-ci:
     rustup run 1.99.1 cargo fmt --all -- --check
     rustup run 1.99.1 cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used
@@ -53,6 +57,8 @@ lint-ci:
 # Тесты всего workspace + пути опциональных фич (та же причина, что в `lint`:
 # `--workspace` их не включает, а матрица ci.yml обязана гонять их на Linux и
 # Windows, иначе гейт #50 не живой).
+
+# Тесты workspace + опциональные фичи отдельными прогонами.
 test:
     cargo test --workspace
     cargo test -p guard-vault --features decliner
@@ -86,6 +92,8 @@ python-lint:
 
 # Побайтовая воспроизводимость golden-датасета: реген + сверка с B2-константой
 # (тот же инвариант, что tests/golden_v1.rs::golden_file_sha256_matches_embedded_const).
+
+# Побайтовая воспроизводимость golden-датасета (реген + сверка с B2).
 golden-verify:
     uv run --locked python scripts/golden_regen_verify.py
 
@@ -143,11 +151,16 @@ lang-scan-files *FILES:
 # Релизный путь ORT (issue #11): официальный dylib вместо статики pyke.
 # Каталог lib: MAC — onnxruntime-osx-arm64-1.31.0/lib release-архива
 # (docs/model-audit.md §8), Linux — onnxruntime-linux-x64-1.31.0/lib.
-# ORT_DIR переопределяется окружением.
+# ORT_DIR переопределяется окружением. Две строки этого блока раньше были
+# ТЕЛОМ рецепта (Just их пропускает, но читать recipe body ради прозы нечего).
+#
+# Формат док-комментария в этом файле: смежной с рецептом обязана быть КОРОТКАЯ
+# сводка, длинная проза отделяется пустой строкой — `just --list` показывает
+# последнюю строку блока комментариев (промер до правки: хвосты предложений у 10
+# рецептов из 17, ревью #76 F6).
 
+# Сборка/прогон с динамическим ORT (rpath прописывает build.rs).
 ort-dylib *ARGS:
-    # Собирает/гоняет с динамическим ORT: rpath прописывает build.rs (guard-onnx),
-    # окружение — два обязательных env. Пример: just ort-dylib -- --arb --lockr
     ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib}" {{ ARGS }}
 
 # Полный spike-прогон релиза на dylib (issue #11 гейт): сборка release + --arb --lockr.
@@ -156,6 +169,92 @@ ort-dylib *ARGS:
 # copy-dylibs кладёт шейды libonnxruntime*.dylib рядом с бинарём → plain-run
 # бинаря, линкованного на 1.31 = SIGSEGV (промер ревью #32; снятие:
 # rm target/release/examples/libonnxruntime*.dylib или rebuild с env).
+
+# Полный spike-прогон релиза на dylib (issue #11 гейт).
 spike-dylib:
     ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib}" cargo build --release --features ort-inference --example spike
     ORT_PREFER_DYNAMIC_LINK=1 target/release/examples/spike --arb --lockr
+
+# ── Релиз (SPEC §10 п.9, шаг 9) ──────────────────────────────────────────────
+# Контракт тот же, что по всему файлу (§5.5.5): CI зовёт ТЕ ЖЕ цели, что
+# оператор локально. Тела рецептов — shebang-bash: на windows-2022 `just` без
+# shebang идёт через `cmd`, где нет ни `set -euo`, ни пайплайнов, ни tar (тот же
+# класс дефекта, из-за которого net-audit переехал из grep-рецепта в тест).
+# Логика упаковки — в scripts/make-bundle.sh: heredoc на колонке 0 ломает
+# парсер just (промер 21.10: `unknown start of token 'Л'`), а скрипт при этом
+# линтуется shellcheck'ом в job `lint-actions`.
+
+# Версия workspace: единый источник — `[workspace.package] version` в Cargo.toml
+# (RELEASES.md п.1). Python в build-контур не пускаем (AGENTS п.6).
+_version:
+    @sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml | sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+
+# Host-тройка (имя артефакта = fasad-<version>-<triple>).
+_triple:
+    @rustc -vV | sed -n 's/^host: //p'
+
+# Релизный бинарь. Контур = каскад-0: у guard-daemon НЕТ фичей
+# (crates/guard-daemon/Cargo.toml), `ort-inference` живёт в guard-onnx и в демоне
+# не включается — модельного пути спанов в демоне физически нет
+# (crates/guard-daemon/src/pipeline.rs, заголовок модуля). Артефакт метится
+# честно, см. docs/release.md §«Что в бандле».
+
+# Релизный бинарь guard-daemon (контур = каскад-0).
+release-build:
+    cargo build --release -p guard-daemon
+
+# Сборка харнеса полного каскада (spike) релизным профилем на официальном dylib
+# ORT: контракт docs/model-audit.md §5 п.1 + §8 (статика pyke на macOS release =
+# SIGSEGV; dylib 1.31.0 = живой прогон). Нужна для `just measure-rss --full`.
+
+# Харнес полного каскада (spike) релизным профилем на dylib ORT.
+build-ort:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib}" \
+        cargo build --release --features ort-inference --example spike
+
+# THIRD-PARTY-LICENSES.txt по about.toml + about.hbs (синтаксис шаблона — первичка
+# cargo-about 0.9.2 docs/src/cli/generate/output.md, промер 21.10: контекст
+# `overview`/`licenses`, поля `crate.name`/`crate.version`; двойные скобки
+# HTML-экранируют, в текстовом бандле нужны тройные).
+# `--offline`: список собирается без сети (air-gap-контур продукта + оффлайн-
+# сборка релиза); `--fail`: нераспознанная лицензия = красный гейт, а не дырка в
+# бандле (первичка generate/README.md: «Exits with a non-zero exit code if any
+# crate's license cannot be reasonably determined»).
+
+# THIRD-PARTY-LICENSES.txt по about.toml + about.hbs.
+deps-licenses:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v cargo-about >/dev/null 2>&1 || { echo "cargo-about не установлен (cargo install --locked --features cli cargo-about) — гейт НЕИСПОЛНЕН, не провален"; exit 2; }
+    mkdir -p dist
+    cargo about generate -c about.toml --workspace --offline --fail about.hbs -o dist/THIRD-PARTY-LICENSES.txt
+    echo "deps-licenses ok: $(wc -l < dist/THIRD-PARTY-LICENSES.txt | tr -d ' ') строк, $(grep -c '^  - ' dist/THIRD-PARTY-LICENSES.txt | tr -d ' ') записей пакет→версия→лицензия"
+
+# Упаковка бандла (бинарь + LICENSE + README-ссылка + схема + лицензии +
+# SHA256SUMS) в архив. Формат выбирает ОС ХОСТА СБОРКИ, не параметр: unix →
+# tar.gz, Windows (MINGW/MSYS/CYGWIN) → zip через `powershell Compress-Archive`
+# (Git-for-Windows `tar` zip не умеет) — scripts/make-bundle.sh:86-89,163-164.
+# На macOS локальный прогон даёт ОДИН tar.gz: обещать рядом zip в этой строке
+# было бы врать про ячейку, на которой ты стоишь.
+# Девелер: dist/ в .gitignore (строка `dist/`).
+
+# Упаковка бандла (бинарь, лицензии, схема, SHA256SUMS): tar.gz на unix, zip на Windows-хосте.
+dist: release-build deps-licenses
+    bash scripts/make-bundle.sh
+
+# Полный релизный прогон на хосте = одна ячейка матрицы CI локально.
+release: dist
+    @echo "release ok: версия $(just _version), тройка $(just _triple), артефакты в dist/"
+
+# RAM-гейт SPEC §10 п.9 (цель ≤1.8 ГБ): контур каскада-0 (релизный бинарь,
+# footprint/ps с методом в выводе) + опция --full (харнес spike, орт-сессии
+# lockR+Decide). Числа идут в docs/model-audit.md §9 «Release RSS».
+# Примеры: just measure-rss ; just measure-rss --full ; just measure-rss --full --skip-build
+
+# RAM-гейт SPEC §10 п.9: каскад-0, опция --full — харнес.
+measure-rss *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash scripts/measure-rss.sh {{ ARGS }}

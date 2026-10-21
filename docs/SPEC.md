@@ -368,7 +368,11 @@ middleware должен переживать панику отдельного �
 `libonnxruntime.so`/`onnxruntime.dll` рядом (ort `copy-dylibs`) + `schema.default.json`
 + SHA256SUMS → `softprops/action-gh-release` (SPEC-пин v2 устарел: latest v3.0.3, промер 18.10 — пинить по dep-verify-repos).
    Прочие CI-пины: `actions/checkout` latest v7 (SPEC v4 устарел), `rust-cache` v2.9.2
-   (node24 → нужны свежие раннеры), `rust-toolchain` — @master (мажорных тегов нет).
+   (node24 → нужны свежие раннеры), `rust-toolchain` — пин коммитом `b725eda5…`:
+   скобка «мажорных тегов нет» была ложью и снята (ревью #76, F3/D2) — moving-тег
+   `v1` существует (`releases/latest` = v1, `git/ref/tags/v1` → `683b588c487a…`,
+   промер 21.10) и едет вместе со `stable`; конвенция автора `@master` = движущаяся
+   цель, релизному контуру нужна воспроизводимость по sha.
 
 ## 10. Порядок сборки для агента (атомарные шаги, по одному PR)
 
