@@ -258,8 +258,8 @@ upstream, содержит маркер `[[F0#…]]` и не содержит И
 | Аудит сети | `just net-audit` (манифест, исходники и дерево зависимостей демона чисты от сети) |
 | Зависимости | `just deny` (cargo-deny: advisories/bans/licenses/sources) |
 | Харнес каскадов | `just spike-dylib` (нужен dylib ORT 1.31.0, пути — docs/model-audit.md §8) |
-| Тесты щадяще CPU | `just local-test` (тот же набор, что `just test`, под рычагами; justfile:68) |
-| Язык текста | `just lang-scan` (self-test + весь текстовый tree; justfile:130), на диффе PR — `just lang-scan-files <файлы>` (justfile:134) |
+| Тесты щадяще CPU | `just local-test` (тот же набор, что `just test`, под рычагами) |
+| Язык текста | `just lang-scan` (self-test + весь текстовый tree), на диффе PR — `just lang-scan-files <файлы>` |
 
 Тяжёлые локальные прогоны — в щадящем режиме CPU (AGENTS §3, рюлинг оператора
 21.10): `CARGO_BUILD_JOBS=2`, `cargo test -- --test-threads=2`, у харнесов
