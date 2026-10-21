@@ -66,7 +66,7 @@ mod ffi {
     }
 
     /// Мост к C-острову (issue #6): прямой extern не долетает до release-линковки
-    /// (`docs/model-audit.md` §5); dylib грузится dlopen по полному пути из
+    /// (`docs/model-audit-weights.md` §W2); dylib грузится dlopen по полному пути из
     /// `SPIKE_DYLIB`, фанк-пойтер кэшируется `OnceLock` (nit #18 ревью #9).
     fn rss_fn() -> Option<extern "C" fn() -> f64> {
         static CACHE: std::sync::OnceLock<Option<extern "C" fn() -> f64>> =
@@ -1128,7 +1128,7 @@ fn vmfoot_mib() -> Option<f64> {
 /// (тот же вход, что `--arb`), режется [`guard_onnx::chunker::chunk`] под
 /// бюджет Decide, на каждый кусок — отдельный прогон `DecideArbiter`.
 /// Метрики: промеры `L_chunk`, `p50` latency на текст (ожидание ТЗ ≤1500 мс
-/// против 5963 мс one-прогона — см. сырьё и разбор в audit §5.6), покрытие
+/// против 5963 мс one-прогона — см. сырьё и разбор в audit §W2.6), покрытие
 /// `merged`-хитов оригинального текста.
 #[cfg(feature = "ort-inference")]
 fn arb_chunked_run(

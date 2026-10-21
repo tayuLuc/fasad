@@ -29,7 +29,9 @@ data/golden/README.md §«Метрика recall» требует совпаде�
 выбираем: расхождение двух владельцев одной метрики = находка, а не деталь.
 
 Классы: все 11 категорий golden-v1.1 (recall-сплит). У iban/ogrn/ogrnip нет голов у
-моделей (validator_only в схеме, docs/model-audit §14) — их закрывает только каскад 0,
+моделей (validator_only в схеме — владелец `crates/guard-daemon/src/schema.rs:73,100`,
+классы исключены из знаменателя харнеса каскада-2 в docs/golden-report.md §2;
+контур схемы — docs/SPEC.md §14) — их закрывает только каскад 0,
 поэтому знаменатель 358 (не 285, как у харнеса каскада-2).
 
 Запуск (веса: scripts/fetch-models.sh; каскад 0 — собранный бинарь демона):
@@ -59,7 +61,7 @@ row-level вердикт Decide того же класса (дефолтный �
 
 Детерминированность: RNG в пайплайне нет (seed: n/a); фиксированы sha256 датасета
 (гейт B2), sha256 весов (models/manifest.tsv), порядок онтологии (схема), `--threads`
-(ORT intra-op: docs/model-audit §5.7 — на decide потоки двигают счёт на 1 tp).
+(ORT intra-op: docs/model-audit-weights.md §W2.7 — на decide потоки двигают счёт на 1 tp).
 Число потоков печатается в `UNION|env`. Повтор прогона при тех же `--threads`
 обязан дать совпадающие строки `UNION|` (сверка diff'ом двух `--out`).
 """
@@ -340,7 +342,7 @@ def _session(path: str, threads: int) -> "rt.InferenceSession":
     """Сессия ORT с зафиксированными потоками (детерминизм + щадящий режим 21.10).
 
     intra_op = inter_op = threads: число потоков — часть воспроизводимости метрики
-    (docs/model-audit §5.7: на decide потоки двигают счёт на 1 tp из-за intra-op
+    (docs/model-audit-weights.md §W2.7: на decide потоки двигают счёт на 1 tp из-за intra-op
     редукций), а 2 = верх границы, разрешённой рюлингом «не нагружать CPU ноутбука».
     """
     opts = rt.SessionOptions()

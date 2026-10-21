@@ -46,7 +46,7 @@
 //!    `chunker`). Окно lockR-конфига = `PAD` (256 токенов = 1024 байта
 //!    байтовой оценки), НЕ 384: граф.pad-256 жёсткий, 384-окно SPEC §2 —
 //!    потолок конфигурации A, а lockR живёт на нижней границе своего
-//!    фиксированного окна (`docs/model-audit.md` §5: «чанкер 4b-1 сокращает
+//!    фиксированного окна (`docs/model-audit-weights.md` §W2: «чанкер 4b-1 сокращает
 //!    только арбитра, lockR окно 256 фиксировано»).
 //! 2. **Overlap = 32 токена** (SPEC §2, [`guard_onnx::chunker::OVERLAP_TOKENS`],
 //!    128 байта оценки). Мера — байтовая оценка `bytes/4` (промер первички в
@@ -73,15 +73,15 @@
 //!    [`CascadeFailure::Truncated`]. Это край, а не норма (issue #84 п.4):
 //!    молча выбросить хвост = fail-open, инвариант AGENTS не тронут.
 //! 6. **Бюджет.** Каждый чанк стоит один полный прогон окна
-//!    (`run_p50_ms_extractor1b` = 271.8 мс при threads=4, `docs/model-audit.md`
-//!    §5; при `FASAD_THREADS=2` — выше), Decide-чанк ≈ 1.0–1.5 с
-//!    (§5.6 п.6, фикс-оверхед прогона доминирует). Бюджет запроса
+//!    (`run_p50_ms_extractor1b` = 271.8 мс при threads=4, `docs/model-audit-weights.md`
+//!    §W2; при `FASAD_THREADS=2` — выше), Decide-чанк ≈ 1.0–1.5 с
+//!    (§W2.6 п.6, фикс-оверхед прогона доминирует). Бюджет запроса
 //!    `FASAD_TIMEOUT_MS` проверяется на КАЖДОМ чанке lockR
 //!    ([`extract_chunked`]'й `over_budget`), вне бюджета — `Timeout`, не
 //!    бесконечный прогон: «чанкам нужен свой бюджет, иначе таймаут становится
 //!    единственным исходом» (issue #84 п.2) закрыт формулой
 //!    `budget ≳ N_lockR × 0.3 с + N_decide × 8 с` при threads=2 — промер
-//!    docs/model-audit.md §11: Decide-чанк дороже предсказания в 4 раза
+//!    docs/model-audit-inference.md §I1: Decide-чанк дороже предсказания в 4 раза
 //!    (README демона). Число чанков ограничено сверху `ceil + 1` только с #111
 //!    (адванс чанкера якорится от края окна): пересъёмка 22.10 на базе
 //!    `ec9a36b` — 33 КБ = 38 чанков lockR = 14.2 с при 329–373 мс на чанк
@@ -883,7 +883,7 @@ mod onnx {
         let mut spans = gate_spans(&raw, job);
         // Каскад 2, short-circuit (SPEC §2): ни одного спана серой зоны —
         // Decide не зовём вообще. Его латентность на прогон ≈1.0–1.5 с
-        // фикс-оверхеда (docs/model-audit.md §5.6 п.6), и гонять её на каждом
+        // фикс-оверхеда (docs/model-audit-weights.md §W2.6 п.6), и гонять её на каждом
         // запросе = гарантированно вылетать из FASAD_TIMEOUT_MS на ровном месте.
         let grey = grey_classes(&spans, &job.ctx, &job.plan);
         if grey.is_empty() {
@@ -923,7 +923,7 @@ mod onnx {
         started: Instant,
     ) -> Result<Vec<ChunkedSpan>, CascadeFailure> {
         // Окно lockR = PAD (256 токенов): граф паддит вход жёстко до 256,
-        // 384-потолок SPEC §2 для него недостижим (model-audit §5: «lockR окно
+        // 384-потолок SPEC §2 для него недостижим (model-audit-weights.md §W2: «lockR окно
         // 256 фиксировано»). 256 — нижняя граница легального множества
         // `ChunkCfg::new`, отказ здесь = рассинхронизация констант, не данные.
         let lockr_window = u32::try_from(PAD).unwrap_or(u32::MAX);
@@ -1028,7 +1028,7 @@ mod onnx {
         )]
         let tau = job.plan.tau as f32;
         // Decide чанкуется (issue #84 п.2, config A): весь документ арбитром не
-        // гоняется — O(L²) (5963 мс при L=1235, docs/model-audit.md §5), на
+        // гоняется — O(L²) (5963 мс при L=1235, docs/model-audit-weights.md §W2), на
         // document-входе таймаут стал бы единственным исходом.
         // `arb_chunk_cfg(384, 56)` укладывает окно+overhead в 512 (промер
         // 4b-2d); `None` на этих константах невозможен (тесты `arb_chunk_cfg`

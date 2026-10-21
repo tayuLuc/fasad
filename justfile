@@ -349,7 +349,7 @@ release-build:
     cargo build --release -p guard-daemon
 
 # Сборка харнеса полного каскада (spike) релизным профилем на официальном dylib
-# ORT: контракт docs/model-audit.md §5 п.1 + §8 (статика pyke на macOS release =
+# ORT: контракт docs/model-audit-weights.md §W2 п.1 + docs/model-audit.md §8 (статика pyke на macOS release =
 # SIGSEGV; dylib 1.31.0 = живой прогон). Нужна для `just measure-rss --full`.
 
 # Харнес полного каскада (spike) релизным профилем на dylib ORT.

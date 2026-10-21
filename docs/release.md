@@ -260,7 +260,7 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    1.31.0): пик двух моделей в одном процессе 976.3 MiB (`--threads 4`,
    53 % бюджета) и 889.1 MiB (`--threads 2`, 48 %); для бюджета держим max.
    Промеры 21.10, метод и сырые строки — docs/model-audit.md §9.
-4. Профиль: бюджет-гейт раньше был закрыт dev-числом 1434.6 MiB (§5.6 п.5),
+4. Профиль: бюджет-гейт раньше был закрыт dev-числом 1434.6 MiB (docs/model-audit-weights.md §W2.6 п.5),
    релизный профиль даёт 976.3 — оговорка профиля по этой точке снята.
 5. Windows: **не промерено**. `scripts/measure-rss.sh` на `MINGW*`/`MSYS*`
    падает exit 2 с явной причиной (реализованы Darwin/Linux); PowerShell-метод
@@ -336,14 +336,14 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 ## ORT-контур на macOS (промер, issue #31)
 
 1. Статика pyke (`download-binaries`, default) в **release**-профиле на macOS
-   SIGSEGV'ит (docs/model-audit.md §5 п.1, промер ×5, обе конфигурации) —
+   SIGSEGV'ит (docs/model-audit-weights.md §W2 п.1, промер ×5, обе конфигурации) —
    релизный путь = официальный dylib (ort-дока
    https://ort.pyke.io/setup/linking: compile-time dynamic = `ORT_LIB_PATH` +
    `ORT_PREFER_DYNAMIC_LINK=1`; рантайм-поиск на macOS — rpath `@loader_path`
    либо каталог рядом с бинарём).
    Голое `cargo build --release --features ort-inference` (без env-префикса) на
    чистой macOS не линкуется: `___isPlatformVersionAtLeast` undefined, CoreML-
-   хелпер из pyke-статики (docs/model-audit.md §5 п.2; промер ревью #97, 2-й
+   хелпер из pyke-статики (docs/model-audit-weights.md §W2 п.2; промер ревью #97, 2-й
    раунд). Команды сборки в этой ветке пишутся с префиксом — рецепт
    §«Как включить монтаж каскадов 1–2» п.1 в `crates/guard-daemon/README.md`.
 2. Фактическая сборка промерена 21.10 на macOS arm64 (rustc 1.99.1):
