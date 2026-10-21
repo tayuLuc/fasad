@@ -224,12 +224,17 @@ restore-integrity *ARGS:
 # линковка краснеет, docs/model-audit §5 п.2), веса FASAD_MODEL_DIR, бюджет
 # запроса 10 с (дефолт 3000 мс на смонтированном пути не вмещает Decide-чанк —
 # README §env, промер ревью #97). Стадия проверяется харнесом по /health.
+# Ключ `--features` в профиль target/ — общий с каскад-0 сборкой: полный прогон
+# ПЕРЕТИРАЛ бы target/debug/fasad орт-смонтированным бинарём (ревью #139:
+# `just restore-integrity` ниже поднял бы смонтированный демон, и stage в
+# RESTORE|daemon|stage уехал бы молча). Отдельный --target-dir изолирует
+# артефакт, --daemon указывает на него.
 restore-integrity-full *ARGS:
     ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib}" \
-        CARGO_BUILD_JOBS=2 nice -n 10 cargo build --features guard-daemon/ort-inference --bin fasad
+        CARGO_BUILD_JOBS=2 nice -n 10 cargo build --target-dir target-ort --features guard-daemon/ort-inference --bin fasad
     nice -n 10 env FASAD_THREADS=2 FASAD_MODEL_DIR="${HOME}/.cache/fasad-models" \
         FASAD_TIMEOUT_MS=10000 \
-        python3 tools/metrics/restore_integrity.py --daemon target/debug/fasad {{ ARGS }}
+        python3 tools/metrics/restore_integrity.py --daemon target-ort/debug/fasad {{ ARGS }}
 
 # docs/golden-report.md из сырого артефакта прогона: числа в документацию попадают
 # генерацией, а не переписыванием руками (правило факта «отформатированное число —

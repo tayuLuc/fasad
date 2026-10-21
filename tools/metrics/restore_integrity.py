@@ -110,6 +110,38 @@ def wilson(k: int, n: int) -> tuple[float, float]:
     return (max(0.0, centre - half), min(1.0, centre + half))
 
 
+def byte_eq(got: str | None, want: str) -> bool:
+    """ЕДИНСТВЕННАЯ точка побайтовой сверки метрики (ревью #139 64cb25c2).
+
+    Мутационный промер: до этого compare стоял в трёх местах (run_row,
+    control, perturbation leg-B), и подмена ЛЮБОГО из них на константу True
+    оставляла остальные зелёными — positive control мерил свой же предикат, а
+    не call-site (реестр ложно-зелёных #19). Теперь весь «exact» проходит
+    через одну функцию, а `comparator_selftest()` каллит её на заведомо
+    искажённом входе (подставленный deanonymize-ответ) и на побайтовом
+    совпадении: зелёный без различения = rc=2.
+    """
+    return got is not None and got.encode("utf-8") == want.encode("utf-8")
+
+
+def comparator_selftest() -> int:
+    """Positive control ЕДИНОЙ сверки (реестр #19: контроль мерит call-site).
+
+    Три обязательных исхода на фикстурах, которым мы верим по построению:
+      равные строки            → True;
+      байт в хвосте (не-побайт) → False;
+      None (не-200 ответ)       → False.
+    Подмена компаратора константой валит как минимум один из них.
+    """
+    a = "Клиент [[F0#abc]] ИНН 7714161210"
+    checks = (byte_eq(a, a), byte_eq(a + "X", a), byte_eq(None, a))
+    if checks != (True, False, False):
+        print(f"RESTORE|comparator|DEAD|{checks} != (True,False,False)", file=sys.stderr)
+        return 2
+    print("RESTORE|comparator|ok|equal=True|tampered=False|none=False")
+    return 0
+
+
 def wilson_anchors() -> int:
     """Живость формулы по таблице §8: 48/50, 49/50, 50/50 (тот же контроль, что union)."""
     for k, n, lo, hi in ((48, 50, 86.540, 98.896), (49, 50, 89.505, 99.646),
@@ -231,6 +263,50 @@ class Api:
             return resp.status
 
 
+class _MutantApi:
+    """Декоратор живого `Api`: «read кэша в обход реверс-индекса» (мутант v3).
+
+    `deanonymize` отвечает побайтовым исходником при `restore_refused=0` —
+    ровно то состояние, в котором метрика была бы ложно-зелёной, если б
+    сверка мерила предикат, а не call-site (реестр #19). Остальные вызовы
+    идут демону без изменений.
+    """
+
+    def __init__(self, inner: Api, original_text: str):
+        self._inner = inner
+        self._original = original_text
+
+    def call(self, path: str, body: dict, headers: dict | None = None) -> tuple[int, dict]:
+        st, resp = self._inner.call(path, body, headers)
+        if path == "/v1/deanonymize" and st == 200:
+            return 200, {"text": self._original, "restore_refused": 0}
+        return st, resp
+
+    def delete(self, path: str) -> int:
+        return self._inner.delete(path)
+
+
+def control_on_mutant(api: Api) -> int:
+    """Positive control CALL-SITE единой сверки (ревью #139 64cb25c2, реестр
+    #19: «контроль мерит предикат, а не call-site»).
+
+    Тот же `control(api)` на том же входе, но deanonymize подменён мутантом,
+    возвращающим исходник при нулевом отказе. Честный компаратор sabotage-ногу
+    НЕ краснит (отказ есть, exact=0); мутант её краснит (is sabotage exact=1 →
+    control DEAD rc=2). Значит rc(control_on_mutant) == 2 — доказательство, что
+    control-нога жива на реальном пути запроса; rc == 0 = сверка константа,
+    метрике нельзя верить (rc=2).
+    """
+    rc = control(_MutantApi(api, CONTROL_TEXT))
+    if rc == 0:
+        print("RESTORE|comparator|mutant|DEAD: control на мутанте «read кэша»"
+              " зелёный — побайтовая сверка мерит предикат, а не call-site",
+              file=sys.stderr)
+        return 2
+    print("RESTORE|comparator|mutant|ok|control-на-мутанте-красный")
+    return 0
+
+
 def _prio(s: dict) -> tuple[int, int]:
     """Ключ порядка при снятии пересечений: чексумма важнее модели.
 
@@ -344,12 +420,17 @@ def run_row(api: Api, session: str, row: dict, thr: float, stage: str) -> dict:
     st2, back = api.call("/v1/deanonymize", {"text": anon.get("text", "")}, hdr)
     if st2 == 200:
         restored = back.get("text", "")
-        verdict = "exact" if restored.encode("utf-8") == row["text"].encode("utf-8") \
-            else "mismatch"
+        verdict = "exact" if byte_eq(restored, row["text"]) else "mismatch"
         return dict(verdict=verdict, sur=sur, lbl=lbl, ov=dropped,
                     sur_f=int(back.get("restore_refused", 0)), code="")
     return dict(verdict="refused", sur=sur, lbl=lbl, sur_f=0, ov=dropped,
                 code=str(back.get("error", {}).get("code", st2)))
+
+
+# Фикстура control-ноги: ФИО (суррогатный путь) + ИНН (меточный путь) в одном
+# тексте. Одна константа на control и control_on_mutant: мутант обязан
+# подставлять РОВНО тот «исходник», с которым сравнит вход живой control.
+CONTROL_TEXT = "Клиент Ушакова Кира Саввична, ИНН 7714161210"
 
 
 def control(api: Api) -> int:
@@ -359,10 +440,11 @@ def control(api: Api) -> int:
       clean    — живая сессия: разворот даёт исходник побайтово;
       sabotage — та же подмена после teardown сессии: разворот обязан отказать.
     Разные доли на одном входе = контроль дискриминирует (0.0 vs 1.0).
+    Тот же control на мутантном deanonymize — `control_on_mutant` (реестр #19).
     """
     fio = "Ушакова Кира Саввична"
     inn = "7714161210"
-    text = f"Клиент {fio}, ИНН {inn}"
+    text = CONTROL_TEXT
     # Оффсеты — БАЙТОВЫЕ (контракт `/v1/anonymize`: byte_start/byte_end,
     # BadSpan на не-границе символа). `str.index` на кириллице был бы ложью
     # (русская буква = 2 байта UTF-8); дефект пойман smoke-прогоном:
@@ -383,7 +465,7 @@ def control(api: Api) -> int:
         ops = sorted({i["operator"] for i in anon.get("items", [])})
         if "mask" not in ops:
             # Меточный путь тоже обязан быть представлен, иначе clean-нога
-            # меряет только суррогаты, а `422 unresolved_token` на sabotаge
+            # меряет только суррогаты, а `422 unresolved_token` на sabotage
             # приходит по другой причине, чем думает контроль.
             print(f"RESTORE|control|{tag}|FAIL-no-mask-path|ops|{ops}")
             return 2
@@ -397,7 +479,7 @@ def control(api: Api) -> int:
             return 2
         st2, back = api.call("/v1/deanonymize", {"text": anon["text"]}, hdr)
         got = back.get("text", "") if st2 == 200 else None
-        exact = int(got == text)
+        exact = int(byte_eq(got, text))
         code = str(back.get("error", {}).get("code", st2)) if st2 != 200 else "-"
         out[tag] = (exact, code)
         print(f"RESTORE|control|{tag}|status|{st2}|byte_exact|{exact}|code|{code}"
@@ -422,7 +504,7 @@ def perturbation(api: Api) -> int:
     не покраснеет на built-в-прогоне дефекте.
 
     Состояние-мутант (промер 21.10, мутант v3/v11 «read кэша в обход
-    реверс-индекса #70», /tmp-воркtree): выдача имени W в сессии, затем
+    реверс-индекса #70», /tmp-worktree): выдача имени W в сессии, затем
     `DELETE` сессии — ровно состояние idle-истечения 15 мин: запись кэша
     мертва, разворот обязан ОТКАЗАТЬСЯ вернуть исходник (SPEC §4: «разворот
     без доказательства был бы каналом утечки»; #70: `unrestored_mismatch`
@@ -477,14 +559,14 @@ def perturbation(api: Api) -> int:
     st2, back = api.call("/v1/deanonymize", {"text": anon["text"]}, hdr)
     out = back.get("text", "") if st2 == 200 else ""
     refused = int(back.get("restore_refused", 0))
-    if out == text and refused == 0:
+    if byte_eq(out, text) and refused == 0:
         print("RESTORE|perturbation|leg-b|GREEN-when-must-be-RED: исходник"
               " вернулся побайтово после teardown сессии (разворот без"
               " свидетельства: read кэша в обход реверс-индекса #70),"
               " метрика не засчитывается", file=sys.stderr)
         return 2
     print("RESTORE|perturbation|clean|exact|broken|refusal-after-teardown"
-          f"|status|{st2}|refused|{refused}|byte_exact|{int(out == text)}"
+          f"|status|{st2}|refused|{refused}|byte_exact|{int(byte_eq(out, text))}"
           f"|verdict|ok|discriminating")
     return 0
 
@@ -505,8 +587,17 @@ def run(args: argparse.Namespace) -> int:
     if got != m.group(1):
         print(f"FAIL golden sha256 {got} != B2 {m.group(1)} (дрейф датасета)", file=sys.stderr)
         return 2
+    # `os.nice(0)` — это ЧТЕНИЕ niceness, а не выставление: под внешним
+    # `nice -n 10` (рюлинг 21.10, just-рецепты) у процесса нет права понижать
+    # любезность, и на macOS это PermissionError. Читаем в try/except, чтобы
+    # prolog не валил прогон на diagnostics-строке (реестр: ложь о причине
+    # отказа — здесь это был бы rc=1 «метрика красна» на ровном env).
+    try:
+        niceness = str(os.nice(0))
+    except OSError as exc:  # PermissionError — внешний nice уже понизил
+        niceness = f"n/a-external-nice({exc.strerror})"
     print(f"RESTORE|env|python|{platform.python_version()}|platform|{platform.system()}"
-          f"-{platform.machine()}|niceness|{os.nice(0)}|threads|daemon-2"
+          f"-{platform.machine()}|niceness|{niceness}|threads|daemon-2"
           f"|vault|session|seed|n/a-no-RNG")
 
     rec = load_recall_rows()
@@ -528,7 +619,13 @@ def run(args: argparse.Namespace) -> int:
             print(f"FAIL демон поднялся в режиме {mode!r}, ждали session", file=sys.stderr)
             return 2
 
-        rc_ctl = control(api)
+        rc_ctl = comparator_selftest()
+        if rc_ctl == 0:
+            rc_ctl = control(api)
+        if rc_ctl == 0:
+            rc_ctl = control_on_mutant(api)
+        if rc_ctl == 0:
+            rc_ctl = perturbation(api)
         if rc_ctl == 0:
             rc_ctl = perturbation(api)
         if rc_ctl:
@@ -595,7 +692,12 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--daemon", default=str(ROOT / "target" / "debug" / "fasad"))
     ap.add_argument("--out", default="")
+    ap.add_argument("--self-test", action="store_true",
+                    help="только positive control'ы харнеса (wilson-якоря + "
+                         "единая побайтовая сверка), без демона и датасета")
     args = ap.parse_args()
+    if args.self_test:
+        return comparator_selftest() if wilson_anchors() == 0 else 2
     out_fh = open(args.out, "w", encoding="utf-8") if args.out else None  # noqa: SIM115
     if out_fh:
         sys.stdout = Tee(out_fh)
