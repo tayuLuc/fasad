@@ -9,8 +9,11 @@
 //!
 //! Инварианты:
 //!
-//! 1. чанкер — покрытие всего текста, монотонность `start`, перекрытие соседей
-//!    ≥ `(overlap−1)·BYTES_PER_TOKEN` байт, окно не превышено, детерминированность;
+//! 1. чанкер — покрытие всего текста, СТРОГАЯ монотонность `start`, перекрытие
+//!    соседей ≥ `cfg.overlap_floor(prev_span)` (edge-якорная геометрия: полная
+//!    грань `(overlap−1)·BYTES_PER_TOKEN` минус уезжка реза из окна — см. док
+//!    метода), окно не превышено, число чанков ≤ stride-bound (атом
+//!    step10-chunkerfix), детерминированность;
 //! 2. merger — попарная непересекаённость выхода, идемпотентность, независимость
 //!    от порядка входа, вето чексуммы (приоритет 1.0 не понижается);
 //! 3. bucketing — `bucket_len` монотонен и тотален, `plan_batches` — разбиение
@@ -119,8 +122,10 @@ fn prop_chunker_covers_text_monotonically() {
         );
         for w in chunks.windows(2) {
             assert!(
-                w[1].span.start >= w[0].span.start,
-                "case {case}: start убывает"
+                w[1].span.start > w[0].span.start,
+                "case {case}: start не вырос: {:?} → {:?}",
+                w[0].span,
+                w[1].span
             );
             assert!(
                 w[1].span.start <= w[0].span.end,
@@ -133,6 +138,71 @@ fn prop_chunker_covers_text_monotonically() {
                 "case {case}: рез внутри кода"
             );
         }
+    }
+}
+
+/// Оценка числа границ предложений сверху: каждая `.!?` даёт ≤ одной границы,
+/// каждый прогон `\n`/`\r` длиной ≥ 2 — ≤ одной. Пересчёт — запас, не дыра.
+fn sentence_boundaries_upper_bound(text: &str) -> usize {
+    let b = text.as_bytes();
+    let mut n = 0;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'.' | b'!' | b'?' => n += 1,
+            b'\n' | b'\r' => {
+                let j = i;
+                while i < b.len() && (b[i] == b'\n' || b[i] == b'\r') {
+                    i += 1;
+                }
+                if i - j >= 2 {
+                    n += 1;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    n
+}
+
+#[test]
+fn prop_chunker_count_bounded_by_stride() {
+    // Инвариант 3 (атом step10-chunkerfix, property-форма): шаг адванса либо
+    // полный stride−3 (флор к UTF-8-границе съедает ≤ 3 байта), либо «кап»
+    // по покрытию — приземление на границу предложения. Капов ≤ числа границ
+    // (каждое приземление — новый старт, старты строго растут), полных шагов
+    // ≤ ceil(len/(stride−3)). Старая end-якорная геометрия на «прилипшем»
+    // конце ходила шагами 1–2 байта при B=3 и len=44 — bound 6 против 23.
+    let mut rng = XorShift64::new(0x7A11_51DE);
+    for case in 0..CASES {
+        let text = rand_text(&mut rng, 3000);
+        let cfg = rand_cfg(&mut rng);
+        let chunks = chunk(&text, cfg);
+        if text.is_empty() {
+            assert!(chunks.is_empty(), "case {case}: пустой вход");
+            continue;
+        }
+        let stride = (usize::try_from(
+            cfg.window_tokens
+                .0
+                .saturating_sub(cfg.overlap_tokens)
+                .max(1),
+        )
+        .unwrap_or(usize::MAX))
+            * BYTES_PER_TOKEN_U;
+        let bound = text
+            .len()
+            .div_ceil(stride.saturating_sub(3).max(1))
+            + sentence_boundaries_upper_bound(&text)
+            + 2;
+        assert!(
+            chunks.len() <= bound,
+            "case {case}: {} чанков > bound {bound} (len {}, cfg {cfg:?})",
+            chunks.len(),
+            text.len()
+        );
     }
 }
 
