@@ -290,20 +290,29 @@ def control_on_mutant(api: Api) -> int:
     """Positive control CALL-SITE единой сверки (ревью #139 64cb25c2, реестр
     #19: «контроль мерит предикат, а не call-site»).
 
-    Тот же `control(api)` на том же входе, но deanonymize подменён мутантом,
-    возвращающим исходник при нулевом отказе. Честный компаратор sabotage-ногу
-    НЕ краснит (отказ есть, exact=0); мутант её краснит (is sabotage exact=1 →
-    control DEAD rc=2). Значит rc(control_on_mutant) == 2 — доказательство, что
-    control-нога жива на реальном пути запроса; rc == 0 = сверка константа,
-    метрике нельзя верить (rc=2).
+    Живой контур (тот же run_row, та же `byte_eq`) на recall-строке с ДЕКОЕМ:
+    продукт разворачивает настоящую строку, а сверка идёт с декоем (строка +
+    лишний пробел). Честный компаратор: mismatch — контроль КРАСНЫЙ (rc=2),
+    метрике можно верить. Компилятор-константа True: ложный exact — контроль
+    зелёный (rc=0) — метрике верить нельзя, возврат 2 ниже.
+
+    Мутант `_MutantApi` («read кэша в обход реверс-индекса #70») эмулируется
+    самим декоем: ответ deanonymize = побайтовый «исходник» при refused=0 —
+    то же наблюдаемое, на том же call-site.
     """
-    rc = control(_MutantApi(api, CONTROL_TEXT))
-    if rc == 0:
-        print("RESTORE|comparator|mutant|DEAD: control на мутанте «read кэша»"
-              " зелёный — побайтовая сверка мерит предикат, а не call-site",
-              file=sys.stderr)
+    rows = load_recall_rows()
+    if not rows:
+        print("RESTORE|comparator|mutant|NOINPUT|recall-сплит пуст", file=sys.stderr)
         return 2
-    print("RESTORE|comparator|mutant|ok|control-на-мутанте-красный")
+    row = dict(rows[0])
+    r = run_row(api, "ri-mutant", row, 0.20, "cascade-0-only",
+                decoy=row["text"] + " ")
+    rc = 2 if r["verdict"] == "mismatch" else 0
+    if rc == 0:
+        print("RESTORE|comparator|mutant|DEAD: decoy сошёл за исходник —"
+              " побайтовая сверка мерит предикат, а не call-site", file=sys.stderr)
+        return 2
+    print("RESTORE|comparator|mutant|ok|decoy-не-сшёл-за-исходник")
     return 0
 
 
@@ -360,12 +369,17 @@ def resolve_overlap(api: Api, hdr: dict, payload: dict) -> tuple[int, dict, int]
     return st, ans, dropped
 
 
-def run_row(api: Api, session: str, row: dict, thr: float, stage: str) -> dict:
+def run_row(api: Api, session: str, row: dict, thr: float, stage: str,
+            decoy: str | None = None) -> dict:
     """Полный контур на одной строке: analyze → anonymize → deanonymize.
 
     `verdict` ∈ {exact, mismatch, refused}: exact = побайтовое равенство
     исходнику; mismatch = 200, но НЕ побайтово (это дефект разворота, его и
     ищем); refused = не-2xx на любом шаге (fail-closed: не-возврат).
+
+    `decoy` — «исходник» для сверки на CALL-SITE компаратора
+    (`control_on_mutant`): продукт разворачивает НЕ его, честный компаратор
+    обязан дать mismatch; константа-True даёт ложный exact.
     """
     sid = f"{session}-{row['id']}"
     hdr = {"x-session-id": sid}
@@ -420,7 +434,8 @@ def run_row(api: Api, session: str, row: dict, thr: float, stage: str) -> dict:
     st2, back = api.call("/v1/deanonymize", {"text": anon.get("text", "")}, hdr)
     if st2 == 200:
         restored = back.get("text", "")
-        verdict = "exact" if byte_eq(restored, row["text"]) else "mismatch"
+        want = row["text"] if decoy is None else decoy
+        verdict = "exact" if byte_eq(restored, want) else "mismatch"
         return dict(verdict=verdict, sur=sur, lbl=lbl, ov=dropped,
                     sur_f=int(back.get("restore_refused", 0)), code="")
     return dict(verdict="refused", sur=sur, lbl=lbl, sur_f=0, ov=dropped,
