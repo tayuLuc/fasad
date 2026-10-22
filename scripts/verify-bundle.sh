@@ -332,9 +332,18 @@ case "$(uname -s)" in
         printf 'ORT|ok|linux: маркер орт-статики в bin/fasad (download-binaries статика; readelf-д = CI-провен run 39786761298, NEEDED без onnxruntime)\n'
         ;;
     MINGW* | MSYS* | CYGWIN*)
-        LC_ALL=C grep -qa 'onnxruntime/core/session' "$bin" 2>/dev/null \
-            || die "ЗУБ А: bin/fasad.exe без орт-статики в теле = бандл не full (release-контур #181, win = MSVC-статик)"
-        printf 'ORT|ok|win: маркер орт-статики в bin/fasad.exe\n'
+        # #188 (провен релиз-репетиции run 39808790297 win-Бандл): маркер
+        # `onnxruntime/core/session` = пути заголовков C++-объектов, в PE
+        # bin-цели их НЕТ (win = pyke static_link: import-либы + C-ABI-линковка,
+        # ort-sys static_link/mod.rs:42-54/117; строка `onnxruntime.dll` —
+        # только в док-комментариях ort environment.rs:29,644, в код не
+        # попадает). Живой маркер win-full = имена EP-либ из
+        # static_link_prerequisites (`DirectML`, DX12-набор): full = есть,
+        # каскад-0 (фича off) = нет (тот же дискриминатор, что full_probe в
+        # make-bundle.sh, win-нога).
+        LC_ALL=C grep -qai 'DirectML' "$bin" 2>/dev/null \
+            || die "ЗУБ А: bin/fasad.exe без EP-либ win-контура (DirectML) = бандл не full (release-контур #181, win = pyke static_link, static_link/mod.rs:50-54, #188)"
+        printf 'ORT|ok|win: маркер DirectML в bin/fasad.exe (win = pyke static_link_prerequisites, #188)\n'
         ;;
 esac
 # 4. Живой HTTP-контур бандла = смонтированный демон ЗУБа Б (weights +
