@@ -171,24 +171,41 @@ full_probe() {
                 || die "$probe: в динамическом графе нет libonnxruntime = бинарь собран БЕЗ ort-inference; метка full запрещена (just release-build)"
             ;;
         Linux)
-            # #188: статика download-контура — маркер-форма (см. шапку).
+            # #188: download-контур = СТАТИКА (см. шапку), readelf-гейт
+            # краснил full-сборку ложно (провен релиз-репетиции run
+            # 39803462540: «в динамическом графе нет libonnxruntime» при rc=0
+            # сборки full; CI-провен графа run 39786761298). Дискриминатор =
+            # маркер: вендорные пути `onnxruntime/core/...` из статик-архива
+            # (ort-sys main.rs:177, промер #170 б: spike full = 4 совпадения,
+            # каскад-0 = 0). ПРОВЕРКА ПЕРВИЧКОЙ #188: linux-нога
+            # verify-bundle = маркер-форма (d02a25d, CI-провен run
+            # 39795161065 dist-linux linux-шаг), тот же дискриминатор здесь.
             LC_ALL=C grep -qa 'onnxruntime/core/session' "$probe" 2>/dev/null \
-                || die "$probe: в теле бинаря нет орт-статики = собран БЕЗ ort-inference; метка full запрещена (just release-build; linux = download-статика ort-sys main.rs:182)"
+                || die "$probe: в теле бинаря нет орт-статики = собран БЕЗ ort-inference; метка full запрещена (just release-build; linux = download-статика ort-sys main.rs:182, #188)"
             ;;
         MINGW* | MSYS* | CYGWIN*)
             # MSVC: динамической зависимости нет у обоих контуров (build.rs
             # rpath-ветка = macos|linux; доставка на win = onnxruntime.dll
             # рядом с exe — ort-sys copy_dylibs в target-каталог, первичка
-            # build/dynamic_link.rs:14-24, промер этой сессии). Отличим по
-            # вендорному маркеру: `static_link_prerequisites` (ort-sys
-            # build/main.rs:59/66/177) прокидывает вендорные пути вида
-            # onnxruntime/core/… в линкуемый образ — `LC_ALL=C grep -a` по
-            # бинарю (тот же маркер, что preflight measure-rss.sh #170 б:
-            # голый spike = 4 совпадения, релизный каскад-0 = 0).
-            # Инструмент = bash-греп по байтам (свой код), НЕ `strings`: на
-            # windows-раннере `strings` из Sysinternals не гарантирован, а
-            # молча пропущенный зуб (WARN) = ложно-зелёный контур (реестр
-            # false-green).
+            # build/dynamic_link.rs:14-24, промер этой сессии).
+            # ДИСКРИМИНАТОР (#188, провен релиз-репетиции run 39803462540
+            # dist-windows): преждний маркер `onnxruntime/core/session`
+            # красил full-сборку ЛОЖНО — «в теле бинаря нет орт-статики» при
+            # rc=0 сборки `--features ort-inference` (тот же класс
+            # ложно-красного, что linux-нога выше и readelf-гейты #184).
+            # Первичка причины: `ort` собирается с load-dynamic-веткой на
+            # windows (ort/src: cfg(any(feature = "load-dynamic", target_os =
+            # "windows")) — орт-символы грузятся dlopen-механизмом, линкеру
+            # undefined-референсов НЕ достаются), и pyke-статика в exe не
+            # разворачивается → строки `onnxruntime/core/...` в bin-бинаре
+            # нет (маркер живёт в spike-цели #170 б, не в bin). Живой маркер
+            # win-бинаря = строка `onnxruntime.dll`: она прописана в коде
+            # загрузки самой ort-библиотеки, которую линкует full-контур
+            # (`dll` в теле есть), и НЕ попадает в каскад-0 (бинарь без
+            # фичи). Инструмент = bash-греп по байтам (свой код), НЕ
+            # `strings`: на windows-раннере `strings` из Sysinternals не
+            # гарантирован, а молча пропущенный зуб (WARN) = ложно-зелёный
+            # контур (реестр false-green).
             #
             # ДИНАМИЧЕСКАЯ нога, если dll едет в архив: win-бандл несёт
             # bin/onnxruntime.dll (параметр --ort-dll) — на MSVC доставка
@@ -200,8 +217,8 @@ full_probe() {
             # инвариант «dll в бандле = полный контур»: наличие dll рядом с
             # exe = заявка упаковки (--ort-dll из CI-шага), и она обязана
             # сопровождаться орт-маркером в самом exe.
-            LC_ALL=C grep -qa 'onnxruntime/core/session' "$probe" 2>/dev/null \
-                || die "$probe: в теле бинаря нет орт-статики = собран БЕЗ ort-inference; метка full запрещена (just release-build)"
+            LC_ALL=C grep -qa 'onnxruntime.dll' "$probe" 2>/dev/null \
+                || die "$probe: в теле бинаря нет строки onnxruntime.dll = собран БЕЗ ort-inference; метка full запрещена (just release-build, win = load-dynamic-контур ort, #188)"
             ;;
     esac
 }
