@@ -140,12 +140,21 @@ esac
 [ -x "$BIN" ] || die "нет бинаря $BIN — сначала cargo build --release -p guard-daemon --features ort-inference (just release-build)"
 [ -f "$LICENSES" ] || die "нет $LICENSES — сначала just deps-licenses"
 
-# Зуб полного контура (mac/linux — динамический dylib, win — статик-линк).
+# Зуб полного контура (mac — динамический dylib, linux/win — маркер-форма).
 # Контур бандла метится именем архива (`-full`); метка обязана быть правдой про
 # бинарь, иначе «full» продаёт cascade-0. Проверка спрашивает У АРТЕФАКТА, а не
 # у env вызывающего (тот же класс, что preflight в measure-rss.sh #170 б).
-#   mac/linux: орт-контур = динамическая зависимость от libonnxruntime в
-#     `otool -L` / `readelf -d -l`; голый бинарь без неё = собран без фичи.
+#   mac: орт-контур = динамическая зависимость от libonnxruntime в `otool -L`
+#     (dylib-контракт §W2 п.1, rpath build.rs); голый бинарь без неё = собран
+#     без фичи.
+#   linux: download-binaries линкует орт СТАТИКОЙ (первичка ort-sys
+#     build/main.rs:177-183), динамической зависимости НЕТ (#188, CI-провен
+#     readelf run 39786761298 + релиз-репетиция run 39803462540: прежняя
+#     readelf-нога краснила full-сборку ложно, ровно как linux-нога
+#     verify-bundle до d02a25d) → тот же дискриминатор, что win: маркер
+#     `onnxruntime/core/session` в теле (venдорные пути из
+#     static_link_prerequisites, main.rs:177; каскад-0 = 0 совпадений,
+#     орт-бинарь >0 — промер preflight measure-rss.sh #170 б).
 #   windows: MSVC линкует орт СТАТИКОЙ (build.rs: rpath-ветка = macos|linux,
 #     delivery на win = onnxruntime.dll рядом с exe), динамической зависимости
 #     нет у обоих контуров — отличим только по маркеру pyke-статики в теле
@@ -162,8 +171,9 @@ full_probe() {
                 || die "$probe: в динамическом графе нет libonnxruntime = бинарь собран БЕЗ ort-inference; метка full запрещена (just release-build)"
             ;;
         Linux)
-            readelf -d -l "$probe" 2>/dev/null | grep -qi onnxruntime \
-                || die "$probe: в динамическом графе нет libonnxruntime = бинарь собран БЕЗ ort-inference; метка full запрещена (just release-build)"
+            # #188: статика download-контура — маркер-форма (см. шапку).
+            LC_ALL=C grep -qa 'onnxruntime/core/session' "$probe" 2>/dev/null \
+                || die "$probe: в теле бинаря нет орт-статики = собран БЕЗ ort-inference; метка full запрещена (just release-build; linux = download-статика ort-sys main.rs:182)"
             ;;
         MINGW* | MSYS* | CYGWIN*)
             # MSVC: динамической зависимости нет у обоих контуров (build.rs
