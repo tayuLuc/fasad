@@ -319,7 +319,7 @@ jobs:
               fi
               ;;
           esac
-      - name: "win: fetch-models.ps1 (PowerShell-доставка весов #190: -List + mock-промер + fail-контроль)"
+      - name: "win: fetch-models.ps1 #190 (-List + mock + red-control + offline)"
         # Windows PowerShell 5.1 (`shell: powershell`) = дефолт win10/11, т.е.
         # та среда, ради которой скрипт писан (issue #190). 879 МБ весов в CI
         # НЕ тянутся; доказываемый контур = mock-манифест с ОДНИМ маленьким
@@ -334,50 +334,58 @@ jobs:
         if: matrix.os == 'windows-2022'
         shell: powershell
         run: |
+          # #190: native Windows weight delivery, CI shelf. PowerShell 5.1
+          # (shell: powershell = the win10/11 default, the issue #190 target).
+          # STEP BODY IS PURE ASCII (lesson of run 39829067427: the runner
+          # writes the powershell step body to a temp .ps1 WITHOUT a BOM, and
+          # PS 5.1 reads Cyrillic UTF-8 bytes as ANSI => parser error. Repo
+          # .ps1 files keep Cyrillic because they carry a BOM; step bodies
+          # cannot). 879 MB weights are NOT pulled in CI: mock manifest with
+          # ONE small file lockR/config.json (2831 B, sha256/rev/size
+          # measured this session: HEAD + live download + Get-FileHash).
           $ErrorActionPreference = 'Stop'
           & scripts\fetch-models.ps1 -List
-          if ($LASTEXITCODE -ne 0) { throw "-List план red (rc=$LASTEXITCODE)" }
+          if ($LASTEXITCODE -ne 0) { throw "-List plan red (rc=$LASTEXITCODE)" }
           $sha = 'f4eeba88d1503a56d629195c9307d42c1acf4ce53ab88fdaecfc754fd0745cf9'
           $rev = 'ea7610b22808c509c0c8b7c7b0f6639c19684d08'
           $ts = [char]9
           $cache = Join-Path $env:RUNNER_TEMP 'ps1-cache'
-          # green-нога: скачал + sha256-сверка + layout <repo>/<file>
-          $m = "mock${ts}lockR/rubert-base-pii-ner-onnx${ts}${rev}${ts}config.json${ts}${sha}${ts}2831${ts}hf${ts}CI mock #190"
+          # Manifest lines are ASCII on purpose: Set-Content -Encoding UTF8 on
+          # PS 5.1 writes a BOM, Get-Content 5.1 does not strip it from the
+          # LAST line, and the BOM stuck to the `source` field of the last
+          # row (CI-proven run 39829067427: source='hf BOM' red).
+          $m = "mock${ts}lockR/rubert-base-pii-ner-onnx${ts}${rev}${ts}config.json${ts}${sha}${ts}2831${ts}hf${ts}CI-mock-190"
           $mp = Join-Path $env:RUNNER_TEMP 'manifest-good.tsv'
-          Set-Content -LiteralPath $mp -Value $m -Encoding UTF8
+          Set-Content -LiteralPath $mp -Value $m -Encoding ASCII
           & scripts\fetch-models.ps1 -Manifest $mp -Cache $cache
-          if ($LASTEXITCODE -ne 0) { throw "mock-промер red (rc=$LASTEXITCODE)" }
+          if ($LASTEXITCODE -ne 0) { throw "mock run red (rc=$LASTEXITCODE)" }
           $f = Join-Path $cache 'lockR\rubert-base-pii-ner-onnx\config.json'
-          if (-not (Test-Path -LiteralPath $f)) { throw "layout: нет $f (кеш-раскладка .sh-паритета)" }
-          # red-контроль ДО глушилки: битый sha в манифесте = exit 1 (гейт жив,
-          # не print-only; глушить сеть после = red-прогон ловил бы DNS-отказ,
-          # а не sha256-рассинхрон — лживая диагностика, process-rules-agent-ops).
-          # Вызов в подобласти с EAP=Continue: Write-Fail пишет Write-Error, а
-          // шаг-level `$ErrorActionPreference='Stop'` (GitHub: шаг = один скрипт)
-          # превращал ожидаемо-красный прогон в падение шага на строке
-          # Write-Error (CI-провен run 39829067427: red-контроль красен =
-          # вердикт верный, канал red = падение скрипта, не $LASTEXITCODE).
+          if (-not (Test-Path -LiteralPath $f)) { throw "layout: missing $f (cache layout = .sh parity)" }
+          # red-control BEFORE the hosts sinkhole: corrupt sha = exit 1 (the
+          # gate is alive, not print-only). Child powershell -File: the parent
+          # runs with EAP=Stop (GitHub wraps the step body), and Write-Fail's
+          # Write-Error under EAP=Stop aborts the parent on the error line
+          # BEFORE $LASTEXITCODE is readable (CI-proven run 39829067427: the
+          # red leg printed the right verdict and killed the step). Child
+          # -File = its own process, exit code via $LASTEXITCODE, stderr noise
+          # dropped (mac-sim pwsh: rc=1 observed, outer rc=0).
           $mBad = $m -replace $sha, ('0' * 64)
           $mpBad = Join-Path $env:RUNNER_TEMP 'manifest-bad.tsv'
-          Set-Content -LiteralPath $mpBad -Value $mBad -Encoding UTF8
-          # red-прогон = дочерний powershell сContinue (промер pwsh 7.6.7
-          # сессией: в EAP=Stop-процессе Write-Fail красит родителя на строке
-          # Write-Error ДО чтения $LASTEXITCODE; EAP-флаги процесса:
-          # `-File`=Stop, `-Command`=Continue (mac-промер: тот же red
-          # печатает Write-Error-шум и выходит 0) → дочерний процесс с
-          # -File = детерминированный канал rc, шум в stderr безвреден)
-          $redRc = powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache 2>$null; $redRc = $LASTEXITCODE
-          if ($redRc -eq 0) { throw "битый sha ПРОШЁЛ (rc=0): sha256-гейт ps1 мёртв" }
-          # повтор = без сети (кеш-хит; DNS HF заглушён на этом шаге)
+          Set-Content -LiteralPath $mpBad -Value $mBad -Encoding ASCII
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache 2>$null
+          $redRc = $LASTEXITCODE
+          if ($redRc -eq 0) { throw "corrupt sha PASSED (rc=0): ps1 sha256 gate is dead" }
+          # repeat = offline (cache hit): sinkhole HF in hosts (runner is an
+          # admin context; reverted in finally)
           $hostsBak = 'C:\Windows\System32\drivers\etc\hosts'
           Add-Content -Path $hostsBak -Value '127.0.0.1 huggingface.co'
           try {
               & scripts\fetch-models.ps1 -Manifest $mp -Cache $cache
-              if ($LASTEXITCODE -ne 0) { throw "повтор без сети red (rc=$LASTEXITCODE)" }
+              if ($LASTEXITCODE -ne 0) { throw "offline repeat red (rc=$LASTEXITCODE)" }
           } finally {
               (Get-Content -LiteralPath $hostsBak) | Where-Object { $_ -notmatch 'huggingface.co' } | Set-Content -LiteralPath $hostsBak
           }
-          Write-Output "ps1 ok: -List + mock-скачка sha256 + red-контроль (битый sha) + повтор-без-сети"
+          Write-Output "ps1 ok: -List + mock sha256 + red-control (corrupt sha rc=$redRc) + offline repeat"
 
   python-golden:
     # Python-тулинг (gutter, рулинг 19.10: AGENTS п.6): uv-locked линт +
