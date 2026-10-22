@@ -167,12 +167,71 @@ jobs:
         # контура в воркфлоу: юнит едет в бандл, а не в air.
         if: matrix.os == 'ubuntu-24.04'
         run: ls -la contrib/systemd/fasad.service
-      - name: RAM-гейт каскад-0-фазы релизного демона (SPEC §10 п.9, метод в выводе)
-        # Контур замера = каскад-0-фазы демона (#181): релизный бинарь
-        # (full, шаг release-build) без FASAD_MODEL_DIR стартует стадией
-        # cascade-0-only, RAM-контур замера не двигается (полный смонтированный
-        # контур меряется §10: пики 825.7–1466.5 MiB против бюджета 1843.2,
-        # verdict ok — docs/model-audit.md §10 п.3/п.4).
+      - name: "Зуб #185: full-бинарь без FASAD_MODEL_DIR = отказ старта (fail-closed)"
+        # Рюлинг оператора 22.10 (#185): каскад-0 — НЕ продукт; full-бинарь
+        # (шаг release-build, фича ort-inference) без названных весов обязан
+        # отказать старта́м (CascadeFailure::ModelsNotConfigured, rc=2), а не
+        # молча обслуживать cascade-0-only. Живой промер на релизном артефакте
+        # до RAM-гейта: красным здесь = молчаливая деградация вернулась в
+        # релизный контур (fail-open на recall, AGENTS).
+        # Релизный артефакт mac линкуется на @rpath/libonnxruntime.1.dylib, а
+        # rpath-запись = каталог СБОРКИ (mac-контур: dylib скачан в runner temp;
+        # локальный промер 22.10 на машине оператора: бинарь из target/release
+        # стартует без DYLD_LIBRARY_PATH, т.к. rpath указывает на живой каталог).
+        # На CI-раннере temp-путь к моменту шага жив (тот же job, GITHUB_ENV),
+        # но зуб от этого не зависит: DYLD_LIBRARY_PATH не выставляется, и
+        # локальный промер обеими ногами дал rc=2 + текст FASAD_MODEL_DIR
+        # (22.10): startup-проверка main.rs идёт ДО обращения к ort-символам,
+        # а на битом графе рантайма процесс умирает dyld-ошибкой (rc≠0, в логе
+        # нет FASAD_MODEL_DIR) — зуб краснеет с текстом лога, диагноз честный.
+        # win-нога не смонтирована: bash-шим запуска бинаря в win-матрице нет;
+        # дискриминатор = unit
+        # cascades::tests::startup_without_model_dir_refuses_the_full_build_and_allows_cascade0
+        # + e2e wire_e2e::full_bin_without_model_dir_refuses_to_start_before_binding
+        # (ort-контур в cargo-CI не линкуется, ci.yml:31-34 — unit на фиче едет
+        # локальным гейтом, feature-off нога e2e = живая CI-нога).
+        # mac/linux: FASAD_MODEL_DIR не выставлен ни в одном env-блоке (шаг
+        # fetch-models пишет GITHUB_ENV, и он же используется зубом Б
+        # verify-bundle — здесь env-блок шага явно удаляет переменную).
+        if: matrix.os != 'windows-2022'
+        shell: bash
+        run: |
+          set -euo pipefail
+          env -u FASAD_MODEL_DIR FASAD_PORT=0 \
+              target/release/fasad >refusal.log 2>&1 &
+          pid="$!"
+          rc=0
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+              kill -0 "$pid" 2>/dev/null || break
+              sleep 0.5
+          done
+          if kill -0 "$pid" 2>/dev/null; then
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+              echo "ОШИБКА: full-бинарь без FASAD_MODEL_DIR поднялся (ожидание: отказ старта, #185):" >&2
+              cat refusal.log >&2
+              exit 1
+          fi
+          wait "$pid" || rc=$?
+          [ "$rc" -ne 0 ] || { echo "ОШИБКА: full-бинарь без весов завершился rc=0 (ожидание: 2, #185)" >&2; exit 1; }
+          grep -q "FASAD_MODEL_DIR" refusal.log \
+              || { echo "ОШИБКА: отказ без FASAD_MODEL_DIR в stderr (причина не названа, #185):" >&2; cat refusal.log >&2; exit 1; }
+          grep -q "listening" refusal.log \
+              && { echo "ОШИБКА: баннер напечатан до отказа (#185)" >&2; exit 1; }
+          echo "refusal ok: full-бинарь без FASAD_MODEL_DIR = rc=$rc, причина в stderr (ModelsNotConfigured)"
+      - name: RAM-гейт каскад-0-артефакта (SPEC §10 п.9, метод в выводе)
+        # Контур замера = каскад-0-артефакт (фича `ort-inference` выключена)
+        # в ОТДЕЛЬНОМ target-dir target-c0 — та же команда, что шаг «Каскад-0-
+        # референс зуба В» ниже (класс #139: пересборка в общий target затёрла
+        # бы релизный full-артефакт; рецепт `just release-build-cascade0`
+        # пишет в общий target/release и в CI-контуре не используется).
+        # Рюлинг #185: full-бинарь без FASAD_MODEL_DIR
+        # больше не стартует (шаг-зуб выше), прежняя форма «full-бинарь без
+        # весов даёт ту же каскад-0-стадию» убита правкой старта — число 3.5
+        # MiB (#168/#170, docs/model-audit.md §9 п.1) мерилось каскад-0-конту-
+        # ром и остаётся за ним; полный смонтированный контур меряется §10
+        # (пики 825.7–1466.5 MiB против бюджета 1843.2, verdict ok,
+        # docs/model-audit.md §10 п.3/п.4, measure-daemon-rss.sh с весами).
         # Windows-ветки метода замера (PowerShell Get-Process) не реализовано:
         # scripts/measure-rss.sh на неизмеренной ОС падает с exit 2 и явной
         # причиной, а не рисует ноль (rc=2 промерен шимом `uname` = FreeBSD,
@@ -185,11 +244,16 @@ jobs:
         # выходит rc=1 (плюс причина в stderr), и step падает. До правки OVER
         # только печатался, rc был 0 и шаг зеленел при превышении бюджета —
         # класс false-green «print-only landing test» (реестр 15/18).
-        # `--skip-build`: артефакт уже собран шагом release-build (full);
-        # пересборка здесь каскад-0-фичей затёрла бы его в target/ (класс
-        # #139) и обрушила verify-зубы А/В ниже.
+        # `--skip-build`: артефакт собирается первой строкой шага (target-c0),
+        # FASAD_RSS_TARGET указывает скрипту на него (дефолт скрипта =
+        # target/release, а там релизный full-бинарь — без весов он не стартует,
+        # #185); пересборка в общий target затёрла бы target/release/fasad
+        # (класс #139) и обрушила verify-зубы А/Б ниже.
         if: matrix.os != 'windows-2022'
-        run: just measure-rss --skip-build
+        run: |
+          set -euo pipefail
+          cargo build --release -p guard-daemon --target-dir target-c0
+          FASAD_RSS_TARGET="$PWD/target-c0/release" just measure-rss --skip-build
       - name: "Каскад-0-референс зуба В (win/linux: дискриминатор против full-метки)"
         # verify-bundle ЗУБ В проверяет живым прогомом: бинарь БЕЗ ort-inference
         # при FASAD_MODEL_DIR обязан отказать стартом (BuiltWithoutInference).

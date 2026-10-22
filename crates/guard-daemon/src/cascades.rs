@@ -176,6 +176,12 @@ pub enum CascadeFailure {
     /// `model_dir` задан, а бинарь собран без фичи `ort-inference`: каскады
     /// физически нечем гонять, и молча объявлять `cascade-0+models` нельзя.
     BuiltWithoutInference,
+    /// Бинарь собран С фичей `ort-inference` (релизный full-контур, #181), а
+    /// `FASAD_MODEL_DIR` не задан: весов нет, и старт дал бы молчаливый
+    /// `cascade-0-only` — тихую деградацию защиты, которую пользователь
+    /// считает полной. Рюлинг оператора 22.10 (#185): каскад-0 — не продукт,
+    /// полный бинарь без весов не стартует.
+    ModelsNotConfigured,
 }
 
 impl std::fmt::Display for CascadeFailure {
@@ -201,6 +207,11 @@ impl std::fmt::Display for CascadeFailure {
                 f,
                 "FASAD_MODEL_DIR задан, а бинарь собран без фичи `ort-inference` \
                  (нужно `--features guard-daemon/ort-inference`)"
+            ),
+            Self::ModelsNotConfigured => write!(
+                f,
+                "FASAD_MODEL_DIR не задан: полный контур требует весов \
+                 (models/README.md в бандле); каскад-0-only — не продакшн-режим"
             ),
         }
     }
@@ -630,22 +641,33 @@ pub fn install_test_mount(mount: Option<Arc<dyn Cascade12>>) {
 /// Смысл функции в том, чего она НЕ делает: не поднимает каскады «на сколько
 /// хватит весов» и не молчит, когда каталог назван, а открыть его нечем.
 ///
+/// Рюлинг оператора 22.10 (#185): каскад-0 — НЕ продукт. С фичей `ort-inference`
+/// (релизный full-контур, #181) отсутствие `model_dir` отказывает старта́м наравне
+/// с битыми весами: молчаливый stage `cascade-0-only` = тихая деградация защиты,
+/// которую пользователь считает полной.
+///
 /// # Errors
 ///
-/// [`CascadeFailure::BuiltWithoutInference`] (нет фичи при заданном
+/// [`CascadeFailure::ModelsNotConfigured`] (фича есть, а `model_dir` не задан —
+/// рюлинг #185), [`CascadeFailure::BuiltWithoutInference`] (нет фичи при заданном
 /// `model_dir`), [`CascadeFailure::Load`] (веса битые/отсутствуют),
 /// [`CascadeFailure::Timeout`] (вес не поднялся в бюджет старта).
 pub fn startup(cfg: &Config) -> Result<(), CascadeFailure> {
     match cfg.model_dir.as_ref() {
-        // Весов нет — каскад 0. Это не деградация, а заявленный контур:
-        // `Config::stage()` скажет «cascade-0-only», и `/health` покажет то же.
-        None => Ok(()),
+        // Рюлинг #185: full-бинарь (фича ON) без названных весов не стартует —
+        // молчаливой деградации до каскада-0 нет (fail-closed, AGENTS).
+        #[cfg(feature = "ort-inference")]
+        None => Err(CascadeFailure::ModelsNotConfigured),
         #[cfg(feature = "ort-inference")]
         Some(dir) => {
             let mount = onnx::OnnxMount::load(cfg, dir)?;
             *mount_slot() = Some(Arc::new(mount));
             Ok(())
         }
+        // Каскад-0-бинарь (фича OFF) = харнес/тестовый контур, не релиз (#181):
+        // без весов стартует каскадом 0; с названными весами — отказ ниже.
+        #[cfg(not(feature = "ort-inference"))]
+        None => Ok(()),
         #[cfg(not(feature = "ort-inference"))]
         Some(_dir) => Err(CascadeFailure::BuiltWithoutInference),
     }
@@ -1633,9 +1655,36 @@ mod tests {
     }
 
     #[test]
-    fn startup_without_model_dir_is_cascade0() {
+    fn startup_without_model_dir_refuses_the_full_build_and_allows_cascade0() {
+        // Рюлинг оператора 22.10 (#185): каскад-0 — НЕ продукт. Дискриминатор
+        // краснеет ровно на молчаливом `Ok(())` full-бинаря без весов (тихая
+        // деградация защиты, которую пользователь считает полной).
+        // feature-off: каскад-0-бинарь = харнес/тестовый контур (#181), легален.
         let cfg = Config::from_lookup(&|_: &str| None).expect("дефолты sane");
-        assert_eq!(startup(&cfg), Ok(()));
+        let r = startup(&cfg);
+        #[cfg(feature = "ort-inference")]
+        {
+            let Err(CascadeFailure::ModelsNotConfigured) = r else {
+                panic!("ожидан ModelsNotConfigured, получено {r:?}");
+            };
+            // Текст причины — часть контракта (по образцу BuiltWithoutInference):
+            // оператор читает stderr, а не код. Без ПДн, с именем переменной.
+            let text = CascadeFailure::ModelsNotConfigured.to_string();
+            assert!(
+                text.contains("FASAD_MODEL_DIR"),
+                "в тексте нет имени переменной: {text}"
+            );
+            assert!(
+                text.contains("models/README.md"),
+                "в тексте нет пути к инструкции: {text}"
+            );
+        }
+        #[cfg(not(feature = "ort-inference"))]
+        assert_eq!(
+            r,
+            Ok(()),
+            "каскад-0-бинарь (харнес-контур) без весов стартует"
+        );
         assert_eq!(cfg.stage(), "cascade-0-only");
     }
 }

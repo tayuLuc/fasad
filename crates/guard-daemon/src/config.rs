@@ -453,6 +453,11 @@ impl Config {
     /// `ort-inference` (или веса не загрузились) — демон не поднимается вовсе
     /// ([`crate::cascades::startup`]), потому что молчаливая деградация до
     /// каскада 0 при обещанных весах = fail-open на recall.
+    ///
+    /// Рюлинг #185 (22.10) закрыл и обратную сторону: full-бинарь (фича
+    /// `ort-inference`) без `model_dir` тоже не стартует
+    /// (`CascadeFailure::ModelsNotConfigured`) — `cascade-0-only` в релизном
+    /// контуре недостижим, каскад-0 = харнес/тесты, не продакшн.
     #[must_use]
     pub fn stage(&self) -> &'static str {
         if self.model_dir.is_some() {

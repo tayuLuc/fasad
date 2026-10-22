@@ -247,7 +247,7 @@ else
     ( cd "$stage" && sha256sum -c SHA256SUMS.txt )
 fi
 
-# 3. Бинарь извлекается, запускается и отвечает. Порт = 0 (свободный),
+# 3. Бинарь извлекается и проверяется живым прогоном. Порт = 0 (свободный),
 #    адрес берётся из banner'а.
 bin="$stage/bin/fasad"
 [ -x "$bin" ] || bin="$stage/bin/fasad.exe"
@@ -255,33 +255,47 @@ bin="$stage/bin/fasad"
     printf 'verify-bundle: ОШИБКА: bin/fasad не исполняемый (потеряны права при упаковке)\n' >&2
     exit 1
 }
+# ── ЗУБ Г (#185): full-бинарь БЕЗ FASAD_MODEL_DIR = отказ старта ─────────────
+# Рюлинг оператора 22.10: каскад-0 — НЕ продукт; бандл метится `-full`, и его
+# бинарь без названных весов обязан отказать (rc=2, ModelsNotConfigured), а не
+# молча обслуживать cascade-0-only. Прежняя нога («старт без весов → баннер +
+# /health stage=cascade-0-only как легальная стадия») убита правкой старта:
+# тот же прогон красным = молчаливая деградация вернулась в релизный контур.
+# Контура «бинарь бандла живой, stage=cascade-0-only» в релизе больше НЕТ:
+# живой сокет доказывает ЗУБ Б (веса + FASAD_MODEL_DIR → cascade-0+models),
+# дискриминатор «бинарь без орта» = ЗУБ В (BuiltWithoutInference).
+# env `-u FASAD_MODEL_DIR`: на mac-контуре CI шаг fetch-models экспортирует
+# кеш в GITHUB_ENV (он же нужен зубу Б ниже) — без удаления переменных зуб Г
+# краснел бы на собственной машине (full-бинарь С весами стартует легально).
 log="$(mktemp)"
-FASAD_PORT=0 "$bin" >"$log" 2>&1 &
+env -u FASAD_MODEL_DIR FASAD_PORT=0 "$bin" >"$log" 2>&1 &
 pid="$!"
-port=""
+rc=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-    port="$(sed -n 's#.*listening on http://127\.0\.0\.1:\([0-9]*\)/health.*#\1#p' "$log" | head -1)"
-    [ -n "$port" ] && break
+    kill -0 "$pid" 2>/dev/null || break
     sleep 0.3
 done
-[ -n "$port" ] && [ "$port" != "0" ] || {
-    printf 'verify-bundle: ОШИБКА: демон не поднялся, banner:\n' >&2
-    cat "$log" >&2
-    exit 1
-}
-
-health="$(curl -sS --fail --max-time 5 "http://127.0.0.1:${port}/health")"
-printf 'HEALTH|%s\n' "$health"
-# Контур бандла метится в двух местах: имя артефакта (-full, #181) и /health.
-# Стадия без весов = cascade-0-only — легальная стадия ПОЛНОГО бинаря
-# (`FASAD_MODEL_DIR` не задан → конвейер каскада 0, cascades.rs:639-641),
-# а не метка «бинарь без орта»: контур бинаря доказывает ЗУБ А ниже
-# (орт-зависимость в артефакте), наличие весов доказывает ЗУБ Б
-# (stage=cascade-0+models на смонтированном). Расхождение метки архива и
-# контура бинаря = бандл подписан не тем, чем является.
-printf '%s' "$health" | grep -q '"stage":"cascade-0-only"' || {
-    die "/health без весов не подтверждает cascade-0-only (ожидаемая стартовая стадия full-бинаря без FASAD_MODEL_DIR)"
-}
+if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    rm -f "$log"
+    die "ЗУБ Г: full-бинарь бандла поднялся БЕЗ FASAD_MODEL_DIR (ожидание: отказ старта, #185) — молчаливая деградация в релизном контуре"
+fi
+# `wait` — без редиректа stderr (урок ЗУБа В 22.10: `2>/dev/null` на встроенной
+# wait делает её «недожидной», следующая команда под `set -e` умирает молча);
+# rc читаем через `|| rc=$?`, не присваиванием.
+rc=0
+wait "$pid" || rc=$?
+if [ "$rc" -eq 0 ]; then
+    rm -f "$log"
+    die "ЗУБ Г: full-бинарь бандла без FASAD_MODEL_DIR завершился rc=0 (ожидание: 2, #185)"
+fi
+grep -q "FASAD_MODEL_DIR" "$log" \
+    || { c0tail="$(head -c 400 "$log")"; rm -f "$log"; die "ЗУБ Г: отказ без FASAD_MODEL_DIR в stderr (причина не названа, #185): $c0tail"; }
+grep -q "listening" "$log" \
+    && { c0tail="$(head -c 400 "$log")"; rm -f "$log"; die "ЗУБ Г: баннер напечатан до отказа (#185): $c0tail"; }
+rm -f "$log"
+printf 'REFUSAL|ok|rc=%s|full-бинарь без FASAD_MODEL_DIR = отказ старта (#185, ModelsNotConfigured)\n' "$rc"
 # ── ЗУБ А: бинарь бандла = орт-контур (full) ────────────────────────────────
 # Та же логика, что full_probe в make-bundle.sh (первичка ort-sys
 # build/dynamic_link.rs/static_link): mac/linux — динамическая зависимость,
@@ -309,58 +323,14 @@ case "$(uname -s)" in
         printf 'ORT|ok|win: маркер орт-статики в bin/fasad.exe\n'
         ;;
 esac
+# 4. Живой HTTP-контур бандла = смонтированный демон ЗУБа Б (weights +
+#    `FASAD_MODEL_DIR`): после рюлинга #185 full-бинарь без весов не стартует
+#    (ЗУБ Г выше), и каскад-0-сокета в релизном контуре больше нет. Версия
+#    демона (`ver_health`) и анализ (`/v1/analyze`) берутся из mounted-ноги
+#    (блок ЗУБ Б ниже, `$mhealth`/`$mport`); на win/linux без доставки весов
+#    (SKIPPED-нога) живого сокета нет, и эти две проверки печатают SKIPPED с
+#    причиной — молчание = ложно-зелёная проверка (класс реестра).
 ver_archive="$(printf '%s' "$(basename "$arch")" | sed -n 's/^fasad-\([0-9][0-9.]*\)-.*/\1/p')"
-ver_health="$(printf '%s' "$health" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
-[ "$ver_archive" = "$ver_health" ] || {
-    printf 'verify-bundle: ОШИБКА: версия архива %s ≠ версия демона %s\n' \
-        "$ver_archive" "$ver_health" >&2
-    exit 1
-}
-if [ -n "$EXPECT_VERSION" ]; then
-    # Третья точка того же ожидания: версия, вкомпилированная в бинарь из
-    # архива (crate-версия guard-daemon). Тег обязан совпасть и с ней, иначе
-    # «Cargo.toml подняли после сборки» даёт свежий тег над старым бинарём.
-    [ "$exp" = "$ver_health" ] || {
-        die "тег $EXPECT_VERSION (версия $exp) ≠ версия демона в бандле $ver_health"
-    }
-    printf 'VERSION|ok|ref=%s|daemon=%s\n' "$EXPECT_VERSION" "$ver_health"
-fi
-
-# 4. Анализ прогона: спаны возвращаются, policy-заголовок живёт. Поле спана —
-#    `entity_type` (промер живого ответа /v1/analyze 21.10:
-#    `[{"entity_type":"inn","start":…,"score":1.0,"class":"inn","source":"checksum_rf",
-#       "verdict":"mask_surrogate","validator":"inn10"}]`), а не `category`/`span_id`.
-req='{"text":"ИНН 7707083893, телефон +79161234567, паспорт 45 09 123456"}'
-# `curl --fail` при HTTP-ошибке возвращается 22, а под `set -euo pipefail` это
-# обрывает скрипт на присваивании без единой строки диагностики (тот же класс,
-# что у счётчика спанов ниже). Причина отказа обязана называться самим скриптом.
-analyze="$(curl -sS --fail --max-time 10 -H 'content-type: application/json' \
-    -H 'x-guard-policy: mask' -X POST "http://127.0.0.1:${port}/v1/analyze" -d "$req")" || {
-    die "/v1/analyze от бандла не ответил (HTTP-ошибка или таймаут), порт $port"
-}
-# Голый `grep -o` без совпадения возвращается 1 и под pipefail убивает скрипт на
-# присваивании: при нуле спанов собственное сообщение «вернул пустой список
-# спанов» не печаталось (позитивный контроль 21.10 — ИНН с битой чексуммой,
-# rc=1 без диагностики). Ноль — законное значение счётчика.
-spans="$(printf '%s' "$analyze" | { grep -o '"entity_type"' || true; } | wc -l | tr -d ' ')"
-printf 'ANALYZE|spans=%s\n' "$spans"
-[ "$spans" -ge 1 ] || {
-    die "/v1/analyze вернул пустой список спанов: $analyze"
-}
-# Счётчик спанов сам по себе слаб (ревью #76, F5): зелёным остаётся любой
-# мусорный спан, а регресс ИНН-валидатора — главного цифрового класса нашей
-# схемы — прошёл бы незамеченным. Требуем конкретный спан на заведомо валидном
-# номере: класс inn И источник checksum_rf через валидатор inn10.
-printf '%s' "$analyze" | grep -q '"entity_type":"inn"' || {
-    die "ИНН 7707083893 (валидный inn10) не найден бандлом: $analyze"
-}
-printf '%s' "$analyze" | grep -q '"validator":"inn10"' || {
-    die "inn-спан найден не чексумма-валидатором inn10: $analyze"
-}
-printf 'ANALYZE|inn10=ok\n'
-
-kill "$pid" 2>/dev/null || true
-wait "$pid" 2>/dev/null || true
 
 # ── ЗУБ Б/В: полный контур с весами (FASAD_MODEL_DIR) ───────────────────────
 # Контур #181: релизный бандл = full (рюлинг оператора 22.10), и гейт обязан
@@ -515,6 +485,56 @@ if [ "$weights_present" -eq 1 ]; then
     printf '%s' "$manalyze" | grep -q '"person_name"' \
         || die "ЗУБ Б: ФИО-спан (person_name) не найден на смонтированном контуре — модельный путь не жив: $manalyze"
     printf 'MOUNTED|ok|stage=cascade-0+models|person_name=ok|кеш=%s\n' "$model_dir"
+    # 4 (live-нога). Версия демона и чексумма-контур берутся от mounted-демона:
+    # после #185 каскад-0-сокета в релизном контуре нет, живой HTTP = нога Б.
+    ver_health="$(printf '%s' "$mhealth" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
+    [ "$ver_archive" = "$ver_health" ] || {
+        printf 'verify-bundle: ОШИБКА: версия архива %s ≠ версия демона %s\n' \
+            "$ver_archive" "$ver_health" >&2
+        exit 1
+    }
+    if [ -n "$EXPECT_VERSION" ]; then
+        # Третья точка того же ожидания: версия, вкомпилированная в бинарь из
+        # архива (crate-версия guard-daemon). Тег обязан совпасть и с ней, иначе
+        # «Cargo.toml подняли после сборки» даёт свежий тег над старым бинарём.
+        [ "$exp" = "$ver_health" ] || {
+            die "тег $EXPECT_VERSION (версия $exp) ≠ версия демона в бандле $ver_health"
+        }
+        printf 'VERSION|ok|ref=%s|daemon=%s\n' "$EXPECT_VERSION" "$ver_health"
+    fi
+    # Чексумма-контур (каскад 0 на смонтированном): спаны возвращаются,
+    # policy-заголовок живёт. Поле спана — `entity_type` (промер живого ответа
+    # /v1/analyze 21.10: `[{"entity_type":"inn","start":…,"score":1.0,"class":
+    # "inn","source":"checksum_rf","verdict":"mask_surrogate","validator":
+    # "inn10"}]`), а не `category`/`span_id`.
+    # `curl --fail` при HTTP-ошибке возвращается 22, а под `set -euo pipefail` это
+    # обрывает скрипт на присваивании без единой строки диагностики (тот же класс,
+    # что у счётчика спанов ниже). Причина отказа обязана называться самим скриптом.
+    analyze="$(curl -sS --fail --max-time 10 -H 'content-type: application/json' \
+        -H 'x-guard-policy: mask' -X POST "http://127.0.0.1:${mport}/v1/analyze" \
+        -d '{"text":"ИНН 7707083893, телефон +79161234567, паспорт 45 09 123456"}')" || {
+        die "/v1/analyze от бандла не ответил (HTTP-ошибка или таймаут), порт $mport"
+    }
+    # Голый `grep -o` без совпадения возвращается 1 и под pipefail убивает скрипт на
+    # присваивании: при нуле спанов собственное сообщение «вернул пустой список
+    # спанов» не печаталось (позитивный контроль 21.10 — ИНН с битой чексуммой,
+    # rc=1 без диагностики). Ноль — законное значение счётчика.
+    spans="$(printf '%s' "$analyze" | { grep -o '"entity_type"' || true; } | wc -l | tr -d ' ')"
+    printf 'ANALYZE|spans=%s\n' "$spans"
+    [ "$spans" -ge 1 ] || {
+        die "/v1/analyze вернул пустой список спанов: $analyze"
+    }
+    # Счётчик спанов сам по себе слаб (ревью #76, F5): зелёным остаётся любой
+    # мусорный спан, а регресс ИНН-валидатора — главного цифрового класса нашей
+    # схемы — прошёл бы незамеченным. Требуем конкретный спан на заведомо валидном
+    # номере: класс inn И источник checksum_rf через валидатор inn10.
+    printf '%s' "$analyze" | grep -q '"entity_type":"inn"' || {
+        die "ИНН 7707083893 (валидный inn10) не найден бандлом: $analyze"
+    }
+    printf '%s' "$analyze" | grep -q '"validator":"inn10"' || {
+        die "inn-спан найден не чексумма-валидатором inn10: $analyze"
+    }
+    printf 'ANALYZE|inn10=ok\n'
     rm -f "$mlog"
 else
     # Нет весов. На mac это красным: mac-контур релиза обязан нести доставку
@@ -529,6 +549,14 @@ else
             ;;
     esac
     printf 'MOUNTED|SKIPPED|весов нет в %s — win/linux-контур CI без доставки весов (#181); unit-доказательства: cascades.rs startup-тесты\n' "$model_dir"
+    # Живого сокета нет (full-бинарь без весов не стартует, #185), и версия
+    # демона из /health недоступна: обе live-проверки печатают SKIPPED с
+    # причиной (молчание = ложно-зелёная проверка, класс реестра). Тег↔версия
+    # на этой ноге покрывается второй точкой (Cargo.toml, блок EXPECT_VERSION
+    # выше) и `gh release create --verify-tag` (job release).
+    printf 'VERSION|SKIPPED|version демона читается из /health mounted-ноги (win/linux CI без весов = нет живой ноги, #185)\n'
+    printf 'ANALYZE|SKIPPED|чексумма-контур меряется на mounted-демоне (win/linux CI без весов = нет живой ноги, #185)\n'
+    ver_health="SKIPPED"
 fi
 
 # 5. Платформенный контур (#128/#140): бандл обязан нести ровно то, что
@@ -553,39 +581,79 @@ case "$os" in
             || die "linux-бандл нёс трей-бинарь: linux-сборка фичи tray невозможна (§16)"
         ;;
     Darwin | MINGW* | MSYS* | CYGWIN*)
-        # win/mac-бандл = трей: бинарь обязан быть, исполняемым, запускаться
-        # и отвечать (headless-бинарь проверяется п.3; этот = витрина).
+        # win/mac-бандл = трей: бинарь обязан быть и исполняться (headless-
+        # бинарь проверяется п.3; этот = витрина). #181: трей = тот же
+        # main.rs + ort-контур, значит #185-отказ без весов обязан сработать
+        # и здесь (headless-нога = ЗУБ Г выше, трей-бинарь = свой прогон).
+        # Живой сокет трея меряется ТОЛЬКО с весами (нога weights_present=1):
+        # на win/linux-ячейках доставки весов нет, и трей-контур =
+        # refusal-проверка + SKIPPED-строка, а не красная ложь.
         tray_bin="$stage/bin/fasad-tray"
         [ "$os" = Darwin ] || tray_bin="$stage/bin/fasad-tray.exe"
         [ -x "$tray_bin" ] || {
             [ -x "$stage/bin/fasad-tray.exe" ] || die "win/mac-бандл без bin/fasad-tray (#128)"
             tray_bin="$stage/bin/fasad-tray.exe"
         }
+        # Нога 1 (#185): трей без весов = отказ старта (rc≠0, причина, баннера нет).
         tray_log="$(mktemp)"
-        FASAD_PORT=0 "$tray_bin" >"$tray_log" 2>&1 &
+        env -u FASAD_MODEL_DIR FASAD_PORT=0 "$tray_bin" >"$tray_log" 2>&1 &
         tray_pid="$!"
-        tray_port=""
+        trc=0
         for _ in 1 2 3 4 5 6 7 8 9 10; do
-            tray_port="$(sed -n 's#.*listening on http://127\.0\.0\.1:\([0-9]*\)/health.*#\1#p' "$tray_log" | head -1)"
-            [ -n "$tray_port" ] && break
+            kill -0 "$tray_pid" 2>/dev/null || break
             sleep 0.3
         done
-        [ -n "$tray_port" ] && [ "$tray_port" != "0" ] || {
-            printf 'verify-bundle: ОШИБКА: трей-бинарь не поднялся, banner:\n' >&2
-            cat "$tray_log" >&2
-            exit 1
-        }
-        tray_health="$(curl -sS --fail --max-time 5 "http://127.0.0.1:${tray_port}/health")" || {
-            die "трей-бинарь не ответил на /health (порт $tray_port)"
-        }
-        printf '%s' "$tray_health" | grep -q '"stage":"cascade-0-only"' || {
-            die "трей-бинарь: /health не подтверждает cascade-0-only: $tray_health"
-        }
-        printf 'TRAY|ok|port=%s\n' "$tray_port"
-        kill "$tray_pid" 2>/dev/null || true
-        wait "$tray_pid" 2>/dev/null || true
+        if kill -0 "$tray_pid" 2>/dev/null; then
+            kill "$tray_pid" 2>/dev/null || true
+            wait "$tray_pid" 2>/dev/null || true
+            rm -f "$tray_log"
+            die "ЗУБ Г (трей): fasad-tray поднялся БЕЗ FASAD_MODEL_DIR (ожидание: отказ старта, #185 — трей = full-контур, #181)"
+        fi
+        trc=0
+        wait "$tray_pid" || trc=$?
+        [ "$trc" -ne 0 ] || { rm -f "$tray_log"; die "ЗУБ Г (трей): fasad-tray без весов завершился rc=0 (ожидание: 2, #185)"; }
+        grep -q "FASAD_MODEL_DIR" "$tray_log" \
+            || { tr0="$(head -c 400 "$tray_log")"; rm -f "$tray_log"; die "ЗУБ Г (трей): отказ без FASAD_MODEL_DIR в stderr: $tr0"; }
+        rm -f "$tray_log"
+        printf 'REFUSAL|ok|tray|rc=%s|трей без FASAD_MODEL_DIR = отказ старта (#185)\n' "$trc"
+        # Нога 2 (только с весами): смонтированный трей обязан поднять сокет и
+        # отдать cascade-0+models (pre-#185 контур «cascade-0-only» без весов
+        # мёртв, живой трей-контур = product-контур с model_dir).
+        if [ "$weights_present" -eq 1 ]; then
+            tray_log="$(mktemp)"
+            FASAD_PORT=0 FASAD_MODEL_DIR="$model_dir" FASAD_THREADS="${FASAD_THREADS:-2}" \
+                FASAD_TIMEOUT_MS=10000 nice -n 10 "$tray_bin" >"$tray_log" 2>&1 &
+            tray_pid="$!"
+            tray_port=""
+            for _ in $(seq 1 60); do
+                tray_port="$(sed -n 's#.*listening on http://127\.0\.0\.1:\([0-9]*\)/health.*#\1#p' "$tray_log" | head -1)"
+                [ -n "$tray_port" ] && [ "$tray_port" != "0" ] && break
+                kill -0 "$tray_pid" 2>/dev/null \
+                    || { cat "$tray_log" >&2; die "трей-бинарь (с весами) умер на старте: banner:"; }
+                sleep 0.5
+            done
+            [ -n "$tray_port" ] && [ "$tray_port" != "0" ] || {
+                printf 'verify-bundle: ОШИБКА: трей-бинарь не поднялся за 30 с, banner:\n' >&2
+                cat "$tray_log" >&2
+                exit 1
+            }
+            tray_health="$(curl -sS --fail --max-time 5 "http://127.0.0.1:${tray_port}/health")" || {
+                die "трей-бинарь не ответил на /health (порт $tray_port)"
+            }
+            printf '%s' "$tray_health" | grep -q '"stage":"cascade-0+models"' || {
+                die "трей-бинарь: /health не подтверждает cascade-0+models (трей = full-контур с весами, #181/#185): $tray_health"
+            }
+            printf 'TRAY|ok|port=%s|stage=cascade-0+models\n' "$tray_port"
+            kill "$tray_pid" 2>/dev/null || true
+            wait "$tray_pid" 2>/dev/null || true
+            rm -f "$tray_log"
+        else
+            printf 'TRAY|SKIPPED|живой трей-контур требует весов (%s); отказ без весов промёрт, стадия не мерялась (#185)\n' "$model_dir"
+        fi
         ;;
 esac
-rm -f "$log"
-printf 'verify-bundle ok: бандл %s распакован, хэши совпали, демон отвечает (version=%s)\n' \
+# `$log` (refusal-нога) убран самим зубом Г; `$health` (версия) = mounted-нога
+# (#185: живой каскад-0-сокет в релизе невозможен, «демон отвечает» = stage
+# cascade-0+models).
+printf 'verify-bundle ok: бандл %s распакован, хэши совпали, mounted-контур проверен (version=%s)\n' \
     "$(basename "$arch")" "$ver_health"

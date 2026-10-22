@@ -59,6 +59,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 2. `/health` обязан родиться с честным `stage`: `model_dir` назван, а
     //    каскады не поднялись — это отказ старта, а не «cascade-0+models» на
     //    пустых весах (fail-closed, AGENTS).
+    // 3. рюлинг #185: full-бинарь (фича `ort-inference`) без `FASAD_MODEL_DIR`
+    //    отказывает здесь же (`ModelsNotConfigured`) — молчаливого
+    //    `cascade-0-only` в релизном контуре нет; stage каскад-0-only легален
+    //    только харнесам/тестам (бинарь без фичи).
     if let Err(e) = guard_daemon::cascades::startup(&cfg) {
         refuse_startup(&e);
     }

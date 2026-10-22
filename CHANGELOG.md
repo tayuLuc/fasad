@@ -33,6 +33,7 @@
 - `just dist` красен на mac/win (пустой массив под `set -u`, bash 3.2/4.4) (#183 ревью).
 - `actionlint`: `runner.home` не существует в workflow-выражениях (#183).
 - CI: rust-cache пин v2.8.7 = verified sha (#142).
+- Full-бинарь (фича `ort-inference`) без `FASAD_MODEL_DIR` отказывается стартовать (`ModelsNotConfigured`, rc=2, текст причины): молчаливой деградации до каскад-0-only нет — каскад-0 = харнес/тесты, не продакшн (рюлинг оператора 22.10; unit + e2e + зуб Г verify-bundle + шаг-зуб release.yml; RAM-гейт CI меряется каскад-0-артефактом в target-c0) — #185.
 
 ### Removed
 - (пусто)

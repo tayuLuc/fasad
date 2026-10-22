@@ -32,6 +32,18 @@ struct Daemon {
 
 impl Daemon {
     fn start(env: &[(&str, &str)]) -> Self {
+        // #185: full-бинарь (feature `ort-inference`) без весов не стартует —
+        // live-контур файла (UI-протокол, каскад-0-ожидания, ревью #87) =
+        // feature-off бинарь; на ort-контуре — явная SKIPPED-строка и rc=0
+        // (молчание = ложно-зелёная проверка, тот же контракт, что wire_e2e).
+        if cfg!(feature = "ort-inference") {
+            eprintln!(
+                "SKIP|ui_sandbox|full-бинарь (#185) без весов не стартует; live-контур \
+                 файла = каскад-0-ожидания (ревью #87), ort-контур покрыт unit-тестами \
+                 http.rs/cascades.rs"
+            );
+            std::process::exit(0);
+        }
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fasad"));
         cmd.env("FASAD_BIND", "127.0.0.1")
             .env("FASAD_PORT", "0")

@@ -10,7 +10,9 @@
 # (`guard-vault::cache`, вес записи = длина оригинала).
 #
 # Метод.
-# 1. Дефолтный `Config` (стадия cascade-0-only, без весов): изолирует контур
+# 1. Дефолтный `Config` (каскад-0-бинарь без фичи, без весов — #185: full-бинарь
+#    без FASAD_MODEL_DIR не стартует, скрипт краснеет на env с MODEL_DIR):
+#    изолирует контур
 #    хранилища от 976 MiB каскадов 1–2. Числа этого промера — про дельту
 #    потолков, а не про бюджет SPEC §1; бюджет меряет measure-daemon-rss.sh.
 # 2. `FASAD_VAULT_MODE=session`, `FASAD_THREADS=2` (рюлинг 21.10), `FASAD_MLOCK`
@@ -46,6 +48,18 @@ THREADS="${FASAD_THREADS:-2}"
 BUDGET_MIB="${BUDGET_MIB:-1843.2}"
 BIN="${DSH_FASAD_BIN:-target/release/fasad}"
 PORT="${FASAD_PORT:-18250}"
+# Контур замера = каскад-0-стадия (п.1 шапки: «изолирует контур хранилища от
+# 976 MiB каскадов 1–2»). #185: full-бинарь без весов не стартует
+# (ModelsNotConfigured), поэтому каскад-0-стадия = бинарь БЕЗ фичи
+# `ort-inference` (харнес-контур, `cargo build --release -p guard-daemon`);
+# запускать этот скрипт на орт-контурном `target/release/fasad` = демон
+# откажется стартовать. FASAD_MODEL_DIR в env = красным: унаследованная
+# переменная на машине с кешем монтировала бы каскады в контур, изолирующий
+# хранилище (тот же класс, что `Daemon::start` в wire_e2e, ревью #87).
+if [[ -n "${FASAD_MODEL_DIR:-}" ]]; then
+  echo "measure-vault-cap-rss: ОШИБКА: артефакт непригоден: FASAD_MODEL_DIR=$FASAD_MODEL_DIR задан — контур #120 меряется каскадом 0 (бинарь без фичи, без весов, п.1 шапки; #185)" >&2
+  exit 2
+fi
 SESSIONS="${1:-256}"
 REQS="${2:-4}"
 

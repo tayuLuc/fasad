@@ -22,24 +22,25 @@
 [just](https://github.com/casey/just) для контракта команд.
 
 ```sh
-cargo build --release -p guard-daemon
+cargo build --release -p guard-daemon --features guard-daemon/ort-inference
+export FASAD_MODEL_DIR="$HOME/.cache/fasad-models"   # scripts/fetch-models.sh
 ./target/release/fasad
 ```
 
-Баннер прогона (запуск без единой переменной окружения, порт по умолчанию 8765;
-промер 22.10 на headless-бинаре без фичей — тот, что даёт команда выше):
-
-```
-fasad 0.1.0 cascade-0-only, listening on http://127.0.0.1:8765/health (классов схемы: 8, vault: stateless/strict, ключ: ephemeral)
-```
-
-На смонтированной сборке с весами (команда и раскладка — §«Как включить монтаж
-каскадов 1–2» в [crates/guard-daemon/README.md](crates/guard-daemon/README.md);
-`FASAD_MODEL_DIR` задан, `FASAD_THREADS=2`; промер 22.10, на этом процессе
-устроена вся витрина §2):
+Баннер смонтированного прогона (продуктовый контур #181/#185: full-бинарь +
+веса, порт по умолчанию 8765; промер 22.10, на этом процессе устроена вся
+витрина §2; команда и раскладка монтажа — §«Как включить монтаж каскадов
+1–2» в [crates/guard-daemon/README.md](crates/guard-daemon/README.md),
+`FASAD_THREADS=2`):
 
 ```
 fasad 0.1.0 cascade-0+models, listening on http://127.0.0.1:8765/health (классов схемы: 8, vault: stateless/strict, ключ: ephemeral)
+```
+
+Без `FASAD_MODEL_DIR` full-бинарь не стартует (#185, код 2):
+
+```
+fasad: старт невозможен: FASAD_MODEL_DIR не задан: полный контур требует весов (models/README.md в бандле); каскад-0-only — не продакшн-режим
 ```
 
 ```sh
@@ -47,7 +48,7 @@ curl -s localhost:8765/health
 ```
 
 ```json
-{"version":"0.1.0","stage":"cascade-0-only","mode":"stateless","vault":{"surrogate_fallbacks":0,"unrestored_mismatch":0}}
+{"version":"0.1.0","stage":"cascade-0+models","mode":"stateless","vault":{"surrogate_fallbacks":0,"unrestored_mismatch":0}}
 ```
 
 Переменные окружения (значения — из `crates/guard-daemon/src/config.rs`, номер
@@ -59,7 +60,7 @@ curl -s localhost:8765/health
 | `FASAD_BIND` | 127.0.0.1 (config.rs:28) | только loopback: на внешний адрес демон стартовать отказывается |
 | `FASAD_VAULT_MODE` | `stateless` | `stateless`/`3` = SPEC §3.3, `session`/`2` = SPEC §3.2 (таблица §4 ниже) |
 | `FASAD_VAULT_KEY` | нет (ключ эфемерный) | 64 hex-символа (32 байта); с ним обратимость переживает перезапуск (vault.rs:406) |
-| `FASAD_THREADS` | 8 (config.rs:76) | потоки инференса; **жив на смонтированном пути каскадов 1–2**: `cfg.threads` (config.rs:423) уходит в `LockrExtractor::load` и `DecideArbiter::load` (`cascades.rs:750` → `cascades.rs:867,869`) — монтаж #87, в main с `3b2d596` (первичка новой правды: AGENTS §3 п.3). На стадии `cascade-0-only` инертен: значение разбирается, а единственным потребителем поля в демоне остаётся тест config.rs:638 — до сессий ORT оно не доходит. Номера строк пересняты live-grep'ом на этом дереве (прежние `:67`/`:403`/`:610` сняты на `bfb0014`). Харнесы каскадов — рычагом `--threads 2` (рюлинг CPU, AGENTS §3) |
+| `FASAD_THREADS` | 8 (config.rs:76) | потоки инференса; **жив на смонтированном пути каскадов 1–2**: `cfg.threads` (config.rs:423) уходит в `LockrExtractor::load` и `DecideArbiter::load` (`cascades.rs:750` → `cascades.rs:867,869`) — монтаж #87, в main с `3b2d596` (первичка новой правды: AGENTS §3 п.3). На стадии `cascade-0-only` (каскад-0-бинарь харнесов/тестов; full-бинарь без весов не стартует, #185) инертен: значение разбирается, а единственным потребителем поля в демоне остаётся тест config.rs:638 — до сессий ORT оно не доходит. Номера строк пересняты live-grep'ом на этом дереве (прежние `:67`/`:403`/`:610` сняты на `bfb0014`). Харнесы каскадов — рычагом `--threads 2` (рюлинг CPU, AGENTS §3) |
 | `FASAD_MLOCK` | `strict` (config.rs:411) | `strict`/`best_effort` — политика залочки буферов ПДн; деградация видна в баннере (`main.rs:91-99`), в `/health` её поля нет — там `version`/`stage`/`mode` и счётчики vault (`http.rs:157-169`) |
 | `FASAD_GRAY_LO`, `FASAD_GRAY_HI` | 0.22 / 0.80 (config.rs:59,62) | полоса неуверенности |
 | `FASAD_TAU_LOW`, `FASAD_TAU_HIGH` | 0.20 / 0.80 (guard-onnx/src/routing.rs:70,74) | пороги; инвариант `low ≤ gray_lo < gray_hi ≤ high`, рассогласование = отказ старта |
@@ -68,7 +69,7 @@ curl -s localhost:8765/health
 | `FASAD_UPSTREAM_ALLOWLIST` | пусто = прокси выключен | список `host[:port]`, куда пускать `X-Upstream-URL` |
 | `FASAD_PROXY_LOOPBACK_HTTP` | выключен | разрешить `http://` только на loopback (для локального стенда) |
 | `FASAD_SCHEMA` | нет (схема встроена) | путь к своей схеме классов; канон встроенной — `config/schema.default.json` (`schema.rs:24`), поле — config.rs:267 |
-| `FASAD_MODEL_DIR` | нет | каталог весов каскадов 1–2; **на смонтированной сборке читается**: разбор — config.rs:424, метка стадии `cascade-0+models` — `config.rs:457`. Стартовый precheck четырёх файлов (`cascades.rs:752-765`, вход — `cascades.rs:742` через `cascades.rs:638`): весов нет или бинарь собран без фичи `ort-inference` — демон не поднимается (exit 2, сокет не биндится, в stderr имя файла; промер 21.10 на пустом каталоге). Раскладка весов, команда сборки и dylib — §«Как включить монтаж каскадов 1–2» в [crates/guard-daemon/README.md](crates/guard-daemon/README.md), он владелец деталей |
+| `FASAD_MODEL_DIR` | нет (full-бинарь без него **не стартует**) | каталог весов каскадов 1–2; **на смонтированной сборке читается**: разбор — config.rs:424, метка стадии `cascade-0+models` — `config.rs:457`. Full-бинарь (фича `ort-inference`) без `FASAD_MODEL_DIR` отказывает старта́м (`ModelsNotConfigured`, `cascades.rs::startup`, #185: каскад-0-only — харнес/тесты, не продакшн). Стартовый precheck четырёх файлов (`cascades.rs:752-765`, вход — `cascades.rs:742` через `cascades.rs:638`): весов нет или бинарь собран без фичи `ort-inference` — демон не поднимается (exit 2, сокет не биндится, в stderr имя файла; промер 21.10 на пустом каталоге). Раскладка весов, команда сборки и dylib — §«Как включить монтаж каскадов 1–2» в [crates/guard-daemon/README.md](crates/guard-daemon/README.md), он владелец деталей |
 
 ## 2. Три запроса, ради которых продукт ставят
 
@@ -233,7 +234,9 @@ allowlist (`https://api.openai.com/…`) этот rig отвечает `403`
 Контур релизного бандла = **full** (#181, рюлинг оператора 22.10): бинари
 собранны с `ort-inference`, модели каскадов 1–2 скачиваются инструкцией бандла
 (`scripts/fetch-models.sh`, sha256-гейт), `FASAD_MODEL_DIR` включает монтаж;
-без весов работает каскад-0 (стадия в `/health`). Числа витрины §2 сняты на
+full-бинарь **требует** `FASAD_MODEL_DIR`: старт без весов = отказ с текстом
+причины (код 2, `ModelsNotConfigured`), молчаливой деградации до каскада-0 нет
+— каскад-0-only = харнес/тесты, не продакшн (#185). Числа витрины §2 сняты на
 смонтированном контуре и остаются её первичкой.
 
 Три артефакта бандла — три контура запуска (первичка —
@@ -318,7 +321,8 @@ Stateless-контур (режим по умолчанию) на том же т�
    его не понижает (AGENTS); в примере выше источник спана — `checksum_rf`,
    валидатор `inn10`.
 2. `person_name` каскадом 0 **не находится никогда**: его ищет
-   токеноклассификатор каскада 1+. В промере §2 (демон без весов) из «Ушакова
+   токеноклассификатор каскада 1+. В промере §2 (каскад-0-контур: харнес-бинарь
+   без весов; full-бинарь без весов не стартует с #185) из «Ушакова
    Кира Саввична, ИНН …» найдены ИНН и СНИЛС, имени нет. С монтажом каскадов
    (#87, п.4 этого же списка) ФИО находит этот же демон: на тексте §2 — три
    `person_name`-спана с `source: gliner_extractor`, числа — в п.4.
@@ -365,9 +369,10 @@ Stateless-контур (режим по умолчанию) на том же т�
    в баннере, в `/health` и в заголовке `X-Guard-Stage`
    ([docs/daemon-scope.md](docs/daemon-scope.md), §«Деградация каскада»), а лег
    каскада 2 видно per-request в `X-Guard-Cascade2` (`http.rs:56`,
-   SPEC §8:344-347). Без весов конвейер остаётся каскадом 0 — это легальный
-   режим, не деградация; задан `FASAD_MODEL_DIR`, а веса не загрузились — старт
-   отказывает (строка `FASAD_MODEL_DIR` в таблице §1). Раскладка весов и команда
+   SPEC §8:344-347). Full-бинарь без весов не стартует (#185:
+   `ModelsNotConfigured`, fail-closed — stage каскад-0-only = харнес/тесты, не
+   продакшн); задан `FASAD_MODEL_DIR`, а веса не загрузились — тоже отказ
+   старта (строка `FASAD_MODEL_DIR` в таблице §1). Раскладка весов и команда
    сборки — §«Как включить монтаж каскадов 1–2» в
    [crates/guard-daemon/README.md](crates/guard-daemon/README.md); харнес
    `crates/guard-onnx/examples/` при этом остаётся мерой качества (инвариант 7b).
@@ -438,7 +443,8 @@ Stateless-контур (режим по умолчанию) на том же т�
    не тихая потеря формы (потерянная форма дала бы partial-restore, то есть
    fail-open на данных); закреплено тестом
    `forms_cap_refuses_request_before_first_substitution` (`vault.rs:1530`). С
-   стадии `cascade-0-only` (`/v1/analyze` без весов) порога не достичь: форму
+   каскада-0 (стадия харнесов/тестов; full-бинарь без весов не стартует, #185)
+   порога не достичь: форму
    плодит подмена ФИО, а её детектор — каскад 1; на смонтированной сборке
    (ФИО-спаны витрины §2) счёт форм становится достижимым.
 4. Отсутствие `X-Guard-Redacted-Count` на 2xx-ответе маршрутов разбора и прокси
@@ -598,7 +604,8 @@ Stateless-контур (режим по умолчанию) на том же т�
 инференса потоки рычагом `--threads 2`, `nice -n 10`, один прогон за раз;
 готовая обёртка того же набора — `just local-test`. `OMP_NUM_THREADS` на нашей
 сборке инертен (вендорный `libonnxruntime` osx-arm64 собран без OpenMP), а
-`FASAD_THREADS` инертен на стадии `cascade-0-only` по причине из таблицы §1.
+`FASAD_THREADS` инертен на каскад-0-контуре харнесов/тестов по причине из
+таблицы §1 (full-бинарь без весов не стартует, #185).
 
 ## Ссылки
 

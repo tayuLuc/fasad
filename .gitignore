@@ -12,6 +12,12 @@ coverage/
 # python tooling (uv)
 .venv/
 **/target/
+# Изолированные target-dir (#139-класс: ключ `--features`/`--target-dir` делит
+# профиль, релизный артефакт затирается): `target-ort` (just
+# restore-integrity-full, #139), `target-c0` (RAM-гейт/зуб В релизного контура,
+# шаг release.yml #185). Паттерн, а не поштучные строки: следующий изолированный
+# dir попадает в игнор в момент появления (#137-класс ручных списков).
+target-*/
 # models: only manifest in git, no weights (внешние веса/данные — наружу; манифест models/manifest.md в гите)
 models/*
 !models/manifest.md

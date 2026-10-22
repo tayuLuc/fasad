@@ -19,9 +19,11 @@
 2. Полный контур = бинарь + веса + `FASAD_MODEL_DIR`. Веса (~879 МБ,
    манифест `models/manifest.tsv`) в архив не входят: бандл несёт
    `scripts/fetch-models.sh` + манифест + `models/README.md` (скачивание по
-   commit-шейа со сверкой sha256, fail-closed). Без весов полный бинарь
-   работает каскадом 0 — легальный режим, стадия `cascade-0-only` в
-   `/health`, это не деградация.
+   commit-шейа со сверкой sha256, fail-closed). Full-бинарь **требует**
+   `FASAD_MODEL_DIR`: без весов старт отказывает (`ModelsNotConfigured`,
+   код 2, причина в stderr — #185, рюлинг оператора 22.10), молчаливой
+   деградации до `cascade-0-only` нет; stage каскад-0-only = харнес/тесты
+   (каскад-0-бинарь без фичи), не продакшн-режим.
 3. Назвал `FASAD_MODEL_DIR`, а смонтировать нечем (бинарь без орт-контура
    или веса битые/отсутствуют) — демон **не стартует**
    (`CascadeFailure::BuiltWithoutInference` / `Load`, `cascades.rs:635-650`);
@@ -40,8 +42,13 @@
    3. ЗУБ В — дискриминатор: каскад-0-бинарь при `FASAD_MODEL_DIR` обязан
       отказать стартом (`BuiltWithoutInference`) — против каскад-0-артефакта
       под full-меткой.
-   4. Плюс прежние: хэши `SHA256SUMS.txt`, версия архива = версия демона,
-      тег = версия.
+   4. ЗУБ Г (#185) — full-бинарь бандла (headless и трей) БЕЗ
+      `FASAD_MODEL_DIR` обязан отказать стартом (`ModelsNotConfigured`,
+      rc=2, причина в stderr, баннера нет) — против молчаливой деградации
+      релиза; строка гейта `REFUSAL|ok`.
+   5. Плюс прежние: хэши `SHA256SUMS.txt`, версия архива = версия демона
+      (читается из `/health` mounted-ноги — живого каскад-0-сокета в релизе
+      нет, #185), тег = версия.
 5. Гард метки: `make-bundle.sh` краснеет на `--label cascade-0` — откат
    релизного контура возможен только через смену рюлинга (issue #181), не
    через флаг упаковки.
@@ -168,7 +175,7 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 | `FASAD_VAULT_MODE` | stateless-контур; значения `2\|3\|session\|stateless` | config.rs:345 |
 | `FASAD_MLOCK` | `strict` (`strict\|best_effort`) | config.rs:128-142 |
 | `FASAD_SCHEMA` | встроенный канон (`schema.default.json` в бандле) | config.rs:263, :425 |
-| `FASAD_MODEL_DIR` | нет = стадия `cascade-0-only`; задан = `cascade-0+models` на full-бинаре (отказ старта, если смонтировать нечем) | config.rs:424, cascades.rs:635-650 |
+| `FASAD_MODEL_DIR` | full-бинарь без него **не стартует** (#185, `ModelsNotConfigured`); задан = `cascade-0+models` (отказ старта, если смонтировать нечем) | config.rs:424, cascades.rs:635-650 |
 | `FASAD_UPSTREAM_ALLOWLIST` | пусто = наружу ходить некуда | config.rs:271, :431 |
 | `FASAD_PROXY_LOOPBACK_HTTP` | false | config.rs:277, :432 |
 
@@ -201,8 +208,10 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    «fasad {} {}, listening on http://{}/health (классов схемы: …)», значит
    регэксп порта в `scripts/measure-rss.sh` и `scripts/verify-bundle.sh`
    работает и после слияния.
-2. `/health`: на main остаются `version`, `stage` (тест http.rs:764 ждёт
-   `cascade-0-only`) и `mode`; наши проверки — подстроковые, новые поля
+2. `/health`: на main остаются `version`, `stage` (тест http.rs ждёт
+   `cascade-0-only` — unit-контур конфига без весов, легальный для feature-off;
+   full-бинарь без весов не стартует с #185, живого `cascade-0-only` в релизе
+   нет) и `mode`; наши проверки — подстроковые, новые поля
    (метрика #70) их не ломают.
 3. Контракт прогрева `/v1/anonymize` = `{text, spans}` (main:
    `vault.rs:141-148`, `spans: Vec<SpanIn>`) — тот же, на нём построен прогрев
@@ -291,7 +300,9 @@ release-build-tray` + `make-bundle --tray-binary`, mac-контур #128: бан
 `d8c83510d1f34f74e207a52a97616600afbdad5b2545eaf443e5accf1c6c6c1b`.
 `shasum -a 256 -c SHA256SUMS.txt` = OK (6/6 файлов); `scripts/verify-bundle.sh` = rc 0 (пересъёмка
 22.10: `ANALYZE|spans=1`, `ANALYZE|inn10=ok`, `HEALTH|…stage":"cascade-0-only"…`,
-`TRAY|ok|port=60864`); позитивные контроли: подменённый
+`TRAY|ok|port=60864` — промер ДО #185; после #185 тот же прогон даёт
+`REFUSAL|ok|rc=2` + mounted-ногу `HEALTH|mounted|…cascade-0+models…` +
+`TRAY|ok|…stage=cascade-0+models`). Позитивные контроли: подменённый
 байт в `bin/fasad` = rc 1, ИНН с битой чексуммой в проверочном запросе = rc 1. Посадка зуба
 «тег == версия» (п.4a, промер 21.10 на этом дереве; контроль 22.10 на `237bd1c`
 повторил все ветки: v9.9.9 = rc 1 с двумя строками причины, пре-релиз
@@ -359,8 +370,11 @@ v0.1.0-rc1 = rc 1, `v0.1.0` = rc 0 и ДВУМЯ строками `VERSION|ok`
    влитые PR сдвинули строки первички #76). `OMP_NUM_THREADS` не рычаг: вендорный
    `libonnxruntime` osx-arm64 без OpenMP, переменную не читает (первичка
    правки к рюлингу — `otool`/`strings`, ревью #73).
-2. Каскад-0-фаза публикуемого бинаря (`just measure-rss` в job dist: релизный
-   full-бинарь, старт без `FASAD_MODEL_DIR` — стадия `cascade-0-only`, #181):
+2. Каскад-0-контур замера (`just measure-rss` в job dist: каскад-0-артефакт
+   (`cargo build --release -p guard-daemon --target-dir target-c0`, фича
+   выключена, `FASAD_RSS_TARGET` указывает скрипту на target-c0/release; #185:
+   full-бинарь без `FASAD_MODEL_DIR` не стартует — прежняя форма «full-бинарь
+   без весов даёт ту же стадию», #181, убита правкой старта):
    пик 3.5 MiB (`ps -o rss`) / 1.7 MiB
    (`footprint phys_footprint`) после прогрева — пересъёмка 22.10 на head
    `237bd1c`, четыре прогона `just measure-rss --cascade0 --skip-build`
