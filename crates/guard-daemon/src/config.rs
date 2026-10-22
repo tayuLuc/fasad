@@ -359,6 +359,31 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+/// Дефолтный каталог весов: кеш-контракт `scripts/fetch-models.sh:24`
+/// (`$HOME/.cache/fasad-models`) и раскладка `cascades::onnx::OnnxMount::load`
+/// (#192 требование A: «двойной клик → браузер, ноль консоли»).
+///
+/// Контур разрешённости (#192): при `FASAD_MODEL_DIR` unset каталог =
+/// `$HOME/.cache/fasad-models`; при `HOME` unset (win cmd без `USERPROFILE`
+/// попадается) — `None`, т.е. прежнее поведение отказа старта с текстом
+/// (`cascades::startup`, рюлинг #185: смонтировать нечем = старт red, не
+/// молчание). Явный `FASAD_MODEL_DIR` жив как override: дефолт подставляется
+/// ТОЛЬКО на unset/пустое, и только на env-границе `from_env` (не в чистой
+/// `from_lookup` — харнеси `from_lookup(|_| None)` остаются cascade-0).
+pub const DEFAULT_MODEL_DIR_SUFFIX: &str = ".cache/fasad-models";
+
+/// Значение дефолтного пути по `HOME` (unix; Git-Bash-win = `%USERPROFILE%`
+/// под bash; ps1 #190 пишет в `$env:USERPROFILE\.cache\fasad-models` — тот же
+/// путь, win-нэйтив) + суффикс. Только home, без `xdg`-обходов: скриптовый
+/// контракт должен читаться в две секунды. `None` на пустом/отсутствующем
+/// `HOME` — не краш, а прежнее поведение отказа старта с текстом (#185).
+#[must_use]
+pub fn default_model_dir_from_home(home: Option<&str>) -> Option<std::path::PathBuf> {
+    home.map(str::trim)
+        .filter(|h| !h.is_empty())
+        .map(|h| std::path::Path::new(h).join(DEFAULT_MODEL_DIR_SUFFIX))
+}
+
 /// Порт из значения env: мусор = дефолт (эргономика, не безопасность — см.
 /// заголовок модуля).
 #[must_use]
@@ -375,7 +400,33 @@ impl Config {
     /// Любой [`ConfigError`]: неверный бинд, рассогласованные пороги, неизвестный
     /// режим хранилища, непарсящееся/нулевое число.
     pub fn from_env() -> Result<Self, ConfigError> {
-        Self::from_lookup(|var| std::env::var(var).ok())
+        Self::from_lookup(|var| {
+            let v = std::env::var(var).ok();
+            // #192 требование A: при unset/пустом `FASAD_MODEL_DIR` дефолт =
+            // кеш-контракт `~/.cache/fasad-models` (double-click UX). Здесь, в
+            // env-границе, а НЕ в чистой `from_lookup`: харнесы
+            // `from_lookup(|_| None)` обязаны оставаться cascade-0-контуром
+            // (тот же контракт, что тестовый `env_remove` в ui_sandbox/wire_e2e),
+            // а живая env-машина оператора получает дефолт.
+            //
+            // Исключение для ТЕСТОВОГО КОНТУРА: `FASAD_TEST_CASCADE0=1` (Ставит
+            // `Daemon::start` в ui_sandbox/wire_e2e) отключает подстановку —
+            // каскад-0-бинарь с резолвнутым дефолтом падал бы
+            // `BuiltWithoutInference` (дефолт = Some!), и тесты UI/pad-контура
+            // краснели бы на машине с HOME. Машине оператора переменная не
+            // нужна: она на пути без неё.
+            match var {
+                "FASAD_MODEL_DIR" if std::env::var("FASAD_TEST_CASCADE0").is_ok() => {
+                    v.filter(|s| !s.trim().is_empty())
+                }
+                "FASAD_MODEL_DIR" => v.filter(|s| !s.trim().is_empty()).or_else(|| {
+                    std::env::var("HOME").ok().as_deref().and_then(|h| {
+                        default_model_dir_from_home(Some(h)).map(|p| p.display().to_string())
+                    })
+                }),
+                _ => v,
+            }
+        })
     }
 
     /// Чистая часть: источник значений инжектится, чтобы тесты не трогали среду
@@ -388,6 +439,16 @@ impl Config {
     where
         L: FnMut(&'static str) -> Option<String>,
     {
+        // #192 (тесты): `FASAD_MODEL_DIR` из чистого lookup (тесты-харнесы,
+        // `from_lookup(|_| None)`) = cascade-0-контур, КАК ДО #192: дефолт по
+        // HOME подставляет `from_env` (нижняя граница), а не чистая функция.
+        // Иначе каждый харнес `from_lookup(|_| None)` получил бы stage
+        // `cascade-0+models` и `BuiltWithoutInference` — молчаливая смена
+        // семантики тестового контура.
+        let model_dir = lookup("FASAD_MODEL_DIR")
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from);
         let addr = bind_from_value(
             lookup("FASAD_BIND").as_deref(),
             lookup("FASAD_PORT").as_deref(),
@@ -421,7 +482,7 @@ impl Config {
             thresholds,
             vault_mode,
             threads: usize_or(&mut lookup, "FASAD_THREADS", DEFAULT_THREADS)?,
-            model_dir: lookup("FASAD_MODEL_DIR").map(std::path::PathBuf::from),
+            model_dir,
             schema_path: lookup("FASAD_SCHEMA").map(std::path::PathBuf::from),
             read_timeout_ms: u64_or(
                 &mut lookup,

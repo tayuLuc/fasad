@@ -50,6 +50,11 @@ ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 # Только `Stream` для `Body::from_stream` (прокси-стрим из блокирующей задачи).
 # `tokio-stream` не берём: этот крейт уже в дереве через axum, lock не двигается.
 futures-core = { version = "0.3", default-features = false }
+# sha256-гейт загрузки весов (#192, `src/fetch.rs`): поточный хеш скачанного.
+# Пин = пакет УЖЕ в Cargo.lock (0.11.0, транзитив rust-embed-utils/guard-vault,
+# промер `cargo tree -i sha2` этой сессии) = новых узлов в дереве ноль;
+# `just net-audit` крейт не в чёрных списках (хеш-функция, не транспорт).
+sha2 = { workspace = true }
 # Иконка трея для win/mac (#128 фаза 2, решение оператора в комментарии к issue:
 # «трей ДЕЛАЕМ — Linux-сервер = systemd-юнит, Windows и macOS = трей»). Пин и
 # `default-features = false` — вердикт docs/dep-verify-crates.md §16: дефолт

@@ -38,7 +38,9 @@ fasad 0.1.0 cascade-0+models, listening on http://127.0.0.1:8765/health (кла�
 fasad: UI браузера — http://127.0.0.1:8765/
 ```
 
-Без `FASAD_MODEL_DIR` full-бинарь не стартует (#185, код 2):
+Без весов (пустой дефолтный каталог) full-бинарь не стартует (#185, код 2; с #192
+причина — «нет файла …», путь уже известен: карточка UI/`GET /v1/status` показывают
+«весов нет» + кнопку «Скачать веса»):
 
 ```
 fasad: старт невозможен: FASAD_MODEL_DIR не задан: полный контур требует весов (models/README.md в бандле); каскад-0-only — не продакшн-режим
@@ -70,7 +72,8 @@ curl -s localhost:8765/health
 | `FASAD_UPSTREAM_ALLOWLIST` | пусто = прокси выключен | список `host[:port]`, куда пускать `X-Upstream-URL` |
 | `FASAD_PROXY_LOOPBACK_HTTP` | выключен | разрешить `http://` только на loopback (для локального стенда) |
 | `FASAD_SCHEMA` | нет (схема встроена) | путь к своей схеме классов; канон встроенной — `config/schema.default.json` (`schema.rs:24`), поле — config.rs:267 |
-| `FASAD_MODEL_DIR` | нет (full-бинарь без него **не стартует**) | каталог весов каскадов 1–2; **на смонтированной сборке читается**: разбор — config.rs:424, метка стадии `cascade-0+models` — `config.rs:457`. Full-бинарь (фича `ort-inference`) без `FASAD_MODEL_DIR` отказывает старта́м (`ModelsNotConfigured`, `cascades.rs::startup`, #185: каскад-0-only — харнес/тесты, не продакшн). Стартовый precheck четырёх файлов (`cascades.rs:752-765`, вход — `cascades.rs:742` через `cascades.rs:638`): весов нет или бинарь собран без фичи `ort-inference` — демон не поднимается (exit 2, сокет не биндится, в stderr имя файла; промер 21.10 на пустом каталоге). Раскладка весов, команда сборки и dylib — §«Как включить монтаж каскадов 1–2» в [crates/guard-daemon/README.md](crates/guard-daemon/README.md), он владелец деталей |
+| `FASAD_MODEL_DIR` | `$HOME/.cache/fasad-models` (#192: unset = кеш-контракт fetch-скриптов; HOME unset = отказ старта текстом) | каталог весов каскадов 1–2; **на смонтированной сборке читается**: разбор — config.rs:424, метка стадии `cascade-0+models` — `config.rs:457`. Full-бинарь (фича `ort-inference`) без `FASAD_MODEL_DIR` отказывает старта́м (`ModelsNotConfigured`, `cascades.rs::startup`, #185: каскад-0-only — харнес/тесты, не продакшн). Стартовый precheck четырёх файлов (`cascades.rs:752-765`, вход — `cascades.rs:742` через `cascades.rs:638`): весов нет или бинарь собран без фичи `ort-inference` — демон не поднимается (exit 2, сокет не биндится, в stderr имя файла; промер 21.10 на пустом каталоге). Раскладка весов, команда сборки и dylib — §«Как включить монтаж каскадов 1–2» в [crates/guard-daemon/README.md](crates/guard-daemon/README.md), он владелец деталей |
+| `FASAD_HF_HOST` | `https://huggingface.co` | хост загрузки весов кнопкой UI (`POST /v1/models/fetch`, #192): резолвится при старте, запрос-параметра нет; `http://` — только loopback с `FASAD_PROXY_LOOPBACK_HTTP=1` (тестовый mock-HF) |
 
 ## 2. Три запроса, ради которых продукт ставят
 

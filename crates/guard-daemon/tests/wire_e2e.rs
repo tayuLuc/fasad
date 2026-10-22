@@ -51,6 +51,12 @@ impl Daemon {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fasad"));
         cmd.env("FASAD_BIND", "127.0.0.1")
             .env("FASAD_PORT", "0")
+            // #192: на машине оператора дефолт `FASAD_MODEL_DIR`
+            // (`~/.cache/fasad-models`) резолвится из HOME — каскад-0-бинарь
+            // с названным каталогом краснеет `BuiltWithoutInference`, а
+            // `env_remove` уже не спасает. Флаг = «харнес cascade-0»: env-
+            // граница `from_env` не подставляет дефолт (см. config.rs).
+            .env("FASAD_TEST_CASCADE0", "1")
             // Тестовый демон поднимается БЕЗ весов и без чужих ручек окружения.
             // Причина (ревью #87, воспроизведено на этом дереве): в
             // feature-сборке унаследованный `FASAD_MODEL_DIR` монтирует каскады
@@ -64,6 +70,7 @@ impl Daemon {
             // «В CI же чисто» гейт не чинит: он обязан быть воспроизводимым на
             // машине с весами, поэтому remove явный, а не молчаливый дефолт.
             .env_remove("FASAD_MODEL_DIR")
+            .env("FASAD_TEST_CASCADE0", "1")
             .env_remove("FASAD_THREADS")
             .env_remove("FASAD_TIMEOUT_MS")
             .stdin(Stdio::null())
@@ -618,8 +625,11 @@ fn bad_vault_key_refuses_to_start_before_binding() {
         .env("FASAD_VAULT_KEY", "не-шестнадцатеричный")
         // Причина отказа обязана быть про ключ, а не про веса: на машине с
         // `FASAD_MODEL_DIR` каскадный старт проверяется раньше и перехватил бы
-        // первую строку stderr.
+        // первую строку stderr. #192: то же касается дефолта по HOME —
+        // каскад-0-бинарь с резолвнутым дефолтом краснеет BuiltWithoutInference
+        // раньше валидации ключа; флаг харнеса отключает подстановку.
         .env_remove("FASAD_MODEL_DIR")
+        .env("FASAD_TEST_CASCADE0", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1865,6 +1875,7 @@ fn banner_carries_ui_line_with_the_actual_port() {
             .env("FASAD_BIND", "127.0.0.1")
             .env("FASAD_PORT", "0")
             .env_remove("FASAD_MODEL_DIR")
+            .env("FASAD_TEST_CASCADE0", "1")
             .env_remove("FASAD_THREADS")
             .env_remove("FASAD_TIMEOUT_MS")
             .stdin(Stdio::null())

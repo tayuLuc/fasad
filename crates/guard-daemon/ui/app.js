@@ -342,6 +342,120 @@ async function loadHealth() {
   }
 }
 
+/* --- карточка веса (#192): GET /v1/status + кнопка POST /v1/models/fetch ---
+   Полл: setInterval 1 с ТОЛЬКО во время running; без загрузки = один GET на
+   загрузку страницы. Прогресс = байты текущего файла; результат done =
+   перечитать статус + подсказка перезапуска (каскады монтируются на старте,
+   «Скачал — перезапусти демона», ТЗ #192). */
+
+let weightsTimer = null;
+
+function fmtBytes(n) {
+  if (n === null || n === undefined) return "—";
+  if (n < 1024) return n + " Б";
+  if (n < 1048576) return (n / 1024).toFixed(1) + " КБ";
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + " МБ";
+  return (n / 1073741824).toFixed(2) + " ГБ";
+}
+
+async function loadWeights() {
+  let d;
+  try {
+    d = (await api("/v1/status")).data;
+  } catch (err) {
+    $("weightsDir").textContent = "статус недоступен: " + err;
+    return;
+  }
+  const w = d.weights || {};
+  $("weightsDir").textContent =
+    "путь: " + (w.dir || "(не определён)") + (w.default ? " (по умолчанию)" : "");
+  const ul = $("weightsFiles");
+  ul.replaceChildren();
+  for (const f of w.present || []) {
+    const li = document.createElement("li");
+    const mark = f.ok ? "✓" : f.present ? "✗" : "✗";
+    li.textContent =
+      mark + " " + f.path + " — " +
+      (f.present ? fmtBytes(f.bytes) : "нет") +
+      (f.present && f.expected_bytes && f.bytes !== f.expected_bytes
+        ? " (ожидалось " + fmtBytes(f.expected_bytes) + ")"
+        : "");
+    li.className = f.ok ? "ok" : "bad";
+    ul.append(li);
+  }
+  const m = d.model || {};
+  $("weightsModel").textContent =
+    "lockR rev " + (m.lockr_revision || "—") +
+    " · Decide rev " + (m.arbiter_revision || "—") +
+    " · этап " + d.stage;
+  renderFetch(d.fetch);
+}
+
+function renderFetch(fr) {
+  const bar = $("fetchBar");
+  const msg = $("fetchMsg");
+  const btn = $("btnFetch");
+  const phase = $("fetchPhase");
+  if (!fr) return;
+  if (fr.state === "running") {
+    btn.disabled = true;
+    bar.hidden = false;
+    const p = fr.progress || {};
+    const done = Number(p.bytes_done || 0);
+    const total = Number(p.bytes_total || 0);
+    bar.value = total > 0 ? Math.min(100, Math.round((done * 100) / total)) : 0;
+    phase.textContent =
+      "файл " + (fr.index + 1) + "/" + fr.total + " · " + (p.phase || "") +
+      " · " + fmtBytes(done) + (total ? " / " + fmtBytes(total) : "");
+    msg.textContent = "скачивание весов (~879 МБ)…";
+    msg.dataset.kind = "";
+    startPoll();
+    return;
+  }
+  stopPoll();
+  btn.disabled = false;
+  bar.hidden = true;
+  phase.textContent = "";
+  if (fr.state === "done") {
+    msg.textContent = "веса скачаны: перезапусти демона, чтобы каскады 1–2 смонтировались";
+    msg.dataset.kind = "";
+    return;
+  }
+  if (fr.state === "failed") {
+    msg.textContent = "загрузка не удалась [" + (fr.error || "?") + "] файл: " + (fr.file || "");
+    msg.dataset.kind = "err";
+    return;
+  }
+  msg.textContent = "";
+}
+
+function startPoll() {
+  if (weightsTimer) return;
+  weightsTimer = setInterval(loadWeights, 1000);
+}
+
+function stopPoll() {
+  if (weightsTimer) {
+    clearInterval(weightsTimer);
+    weightsTimer = null;
+  }
+}
+
+async function fetchWeights() {
+  const msg = $("fetchMsg");
+  $("btnFetch").disabled = true;
+  try {
+    await api("/v1/models/fetch", {}, "POST");
+    msg.textContent = "загрузка начата…";
+    msg.dataset.kind = "";
+  } catch (err) {
+    msg.textContent = "старт не принят: " + err;
+    msg.dataset.kind = "err";
+  }
+  $("btnFetch").disabled = false;
+  loadWeights();
+}
+
 /* --- wiring ------------------------------------------------------------- */
 
 $("thr").addEventListener("input", function () {
@@ -352,6 +466,8 @@ $("btnAnon").addEventListener("click", anonymize);
 $("btnDean").addEventListener("click", deanonymize);
 $("btnReset").addEventListener("click", resetSession);
 
+$("btnFetch").addEventListener("click", fetchWeights);
+
 $("src").value =
   "Иванова Мария Петровна, ИНН 7707083893, тел. +7 916 123-45-67, " +
   "ivanova@example.test, паспорт 4509 123456";
@@ -359,3 +475,4 @@ showSession();
 $("thrOut").value = "0.00";
 loadHealth();
 loadSchema();
+loadWeights();

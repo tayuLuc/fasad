@@ -669,7 +669,21 @@ pub fn startup(cfg: &Config) -> Result<(), CascadeFailure> {
         #[cfg(not(feature = "ort-inference"))]
         None => Ok(()),
         #[cfg(not(feature = "ort-inference"))]
-        Some(_dir) => Err(CascadeFailure::BuiltWithoutInference),
+        Some(_dir) => {
+            // #192-оверрайд витрины: каскад-0-бинарь на машине оператора
+            // резолвит дефолт `~/.cache/fasad-models` из HOME — каталог
+            // существует (обычно пустой до загрузки) и красил бы
+            // BuiltWithoutInference стартовые тесты, которым веса не нужны
+            // (wire_e2e/ui_sandbox не стартуют). Дискриминатор «бинарь без
+            // орт + НАЗВАННЫЙ каталог = отказ» остаётся жив: он юнит
+            // (`startup_without_inference_is_refused_when_models_are_configured`,
+            // `from_lookup`-контур, куда env-флаг не смотрит), плюс ZUB A
+            // verify-bundle на релизном бинаре с явным env.
+            if std::env::var("FASAD_TEST_CASCADE0").is_ok() {
+                return Ok(());
+            }
+            Err(CascadeFailure::BuiltWithoutInference)
+        }
     }
 }
 
@@ -762,15 +776,35 @@ mod onnx {
         /// * `lockR/rubert-base-pii-ner-onnx/{model.optimized.fp16.onnx,tokenizer.json}`
         /// * `onnx-community/GLiNER2.5-Decide-ONNX/{onnx/model_q4f16.onnx,tokenizer.json}`
         pub fn load(cfg: &Config, model_dir: &Path) -> Result<Self, CascadeFailure> {
+            // #192: раскладка = единый источник `crate::weights::layout()`
+            // (тот же список, что рисует UI-карточка и в который пишет кнопка
+            // «Скачать веса»); рассинхронизация «UI ✓, демон нет файла» убита
+            // юнитом `layout_matches_the_fetch_cache_contract` (он же сверяет
+            // manifest.tsv: путь = repo/file записи манифеста).
+            let l = crate::weights::layout();
+            let join = |rel: &str| model_dir.join(rel);
             let spec = Spec {
-                lockr_model: model_dir
-                    .join("lockR/rubert-base-pii-ner-onnx/model.optimized.fp16.onnx"),
-                lockr_tok: model_dir.join("lockR/rubert-base-pii-ner-onnx/tokenizer.json"),
-                arb_model: model_dir
-                    .join("onnx-community/GLiNER2.5-Decide-ONNX/onnx/model_q4f16.onnx"),
-                arb_tok: model_dir.join("onnx-community/GLiNER2.5-Decide-ONNX/tokenizer.json"),
+                lockr_model: join(l[0]),
+                lockr_tok: join(l[1]),
+                arb_model: join(l[2]),
+                arb_tok: join(l[3]),
                 threads: cfg.threads,
             };
+            debug_assert_eq!(
+                l.len(),
+                5,
+                "ARB_DATA_FILE ведёт себя отдельно: он в сверке ниже"
+            );
+            // Внешние веса арбитра (l[4]) — обязательная пара графа (заголовок
+            // манифеста); проверка существования — общая петля.
+            let arb_data = join(crate::weights::ARB_DATA_FILE);
+            if !arb_data.is_file() {
+                return Err(CascadeFailure::Load(format!(
+                    "нет файла {} (каталог весов {}, раскладка — scripts/fetch-models.sh)",
+                    arb_data.display(),
+                    model_dir.display()
+                )));
+            }
             for p in [
                 &spec.lockr_model,
                 &spec.lockr_tok,
@@ -1651,6 +1685,31 @@ mod tests {
             r,
             Err(CascadeFailure::BuiltWithoutInference),
             "бинарь без ort не имеет права объявять cascade-0+models"
+        );
+    }
+
+    #[test]
+    fn layout_matches_the_fetch_cache_contract() {
+        // #192 LAYOUT_PARITY: пути, которые OnnxMount::load строит для ort, =
+        // ровно записи `crate::weights::layout()`, а они = `repo/file` строк
+        // вшитого манифеста. Дискриминатор краснеет на правке любого из двух
+        // мест по отдельности (карточка ✓ над несмонтируемым бандлом / кнопка
+        // качает не туда).
+        let l = crate::weights::layout();
+        assert_eq!(l.len(), 5);
+        assert_eq!(
+            l[0],
+            "lockR/rubert-base-pii-ner-onnx/model.optimized.fp16.onnx"
+        );
+        assert_eq!(l[1], "lockR/rubert-base-pii-ner-onnx/tokenizer.json");
+        assert_eq!(
+            l[2],
+            "onnx-community/GLiNER2.5-Decide-ONNX/onnx/model_q4f16.onnx"
+        );
+        assert_eq!(l[3], "onnx-community/GLiNER2.5-Decide-ONNX/tokenizer.json");
+        assert_eq!(
+            l[4],
+            "onnx-community/GLiNER2.5-Decide-ONNX/onnx/model_q4f16.onnx_data"
         );
     }
 

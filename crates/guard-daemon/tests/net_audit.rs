@@ -48,10 +48,20 @@ const FORBIDDEN_SRC: &[&str] = &[
     "rustls::",
 ];
 
-/// Единственный файл `src/`, которому разрешено ходить наружу.
-const SANCTIONED_SRC: &str = "proxy.rs";
+/// Файлы `src/`, которым разрешено ходить наружу (именованный контракт, не
+/// молчаливое исключение).
+///
+/// #192 (решение оператора в теле issue, 22.10): `fetch.rs` — второй
+/// санкционированный файл, загрузка весов по клику UI. Инвариант air-gap НЕ
+/// ослаблен: trigger только явный POST, URL строится из ВШИТОГО манифеста
+/// (хост = env `FASAD_HF_HOST` при старте, не запрос-параметр), https
+/// обязателен (loopback — только тестовый аффорданс `FASAD_PROXY_LOOPBACK_HTTP`,
+/// тот же, что у прокси), redirect = ровно один шаг на HF-CDN-allowlist,
+/// sha256+размер fail-closed. `ПДн` в контуре не бывает: скачиваются веса.
+const SANCTIONED_SRC: &[&str] = &["proxy.rs", "fetch.rs"];
 
-/// Маркер исходящего пути, обязательный внутри санкционированного файла.
+/// Маркер исходящего пути, обязательный ВНУТРИ каждого санкционированного
+/// файла: «исключение оформлено под код, которого нет» = ложная стена.
 const REQUIRED_IN_SANCTIONED: &str = "ureq::";
 
 /// Что запрещено **объявлять ключом** в секции зависимостей. `ureq` в списке нет:
@@ -214,8 +224,7 @@ fn outbound_path_lives_in_one_file_only() {
         "сканируем не всё: найдено {} файлов",
         files.len()
     );
-    let mut sanctioned_seen = false;
-    let mut sanctioned_hits = 0_usize;
+    let mut sanctioned_seen = 0_usize;
     for file in &files {
         let name = file
             .file_name()
@@ -225,35 +234,39 @@ fn outbound_path_lives_in_one_file_only() {
         for (at, line) in text.lines().enumerate() {
             for token in FORBIDDEN_SRC.iter().copied() {
                 if line.contains(token) {
-                    assert_eq!(
-                        name,
-                        SANCTIONED_SRC,
-                        "{}:{}: исходящий сокет {token} вне санкционированного модуля \
-                         ({SANCTIONED_SRC}): второй путь наружу = дыра, которую не \
-                         закрывает ни один allowlist",
+                    assert!(
+                        SANCTIONED_SRC.contains(&name),
+                        "{}:{}: исходящий сокет {token} вне санкционированных модулей \
+                         ({SANCTIONED_SRC:?}): третий путь наружу = дыра, которую не \
+                         закрывает ни один allowlist (новая мишень = правка гейта с \
+                         именованным контрактом в PR, не молчание)",
                         file.display(),
                         at + 1,
                     );
-                    sanctioned_seen = true;
-                    if line.contains(REQUIRED_IN_SANCTIONED) {
-                        sanctioned_hits += 1;
+                    if SANCTIONED_SRC.contains(&name) {
+                        sanctioned_seen += 1;
                     }
                 }
             }
         }
     }
-    // Два требования вместо одного: «файл-исключение существует» и «файл-исключение
-    // работает». Без второго гейт был бы зелёным на пустом proxy.rs, а зелёный на
-    // пустом файле гейт и есть ложная стена.
+    // Два требования вместо одного: «файл-исключение существует и работает».
+    // #192: для КАЖДОГО санкционированного файла (маркер обязан найтись в
+    // proxy.rs И в fetch.rs — зелёный на пустом fetch.rs = ложная стена).
     assert!(
-        sanctioned_seen,
-        "санкционированный файл {SANCTIONED_SRC} не найден в `src/`"
+        sanctioned_seen > 0,
+        "санкционированные файлы {SANCTIONED_SRC:?} не найдены в `src/`"
     );
-    assert!(
-        sanctioned_hits > 0,
-        "{SANCTIONED_SRC} не содержит ни одного обращения к клиенту \
-         ({REQUIRED_IN_SANCTIONED}): исключение оформлено под код, которого нет"
-    );
+    for sanctioned in SANCTIONED_SRC {
+        let path = manifest_dir().join("src").join(sanctioned);
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("санкционированный файл {path:?} не читается: {e}"));
+        assert!(
+            text.contains(REQUIRED_IN_SANCTIONED),
+            "{sanctioned} не содержит ни одного обращения к клиенту \
+             ({REQUIRED_IN_SANCTIONED}): исключение оформлено под код, которого нет"
+        );
+    }
 }
 
 #[test]

@@ -84,6 +84,11 @@ pub struct Inner {
     health: Health,
     vault: Vault,
     client: crate::proxy::Client,
+    /// Конфиг загрузки весов (#192), собранный на старте: `FASAD_HF_HOST`
+    /// резолвится при старте, не на запросе (env «при старте», решения #192).
+    /// `Err` хранится, а не роняет старт: плохой `FASAD_HF_HOST` ломает
+    /// кнопку, а не демон (`/health` остаётся жив, отказ — кодом endpoint).
+    fetch: Result<crate::fetch::FetchConfig, crate::fetch::FetchError>,
 }
 
 impl Inner {
@@ -103,6 +108,7 @@ impl AppState {
     #[must_use]
     pub fn new(cfg: Config, schema: Schema, health: Health, vault: Vault) -> Self {
         let client = crate::proxy::Client::new(&cfg);
+        let fetch = crate::fetch::FetchConfig::from_config(&cfg);
         Self {
             inner: Arc::new(Inner {
                 cfg,
@@ -110,6 +116,7 @@ impl AppState {
                 health,
                 vault,
                 client,
+                fetch,
             }),
         }
     }
@@ -155,9 +162,33 @@ impl AppState {
     pub fn client(&self) -> &crate::proxy::Client {
         &self.inner.client
     }
+
+    /// Конфиг загрузки весов (#192): копия `Result`. `Ok` = endpoints
+    /// работают; `Err` несёт класс отказа (плохой `FASAD_HF_HOST`);
+    /// отсутствие каталога (`dir: None`) = случай HOME-unset-машины,
+    /// endpoint отвечает отдельным классом.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::fetch::FetchError`] класса `host_denied` (плохой
+    /// `FASAD_HF_HOST`): витрина и `/v1/models/fetch` отвечают им как 503,
+    /// старт демона — нет.
+    pub fn fetch_config(&self) -> Result<crate::fetch::FetchConfig, crate::fetch::FetchError> {
+        self.inner.fetch.clone()
+    }
+
+    /// Снимок состояния загрузки для `GET /v1/status` (слот процесс-global,
+    /// тот же, в который пишет `spawn_blocking`).
+    pub fn fetch_state(&self) -> crate::weights::FetchState {
+        crate::weights::fetch_slot()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 /// Собирает корневой роутер демона.
+#[allow(clippy::missing_errors_doc, clippy::missing_panics_doc)] // axum-роутер: отказ = ответ, не Result
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
@@ -166,6 +197,12 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/deanonymize", post(deanonymize_handler))
         .route("/v1/chat/completions", post(crate::proxy::handle))
         .route("/v1/sessions/{id}", delete(invalidate_handler))
+        // #192 UX первого запуска: статус весов + загрузка по клику.
+        // `GET /v1/status` — как `/health`: loopback-контур, auth-none, ПДн
+        // в ответе нет по построению (layout-имена, размеры, revision,
+        // относительные пути — домашнего пути нет).
+        .route("/v1/status", get(status_handler))
+        .route("/v1/models/fetch", post(fetch_models_handler))
         .merge(crate::ui::router())
         .with_state(state)
 }
@@ -203,6 +240,195 @@ async fn health_handler(State(st): State<AppState>) -> axum::Json<HealthReply> {
             unrestored_mismatch: vault.unrestored_mismatch(),
         },
     })
+}
+
+// ── #192: статус весов + загрузка по клику ─────────────────────────────────
+
+/// Ответ `GET /v1/status`: витрина первого запуска (ТЗ #192 B).
+#[derive(Debug, serde::Serialize)]
+struct StatusReply {
+    #[serde(flatten)]
+    health: Health,
+    vault: VaultCounters,
+    weights: WeightsStatus,
+    fetch: crate::weights::FetchState,
+    model: ModelInfo,
+}
+
+/// Каталог + раскладка. `dir` — РАЗРЕШЁННЫЙ путь (env или дефолт #192);
+/// наружу отдаётся относительная форма (`~`-префикс): домашний путь — не
+/// секрет на loopback-демоне, но `/health`-контур «секретов не светим»
+/// распространяется и сюда (AGENTS: Debug-вывод только `[REDACTED]`-класс).
+#[derive(Debug, serde::Serialize)]
+struct WeightsStatus {
+    /// Раскрытый каталог весов (tilde-форма).
+    dir: String,
+    /// Путь взят из дефолта (env `FASAD_MODEL_DIR` unset) — UI рисует
+    /// «по умолчанию».
+    default: bool,
+    /// Пять файлов layout: присутствие + размер против манифеста.
+    present: Vec<crate::weights::WeightFile>,
+}
+
+/// Витрина модели: из **вшитого** манифеста (оффлайн-источник, ТЗ #192 B).
+#[derive(Debug, serde::Serialize)]
+struct ModelInfo {
+    lockr_revision: Option<String>,
+    arbiter_revision: Option<String>,
+    /// Число записей манифеста (0 = манифест вшитый испорчен; UI обязан это
+    /// показать, а не молчать — ложь о причине отказа).
+    manifest_records: usize,
+}
+
+fn tilde_dir(p: &std::path::Path) -> String {
+    // Только для витрины: `C:\Users\alex\...` → `~\...`.
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .and_then(|h| h.into_string().ok())
+        .filter(|h| !h.is_empty())
+        .and_then(|h| {
+            p.strip_prefix(&h)
+                .ok()
+                .map(|r| format!("~{}{}", std::path::MAIN_SEPARATOR, r.display()))
+        })
+        .unwrap_or_else(|| p.display().to_string())
+}
+
+async fn status_handler(State(st): State<AppState>) -> axum::Json<StatusReply> {
+    let cfg = st.config();
+    let vault = st.vault();
+    let entries = crate::weights::embedded_entries();
+    // model_dir = Some на весь runtime после #192-дефолта (кроме HOME-unset);
+    // витрина обязана жить и там: fallback на дефолт от HOME напрямую.
+    // Тот же резолв, что у `FetchConfig`: env-граница + fallback (витрина
+    // обязана показывать тот путь, в который пишет кнопка, а не другой).
+    let dir = st
+        .fetch_config()
+        .ok()
+        .and_then(|fc| fc.dir.clone())
+        .or_else(|| cfg.model_dir.clone());
+    let (dir_s, default) = match dir.as_deref() {
+        Some(d) => {
+            let is_default = match std::env::var("FASAD_MODEL_DIR") {
+                Ok(v) => v.trim().is_empty(),
+                Err(_) => true,
+            };
+            (tilde_dir(d), is_default)
+        }
+        // HOME недоступен и env нет: витрина честная — путь неизвестен.
+        None => (String::new(), false),
+    };
+    let present = dir
+        .as_deref()
+        .map(|d| crate::weights::scan(d, &entries))
+        .unwrap_or_default();
+    let lockr = crate::weights::entry_by_role(&entries, crate::weights::ROLE_LOCKR_MODEL)
+        .map(|e| e.revision.clone());
+    let arb = crate::weights::entry_by_role(&entries, crate::weights::ROLE_ARB_WEIGHTS)
+        .map(|e| e.revision.clone());
+    axum::Json(StatusReply {
+        health: st.health(),
+        vault: VaultCounters {
+            surrogate_fallbacks: vault.surrogate_fallbacks(),
+            unrestored_mismatch: vault.unrestored_mismatch(),
+        },
+        weights: WeightsStatus {
+            dir: dir_s,
+            default,
+            present,
+        },
+        fetch: st.fetch_state(),
+        model: ModelInfo {
+            lockr_revision: lockr,
+            arbiter_revision: arb,
+            manifest_records: entries.len(),
+        },
+    })
+}
+
+/// `POST /v1/models/fetch` — запуск фоновой загрузки весов (#192).
+///
+/// Тело запроса не читается (инъекций из него не собирается). Один job на
+/// процесс: повторный клик во время `running` = 409 `fetch_running` (не
+/// «приму и сделаю дважды»). Прогресс — поллом `GET /v1/status`.
+async fn fetch_models_handler(State(st): State<AppState>) -> Response {
+    let entries = crate::weights::embedded_entries();
+    if entries.is_empty() {
+        // Манифест вшитый испорчен = качать нечего и некуда: отказ классом,
+        // не молчание.
+        return ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "manifest_unparsable",
+            "вшитый манифест весов не разобран (сборка испорчена)",
+        )
+        .into_response();
+    }
+    let fc = match st.fetch_config() {
+        Ok(fc) => fc,
+        Err(e) => {
+            return ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                e.code(),
+                &format!("загрузка не настраивается: {}", e.display_safe()),
+            )
+            .into_response();
+        }
+    };
+    if fc.dir.is_none() {
+        // HOME-unset-машина: класс отдельный, не io-ошибка на пустом пути.
+        return ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            crate::fetch::E_NO_DIR,
+            "каталог весов не определён (FASAD_MODEL_DIR unset и HOME недоступен)",
+        )
+        .into_response();
+    }
+    // Занято? (один job) — до постановки: 409, а не «accepted, второй промолчит».
+    if crate::weights::fetch_busy() {
+        return ApiError::new(
+            StatusCode::CONFLICT,
+            "fetch_running",
+            "загрузка уже идёт (GET /v1/status.fetch)",
+        )
+        .into_response();
+    }
+    crate::weights::set_fetch_state(crate::weights::FetchState::Running {
+        index: 0,
+        total: crate::weights::layout().len(),
+        progress: crate::weights::Progress {
+            file: crate::weights::layout()[0],
+            bytes_done: 0,
+            bytes_total: 0,
+            phase: crate::weights::Phase::Download,
+        },
+    });
+    let spawn = tokio::task::spawn_blocking(move || {
+        crate::fetch::run_fetch(fc, entries);
+    });
+    if spawn.is_finished() {
+        // Пул задач лёг мгновенно (дерьмо-машина): честный отказ, не «running
+        // навсегда». Нормальный путь — is_finished() == false на возврате.
+        let _ = spawn.await;
+        crate::weights::set_fetch_state(crate::weights::FetchState::Failed {
+            file: String::new(),
+            error: "spawn_blocking: пул задач недоступен".to_owned(),
+        });
+        return ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "fetch_spawn_failed",
+            "фоновый поток загрузки не поднят",
+        )
+        .into_response();
+    }
+    (
+        StatusCode::ACCEPTED,
+        axum::Json(serde_json::json!({
+            "started": true,
+            "files": crate::weights::layout().len(),
+            "poll": "/v1/status"
+        })),
+    )
+        .into_response()
 }
 
 async fn analyze_handler(State(st): State<AppState>, req: Request) -> Response {
