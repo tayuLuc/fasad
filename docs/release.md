@@ -33,7 +33,10 @@
       в динамическом графе — dylib-контракт сборки; linux: маркер орт-статики
       в теле — download-контур ort-sys линкует СТАТИКОЙ, `main.rs:177-183`,
       CI-провен `readelf -d` run 39786761298 = NEEDED без onnxruntime (#188);
-      win: маркер орт-статики в теле — PE-доставка =
+      win: маркер EP-либ win-контура (`DirectML`, pyke
+      `static_link_prerequisites`, ort-sys `static_link/mod.rs:50-54`) —
+      заголовочных путей C++ в PE нет (#188, провен r6/r7 релиз-репетиции);
+      PE-доставка =
       `bin/onnxruntime.dll` рядом с exe); mac-бандл несёт dylib 1.31.0 в
       `lib/`, бинари — rpath `@loader_path/../lib`.
    2. ЗУБ Б — live-промер смонтированного контура при доступном кеше весов:

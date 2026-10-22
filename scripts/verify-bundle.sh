@@ -316,9 +316,13 @@ rm -f "$log"
 printf 'REFUSAL|ok|rc=%s|full-бинарь без FASAD_MODEL_DIR = отказ старта (#185, ModelsNotConfigured)\n' "$rc"
 # ── ЗУБ А: бинарь бандла = орт-контур (full) ────────────────────────────────
 # Та же логика, что full_probe в make-bundle.sh: mac — динамическая зависимость
-# (dylib-контракт, rpath), linux/win — маркер орт-статики в теле бинаря
-# (download-binaries/MSVC линкуют орт СТАТИКОЙ; доставка win-рантайма =
-# onnxruntime.dll рядом с exe). Инструмент спрашивается у АРТЕФАКТА, env
+# (dylib-контракт, rpath); linux — маркер орт-статики `onnxruntime/core/session`
+# в теле (download-binaries линкует СТАТИКОЙ с вендорными путями, CI-провен
+# r6 run 39808790297: linux-бинарь full маркер несёт, «ORT|ok|linux»);
+# win — маркер EP-либ win-контура `DirectML` (pyke static_link_prerequisites,
+# ort-sys static_link/mod.rs:50-54; в PE заголовочных путей C++ нет, #188
+# провен r6/r7); доставка win-рантайма = onnxruntime.dll рядом с exe.
+# Инструмент спрашивается у АРТЕФАКТА, env
 # вызывающего не влияет (тот же принцип, что preflight measure-rss.sh #170 б).
 case "$(uname -s)" in
     Darwin)
