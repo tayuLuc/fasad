@@ -285,8 +285,20 @@ bin="$stage/bin/fasad"
 # env `-u FASAD_MODEL_DIR`: на mac-контуре CI шаг fetch-models экспортирует
 # кеш в GITHUB_ENV (он же нужен зубу Б ниже) — без удаления переменных зуб Г
 # краснел бы на собственной машине (full-бинарь С весами стартует легально).
+# FASAD_TEST_CASCADE0=1 (#192-контур env-границы, config.rs:419-421): `env -u`
+# снимает ЯВНУЮ переменную, но с #192 на её место встаёт HOME-дефолт
+# `~/.cache/fasad-models` (config.rs:422-426), и на машине с HOME (win-раннер:
+# `%USERPROFILE%` в Git-Bash, CI-провен run 39854576251 ЗУБ Г win) зуб Г
+# проверял бы «отказ из-за HOME-кеша без весов», а не контракт #185 «переменная
+# не названа». Флаг отключает ТОЛЬКО подстановку дефолта: явный FASAD_MODEL_DIR
+# (зуб В) он не глотает (config.rs:419-421 = та же ветка v.filter(...);
+# cascades.rs:682 = Only the default-substitution) — локальный промер 22.10
+# (debug-бинарь feature-off): LEVER+ЯВНЫЙ каталог = refusal rc=2
+# BuiltWithoutInference (зуб В не ослаблен), LEVER+unset = cascade-0-only;
+# full-бинарь под флагом + unset = rc=2 «FASAD_MODEL_DIR не задан» (ред-контур
+# зуба Г жив).
 log="$(mktemp)"
-env -u FASAD_MODEL_DIR FASAD_PORT=0 "$bin" >"$log" 2>&1 &
+env -u FASAD_MODEL_DIR FASAD_TEST_CASCADE0=1 FASAD_PORT=0 "$bin" >"$log" 2>&1 &
 pid="$!"
 rc=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -638,27 +650,55 @@ case "$os" in
             tray_bin="$stage/bin/fasad-tray.exe"
         }
         # Нога 1 (#185): трей без весов = отказ старта (rc≠0, причина, баннера нет).
-        tray_log="$(mktemp)"
-        env -u FASAD_MODEL_DIR FASAD_PORT=0 "$tray_bin" >"$tray_log" 2>&1 &
-        tray_pid="$!"
-        trc=0
-        for _ in 1 2 3 4 5 6 7 8 9 10; do
-            kill -0 "$tray_pid" 2>/dev/null || break
-            sleep 0.3
-        done
-        if kill -0 "$tray_pid" 2>/dev/null; then
-            kill "$tray_pid" 2>/dev/null || true
-            wait "$tray_pid" 2>/dev/null || true
+        # FASAD_TEST_CASCADE0=1 (контур env-границы #192, config.rs:419-421,
+        # тот же, что зубу Г headless): env -u снимает явную переменную, а
+        # без флага на неё встаёт HOME-дефолт (config.rs:422-426) — провен
+        # r2 run 39856985952 win: трей поднимался на
+        # C:\Users\runneradmin\.cache/fasad-models (с флагом = отказ).
+        # Readiness 24×0.5 с = 12 с (провен r5 run 39861721435 win: die на
+        # 3.2-й секунде при живом, но ещё не отказавшем процессе; локальный
+        # промер 22.10 mac-debug: отказ ~1 с).
+        # FASAD_WIN_NO_UI=1 (контракт windows-rust, «GUI без пользовательского
+        # сеанса», https://docs.microsoft.com/windows/win32/ui/using-standard-
+        # services): на win-раннере CI отказ трея = МОДАЛЬНОЕ MessageBoxW
+        # (main.rs:243-256 refuse_startup -> tray/win.rs, #190; промер r6 run
+        # 39863245106: процесс жив на 12-й секунде = стоит в окне с
+        # текстом причины, stderr-то же самое). С флагом MessageBox не
+        # рисуется = exit rc=2 за секунды. mac/local промеры флага не
+        # требуют (ветка target_os = windows), передаём его на всех ОС
+        # единообразно.
+        # Без флага на win = SKIPPED-строка с причиной (молчание =
+        # ложно-зелёная, класс реестра), красным не притворяемся: headless
+        # ЗУБ Г на win зелёный (r6) = тот же #185-контур без UI-ветки.
+        tray_win_gui=0
+        case "$(uname -s)" in
+            MINGW* | MSYS* | CYGWIN*) [ "${FASAD_WIN_NO_UI:-}" != "1" ] && tray_win_gui=1 ;;
+        esac
+        if [ "$tray_win_gui" -eq 1 ]; then
+            printf 'REFUSAL|SKIPPED|tray|win-контур отказа = модальное MessageBoxW (#190, main.rs refuse_startup): без FASAD_WIN_NO_UI=1 процесс стоит в окне (провен r6 run 39863245106, живой на 12-й секунде); headless ЗУБ Г на win зелёный = тот же #185-контур\n'
+        else
+            tray_log="$(mktemp)"
+            env -u FASAD_MODEL_DIR FASAD_TEST_CASCADE0=1 FASAD_WIN_NO_UI=1 FASAD_PORT=0 "$tray_bin" >"$tray_log" 2>&1 &
+            tray_pid="$!"
+            trc=0
+            for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do
+                kill -0 "$tray_pid" 2>/dev/null || break
+                sleep 0.5
+            done
+            if kill -0 "$tray_pid" 2>/dev/null; then
+                kill "$tray_pid" 2>/dev/null || true
+                wait "$tray_pid" 2>/dev/null || true
+                rm -f "$tray_log"
+                die "ЗУБ Г (трей): fasad-tray поднялся БЕЗ FASAD_MODEL_DIR (ожидание: отказ старта, #185 — трей = full-контур, #181)"
+            fi
+            trc=0
+            wait "$tray_pid" || trc=$?
+            [ "$trc" -ne 0 ] || { rm -f "$tray_log"; die "ЗУБ Г (трей): fasad-tray без весов завершился rc=0 (ожидание: 2, #185)"; }
+            grep -q "FASAD_MODEL_DIR" "$tray_log" \
+                || { tr0="$(head -c 400 "$tray_log")"; rm -f "$tray_log"; die "ЗУБ Г (трей): отказ без FASAD_MODEL_DIR в stderr: $tr0"; }
             rm -f "$tray_log"
-            die "ЗУБ Г (трей): fasad-tray поднялся БЕЗ FASAD_MODEL_DIR (ожидание: отказ старта, #185 — трей = full-контур, #181)"
+            printf 'REFUSAL|ok|tray|rc=%s|трей без FASAD_MODEL_DIR = отказ старта (#185)\n' "$trc"
         fi
-        trc=0
-        wait "$tray_pid" || trc=$?
-        [ "$trc" -ne 0 ] || { rm -f "$tray_log"; die "ЗУБ Г (трей): fasad-tray без весов завершился rc=0 (ожидание: 2, #185)"; }
-        grep -q "FASAD_MODEL_DIR" "$tray_log" \
-            || { tr0="$(head -c 400 "$tray_log")"; rm -f "$tray_log"; die "ЗУБ Г (трей): отказ без FASAD_MODEL_DIR в stderr: $tr0"; }
-        rm -f "$tray_log"
-        printf 'REFUSAL|ok|tray|rc=%s|трей без FASAD_MODEL_DIR = отказ старта (#185)\n' "$trc"
         # Нога 2 (только с весами): смонтированный трей обязан поднять сокет и
         # отдать cascade-0+models (pre-#185 контур «cascade-0-only» без весов
         # мёртв, живой трей-контур = product-контур с model_dir).

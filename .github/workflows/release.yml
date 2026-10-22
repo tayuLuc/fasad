@@ -213,11 +213,18 @@ jobs:
         # mac/linux: FASAD_MODEL_DIR не выставлен ни в одном env-блоке (шаг
         # fetch-models пишет GITHUB_ENV, и он же используется зубом Б
         # verify-bundle — здесь env-блок шага явно удаляет переменную).
+        # FASAD_TEST_CASCADE0=1 (#192, config.rs:419-421): `env -u` снимает
+        # ЯВНУЮ переменную, а с #192 на её место встаёт HOME-дефолт
+        # `~/.cache/fasad-models` (config.rs:422-426) — на раннере с HOME зуб
+        # мерил бы «HOME-кеш без весов», а не контракт #185 «переменная не
+        # названа» (CI-провен run 39854576251: mac-нога поднялась на
+        # HOME-кеше весов шага fetch-models, `stage=cascade-0+models`).
+        # Флаг отключает подстановку дефолта = прежний контракт env-границы.
         if: matrix.os != 'windows-2022'
         shell: bash
         run: |
           set -euo pipefail
-          env -u FASAD_MODEL_DIR FASAD_PORT=0 \
+          env -u FASAD_MODEL_DIR FASAD_TEST_CASCADE0=1 FASAD_PORT=0 \
               target/release/fasad >refusal.log 2>&1 &
           pid="$!"
           rc=0
@@ -279,7 +286,19 @@ jobs:
           # названных весах отказывается стартовать (BuiltWithoutInference,
           # cascades.rs:649-650), и measure-rss краснеет «демон умер на старте».
           # Зуб #185 выше делает то же самое через `env -u` — та же причина.
-          env -u FASAD_MODEL_DIR FASAD_RSS_TARGET="$PWD/target-c0/release" \
+          # FASAD_TEST_CASCADE0=1 (контур env-границы #192, config.rs:419-421):
+          # после #192 снятие явной переменной открывает HOME-дефолт
+          # `~/.cache/fasad-models` (config.rs:422-426), и каскад-0-артефакт
+          # (фича off) падал BuiltWithoutInference на резолвнутом дефолте
+          # (CI-провен run 39856985952 mac/linux: «демон умер на старте:
+          # FASAD_MODEL_DIR задан, а бинарь собран без фичи»). Тот же контур,
+          # что ui_sandbox/wire_e2e (`Daemon::start` ставит флаг): каскад-0-
+          # стадия на машине с HOME достижима только в нём. Дискриминатор
+          # промёрзан локально 22.10 (debug feature-off): без флага + unset +
+          # HOME = refusal rc=2 (провен 39856985952); с флагом + unset + HOME
+          # = старт `stage=cascade-0-only`; с флагом + ЯВНЫЙ каталог = refusal
+          # rc=2 BuiltWithoutInference (зуб В флагом не ослаблен).
+          env -u FASAD_MODEL_DIR FASAD_TEST_CASCADE0=1 FASAD_RSS_TARGET="$PWD/target-c0/release" \
               just measure-rss --skip-build
       - name: "Каскад-0-референс зуба В (win/linux: дискриминатор против full-метки)"
         # verify-bundle ЗУБ В проверяет живым прогомом: бинарь БЕЗ ort-inference

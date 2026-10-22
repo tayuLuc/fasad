@@ -119,7 +119,7 @@ ort-inference = ["guard-onnx/ort-inference"]
 # ловушку, от которой вердикт §16 спасает `default-features = false`.
 # `windows-sys` в список фичи НЕ входит (#190): опциональная target-зависимость
 # включается сама ОС-мишенью (`[target.'cfg(windows)'.dependencies]`, код
-# vitрины `src/tray/win.rs` гейтится тем же cfg + фичей tray), а перечисление
+# витрины `src/tray/win.rs` гейтится тем же cfg + фичей tray), а перечисление
 # в `tray` при прицельном `--features tray --target windows` добавило бы в
 # win-дерево фичи ещё один вход — net_audit fact-5 проверяет граф фичи `tray`
 # linux-мишенью (оконных крейтов в нём быть не должно: первичка —

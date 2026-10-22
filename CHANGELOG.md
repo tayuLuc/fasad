@@ -6,6 +6,10 @@
 
 ## Unreleased
 
+(пусто)
+
+## v0.1.1 (2026-10-22)
+
 ### Added
 - UX первого запуска (#192): карточка «Веса моделей» в UI (`GET /v1/status`: путь default/факт, наличие 5 файлов layout + размер против манифеста, revision lockR/Decide из **вшитого** `models/manifest.tsv`, stage/mode/vault) + кнопка «Скачать веса» (`POST /v1/models/fetch`: один job, повтор 409, прогресс-байты поллом, `.part`+rename, sha256+размер fail-closed — второй санкционированный сетевой модуль `src/fetch.rs`, URL только из манифеста + env `FASAD_HF_HOST`, redirect = один шаг на HF-CDN); дефолт `FASAD_MODEL_DIR` = `$HOME/.cache/fasad-models` при unset (win: `%USERPROFILE%` через Git-Bash/ps1-контракт; HOME unset = `None` = прежний отказ старта текстом #185).
 - win-доставка веса́й: `scripts/fetch-models.ps1` (PowerShell 5.1+, паритет `.sh`: манифест / `Get-FileHash` sha256-гейт fail-closed / rev-URL / кеш-раскладка идентична / `-List` без сети; `TBD`-контур и resume — только в `.sh`, названо в шапке), win-секции README бандла (PowerShell-первенство, `bin\fasad-tray.exe`, Git-Bash = альтернатива) — #190; CI win-ячейка ort-build: `-List` + mock-промер (малый файл HF, sha256-ok, повтор без сети через hosts-глушилку) + red-контроль «битый sha = rc1».
@@ -13,8 +17,11 @@
 - UX первого запуска (#191): `--help`/`-h` = usage (env-таблица + UI-адрес), НЕ-флаг аргумент = exit 2 + usage в stderr (argv читается впервые; первичка: молчаливое игнорирование); строка `UI — http://<порт>/` в стартовом баннере (парсер `wire_e2e` не тронут); клик по трею = браузер с UI (win/mac) — был и в v0.1.0 (`tray.rs::open_browser_command`: win `cmd /C start`, mac `/usr/bin/open`), закрыт промером тестов/доков, кода не потребовало.
 
 ### Fixed
+- Релизный контур v0.1.1-репетиции (dispatch run 39854576251, латент #192): `env -u FASAD_MODEL_DIR` в зубе #185 (`release.yml`) и зубе Г (`verify-bundle.sh`) на машине с `HOME` перестал быть отказом — дефолт `~/.cache/fasad-models` (config.rs:422-426) вставал на снятую переменную (mac-нога поднималась `stage=cascade-0+models` на кеше шага fetch-models, win/linux падали с текстом HOME-пути вместо `FASAD_MODEL_DIR`); зубы переведены на тестовый контракт env-границы `FASAD_TEST_CASCADE0=1` (config.rs:419-421) — контракт #185 «переменная не названа» без HOME-подстановки.
 - Релизный контур до первого тега (#188, латенты из эскалаций #184/#187): mac-шаги `release.yml` — `sha256sum: command not found` rc=127 на macos-14 (провен run 39784396502) → hex-сверка `shasum -a 256` (форма ort-build, прообраз зелёный); win-шаг `onnxruntime.dll` — ложно-красный путь `target/release/` → корень `target/` (`vars::target_dir`, первичка ort-sys `vars.rs:32` + CI-провен run 39786761298); linux-контур — «динамическая зависимость» было ЛОЖНЫМ (download-контур = СТАТИКА, ort-sys `main.rs:177-183`, CI-провен readelf run 39786761298) → linux = статика, ЗУБ А verify-bundle = маркер-форма win-ноги, readelf-шаг матрицы = запись ELF-графа (INFO), docs/§Матрица синхронны.
 - Найденные релиз-репетицией (#188, dispatch run 39791625858 — workflow `release` исполнен впервые): `just dist` на linux падал на трей-зависимости (tray-icon compile_error, §16) — трей-сборка перенесена в mac/win uname-ветку рецепта; spike-нога `ort-dylib` (linux) линковала `-lonnxruntime` против корня архива (so лежит в `<архив>/lib`) при mac-only обвязке dynamic_lookup (build.rs:99) — linux-нога харнеса снята как не-контракт (ram-контур = mac, §9), mac-нога = dylib-dlopen-контракт.
+- ЗУБ Г (трей) verify-bundle на win-CI: отказ старта трея = модальное `MessageBoxW` (#190, `main.rs::refuse_startup` cfg(tray,windows)) — процесс живёт в окне дольше любой ready-таймер-окна (провены r5/r6 runs 39861721435/39863245106); зуб = `FASAD_WIN_NO_UI=1` (контракт windows-rust), win-CI без флага = `REFUSAL|SKIPPED|tray` с причиной, headless ЗУБ Г на win зелёный = тот же #185-контур.
+- Язык-гейт `just check` красен на main (4 хита `lang-scan`): склейка кириллицы с латиницей в комментариях `ci.yml:134/149`, `crates/guard-daemon/Cargo.toml:122`, `scripts/make-bundle.sh:155` (влиты #188/#189/#193) → написание исправлено на кириллицу, текст комментариев по смыслу не менялся.
 
 ## v0.1.0 (2026-10-22)
 
