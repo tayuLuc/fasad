@@ -388,7 +388,27 @@ jobs:
           ls -la ort-runtime
           echo "linux INFO: официальный libonnxruntime.so 1.31.0 записан в артефакты job (в бандл НЕ входит, #181/#188)"
       - name: "Бандл: бинарь + LICENSE + README + схема + лицензии + модели-инструкция + SHA256SUMS (контур full, #181)"
-        run: just dist
+        # win/linux (#188): env-префикс dylib-контракта, та же форма, что шаг
+        # ort-build ci.yml:225-227 и рецепт release-build (justfile:434-438):
+        # mac-dylib-контракт (орт в графе бинаря = `@rpath/
+        # libonnxruntime.1.dylib`, промер 22.10 локально, docs/model-audit.md
+        # §W2 п.1) требует ORT_PREFER_DYNAMIC_LINK + ORT_LIB_PATH; без него
+        # bin-цель линкуется download-СТАТИКОЙ pyke (ort-sys main.rs:177-183),
+        # и на mac ЗУБ А (otool-граф) красит full-бинарь ложно-красным
+        # (провен релиз-репетиции run 39808115490 dist-macos: build rc=0 →
+        # make-bundle «бинарь собран БЕЗ ort-inference» — бандл не собирался).
+        # linux-шаг не трогает контракт: каталога `$ORT_DIR/lib` на ubuntu
+        # нет (dist-матрица архив не качает, mac-шаг с `if: macos-14`) →
+        # `[ -d ]` ложен → префикс НЕ ставится → linux = download-статика,
+        # как решено в #188. win: тот же тест (`/lib` нет) → без префикса.
+        run: |
+          set -euo pipefail
+          if [ -n "${ORT_DIR:-}" ] && [ -d "$ORT_DIR/lib" ]; then
+              export ORT_PREFER_DYNAMIC_LINK=1
+              export ORT_LIB_PATH="$ORT_DIR/lib"
+              echo "dist: dylib-контур сборки ($ORT_LIB_PATH)"
+          fi
+          just dist
       - name: "Проверка бандла: распаковка, запуск, /health, орт-зубы А/Б/В, хэши + тег↔версия"
         env:
           # Кеш весов mac-ноги (шаг fetch-models пишет GITHUB_ENV; job-level
