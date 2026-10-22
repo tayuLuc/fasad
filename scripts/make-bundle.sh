@@ -152,7 +152,7 @@ esac
 #     readelf run 39786761298 + релиз-репетиция run 39803462540: прежняя
 #     readelf-нога краснила full-сборку ложно, ровно как linux-нога
 #     verify-bundle до d02a25d) → тот же дискриминатор, что win: маркер
-#     `onnxruntime/core/session` в теле (venдорные пути из
+#     `onnxruntime/core/session` в теле (вендорные пути из
 #     static_link_prerequisites, main.rs:177; каскад-0 = 0 совпадений,
 #     орт-бинарь >0 — промер preflight measure-rss.sh #170 б).
 #   windows: MSVC линкует орт СТАТИКОЙ (build.rs: rpath-ветка = macos|linux,

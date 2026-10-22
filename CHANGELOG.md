@@ -6,6 +6,10 @@
 
 ## Unreleased
 
+(пусто)
+
+## v0.1.1 (2026-10-22)
+
 ### Added
 - UX первого запуска (#192): карточка «Веса моделей» в UI (`GET /v1/status`: путь default/факт, наличие 5 файлов layout + размер против манифеста, revision lockR/Decide из **вшитого** `models/manifest.tsv`, stage/mode/vault) + кнопка «Скачать веса» (`POST /v1/models/fetch`: один job, повтор 409, прогресс-байты поллом, `.part`+rename, sha256+размер fail-closed — второй санкционированный сетевой модуль `src/fetch.rs`, URL только из манифеста + env `FASAD_HF_HOST`, redirect = один шаг на HF-CDN); дефолт `FASAD_MODEL_DIR` = `$HOME/.cache/fasad-models` при unset (win: `%USERPROFILE%` через Git-Bash/ps1-контракт; HOME unset = `None` = прежний отказ старта текстом #185).
 - win-доставка веса́й: `scripts/fetch-models.ps1` (PowerShell 5.1+, паритет `.sh`: манифест / `Get-FileHash` sha256-гейт fail-closed / rev-URL / кеш-раскладка идентична / `-List` без сети; `TBD`-контур и resume — только в `.sh`, названо в шапке), win-секции README бандла (PowerShell-первенство, `bin\fasad-tray.exe`, Git-Bash = альтернатива) — #190; CI win-ячейка ort-build: `-List` + mock-промер (малый файл HF, sha256-ok, повтор без сети через hosts-глушилку) + red-контроль «битый sha = rc1».
@@ -15,6 +19,7 @@
 ### Fixed
 - Релизный контур до первого тега (#188, латенты из эскалаций #184/#187): mac-шаги `release.yml` — `sha256sum: command not found` rc=127 на macos-14 (провен run 39784396502) → hex-сверка `shasum -a 256` (форма ort-build, прообраз зелёный); win-шаг `onnxruntime.dll` — ложно-красный путь `target/release/` → корень `target/` (`vars::target_dir`, первичка ort-sys `vars.rs:32` + CI-провен run 39786761298); linux-контур — «динамическая зависимость» было ЛОЖНЫМ (download-контур = СТАТИКА, ort-sys `main.rs:177-183`, CI-провен readelf run 39786761298) → linux = статика, ЗУБ А verify-bundle = маркер-форма win-ноги, readelf-шаг матрицы = запись ELF-графа (INFO), docs/§Матрица синхронны.
 - Найденные релиз-репетицией (#188, dispatch run 39791625858 — workflow `release` исполнен впервые): `just dist` на linux падал на трей-зависимости (tray-icon compile_error, §16) — трей-сборка перенесена в mac/win uname-ветку рецепта; spike-нога `ort-dylib` (linux) линковала `-lonnxruntime` против корня архива (so лежит в `<архив>/lib`) при mac-only обвязке dynamic_lookup (build.rs:99) — linux-нога харнеса снята как не-контракт (ram-контур = mac, §9), mac-нога = dylib-dlopen-контракт.
+- Язык-гейт `just check` красен на main (4 хита `lang-scan`): склейка кириллицы с латиницей в комментариях `ci.yml:134/149`, `crates/guard-daemon/Cargo.toml:122`, `scripts/make-bundle.sh:155` (влиты #188/#189/#193) → написание исправлено на кириллицу, текст комментариев по смыслу не менялся.
 
 ## v0.1.0 (2026-10-22)
 

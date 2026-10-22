@@ -131,7 +131,7 @@ jobs:
     #   headless `--bin fasad` rc=0 за 44 с; трей `--bin fasad-tray` rc=0 за 167 с;
     #   `otool -L` обоих бинарей = `@rpath/libonnxruntime.1.dylib
     #   (compatibility version 1.0.0, current version 1.31.0)` — mac-контур
-    #   доказан локально (ZУБ mac), CI-нога mac = дубль-подтверждение.
+    #   доказан локально (ЗУБ mac), CI-нога mac = дубль-подтверждение.
     # linux/win = промеренные ячейки ЭТОЙ job (CI-провен): linux-контур =
     # download-binaries-статика ort-sys (cdn.pyke.io, build/download/dist.tsv),
     # win-контур = MSVC-статика pyke-архива `x86_64-pc-windows-msvc+directml`
@@ -146,7 +146,7 @@ jobs:
     # 3 новые параллельные ноги = wall-clock PR не растягивается сверх их own
     # длительности. Холодный первый прогон = полная release-сборка (mac-оценка
     # нижней границы 2m46s warm-локаль, cold-release ≈ 8–15 мин — ОЦЕНКА, не
-    # промер; живойrc/время = этот прогон).
+    # промер; живой rc/время = этот прогон).
     #
     # Живой бюджет первого cold-прогона (#187, run 39786761298 job-durations):
     # linux 1m01s, mac 3m32s, win 5m51s. Гейт timeout-minutes: 30 (нити ревью
