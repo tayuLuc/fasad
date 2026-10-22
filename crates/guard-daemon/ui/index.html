@@ -14,6 +14,23 @@
     </header>
 
     <main>
+      <!-- #192: карточка статуса весов ПЕРВОЙ — первый запуск = «весов нет,
+           нажми кнопку», до всякого текста. Путь = раскрытый/дефолтный,
+           файлы = наличие + размер против манифеста, кнопка = POST
+           /v1/models/fetch + полл /v1/status (app.js, weightsPoll). -->
+      <section class="pane" id="weightsPane">
+        <h2>Веса моделей</h2>
+        <p id="weightsDir" class="hint">путь: запрашивается…</p>
+        <ul id="weightsFiles" class="weights"></ul>
+        <p id="weightsModel" class="hint"></p>
+        <div class="row">
+          <button id="btnFetch" type="button">Скачать веса</button>
+          <span id="fetchPhase" class="hint"></span>
+        </div>
+        <progress id="fetchBar" max="100" value="0" hidden></progress>
+        <p id="fetchMsg" class="status" role="status"></p>
+      </section>
+
       <section class="pane">
         <label class="block" for="src">Текст запроса</label>
         <textarea id="src" rows="12" spellcheck="false"></textarea>

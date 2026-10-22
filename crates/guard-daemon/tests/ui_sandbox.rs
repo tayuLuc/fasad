@@ -47,6 +47,12 @@ impl Daemon {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fasad"));
         cmd.env("FASAD_BIND", "127.0.0.1")
             .env("FASAD_PORT", "0")
+            // #192: на машине оператора дефолт `FASAD_MODEL_DIR`
+            // (`~/.cache/fasad-models`) резолвится из HOME — каскад-0-бинарь
+            // с названным каталогом краснеет `BuiltWithoutInference`, а
+            // `env_remove` уже не спасает. Флаг = «харнес cascade-0»: env-
+            // граница `from_env` не подставляет дефолт (см. config.rs).
+            .env("FASAD_TEST_CASCADE0", "1")
             // Тестовый демон поднимается БЕЗ весов и без чужих ручек окружения.
             // Причина (ревью #87, воспроизведено на этом дереве): с
             // унаследованным `FASAD_MODEL_DIR` каждый прогон грузит веса в
@@ -58,6 +64,7 @@ impl Daemon {
             // на машине с весами, поэтому remove явный, а не молчаливый
             // дефолт.
             .env_remove("FASAD_MODEL_DIR")
+            .env("FASAD_TEST_CASCADE0", "1")
             .env_remove("FASAD_THREADS")
             .env_remove("FASAD_TIMEOUT_MS")
             .stdin(Stdio::null())
@@ -691,4 +698,154 @@ fn ui_schema_editor_knobs_reach_the_wire() {
         base.len(),
         "нулевой порог ослабил серверную планку"
     );
+}
+
+/* ── #192: карточка веса + загрузка по клику ────────────────────────────── */
+
+/// Живой контур кнопки: mock-HF на **петле** (python http.server) — внешняя
+/// сеть в CI запрещена air-gap-контуром (net-audit: исходящие = proxy +
+/// fetch на HF-контракт; loopback-мок не сеть в смысле гейта, прецедент
+/// `FASAD_PROXY_LOOPBACK_HTTP` 7c). Заодно это промер макета: скачанные
+/// файлы лежат РОВНО в `cascades::OnnxMount::load`-раскладке.
+#[test]
+fn weights_card_shows_files_and_fetch_lands_the_layout() {
+    if std::env::var("FASAD_MOCK_HF").is_err() {
+        eprintln!(
+            "SKIP|ui_sandbox|weights_fetch|нет FASAD_MOCK_HF (http://127.0.0.1:PORT \
+             с mock-дерева) — промер живого контура кнопки; CI-нога без сети"
+        );
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("fasad-fetch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let d = Daemon::start(&[
+        ("FASAD_MODEL_DIR", dir.to_str().expect("tmp путь")),
+        (
+            "FASAD_HF_HOST",
+            &std::env::var("FASAD_MOCK_HF").expect("проверен выше"),
+        ),
+        ("FASAD_PROXY_LOOPBACK_HTTP", "1"),
+    ]);
+
+    // (а) GET /v1/status: schema витрины + ПДн-безопасность.
+    let r = call(&d.addr, "GET", "/v1/status", &[], b"");
+    assert_eq!(r.status, 200, "статус отдаётся: {}", r.text());
+    let j = r.json();
+    // Тестовый демон: feature-off + FASAD_MODEL_DIR назван (tmp-каталог) =>
+    // stage cascade-0+models (метка «назван», не «смонтирован» — #185).
+    assert!(j["stage"].is_string());
+    assert!(j["version"].is_string());
+    assert_eq!(j["fetch"]["state"], "idle");
+    let files = j["weights"]["present"].as_array().expect("список файлов");
+    assert_eq!(files.len(), 5, "layout = 5 записей: {files:?}");
+    for f in files {
+        assert_eq!(f["present"], false, "свежий каталог пуст: {f}");
+        assert_eq!(f["ok"], false);
+        assert_eq!(
+            f["path"].as_str().unwrap().find(".."),
+            None,
+            "путь относительный"
+        );
+    }
+    assert_eq!(j["model"]["manifest_records"], 5);
+    assert!(j["model"]["lockr_revision"].is_string());
+    // ПДн-безопасность: домашний путь и маркеры не светятся.
+    let home = std::env::var("HOME").unwrap_or_default();
+    assert!(
+        !home.is_empty() && !r.text().contains(&home),
+        "домашний путь в статусе"
+    );
+    assert!(!r.text().contains("СЕКРЕТ"));
+
+    // (б) POST /v1/models/fetch → 202, повтор → 409.
+    let r = call(&d.addr, "POST", "/v1/models/fetch", &[], b"{}");
+    assert_eq!(r.status, 202, "старт принят: {}", r.text());
+    let r2 = call(&d.addr, "POST", "/v1/models/fetch", &[], b"{}");
+    assert!(
+        r2.status == 409 || r2.status == 202,
+        "занято=409, быстро=202, получено {}",
+        r2.status
+    );
+
+    // (в) полл до терминального состояния (мок локальный = секунды).
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut final_state = String::new();
+    while Instant::now() < deadline {
+        let r = call(&d.addr, "GET", "/v1/status", &[], b"");
+        let js = r.json();
+        let st = js["fetch"]["state"].as_str().unwrap_or("").to_owned();
+        if st == "done" || st == "failed" {
+            final_state = st;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert_eq!(
+        final_state,
+        "done",
+        "загрузка не дошла: {final_state}: {:?}",
+        call(&d.addr, "GET", "/v1/status", &[], b"").json()["fetch"]
+    );
+
+    // (г) ГЛАВНЫЙ ПРОМЕР: файлы на месте РОВНО в раскладке каскадов.
+    for rel in guard_daemon::weights::layout() {
+        let p = dir.join(rel);
+        assert!(p.is_file(), "файл не на месте по макету: {p:?}");
+    }
+    let r = call(&d.addr, "GET", "/v1/status", &[], b"");
+    let js = r.json();
+    let files = js["weights"]["present"].as_array().expect("список");
+    assert!(
+        files.iter().all(|f| f["ok"] == true),
+        "после done карточка обязана гореть зелёным: {files:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fetch_endpoint_contract_offline() {
+    // Контракт endpoints без сети: 409/контент-тип/отсутствие ПДн.
+    let d = Daemon::start(&[]);
+    let r = call(&d.addr, "GET", "/v1/status", &[], b"");
+    assert_eq!(r.header("content-type").unwrap_or(""), "application/json");
+    let j = r.json();
+    assert!(j["vault"].is_object(), "счётчики vault в статусе (ТЗ B)");
+    // Тело запроса не читается: POST с мусор-телом проходит (инъекций из
+    // тела не собирается), а отказ = 503 с классом `host_denied` (тестовый
+    // демон без HOME-дефолта: каталога нет) — не 4xx-за-тело.
+    let r = call(&d.addr, "POST", "/v1/models/fetch", &[], b"not json");
+    assert!(
+        [202, 409, 503].contains(&r.status),
+        "не-JSON тело не запрещено: {}",
+        r.status
+    );
+    let body = r.text();
+    assert!(
+        !body.contains("not json"),
+        "тело запроса не эхо-ится: {body}"
+    );
+    // Очистка фона после теста (job на петле к несуществующему хосту
+    // краснеет failed сам; ждём терминала, чтобы не течь в соседний тест).
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        let st = call(&d.addr, "GET", "/v1/status", &[], b"").json()["fetch"]["state"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned();
+        if st == "failed" || st == "done" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn ui_html_carries_the_weights_card() {
+    let d = Daemon::start(&[]);
+    let r = call(&d.addr, "GET", "/", &[], b"");
+    let t = r.text();
+    for id in ["weightsPane", "weightsFiles", "btnFetch", "fetchBar"] {
+        assert!(t.contains(id), "в index.html нет карточки: {id}");
+    }
+    assert!(t.contains("Скачать веса"), "нет подписи кнопки");
 }

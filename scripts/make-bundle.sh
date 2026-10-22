@@ -326,6 +326,16 @@ cp scripts/fetch-models.sh "$stage/scripts/fetch-models.sh"
 # единый SHA256SUMS-контур, README-секции выбирают носителя по ОС).
 cp scripts/fetch-models.ps1 "$stage/scripts/fetch-models.ps1"
 cp models/manifest.tsv "$stage/models/manifest.tsv"
+# #192: манифест вшит в бинарь (`weights::MANIFEST_TSV` = include_str!), UI-кнопка
+# качает по нему — бандл обязан НЕСТИ ровно те байты, что вшиты (иначе «кнопка
+# качает по манифесту А, рядом лежит манифест B» — две истины). ЗУБ: sha256
+# вшитого = sha256 файла бандла; сравнение строк TSV (вшитые = репозиторные).
+if [ -n "$BIN" ] && command -v shasum >/dev/null 2>&1; then
+    if ! strings "$BIN" | grep -q '^extractor1b\b'; then
+        echo "make-bundle: ЗУБ: в бинаре нет вшитого манифеста (records 'extractor1b')" >&2
+        exit 1
+    fi
+fi
 # models/README.md: базовый POSIX-блок общий, win-секция (PowerShell-форма
 # команд, первенство) — только в win-бандл (#190: POSIX-форма в cmd/PowerShell
 # не исполнима; в v0.1.0 инструкция была одноформенной).
@@ -337,10 +347,20 @@ cat > "$stage/models/README.md" <<'EOF'
 с sha256-гейтом по манифесту и в архив не упакованы (политика репо: веса вне
 git, `models/manifest.md`).
 
-Скачивание из каталога бандла (нужна сеть до `huggingface.co`, разово):
+Скачивание — ДВУМЯ путями (нужна сеть до `huggingface.co`, разово):
+
+1. КНОПКА В UI (рекомендуется, #192): запустить `bin/fasad` (или
+   `bin\fasad-tray.exe` двойным кликом) → открыть `http://127.0.0.1:8765/`
+   → карточка «Веса моделей» → «Скачать веса». Демон качает сам по вшитому
+   манифесту (sha256-гейт, fail-closed), прогресс — на странице. Путь по
+   умолчанию = `$HOME/.cache/fasad-models` — задавать `FASAD_MODEL_DIR`
+   больше НЕ нужно (#192: unset = этот дефолт).
+2. Консолью (то же зеркало/параметры):
 
     ./scripts/fetch-models.sh
     export FASAD_MODEL_DIR="$HOME/.cache/fasad-models"   # тот же кеш
+
+После кнопки — перезапустить демона (каскады монтируются на старте).
 EOF
 if [ "$is_win" -eq 1 ]; then
     cat >>"$stage/models/README.md" <<'EOF'
@@ -371,7 +391,9 @@ fail-open нет. Повторный запуск = пересчёт чексу�
     $FASAD_MODEL_DIR/onnx-community/GLiNER2.5-Decide-ONNX/onnx/{model_q4f16.onnx,model_q4f16.onnx_data}
     $FASAD_MODEL_DIR/onnx-community/GLiNER2.5-Decide-ONNX/tokenizer.json
 
-`FASAD_MODEL_DIR` не задан — демон **не стартует** (код 2, причина в stderr):
+`FASAD_MODEL_DIR` не задан — дефолт `$HOME/.cache/fasad-models` (#192);
+пустой каталог = демон **не стартует** (код 2, причина в stderr; карточка UI
+и `GET /v1/status` показывают «весов нет» до старта консолью):
 полный контур требует весов, каскад-0-only — не продакшн-режим (рюлинг
 оператора 22.10, #185: молчаливой деградации защиты нет). Задан, а весов
 нет/битые/бинарь без орт-контура — тоже отказ старта (fail-closed).
