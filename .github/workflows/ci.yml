@@ -372,11 +372,18 @@ jobs:
           # EAP=Continue around the red leg as belt-and-braces, restored in
           # finally; the verdict is asserted on TWO legs: rc + sha256
           # signature in the captured tail (rc=1 from the gate, not from an
-          # unrelated crash - fail-closed diagnostics).
+          # unrelated crash - fail-closed diagnostics). In-process `&` on the
+          # .ps1 is NOT the form: `exit 1` in a dot/call scope exits the
+          # CALLER, so the step would die on the red line (rc=1 swallowed;
+          # CI-proven 3d5565a: gate PASSED rc=0 means the child ran and the
+          # parent kept going - the reverse: child scope). Child process +
+          # piped stdout: $LASTEXITCODE = child exit code, 2>&1 keeps the
+          # verdict visible to the two-leg assert (mac-sim pwsh: redRc=1,
+          # tail contains the reason, parent survives, outer rc=0).
           $prevEAP = $ErrorActionPreference
           try {
               $ErrorActionPreference = 'Continue'
-              $redTail = & scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache 2>&1
+              $redTail = powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache 2>&1
               $redRc = $LASTEXITCODE
           } finally {
               $ErrorActionPreference = $prevEAP
