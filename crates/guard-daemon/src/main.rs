@@ -11,6 +11,9 @@
 //! из текста запроса (`ПДн`). Печатается только место в коде.
 
 #![forbid(unsafe_code)]
+// #190: bin НЕ наследует остров либы — вызов `guard_daemon::tray::win`
+// идёт через публичный safe-API либы (`forbid` bin-крифта цел: промер
+// сессии — island под bin-forbid красен E0453, под lib-deny зелёный).
 #![warn(clippy::unwrap_used)]
 
 use guard_daemon::Health;
@@ -37,8 +40,53 @@ fn install_panic_hook() {
 /// занят (перезапуск с backoff тут бессмыслен и маскирует опечатку).
 const EXIT_BAD_CONFIG: i32 = 2;
 
+/// usage-текст `--help` (#191): сжатая таблица env + UI-адрес + версия.
+const USAGE_HELP: &str = concat!(
+    "fasad ",
+    env!("CARGO_PKG_VERSION"),
+    " — локальный AI-гард (оффлайн, loopback-only).\n",
+    "\n",
+    "запуск: fasad (слушает http://127.0.0.1:<порт>/health; UI браузера — http://127.0.0.1:<порт>/)\n",
+    "переменные (полная таблица — README.md §Переменные / docs/release.md §Запуск):\n",
+    "  FASAD_PORT=8765          порт; 0 = случайный (адрес в баннере)\n",
+    "  FASAD_BIND=127.0.0.1     только loopback\n",
+    "  FASAD_MODEL_DIR=…        каталог весов каскадов 1–2 (full-бинарь без него не стартует, #185)\n",
+    "  FASAD_VAULT_MODE=stateless|session   режим обратимого маскирования\n",
+    "  FASAD_VAULT_KEY=<64 hex> ключ, переживающий перезапуск (session)\n",
+    "  FASAD_THREADS=8          потоки инференса\n",
+    "  FASAD_TIMEOUT_MS=3000    бюджет конвейера (на монтаже держите ≥ 5000)\n",
+    "  FASAD_SCHEMA=…           своя схема классов (канон встроен)\n",
+    "  FASAD_UPSTREAM_ALLOWLIST=…  адреса прокси /v1/chat/completions (пусто = выключен)\n",
+    "веса: scripts/fetch-models.sh (win: .\\scripts\\fetch-models.ps1), sha256-гейт\n",
+    "исходники: https://github.com/tayuLuc/fasad\n"
+);
+
+/// Разбор argv (#191): процесс вчерашнего дня игнорировал аргументы молча
+/// (первичка `main.rs:41` — только env). Контракт:
+/// - `--help` / `-h` = usage на stdout, код 0;
+/// - любой иной аргумент = usage на stderr, код 2 (`EXIT_BAD_CONFIG`):
+///   молчаливо игнорируемый аргумент = оператор думает, что он что-то сделал.
+///
+/// Разбор — `std::env::args`, без clap: трёх исходов зависимость не стоит.
+fn parse_args() {
+    let mut args = std::env::args().skip(1);
+    match args.next() {
+        None => {}
+        Some(a) if a == "--help" || a == "-h" => {
+            println!("{USAGE_HELP}");
+            std::process::exit(0);
+        }
+        Some(a) => {
+            eprintln!("fasad: неизвестный аргумент: {a}\n");
+            eprint!("{USAGE_HELP}");
+            std::process::exit(EXIT_BAD_CONFIG);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    parse_args();
     install_panic_hook();
     let cfg = match Config::from_env() {
         Ok(cfg) => cfg,
@@ -106,6 +154,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         cfg.mlock.as_str(),
         vault_key_source,
     );
+    // UI-строка баннера (#191): адрес песочницы — отдельной строкой, первым
+    // глазом (оператор win/mac запускает бинарь из cmd/Terminal и ищет
+    // «куда тыкнуть»; трей-контур делает то же двойным кликом по иконке).
+    // Канон адреса = корень: песочница отдаётся на `/` И на `/ui` (промер
+    // живым демоном: GET / = 200, GET /ui = 200; `ui::router`), короткий
+    // адрес — для человека. Парсер баннера `wire_e2e`
+    // (`split_once("listening on http://")`) строку не видит — контракт
+    // порта не тронут.
+    println!("fasad: UI браузера — http://{addr}/");
 
     // Трей (#128 фаза 2, win/mac). Первичка docs крейта: на macOS иконка и меню
     // живут только на главном потоке с крутящимся event loop'ом
@@ -183,11 +240,21 @@ fn serve_on_worker(
     }
 }
 
-/// Отказ на старте (конфиг или схема): причина в stderr, сокет не поднимается.
+/// Отказ на старте (конфиг, схема, веса): причина в stderr, сокет не поднимается.
 ///
 /// Вынесено в `-> !`, чтобы поток управления был явен для компилятора, а не
 /// через `unwrap_or_else(|e| todo!())`.
+///
+/// Win-трей (#190): у `fasad-tray.exe` stderr при запуске двойным кликом
+/// уходит в никуда (промер оператора v0.1.0: отказ `FASAD_MODEL_DIR не
+/// задан…` оператор не увидел) — к stderr добавляется модальное `MessageBox`
+/// с тем же текстом (контур острова — `tray::win`; mac-трей и headless
+/// ничего не получают: у mac запуск из Terminal/Terminal видит stderr,
+/// у `fasad.exe` консоль есть всегда).
 fn refuse_startup(err: &dyn std::fmt::Display) -> ! {
-    eprintln!("fasad: старт невозможен: {err}");
+    let msg = format!("fasad: старт невозможен: {err}");
+    eprintln!("{msg}");
+    #[cfg(all(feature = "tray", target_os = "windows"))]
+    guard_daemon::tray::win::show_startup_failure("fasad — запуск не удался", &msg);
     std::process::exit(EXIT_BAD_CONFIG);
 }

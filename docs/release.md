@@ -73,9 +73,12 @@
    `FASAD_SCHEMA`).
 6. `SHA256SUMS.txt` — sha256 всех файлов бандла; рядом с архивом лежит
    `fasad-…-full.<ext>.sha256` (хэш самого архива).
-7. `scripts/fetch-models.sh` + `models/manifest.tsv` + `models/README.md` —
-   скачивание весов каскадов 1–2 по sha256-манифесту (#181; веса в архив не
-   входят, см. п.2 выше).
+7. `scripts/fetch-models.sh` + `scripts/fetch-models.ps1` (#190: нативная
+   win-доставка, паритет `.sh`; во всех бандлах) + `models/manifest.tsv` +
+   `models/README.md` — скачивание весов каскадов 1–2 по sha256-манифесту
+   (#181; веса в архив не входят, см. п.2 выше). win-README несёт
+   PowerShell-первенство (`bin\fasad-tray.exe`, `$env:FASAD_MODEL_DIR`,
+   Git-Bash = альтернатива, #190).
 8. mac: `lib/libonnxruntime.1.dylib` — официальный dylib 1.31.0 (тот же
    архив и sha256, что проверяет job `ort-dylib`), доставка рантайма внутри
    бандла (`--ort-dir`, rpath-чин install_name_tool); win:
@@ -127,7 +130,7 @@
 | runner | triple | архив | контур |
 | --- | --- | --- | --- |
 | ubuntu-24.04 | x86_64-unknown-linux-gnu | tar.gz | full headless + systemd-юнит (#140) |
-| windows-2022 | x86_64-pc-windows-msvc | zip | full + `bin/fasad-tray.exe` + `bin/onnxruntime.dll` (#128/#181) |
+| windows-2022 | x86_64-pc-windows-msvc | zip | full + `bin/fasad-tray.exe` + `bin/onnxruntime.dll` (#128/#181); README = win-форма доставки (`scripts\fetch-models.ps1`, #190) |
 | macos-14 | aarch64-apple-darwin | tar.gz | full + `bin/fasad-tray` + `lib/libonnxruntime.1.dylib` (#128/#181) |
 
 win/mac-ячейки собирают второй бинарь шагом `just release-build-tray`
@@ -191,6 +194,10 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    `./scripts/fetch-models.sh` (sha256-гейт по `models/manifest.tsv`,
    commit-шейа revision, кеш `~/.cache/fasad-models`, зеркало
    `FASAD_HF_HOST`), затем `export FASAD_MODEL_DIR="$HOME/.cache/fasad-models"`.
+   Windows (#190): `\.\scripts\fetch-models.ps1` +
+   `$env:FASAD_MODEL_DIR = "$env:USERPROFILE\.cache\fasad-models"`
+   (паритет `.sh`; Git-Bash — альтернатива, кеш тот же). Баннер демона несёт
+   строку `UI браузера — http://<порт>/`, `--help` = usage (#191).
    Детали и раскладка — `models/README.md` бандла и §«Как включить монтаж
    каскадов 1–2» в `crates/guard-daemon/README.md` (владелец деталей).
    `FASAD_TIMEOUT_MS=3000` (дефолт) на смонтированном контуре вмещает не

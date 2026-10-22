@@ -60,6 +60,25 @@ futures-core = { version = "0.3", default-features = false }
 # красной строкой компилятора (см. [features]).
 tray-icon = { version = "0.26.1", default-features = false, optional = true }
 
+[target.'cfg(windows)'.dependencies]
+# Витрина отказа старта на Windows (#190): `MessageBoxW` — вызывается из
+# `main.rs::refuse_startup` под cfg `all(feature = "tray", target_os =
+# "windows")` (модуль-остров `src/tray/win.rs`). НЕ optional и НЕ в списке
+# фичи `tray`: win-сборка build-test (feature-off) тоже отказывает старта́ми
+# (e2e-контур `full_bin_without_model_dir_refuses_to_start_before_binding`
+# живёт на windows-ноге — хук компилируется в обоих конфигурациях), а
+# перечисление в `tray` добавило бы в граф фичи второй оконный вход (net_audit
+# fact-5 меряет граф фичи linux-мишенью; промер: `cargo tree --features tray
+# --target x86_64-unknown-linux-gnu` = НОЛЬ windows-sys, с этой декларацией).
+# Пин = ТОТ ЖЕ 0.61.2, что в Cargo.lock (win-бэкенд tray-icon: `>=0.60,
+# <=0.61`, первичка Cargo.toml tray-icon-0.26.1:177-185) = ноль новых пакетов
+# (диф lock = одна строка объявления). Feature `Win32_UI_WindowsAndMessaging`
+# = окно `MessageBoxW` (первичка Windows/Win32/UI/WindowsAndMessaging:
+# `windows_link::link!("user32.dll" …)` — raw-dylib, линковка user32 идёт
+# через `#[link]`, без build-металла). Лицензии MIT/Apache — allow-лист
+# deny.toml (пакет и так в дереве tray-icon, `just deny` промеряет).
+windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging"] }
+
 [features]
 # Монтаж каскадов 1–2 (issue #14A, SPEC §2): модельный путь демона — lockR
 # (`guard_onnx::extract`) + арбитр Decide (`guard_onnx::arbitrate`).
@@ -93,6 +112,14 @@ ort-inference = ["guard-onnx/ort-inference"]
 # `dep:`-форма (не строка `"tray-icon"`): строка в списке фич включила бы и
 # дефолты самого tray-icon (`default = ["libappindicator"]`) — ровно ту GTK3-
 # ловушку, от которой вердикт §16 спасает `default-features = false`.
+# `windows-sys` в список фичи НЕ входит (#190): опциональная target-зависимость
+# включается сама ОС-мишенью (`[target.'cfg(windows)'.dependencies]`, код
+# vitрины `src/tray/win.rs` гейтится тем же cfg + фичей tray), а перечисление
+# в `tray` при прицельном `--features tray --target windows` добавило бы в
+# win-дерево фичи ещё один вход — net_audit fact-5 проверяет граф фичи `tray`
+# linux-мишенью (оконных крейтов в нём быть не должно: первичка —
+# `cargo tree --features tray --target x86_64-unknown-linux-gnu` с этой
+# декларацией = НОЛЬ windows-sys, промер этой сессии).
 tray = ["dep:tray-icon"]
 
 [dev-dependencies]

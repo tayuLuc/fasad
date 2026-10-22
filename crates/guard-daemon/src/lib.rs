@@ -32,7 +32,18 @@
 //! (`mlock`, CSPRNG, переполнение пула) даёт 503, а не «пустой ответ как будто
 //! `ПДн` нет», и буферы с оригиналами обнуляются на `Drop` (`Zeroizing`).
 
-#![forbid(unsafe_code)]
+// `deny`, НЕ `forbid` (#190): остров `tray::win` (`MessageBoxW`) — единственный
+// санкционированный `unsafe` в либе, на win-мишени; механика первичена
+// промером rustc 1.99.1 (сессия #190): `forbid` crate-root'а НЕ снимается
+// НИКАКИМ внутренним `allow` (E0453 «overruled by previous forbid», и на
+// in-crate модуле, и на bin-цели с `[lints]`), а на win-мишени `cfg_attr`
+// локальный `forbid` острова не развяжет — остров обязан жить под `deny`,
+// где модульный `allow` законен (тот же канон, что `net_audit.rs` и
+// `unwrap_used`: область объявления переопределяет workspace-уровень).
+// Инвентарь `forbid(unsafe_code)` (grep crates/): guard-{types,detectors,onnx,
+// vault} + bin `main.rs` + тестовые files = НЕ тронуты; либа демона — этот
+// единственнный crate, где остров возможен.
+#![deny(unsafe_code)]
 #![warn(missing_docs, clippy::unwrap_used)]
 
 pub mod cascade0;

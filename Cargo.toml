@@ -24,6 +24,18 @@ default-members = [
 # здесь, чтобы нарушение ловилось локальной сборкой, а не только красным CI.
 [workspace.lints.rust]
 missing_docs = "warn"
+# `deny` (было `forbid`, #190): механика первичена промером rustc 1.99.1 —
+# crate-root `forbid` не снимается НИКАКИМ внутренним `allow` (E0453, и на
+# in-crate модуле, и на bin-цели), а единственный санкционированный unsafe
+# дерева = остров `guard-daemon::tray::win` (MessageBoxW, win-мишень): его
+# модульный `allow` законен ровно под `deny`-верхом либы (тот же канон,
+# что net_audit/`unwrap_used`: область объявления переопределяет уровень).
+# `forbid` СОХРАНЁН точечно, где острова нет и быть не может: `main.rs` bin
+# (вызывает остров только через safe-API либы) и все тестовые файлы
+# (`grep forbid(unsafe_code) crates/`: guard-{types,detectors,onnx,vault}
+# lib.rs + tests/*.rs демона = первичка инвентаря). CI-контракт `-D
+# clippy::unwrap_used` не тронут; `just lint` линкует `unsafe_code=deny`
+# через `-D warnings` (промер mac+MSVC:unsafe вне острова красен).
 unsafe_code  = "deny"
 
 [workspace.lints.clippy]

@@ -41,6 +41,15 @@
 
 #![cfg(all(feature = "tray", any(target_os = "windows", target_os = "macos")))]
 
+/// Windows-витрина отказа старта (#190): MessageBox с текстом причины —
+/// модуль-остров с собственным `#![allow(unsafe_code)]` (контракт в доке
+/// [`win`]). Мишень = вся win-либа (не фича): на feature-off win-ноге
+/// `cargo test` либы компилирует модуль (зуб «окно только у трея» живёт в
+/// его cfg-атрибуте), а `main.rs` зовёт его только под `tray`-фичей;
+/// mac/linux острова не видят (cfg модуля-хоста).
+#[cfg(target_os = "windows")]
+pub mod win;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
