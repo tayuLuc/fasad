@@ -261,11 +261,18 @@ jobs:
         #     не гейт.
         #   • win = MSVC-статика (PE RUNPATH не несёт, make-bundle.sh:149);
         #     маркер `onnxruntime/core/session` в теле = preflight СПАЙК-бинаря
-        #     (measure-rss.sh:486 «pyke-статика в бинаре», spike-cель), у
+        #     (measure-rss.sh:486 «pyke-статика в бинаре», spike-цель), у
         #     публичного bin API-бинаря его НЕТ (#170/#172), grep по bin =
-        #     ложно-красный ЗУБ (CI 22.10 win rc=1 при build rc=0). win-доказательство
-        #     = build rc=0 + onnxruntime.dll РЯДОМ с exe (delivery-контракт
-        #     ort-доки; тот же hard-гейт, что win-шаг release.yml:279-293).
+        #     ложно-красный ЗУБ (CI run 39785650206 win: build Finished 3m40s
+        #     + tray 2m07s rc=0 = win full-контур ЛИНКУЕТСЯ, MSVC/pyke-статик).
+        #     win-доказательство атома = build rc=0. `onnxruntime.dll рядом с
+        #     exe` здесь НЕ гейт: copy_dylibs (main.rs:180) пишет в
+        #     vars::target_dir() = КОРЕНЬ target/ (vars.rs:32-42), а не
+        #     target/release/, и только в download-ветке (кэш-хит ort-sys на
+        #     трей-шаге = copy не реранится) → hard-гейт на target/release/*.dll
+        #     = ложно-красен (CI 22.10 win rc=1 при build rc=0). Реальная win-
+        #     доставка = релизный шаг release.yml:279-293 (берёт dll из pyke-
+        #     кэша build-контура), ЕЁ промер = на теге, вне рамок #184.
         # mac = шаг выше (otool валиден, rpath прописан build.rs демона).
         if: matrix.os != 'macos-14'
         run: |
@@ -279,10 +286,20 @@ jobs:
               echo "linux ok: full-контур слинкован (build rc=0); ELF-форма записана"
               ;;
             *)
-              [ -f target/release/onnxruntime.dll ] \
-                  || { echo "ОШИБКА: target/release/onnxruntime.dll нет — win-бинарь орт-контурный (release + ort-inference), а copy-dylibs (main.rs:180) его не положил (бандл бы не стартовал)"; exit 1; }
-              ls -la target/release/fasad.exe target/release/fasad-tray.exe target/release/onnxruntime.dll
-              echo "win ok: full-контур слинкован (build rc=0) + onnxruntime.dll рядом с exe (PE-локатор «рядом с exe», mir. release.yml win-шаг)"
+              echo "--- win: запись артефактов (dll-доставка = релизный шаг release.yml, вне #184) ---"
+              ls -la target/release/fasad.exe target/release/fasad-tray.exe
+              echo "win ok: full-контур ЛИНКУЕТСЯ (build rc=0, MSVC+pyke-статик, CI run 39785650206)."
+              # Запись (не гейт): где реально оказался onnxruntime.dll после
+              # copy_dylibs (target_dir = корень target/, vars.rs:32). Релизный
+              # win-шаг (release.yml:279-293) берёт dll из pyke-кэша build-
+              # контура, не из target/release/ → здесь её отсутствие = НЕ
+              # дефект линковки (линка = build rc=0), а вопрос доставки = #181.
+              if [ -f target/release/onnxruntime.dll ]; then
+                  echo "win: onnxruntime.dll в target/release/ (рядом с exe)"
+              else
+                  echo "win: onnxruntime.dll НЕ в target/release/ — copy_dylibs пишет в target/ (vars.rs:32), доставка рантайма = релизный шаг release.yml (#181, не #184); линковка full = build rc=0"
+                  find target -maxdepth 2 -name 'onnxruntime.dll' 2>/dev/null | head -3 || true
+              fi
               ;;
           esac
 
