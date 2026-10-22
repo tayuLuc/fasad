@@ -51,10 +51,16 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-
 function Write-Fail([string]$Message) {
-    # Тот же формат, что die в .sh: префикс +stderr + exit 1.
-    Write-Error ("fetch-models: ОШИБКА: " + $Message)
+    # Пишем в console-стрим [Console]::Error, НЕ Write-Error: в родительском
+    # PowerShell с $ErrorActionPreference='Stop' Write-Error бросает
+    # terminating-исключение НА СТРОКЕ вызова и глотает `exit 1` (CI-провен
+    # run 39829067427: red-вердикт печатался, rc дочернего процесса терялся;
+    # mac-паритет pwsh 7.6.7 та же механика). [Console]::Error.WriteLine =
+    # чистый stderr-поток: exit 1 доходит до $LASTEXITCODE любого родителя;
+    # метод безобъектный (InvokeMethodOnNull в доке PS5.1 про [Console] не
+    # касается вызова статического метода класса System).
+    [Console]::Error.WriteLine('fetch-models: ОШИБКА: ' + $Message)
     exit 1
 }
 

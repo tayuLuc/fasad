@@ -361,26 +361,30 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "mock run red (rc=$LASTEXITCODE)" }
           $f = Join-Path $cache 'lockR\rubert-base-pii-ner-onnx\config.json'
           if (-not (Test-Path -LiteralPath $f)) { throw "layout: missing $f (cache layout = .sh parity)" }
-          # red-control BEFORE the hosts sinkhole: corrupt sha = exit 1 (the
-          # gate is alive, not print-only). Child powershell -File: the parent
-          # runs with EAP=Stop (GitHub wraps the step body), and Write-Fail's
-          # Write-Error under EAP=Stop aborts the parent on the error line
-          # BEFORE $LASTEXITCODE is readable (CI-proven run 39829067427: the
-          # red leg printed the right verdict and killed the step). Child
-          # -File = its own process, exit code via $LASTEXITCODE, stderr noise
-          # dropped (mac-sim pwsh: rc=1 observed, outer rc=0).
-          $mBad = $m -replace $sha, ('0' * 64)
-          $mpBad = Join-Path $env:RUNNER_TEMP 'manifest-bad.tsv'
-          Set-Content -LiteralPath $mpBad -Value $mBad -Encoding ASCII
-          # `2>&1 | Out-Null`: PowerShell 5.1 turns ANY stderr line of a
-          # native command into a NativeCommandError record when
-          # $ErrorActionPreference = 'Stop' (step-level, CI-proven run
-          # 6e1d307: `2>$null` did NOT prevent it — the redirect target is
-          # not a pipe; the classic fix IS the pipe). The pipeline tail
-          # ($LASTEXITCODE of the native command) is what we assert.
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache 2>&1 | Out-Null
-          $redRc = $LASTEXITCODE
+          # red-control BEFORE the hosts sinkhole: corrupt sha in the mock
+          # manifest must exit 1 (gate alive, not print-only). Write-Fail in
+          # fetch-models.ps1 writes to [Console]::Error (NOT Write-Error):
+          # under the step's EAP=Stop a Write-Error in the child's parent
+          # scope aborts before exit code propagation, and a child process'
+          # stderr under EAP=Stop becomes NativeCommandError killing the STEP
+          # (CI-proven runs 39829067427, 6e1d307). Console stream = plain
+          # stderr: rc reaches $LASTEXITCODE, no PowerShell error records.
+          # EAP=Continue around the red leg as belt-and-braces, restored in
+          # finally; the verdict is asserted on TWO legs: rc + sha256
+          # signature in the captured tail (rc=1 from the gate, not from an
+          # unrelated crash - fail-closed diagnostics).
+          $prevEAP = $ErrorActionPreference
+          try {
+              $ErrorActionPreference = 'Continue'
+              $redTail = & scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache 2>&1
+              $redRc = $LASTEXITCODE
+          } finally {
+              $ErrorActionPreference = $prevEAP
+          }
           if ($redRc -eq 0) { throw "corrupt sha PASSED (rc=0): ps1 sha256 gate is dead" }
+          if (-not (($redTail | Out-String) -match 'sha256')) {
+              throw "red leg rc=$redRc without sha256-verdict in stderr: gate reason missing"
+          }
           # repeat = offline (cache hit): sinkhole HF in hosts (runner is an
           # admin context; reverted in finally)
           $hostsBak = 'C:\Windows\System32\drivers\etc\hosts'
