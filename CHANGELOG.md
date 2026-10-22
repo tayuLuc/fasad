@@ -6,6 +6,10 @@
 
 ## Unreleased
 
+### Fixed
+- Релизный контур до первого тега (#188, латенты из эскалаций #184/#187): mac-шаги `release.yml` — `sha256sum: command not found` rc=127 на macos-14 (провен run 39784396502) → hex-сверка `shasum -a 256` (форма ort-build, прообраз зелёный); win-шаг `onnxruntime.dll` — ложно-красный путь `target/release/` → корень `target/` (`vars::target_dir`, первичка ort-sys `vars.rs:32` + CI-провен run 39786761298); linux-контур — «динамическая зависимость» было ЛОЖНЫМ (download-контур = СТАТИКА, ort-sys `main.rs:177-183`, CI-провен readelf run 39786761298) → linux = статика, ЗУБ А verify-bundle = маркер-форма win-ноги, readelf-шаг матрицы = запись ELF-графа (INFO), docs/§Матрица синхронны.
+- Найденные релиз-репетицией (#188, dispatch run 39791625858 — workflow `release` исполнен впервые): `just dist` на linux падал на трей-зависимости (tray-icon compile_error, §16) — трей-сборка перенесена в mac/win uname-ветку рецепта; spike-нога `ort-dylib` (linux) линковала `-lonnxruntime` против корня архива (so лежит в `<архив>/lib`) при mac-only обвязке dynamic_lookup (build.rs:99) — linux-нога харнеса снята как не-контракт (ram-контур = mac, §9), mac-нога = dylib-dlopen-контракт.
+
 ## v0.1.0 (в разработке; релизный контур = full-бандл)
 
 ### Added

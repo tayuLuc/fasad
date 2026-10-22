@@ -140,12 +140,21 @@ esac
 [ -x "$BIN" ] || die "нет бинаря $BIN — сначала cargo build --release -p guard-daemon --features ort-inference (just release-build)"
 [ -f "$LICENSES" ] || die "нет $LICENSES — сначала just deps-licenses"
 
-# Зуб полного контура (mac/linux — динамический dylib, win — статик-линк).
+# Зуб полного контура (mac — динамический dylib, linux/win — маркер-форма).
 # Контур бандла метится именем архива (`-full`); метка обязана быть правдой про
 # бинарь, иначе «full» продаёт cascade-0. Проверка спрашивает У АРТЕФАКТА, а не
 # у env вызывающего (тот же класс, что preflight в measure-rss.sh #170 б).
-#   mac/linux: орт-контур = динамическая зависимость от libonnxruntime в
-#     `otool -L` / `readelf -d -l`; голый бинарь без неё = собран без фичи.
+#   mac: орт-контур = динамическая зависимость от libonnxruntime в `otool -L`
+#     (dylib-контракт §W2 п.1, rpath build.rs); голый бинарь без неё = собран
+#     без фичи.
+#   linux: download-binaries линкует орт СТАТИКОЙ (первичка ort-sys
+#     build/main.rs:177-183), динамической зависимости НЕТ (#188, CI-провен
+#     readelf run 39786761298 + релиз-репетиция run 39803462540: прежняя
+#     readelf-нога краснила full-сборку ложно, ровно как linux-нога
+#     verify-bundle до d02a25d) → тот же дискриминатор, что win: маркер
+#     `onnxruntime/core/session` в теле (venдорные пути из
+#     static_link_prerequisites, main.rs:177; каскад-0 = 0 совпадений,
+#     орт-бинарь >0 — промер preflight measure-rss.sh #170 б).
 #   windows: MSVC линкует орт СТАТИКОЙ (build.rs: rpath-ветка = macos|linux,
 #     delivery на win = onnxruntime.dll рядом с exe), динамической зависимости
 #     нет у обоих контуров — отличим только по маркеру pyke-статики в теле
@@ -162,23 +171,41 @@ full_probe() {
                 || die "$probe: в динамическом графе нет libonnxruntime = бинарь собран БЕЗ ort-inference; метка full запрещена (just release-build)"
             ;;
         Linux)
-            readelf -d -l "$probe" 2>/dev/null | grep -qi onnxruntime \
-                || die "$probe: в динамическом графе нет libonnxruntime = бинарь собран БЕЗ ort-inference; метка full запрещена (just release-build)"
+            # #188: download-контур = СТАТИКА (см. шапку), readelf-гейт
+            # краснил full-сборку ложно (провен релиз-репетиции run
+            # 39803462540: «в динамическом графе нет libonnxruntime» при rc=0
+            # сборки full; CI-провен графа run 39786761298). Дискриминатор =
+            # вендорный маркер `onnxruntime/core/session`: промер CI r6
+            # (run 39808790297, dist ubuntu): linux-бинарь full его НЕСЁТ
+            # («ORT|ok|linux: маркер орт-стави ... verify-bundle», green),
+            # каскад-0 = 0 совпадений (preflight measure-rss.sh #170 б).
+            LC_ALL=C grep -qa 'onnxruntime/core/session' "$probe" 2>/dev/null \
+                || die "$probe: в теле бинаря нет орт-статики = собран БЕЗ ort-inference; метка full запрещена (just release-build; linux = download-статика ort-sys main.rs:182, #188)"
             ;;
         MINGW* | MSYS* | CYGWIN*)
             # MSVC: динамической зависимости нет у обоих контуров (build.rs
             # rpath-ветка = macos|linux; доставка на win = onnxruntime.dll
             # рядом с exe — ort-sys copy_dylibs в target-каталог, первичка
-            # build/dynamic_link.rs:14-24, промер этой сессии). Отличим по
-            # вендорному маркеру: `static_link_prerequisites` (ort-sys
-            # build/main.rs:59/66/177) прокидывает вендорные пути вида
-            # onnxruntime/core/… в линкуемый образ — `LC_ALL=C grep -a` по
-            # бинарю (тот же маркер, что preflight measure-rss.sh #170 б:
-            # голый spike = 4 совпадения, релизный каскад-0 = 0).
-            # Инструмент = bash-греп по байтам (свой код), НЕ `strings`: на
-            # windows-раннере `strings` из Sysinternals не гарантирован, а
-            # молча пропущенный зуб (WARN) = ложно-зелёный контур (реестр
-            # false-green).
+            # build/dynamic_link.rs:14-24, промер этой сессии).
+            # ДИСКРИМИНАТОР (#188, провен релиз-репетиции: run 39803462540
+            # маркер `onnxruntime/core/session` красил full-сборку ложно —
+            # «в теле бинаря нет орт-статики» при rc=0 сборки --features
+            # ort-inference; run 39808790297 маркер-строка `onnxruntime.dll`
+            # = 0 совпадений: grep по registry-источникам ort-2.0.0-rc.14/
+            # ort-sys-2.0.0-rc.14 — строка живёт ТОЛЬКО в док-комментариях
+            # (environment.rs:29,644), в код не попадает; win-путь ort-sys =
+            # static_link: `rustc-link-lib=static=onnxruntime`
+            # (static_link/mod.rs:117) + DX12/DirectML-либы (mod.rs:50-54
+            # static_link_prerequisites, main.rs:42-44 win-ветка)). Живой
+            # маркер win-full = имя EP-либы из prerequisites: в теле bin
+            # `--features tray,ort-inference` оно есть, в каскад-0 (фича
+            # off) — нет. ДИСКРИМИНИРУЕМОСТЬ меряется CI-матрицей: full-шаг
+            # зелёный, шаг «Каскад-0-референс зуба В» строит фича-off
+            # бинарь (release.yml, тот же маркер-зуб проверяет его
+            # дискриминатором в verify-bundle :414 c0_is_cascade0).
+            # Инструмент = bash-греп по байтам, НЕ `strings`
+            # (Sysinternals на раннере не гарантирован; молча пропущенный
+            # зуб = ложно-зелёный контур, реестр false-green).
             #
             # ДИНАМИЧЕСКАЯ нога, если dll едет в архив: win-бандл несёт
             # bin/onnxruntime.dll (параметр --ort-dll) — на MSVC доставка
@@ -190,8 +217,8 @@ full_probe() {
             # инвариант «dll в бандле = полный контур»: наличие dll рядом с
             # exe = заявка упаковки (--ort-dll из CI-шага), и она обязана
             # сопровождаться орт-маркером в самом exe.
-            LC_ALL=C grep -qa 'onnxruntime/core/session' "$probe" 2>/dev/null \
-                || die "$probe: в теле бинаря нет орт-статики = собран БЕЗ ort-inference; метка full запрещена (just release-build)"
+            LC_ALL=C grep -qai 'DirectML' "$probe" 2>/dev/null \
+                || die "$probe: в теле бинаря нет EP-либ win-контура (DirectML) = собран БЕЗ ort-inference; метка full запрещена (just release-build; win = pyke static_link_prerequisites, static_link/mod.rs:50-54, #188)"
             ;;
     esac
 }

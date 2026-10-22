@@ -127,7 +127,7 @@ shellcheck:
     #!/usr/bin/env bash
     set -euo pipefail
     command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck не установлен — гейт НЕИСПОЛНЕН, не провален (brew install shellcheck / apt-get install shellcheck / choco install shellcheck)"; exit 2; }
-    files=( {{SHELL_SOURCES}} )
+    files=( {{ SHELL_SOURCES }} )
     files=( "${files[@]:1}" )
     shellcheck --severity=warning -x "${files[@]}"
 
@@ -181,14 +181,14 @@ test:
 
 # Тесты workspace + опциональные фичи в щадящем режиме CPU (рычаги 21.10).
 local-test:
-    {{CPU_CALM}} cargo test --workspace
-    {{CPU_CALM}} cargo test -p guard-vault --features decliner
-    {{CPU_CALM}} cargo test -p guard-onnx --examples
+    {{ CPU_CALM }} cargo test --workspace
+    {{ CPU_CALM }} cargo test -p guard-vault --features decliner
+    {{ CPU_CALM }} cargo test -p guard-onnx --examples
     # Тесты харнеса гейта #60 п.3 (#134): контракт формата `RESTORE|verdict` и
     # positive control'ы живости ног. Тот же носитель контракта, что у строки
     # `guard-onnx --examples` выше: тестов примеров не видно ни в
     # `cargo test --workspace`, ни в CI, если их не звать явно.
-    {{CPU_CALM}} cargo test -p guard-daemon --examples
+    {{ CPU_CALM }} cargo test -p guard-daemon --examples
 
 # Аудит дерева зависимостей (bans/advisories/licenses) — deny.toml.
 deny:
@@ -243,7 +243,7 @@ golden-verify:
 # подставлялся). Промер 21.10: инкрементальный прогон 2.3 с, сборка с нуля
 # ~1 м 40 с (числа — в теле PR).
 restore-integrity-probe:
-    {{CPU_CALM}} cargo run -p guard-daemon --example restore_probe
+    {{ CPU_CALM }} cargo run -p guard-daemon --example restore_probe
 
 # Гейт #14-B: union-recall ПОЛНОГО каскада (0∨1∨2) на golden-наборе, SPEC §5 п.6
 # (в AGENTS.md и README golden тот же пункт именуется «§5 п.7»).
@@ -502,7 +502,20 @@ deps-licenses:
     set -euo pipefail
     command -v cargo-about >/dev/null 2>&1 || { echo "cargo-about не установлен (cargo install --locked --features cli cargo-about) — гейт НЕИСПОЛНЕН, не провален"; exit 2; }
     mkdir -p dist
-    cargo about generate -c about.toml --workspace --offline --fail about.hbs -o dist/THIRD-PARTY-LICENSES.txt
+    # Контур флага (#188, провен релиз-репетиции run 39798415641, все три
+    # dist-ноги): `--offline` красит CI-контур — `cargo metadata` требует
+    # скачивания crate, отсутствующего в warm-кэше матрицы (провен «failed to
+    # download bumpalo v3.20.3» ubuntu/win/mac; bumpalo = транзитив wasm-цепи,
+    # в target-сборку матрицы не попадает, в lock — есть). Air-gap-контракт
+    # AGENTS — про продукт (рантайм), а лицензионный гейт в CI сеть имеет
+    # (curl-шаги скачивают). Рычаг DEPS_OFFLINE=1 = offline-форма для
+    # оффлайн-машины оператора (локальный репертуар скачан); дефолт = online.
+    offline_flag=""
+    if [ "${DEPS_OFFLINE:-0}" = "1" ]; then offline_flag="--offline"; fi
+    # Флаг = shell-переменная рецепта (just-шаблон с двойными фигурными
+    # скобками здесь не используется намеренно).
+    # shellcheck disable=SC2086
+    cargo about generate -c about.toml --workspace $offline_flag --fail about.hbs -o dist/THIRD-PARTY-LICENSES.txt
     echo "deps-licenses ok: $(wc -l < dist/THIRD-PARTY-LICENSES.txt | tr -d ' ') строк, $(grep -c '^  - ' dist/THIRD-PARTY-LICENSES.txt | tr -d ' ') записей пакет→версия→лицензия"
 
 # Упаковка бандла (бинарь + LICENSE + README-ссылка + схема + лицензии +
@@ -532,7 +545,14 @@ release-build-cascade0:
 # каталог, что у build-ort/spike-dylib); win несёт onnxruntime.dll из $ORT_DLL
 # (win-ячейка CI: путь к runtimes/win-x64/native из pyke-кэша ort-sys,
 # delivery-контракт ort-доки «рядом с exe»).
-dist: release-build release-build-tray deps-licenses
+# linux-ветка (#188): трей-зависимость из dep-списка СНЯТА — фича `tray` на
+# linux физически несобираема (compile_error в tray-icon, §16), а CI зовёт
+# `just dist` на всех трёх ОС: провен релиз-репетиции run 39791625858 —
+# dist ubuntu-24.04 упал на release-build-tray (tray-icon compile_error) ДО
+# упаковки. mac/win-контур сохранён пословно: трей собирается в uname-ветке
+# ниже (та же последовательность release-build → release-build-tray →
+# make-bundle; комментарий release-build-tray про порядок bin-целей).
+dist: release-build deps-licenses
     #!/usr/bin/env bash
     set -euo pipefail
     ext=""
@@ -548,6 +568,7 @@ dist: release-build release-build-tray deps-licenses
         dll_args=(--ort-dll "$ORT_DLL")
     fi
     if [ "$(uname -s)" = "Darwin" ] || [ -n "$ext" ]; then
+        just release-build-tray
         bash scripts/make-bundle.sh --tray-binary "target/release/fasad-tray${ext}" ${ort_dir_args[@]+"${ort_dir_args[@]}"} ${dll_args[@]+"${dll_args[@]}"}
     else
         bash scripts/make-bundle.sh ${dll_args[@]+"${dll_args[@]}"}

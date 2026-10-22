@@ -12,8 +12,11 @@ name: release
 # `ort-dylib`) и несёт `lib/libonnxruntime.1.dylib` в бандле
 # (scripts/make-bundle.sh --ort-dir + install_name_tool -add_rpath).
 # win/linux: доставка runtime-библиотеки — onnxruntime.dll в bin/ (win,
-# --ort-dll из pyke-кэша build-контура) / динамика-по-пути (linux); первый
-# живой промер win/linux full-контура = эта матрица, риск записан в #181.
+# --ort-dll из pyke-кэша build-контура, путь = корень target/, vars.rs:32) /
+# linux = СТАТИКА download-контура (ort-sys main.rs:177-183, CI-провен readelf
+# run 39786761298 — NEEDED без onnxruntime; доставка .so не смонтирована,
+# динамик-контур = отдельное решение оператора); первый живой промер win/linux
+# full-контура = ci.yml job `ort-build` (#184/#187, PR-контур), риск #181.
 # Веса (879 МБ) в бандл НЕ входят: бандл несёт scripts/fetch-models.sh +
 # models/manifest.tsv + models/README.md (sha256-гейт); mac-ячейка скачивает
 # веса шагом ниже и промеряет смонтированный контур в verify-bundle (ЗУБ Б).
@@ -61,6 +64,11 @@ on:
   push:
     tags:
       - "v*"
+  # Релиз-репетиция (#188): прогон матрицы dist + ort-dylib на произвольном
+  # head БЕЗ тега. Публикация НЕ сработает: job `release` гейтится
+  # `if: startsWith(github.ref, 'refs/tags/v')` (первичка :486 на f5dcb54) —
+  # на dispatch ref = ветка, job пропускается, `gh release create` (:590) не
+  # исполняется. Ассеты = артефакты run, не релиз.
   workflow_dispatch: {}
 
 # Workflow-level пусто: каждый job поднимает ровно своё (класс F2 known-red,
@@ -123,15 +131,25 @@ jobs:
         # (матричные ort_archive/ort_sha256 первичка docs/model-audit.md §8
         # п.3). mac-ячейка: dylib нужен И сборке (env-префикс), И бандлу
         # (make-bundle --ort-dir), поэтому шаг именно здесь.
-        # Формат сверки — канон `sha256sum -c` (две строки, два пробела),
-        # BSD/GNU читают одинаково (урок #76 D3: sed-вырезка ломала формат).
+        # Формат сверки (#188) = ПРЯМОЕ hex-сравнение, канон ci.yml ort-build
+        # mac-шага (первичка ci.yml:201-204) — НЕ `sha256sum -c`: macos-14-раннер
+        # НЕ имеет GNU `sha256sum` (только BSD `shasum -a 256`), CI-провен run
+        # 39784396502 job 119843610877 (PR #187, mac-нога, rc=127 «command not
+        # found»). Прежняя форма «канон `sha256sum -c`» жила здесь непрожитой
+        # (workflow `release` = 0 прогонов до #188, gh api runs пусто 25.10) и
+        # упала бы на первом теге; `sha256sum -c` остаётся каноном ubuntu-ног
+        # (publish job ниже — GNU coreutils, не трогать). Parsing формата (урок
+        # #76 D3) обойдён entirely: сравниваются две hex-строки без разбора.
         if: matrix.os == 'macos-14'
         run: |
           set -euo pipefail
           url="https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-osx-arm64-1.31.0.tgz"
           curl -sSfL --retry 3 -A "fasad-release-ci/1.0" -o "$RUNNER_TEMP/ort.tgz" "$url"
-          printf '%s  %s\n' "1031b36dd3bdaa8d976a6130d9cf2a05e9be320b93ae804f8427b91dc3432afc" "$RUNNER_TEMP/ort.tgz" > "$RUNNER_TEMP/ort.sum"
-          ( cd "$RUNNER_TEMP" && sha256sum -c ort.sum )
+          actual="$(shasum -a 256 "$RUNNER_TEMP/ort.tgz" | cut -d' ' -f1)"
+          expected="1031b36dd3bdaa8d976a6130d9cf2a05e9be320b93ae804f8427b91dc3432afc"
+          [ "$actual" = "$expected" ] \
+              || { echo "ОШИБКА: sha256 dylib = $actual, ожидание $expected"; exit 1; }
+          echo "sha256 ok: dylib 1.31.0 = пин ci.yml ort-build ($actual)"
           mkdir -p "$RUNNER_TEMP/ort"
           tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP/ort"
           echo "ORT_DIR=$RUNNER_TEMP/ort/onnxruntime-osx-arm64-1.31.0" >> "$GITHUB_ENV"
@@ -139,9 +157,11 @@ jobs:
         # Контур #181 (рюлинг оператора 22.10: «Нужно только фулл»). mac:
         # ORT_DIR из шага выше → рецепт ставит env-префикс dylib-контракта.
         # win/linux: каталога $ORT_DIR/lib нет → рецепт линкует без префикса
-        # (win: pyke-download + copy-dylibs, delivery dll рядом с exe;
-        # linux: download-binaries статик + динамика libonnxruntime.so;
-        # ПЕРВЫЙ живой промер этих веток = эта матрица, риск #181).
+        # (win: pyke-download + copy-dylibs, delivery dll рядом с exe = корень
+        # target/, шаг ниже; linux: download-binaries = СТАТИКА, ort-sys
+        # main.rs:177-183, доставка .so не смонтирована — решение атома #188,
+        # динамик-контур = отдельное решение оператора. ПЕРВЫЙ живой промер
+        # этих веток = ci.yml ort-build #184/#187 (PR-контур), риск #181).
         run: just release-build
       - name: "Веса каскадов 1–2 (mac: доставка в кеш для ЗУБа Б verify)"
         # mac-контур промеряет смонтированный контур живьём (verify-bundle
@@ -253,7 +273,14 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release -p guard-daemon --target-dir target-c0
-          FASAD_RSS_TARGET="$PWD/target-c0/release" just measure-rss --skip-build
+          # env -u FASAD_MODEL_DIR (#188, провен релиз-репетиции run 39795161065
+          # mac-нога): шаг «Веса каскадов 1–2» пишет FASAD_MODEL_DIR в GITHUB_ENV,
+          # и он наследуется ЭТИМ шагом — каскад-0-артефакт замера (фича off) при
+          # названных весах отказывается стартовать (BuiltWithoutInference,
+          # cascades.rs:649-650), и measure-rss краснеет «демон умер на старте».
+          # Зуб #185 выше делает то же самое через `env -u` — та же причина.
+          env -u FASAD_MODEL_DIR FASAD_RSS_TARGET="$PWD/target-c0/release" \
+              just measure-rss --skip-build
       - name: "Каскад-0-референс зуба В (win/linux: дискриминатор против full-метки)"
         # verify-bundle ЗУБ В проверяет живым прогомом: бинарь БЕЗ ort-inference
         # при FASAD_MODEL_DIR обязан отказать стартом (BuiltWithoutInference).
@@ -276,32 +303,112 @@ jobs:
           set -euo pipefail
           cargo build -p guard-daemon --target-dir target-c0
           echo "FASAD_CASCADE0_BIN=$PWD/target-c0/debug/fasad" >> "$GITHUB_ENV"
-      - name: "win-контур: onnxruntime.dll из pyke-кэша (delivery рядом с exe)"
+      - name: "win-контур: onnxruntime.dll контура сборки (delivery рядом с exe)"
         # win-бинарь линкуется pyke-статикой (build.rs rpath-ветка =
         # macos|linux), рантайм = onnxruntime.dll РЯДОМ с exe (ort-дока
         # setup/linking: «in PATH or next to the exe»; PE RUNPATH нет).
-        # ort-sys `copy-dylibs` (build/dynamic_link.rs:14-24, промер 22.10)
-        # в build-контуре кладёт dll в target/release/ — берём её оттуда;
-        # отсутствие = красным (бинарь собран, а рантайма нет = бандл, который
-        # не стартует; риск win-ветки записан в #181).
+        # Путь dll (#188, CI-провены): `copy_dylibs` (орт-sys
+        # build/dynamic_link.rs:14-20, промер 22.10) пишет в
+        # `vars::target_dir()` (vars.rs:32-42) = КОРЕНЬ target/, НЕ в
+        # target/release/; на кэш-хите ort-sys не реранится вовсе
+        # (write-through `!out_path.exists()`, dynamic_link.rs:40).
+        # РЕАЛЬНОСТЬ win-контра (провен релиз-репетиции run 39795161065
+        # dist-windows): dll НЕТ ни в `target/`, ни в `target/release/` при
+        # rc=0 сборки release-профиля (find глубже = пусто по всему target/:
+        # см. строку лога) — pyke-win дистрибутив линкуется MSVC-статикой
+        # (`rustc-link-lib=static=onnxruntime`, main.rs:183), dll-артефакт
+        # в нём для RUNTIME НЕ обязателен: exe со статик-ортом не грузит
+        # onnxruntime.dll (PE-графа без неё: make-bundle.sh:184-189).
+        # Динамик-контура win (pyke import-lib, `ORT_LIB_LOCATION`) в нашем
+        # релизе нет. ПРЕЖНИЙ hard-гейт (отсутствие dll = красным,
+        # «бинарь собран, а рантайма нет») = ложно-красный для статик-контура
+        # (тот же класс, что linux readelf-гейт #188); шаг = ЗАПИСЬ
+        # расположения dll (INFO): есть → берём в бандл `--ort-dll`
+        # (make-bundle кладёт bin/onnxruntime.dll рядом с exe), нет → в бандл
+        # идёт статик-екзешник (раннер-доказательство: ЗУБ А verify-bundle
+        # маркер-форма win-ноги, провен 39795161065 win dist дошёл до
+        # «Бандл» без dll-гейта). Доставка win-рантайма = вопрос контура
+        # линковки (статик vs динамик), закрыт первичкой: Статик.
         if: matrix.os == 'windows-2022'
         shell: bash
         run: |
           set -euo pipefail
-          [ -f target/release/onnxruntime.dll ] \
-              || { echo "ОШИБКА: target/release/onnxruntime.dll нет — win-бинарь орт-контурный (release-build), а copy-dylibs его не положил"; exit 1; }
-          echo "ORT_DLL=$PWD/target/release/onnxruntime.dll" >> "$GITHUB_ENV"
-      - name: "Linux-контур: runtime-библиотека орта в артефактах сборки"
-        # linux-полный путь: ort-sys download-binaries, рантайм-поиск =
-        # LD_LIBRARY_PATH/системный каталог (per ort-дока); доставка в бандле
-        # НЕ смонтирована (#181: linux-ячейка промеряется ЗУБОМ А
-        # (readelf) + unit-доказательствами, живой mounted-промер = mac).
-        # Шаг фиксирует факт сборки динамической зависимости в логе матрицы.
+          # Единственный носитель факта «dll есть» = ls/find из самого шага
+          # (exit code `[ -f ]` при `set -e` внутри if — не источник истины).
+          dll="$(find target -maxdepth 2 -name 'onnxruntime.dll' -print -quit 2>/dev/null || true)"
+          if [ -n "$dll" ]; then
+              echo "win: onnxruntime.dll = $dll (copy_dylibs → vars::target_dir, vars.rs:32) — в бандл через --ort-dll"
+              echo "ORT_DLL=$PWD/$dll" >> "$GITHUB_ENV"
+          else
+              echo "win INFO: onnxruntime.dll в target-контуре НЕ найдена (провен run 39795161065: нет ни в target/, ни в target/release/) — win-релиз = pyke MSVC-статика (ort-sys main.rs:183), рантайм-библиотека exe не нужна; бандл = статик-екзешник (ЗУБ А verify = маркер-форма win-ноги, #188)."
+              echo "--- полный поиск dll по target/ (запись, не гейт) ---"
+              find target -name 'onnxruntime*.dll' 2>/dev/null | head -10 || true
+          fi
+      - name: "Linux-контур: запись ELF-графа + доставка libonnxruntime.so (#188)"
+        # linux-полный путь: ort-sys download-binaries линкует орт СТАТИКОЙ
+        # (первичка ort-sys build/main.rs:177-183: static_link_prerequisites +
+        # `rustc-link-lib=static=onnxruntime`). CI-провен run 39786761298
+        # (ort-build linux): `readelf -d` bin-цели = NEEDED libstdc++/libgcc_s/
+        # libm/libc/ld-linux, onnxruntime в графе НЕТ; `ldd` = .so нет.
+        # Прежний `readelf -d | grep -i onnxruntime` краснел ЛОЖНО для этого
+        # контура (тот же класс, что win-гейт #184); прежний комментарий
+        # «динамика-по-пути» (заголовок job :14-15) = ложное утверждение о
+        # форме рантайма. linux-решение атома = СТАТИКА; доставка
+        # libonnxruntime.so (динамик-контур) = отдельное решение оператора, не
+        # этот PR. Шаг = ЗАПИСЬ графа (INFO), не гейт: линковка full = rc=0
+        # шага сборки выше, ЗУБ «несёт орт» = маркер-форма verify-bundle
+        # (linux-нога ЗУБа А, #188).
+        # Ниже — ЗАПИСЬ официального libonnxruntime.so 1.31.0 в артефакты job
+        # (не в бандл): linux-бандл = статика, доставка .so в архив не
+        # смонтирована (#181, mac = mounted-контур, linux = unit-доказательства
+        # + ЗУБ А); запись даёт ручной промер динамики на linux-машине, не
+        # меняя контур релиза. Шаг standalone (своё скачивание + sha256 =
+        # канон, тот же пин, что матрица ort-dylib / первичка docs/model-audit.md
+        # §8 п.3) и `continue-on-error`: артефакт-запись не имеет права красить
+        # релизную матрицу (класс «запись ≠ гейт»).
         if: matrix.os == 'ubuntu-24.04'
         shell: bash
-        run: readelf -d -l target/release/fasad | grep -i onnxruntime
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo "--- linux: запись ELF-графа bin-цели (readelf -d + ldd; НЕ гейт) ---"
+          readelf -d target/release/fasad | grep -iE "onnxruntime|NEEDED" \
+              || echo "readelf: NEEDED onnxruntime НЕТ (linux = download-binaries СТАТИКА, ort-sys main.rs:182)"
+          ldd target/release/fasad | grep -i onnxruntime \
+              || echo "ldd: onnxruntime .so нет (linux = download-binaries СТАТИКА, ort-sys main.rs:182; CI-провен run 39786761298)"
+          echo "linux ok: full-контур слинкован (build rc=0); ELF-форма записана (статика)"
+          url="https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-linux-x64-1.31.0.tgz"
+          curl -sSfL --retry 3 -A "fasad-release-ci/1.0" -o "$RUNNER_TEMP/ort-linux.tgz" "$url"
+          printf '%s  %s\n' "cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57" "$RUNNER_TEMP/ort-linux.tgz" > "$RUNNER_TEMP/ort-linux.sum"
+          ( cd "$RUNNER_TEMP" && sha256sum -c ort-linux.sum )
+          mkdir -p "$RUNNER_TEMP/ort"
+          tar -xzf "$RUNNER_TEMP/ort-linux.tgz" -C "$RUNNER_TEMP/ort"
+          mkdir -p ort-runtime
+          cp "$RUNNER_TEMP/ort/onnxruntime-linux-x64-1.31.0/lib/"libonnxruntime.so* ort-runtime/
+          ls -la ort-runtime
+          echo "linux INFO: официальный libonnxruntime.so 1.31.0 записан в артефакты job (в бандл НЕ входит, #181/#188)"
       - name: "Бандл: бинарь + LICENSE + README + схема + лицензии + модели-инструкция + SHA256SUMS (контур full, #181)"
-        run: just dist
+        # win/linux (#188): env-префикс dylib-контракта, та же форма, что шаг
+        # ort-build ci.yml:225-227 и рецепт release-build (justfile:434-438):
+        # mac-dylib-контракт (орт в графе бинаря = `@rpath/
+        # libonnxruntime.1.dylib`, промер 22.10 локально, docs/model-audit.md
+        # §W2 п.1) требует ORT_PREFER_DYNAMIC_LINK + ORT_LIB_PATH; без него
+        # bin-цель линкуется download-СТАТИКОЙ pyke (ort-sys main.rs:177-183),
+        # и на mac ЗУБ А (otool-граф) красит full-бинарь ложно-красным
+        # (провен релиз-репетиции run 39808115490 dist-macos: build rc=0 →
+        # make-bundle «бинарь собран БЕЗ ort-inference» — бандл не собирался).
+        # linux-шаг не трогает контракт: каталога `$ORT_DIR/lib` на ubuntu
+        # нет (dist-матрица архив не качает, mac-шаг с `if: macos-14`) →
+        # `[ -d ]` ложен → префикс НЕ ставится → linux = download-статика,
+        # как решено в #188. win: тот же тест (`/lib` нет) → без префикса.
+        run: |
+          set -euo pipefail
+          if [ -n "${ORT_DIR:-}" ] && [ -d "$ORT_DIR/lib" ]; then
+              export ORT_PREFER_DYNAMIC_LINK=1
+              export ORT_LIB_PATH="$ORT_DIR/lib"
+              echo "dist: dylib-контур сборки ($ORT_LIB_PATH)"
+          fi
+          just dist
       - name: "Проверка бандла: распаковка, запуск, /health, орт-зубы А/Б/В, хэши + тег↔версия"
         env:
           # Кеш весов mac-ноги (шаг fetch-models пишет GITHUB_ENV; job-level
@@ -340,8 +447,11 @@ jobs:
     # SIGSEGV'ит (docs/model-audit-weights.md §W2 п.1, промер ×5), рабочий путь — официальный
     # dylib 1.31.0 + `ORT_PREFER_DYNAMIC_LINK=1` (per первичка ort:
     # https://ort.pyke.io/setup/linking — compile-time dynamic linking =
-    # ORT_LIB_PATH + ORT_PREFER_DYNAMIC_LINK=1; доставка рантайма на macOS/Linux —
-    # rpath `@loader_path`/`$ORIGIN` или каталог рядом с бинарём, там же).
+    # ORT_LIB_PATH + ORT_PREFER_DYNAMIC_LINK=1; доставка рантайма на macOS —
+    # rpath `@loader_path`). linux-нога = spike на официальном linux-dylib
+    # (репетиция динамик-линка; linux-РЕЛИЗ = download-статика dist-матрицы,
+    # main.rs:177-183, и её ЗУБ = маркер-форма #188; доставка linux-рантайма =
+    # отдельное решение оператора). Рам-мера харнеса = mac (§9).
     # Хэши архивов — первичка docs/model-audit.md §8 п.3 (промер 19.10), не SPEC.
     name: ort-dylib (${{ matrix.os }})
     permissions:
@@ -379,39 +489,79 @@ jobs:
         uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: just
-      - name: "Официальный dylib ORT 1.31.0 и сверка sha256"
+      - name: "Официальный архив ORT 1.31.0 и сверка sha256 (mac, #188)"
+        # mac: прямое hex-сравнение через BSD `shasum -a 256`, канон ci.yml
+        # ort-build mac-шага (первичка ci.yml:201-204) — macos-14-раннер НЕ
+        # имеет GNU `sha256sum` (провен run 39784396502 job 119843610877,
+        # mac-нога PR #187, rc=127 «command not found»); прежняя `sha256sum -c`
+        # форма жила здесь непрожитой (workflow `release` = 0 прогонов до #188)
+        # и упала бы на первом теге. История формата #76 D3 («ровно два
+        # пробела», BSD sed-урок) снимается вместе с `-c`: hex-сравнение не
+        # парсит `.sum`-файл. linux: сверка = `sha256sum -c` (GNU coreutils,
+        # ubuntu-24.04 — промер publish-ноги этого воркфлоу, не трогать).
+        if: matrix.os == 'macos-14'
+        run: |
+          set -euo pipefail
+          url="https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/${{ matrix.ort_archive }}"
+          curl -sSfL --retry 3 -A "fasad-release-ci/1.0" -o "$RUNNER_TEMP/ort.tgz" "$url"
+          actual="$(shasum -a 256 "$RUNNER_TEMP/ort.tgz" | cut -d' ' -f1)"
+          expected="${{ matrix.ort_sha256 }}"
+          [ "$actual" = "$expected" ] \
+              || { echo "ОШИБКА: sha256 dylib = $actual, ожидание $expected"; exit 1; }
+          echo "sha256 ok: dylib 1.31.0 = пин матрицы ($actual)"
+          mkdir -p "$RUNNER_TEMP/ort"
+          tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP/ort"
+          ls -1 "$RUNNER_TEMP/ort"
+      - name: "Официальный архив ORT 1.31.0 и сверка sha256 (linux, GNU-контур)"
+        if: matrix.os == 'ubuntu-24.04'
         run: |
           set -euo pipefail
           url="https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/${{ matrix.ort_archive }}"
           curl -sSfL --retry 3 -A "fasad-release-ci/1.0" -o "$RUNNER_TEMP/ort.tgz" "$url"
           # Ровно ДВА пробела между хэшем и путём, и оба — из формата, а не из
-          # аргумента. Промер 21.10 на BSD `/sbin/sha256sum` («sha256sum (Darwin)
-          # 1.0»), то есть на macos-14: прежняя форма с `'…  '` внутри аргумента
-          # давала четыре пробела, поле пути начиналось с пробела, и
-          # `sha256sum -c` отвечал rc=1 («No such file or directory» на
-          # существующий файл). Правка 21.10 чинила это `sed -i`, а он на BSD
-          # съедает СЛЕДУЮЩИЙ аргумент как суффикс бэкапа: скрипт `'s/…//'`
-          # уходил в -i, а его место занималось ИМЕНЕМ ФАЙЛА — файл читался как
-          # sed-скрипт, первая строка (`хэш  путь`) ломалась на переводе строки
-          # внутри шаблона подстановки: rc=1, «unescaped newline inside
-          # substitute pattern» (промер 21.10 на BSD sed этого хоста:
-          # `sed: 1: "/tmp/…/ort.sum\n": unescaped newline inside substitute
-          # pattern`; прежняя скобка «invalid command code» была текстом чужой
-          # ошибки, ревью #76, D3). Гейт умирал ДО сверки хэша. `sed` удалён;
-          # форма каноническая, GNU и BSD читают её одинаково.
+          # аргумента (урок #76 D3: BSD sed съедал следующий аргумент как
+          # суффикс бэкапа, гейт умирал ДО сверки хэша; `sed` удалён, форма
+          # каноническая). GNU `sha256sum` на ubuntu-раннере есть — промер
+          # publish-ноги этого воркфлоу (:464 на f5dcb54).
           printf '%s  %s\n' "${{ matrix.ort_sha256 }}" "$RUNNER_TEMP/ort.tgz" > "$RUNNER_TEMP/ort.sum"
           ( cd "$RUNNER_TEMP" && sha256sum -c ort.sum )
           mkdir -p "$RUNNER_TEMP/ort"
           tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP/ort"
           ls -1 "$RUNNER_TEMP/ort"
-      - name: "Сборка spike с ort-inference (release, dylib)"
+      - name: "Сборка spike с ort-inference (release, dylib; mac/linux)"
+        # Контур харнеса (контракт §W2 п.1: pyke-статика в mac release
+        # SIGSEGV'ит, рабочий путь = официальный dylib + ORT_PREFER_DYNAMIC_LINK;
+        # spike dlopen'ит RSS-мост по SPIKE_DYLIB, орт-символы = динамик-линк
+        # `-lonnxruntime`, ort-sys main.rs:49-51: `-L <ORT_LIB_PATH>`).
+        # mac = продукт-мера (§9); linux-нога = динамик spike на официальном
+        # linux-dylib (linux-РЕЛИЗ = download-статика dist-матрицы,
+        # main.rs:177-183; доставка linux-рантайма = отдельное решение
+        # оператора, #188).
+        # КОНТРАКТ ПУТИ (#188): `ORT_LIB_PATH` = КАТАЛОГ БИБЛИОТЕКИ
+        # (`<архив>/lib`; промер распаковки 25.10 в сессии, обе платформы:
+        # mac lib/libonnxruntime.dylib, linux lib/libonnxruntime.so).
+        # РЕЦЕПТ `build-ort` (justfile:487) ПЕРЕПРИСВАИВАЕТ
+        # `ORT_LIB_PATH="${ORT_DIR:-…/lib}"`: при шаговом `ORT_DIR` (корень
+        # архива) рецепт затирает шаговый ORT_LIB_PATH значением КОРНЯ →
+        # линк-строка `-L <корень>` → «library not found» (провен CI: все
+        # три репетиции 39791625858/39795161065/39798415641 на обеих ногах;
+        # локальный красно-зелёный промер 25.10 на этом хосте, ruling 22.10
+        # JOBS=2: expansion-форма рецепта с root-ORT_DIR = rc=101 «library
+        # not found», явный `ORT_LIB_PATH=<архив>/lib` = Finished 36-45 с +
+        # `otool -L` = `@rpath/libonnxruntime.1.dylib 1.31.0`). Поэтому шаг
+        # зовёт РАЗВЁРНУЮ форму рецепта (те же env/команда, что justfile:487,
+        # без переприсваивания) — контракт docs/model-audit.md §8 п.4
+        # («ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=<dir>/lib cargo build
+        # --release --features ort-inference») в точности.
         env:
-          # Корень распакованного архива = имя самого архива без .tgz
-          # (промер локальной распаковки 21.10: onnxruntime-osx-arm64-1.31.0/,
-          # onnxruntime-linux-x64-1.31.0/); каталоги `ort_dir` заданы в матрице
-          # рядом с `ort_archive`, чтобы они не разъезжались.
-          ORT_DIR: ${{ runner.temp }}/ort/${{ matrix.ort_dir }}
-        run: just build-ort
+          # Каталог библиотеки = `<архив>/lib` (имя архива без .tgz =
+          # ort_dir матрицы, промер 21.10).
+          ORT_LIB_PATH: ${{ runner.temp }}/ort/${{ matrix.ort_dir }}/lib
+        run: |
+          set -euo pipefail
+          [ -d "$ORT_LIB_PATH" ] || { echo "ОШИБКА: нет каталога библиотек $ORT_LIB_PATH (архив распакован шагом выше)"; exit 1; }
+          export ORT_PREFER_DYNAMIC_LINK=1
+          cargo build --release --features ort-inference --example spike
       - name: "Проверка линковки: dylib прописан в load commands"
         env:
           ORT_DIR: ${{ runner.temp }}/ort/${{ matrix.ort_dir }}

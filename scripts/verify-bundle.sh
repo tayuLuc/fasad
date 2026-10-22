@@ -18,10 +18,12 @@
 # Контур релиза #181 (рюлинг оператора 22.10: «нужно только фулл»): бандл =
 # `full` — бинарь собран с `ort-inference`, см. docs/release.md §«Что в
 # бандле». П.5 проверяет полный контур:
-#   ЗУБ А (всегда): бинарь бандла содержит орт-контур — mac/linux:
-#     динамическая зависимость от libonnxruntime в otool -L / readelf -d;
-#     win: маркер орт-статики в теле бинаря (MSVC-линк, delivery = dll рядом
-#     с exe — build.rs rpath-ветка = macos|linux).
+#   ЗУБ А (всегда): бинарь бандла содержит орт-контур — mac: динамическая
+#     зависимость от libonnxruntime в otool -L (dylib-контракт); linux/win:
+#     маркер орт-статики в теле бинаря (linux = download-binaries СТАТИКА,
+#     ort-sys main.rs:177-183, CI-провен readelf run 39786761298, #188;
+#     win = MSVC-линк, delivery = dll рядом с exe — build.rs rpath-ветка =
+#     macos|linux).
 #   ЗУБ Б (при mounted-контуре): FASAD_MODEL_DIR=<кеш весов> → демон стартует
 #     и /health говорит "stage":"cascade-0+models" (fallback: нет весов в CI →
 #     SKIPPED-строка, молчание = ложно-зелёная проверка, класс реестра).
@@ -175,19 +177,35 @@ case "$arch" in
     *.tar.gz) tar -xzf "$arch" -C "$tmp" ;;
     *.zip)
         # Windows-раннер (git bash) обязан распаковать архив тем же семейством
-        # инструментов, что его собрал: Expand-Archive. Python — НЕТ: AGENTS п.6
-        # не пускает Python в контур сборки, а на windows-2022 `python3` в
-        # Git Bash не гарантирован. Порядок: unzip (есть на macOS/Linux-разработке)
-        # → powershell (Windows) → явный отказ.
-        if command -v unzip >/dev/null 2>&1; then
-            unzip -q "$arch" -d "$tmp"
-        elif command -v powershell.exe >/dev/null 2>&1; then
+        # инструментов, что его собрал (make-bundle: powershell
+        # Compress-Archive). Python — НЕТ: AGENTS п.6 не пускает Python в
+        # контур сборки, а на windows-2022 `python3` в Git Bash не гарантирован.
+        # Порядок (#188): powershell (собиравший инструмент = канон) → bsdtar
+        # (в составе Git for Windows: /usr/bin/bsdtar, libarchive умеет zip) →
+        # unzip → явный отказ.
+        # Почему powershell ПЕРВЫМ, а не unzip (провен релиз-репетиции run
+        # 39810796923 dist-windows, шаг «Проверка бандла»):
+        # `Compress-Archive` пишет разделители путей ОБРАТНЫМИ слэшами
+        # (`bin\fasad.exe` как ИМЯ ФАЙЛА, а не каталог), а `unzip` на это
+        # роняет warning и не раскладывает дерево — verify-bundle умирал
+        # rc=1 на пустой распаковке («в архиве нет каталога бандла»), НЕ
+        # доходя до зубов. Expand-Archive = тулинг, которым архив собран
+        # (round-trip инвариант), он же нормализует сепараторы.
+        if command -v powershell.exe >/dev/null 2>&1; then
             powershell.exe -NoProfile -Command \
                 "Expand-Archive -LiteralPath '$(cygpath -w "$arch" 2>/dev/null || printf '%s' "$arch")' -DestinationPath '$(cygpath -w "$tmp" 2>/dev/null || printf '%s' "$tmp")'"
+        elif command -v bsdtar >/dev/null 2>&1; then
+            bsdtar -xf "$arch" -C "$tmp"
+        elif command -v unzip >/dev/null 2>&1; then
+            unzip -q "$arch" -d "$tmp"
         else
-            printf 'verify-bundle: ОШИБКА: нет ни unzip, ни powershell.exe — архив %s нечем распаковать\n' "$arch" >&2
+            printf 'verify-bundle: ОШИБКА: нет ни powershell.exe, ни bsdtar, ни unzip — архив %s нечем распаковать\n' "$arch" >&2
             exit 1
         fi
+        # Зуб пустой распаковки (#188): молчаливая пустая распаковка = все
+        # зубы ниже краснеют с неочевидной причиной; здесь — с именем архива.
+        [ -n "$(ls -A "$tmp" 2>/dev/null)" ] \
+            || die "архив $arch распаковался ПУСТО (инструмент: см. ветку выше) — бандл не проверялся"
         ;;
     *)
         printf 'verify-bundle: ОШИБКА: неизвестный формат архива: %s\n' "$arch" >&2
@@ -297,10 +315,14 @@ grep -q "listening" "$log" \
 rm -f "$log"
 printf 'REFUSAL|ok|rc=%s|full-бинарь без FASAD_MODEL_DIR = отказ старта (#185, ModelsNotConfigured)\n' "$rc"
 # ── ЗУБ А: бинарь бандла = орт-контур (full) ────────────────────────────────
-# Та же логика, что full_probe в make-bundle.sh (первичка ort-sys
-# build/dynamic_link.rs/static_link): mac/linux — динамическая зависимость,
-# win — маркер орт-статики в теле (PE-локатор не несёт RUNPATH; доставка =
-# onnxruntime.dll рядом с exe). Инструмент спрашивается у АРТЕФАКТА, env
+# Та же логика, что full_probe в make-bundle.sh: mac — динамическая зависимость
+# (dylib-контракт, rpath); linux — маркер орт-статики `onnxruntime/core/session`
+# в теле (download-binaries линкует СТАТИКОЙ с вендорными путями, CI-провен
+# r6 run 39808790297: linux-бинарь full маркер несёт, «ORT|ok|linux»);
+# win — маркер EP-либ win-контура `DirectML` (pyke static_link_prerequisites,
+# ort-sys static_link/mod.rs:50-54; в PE заголовочных путей C++ нет, #188
+# провен r6/r7); доставка win-рантайма = onnxruntime.dll рядом с exe.
+# Инструмент спрашивается у АРТЕФАКТА, env
 # вызывающего не влияет (тот же принцип, что preflight measure-rss.sh #170 б).
 case "$(uname -s)" in
     Darwin)
@@ -313,14 +335,35 @@ case "$(uname -s)" in
         printf 'ORT|ok|mac: dylib в бандле + rpath-контур (lib/libonnxruntime.1.dylib)\n'
         ;;
     Linux)
-        readelf -d -l "$bin" 2>/dev/null | grep -qi onnxruntime \
-            || die "ЗУБ А: bin/fasad без libonnxruntime в динамическом графе = бандл не full (release-контур #181)"
-        printf 'ORT|ok|linux: динамический libonnxruntime\n'
+        # Форма зуба (#188) = маркер в теле, та же, что win-нога ниже.
+        # Прежний readelf-гейт краснел ЛОЖНО: linux-контур релиза =
+        # ort-sys download-binaries, а он линкует орт СТАТИКОЙ (первичка
+        # ort-sys build/main.rs:177-183: static_link_prerequisites +
+        # `rustc-link-lib=static=onnxruntime`), в ELF-графе onnxruntime НЕТ —
+        # CI-провен run 39786761298 (ort-build linux, ci.yml): `readelf -d`
+        # bin-цели = NEEDED libstdc++/libgcc_s/libm/libc/ld-linux, .so через
+        # `ldd` нет. Дискриминатор маркера = тот же, что preflight
+        # measure-rss.sh #170 б: релизный каскад-0 (бинарь БЕЗ фичи,
+        # release.yml-шаг target-c0) = 0 совпадений, орт-бинарь = >0
+        # (вендорные пути onnxruntime/core/… из static_link_prerequisites,
+        # ort-sys main.rs:177, промер win-ноги #181/#184).
+        LC_ALL=C grep -qa 'onnxruntime/core/session' "$bin" 2>/dev/null \
+            || die "ЗУБ А: bin/fasad без орт-статики в теле = бандл не full (release-контур #181, linux = download-binaries статика, ort-sys main.rs:182)"
+        printf 'ORT|ok|linux: маркер орт-статики в bin/fasad (download-binaries статика; readelf-д = CI-провен run 39786761298, NEEDED без onnxruntime)\n'
         ;;
     MINGW* | MSYS* | CYGWIN*)
-        LC_ALL=C grep -qa 'onnxruntime/core/session' "$bin" 2>/dev/null \
-            || die "ЗУБ А: bin/fasad.exe без орт-статики в теле = бандл не full (release-контур #181, win = MSVC-статик)"
-        printf 'ORT|ok|win: маркер орт-статики в bin/fasad.exe\n'
+        # #188 (провен релиз-репетиции run 39808790297 win-Бандл): маркер
+        # `onnxruntime/core/session` = пути заголовков C++-объектов, в PE
+        # bin-цели их НЕТ (win = pyke static_link: import-либы + C-ABI-линковка,
+        # ort-sys static_link/mod.rs:42-54/117; строка `onnxruntime.dll` —
+        # только в док-комментариях ort environment.rs:29,644, в код не
+        # попадает). Живой маркер win-full = имена EP-либ из
+        # static_link_prerequisites (`DirectML`, DX12-набор): full = есть,
+        # каскад-0 (фича off) = нет (тот же дискриминатор, что full_probe в
+        # make-bundle.sh, win-нога).
+        LC_ALL=C grep -qai 'DirectML' "$bin" 2>/dev/null \
+            || die "ЗУБ А: bin/fasad.exe без EP-либ win-контура (DirectML) = бандл не full (release-контур #181, win = pyke static_link, static_link/mod.rs:50-54, #188)"
+        printf 'ORT|ok|win: маркер DirectML в bin/fasad.exe (win = pyke static_link_prerequisites, #188)\n'
         ;;
 esac
 # 4. Живой HTTP-контур бандла = смонтированный демон ЗУБа Б (weights +

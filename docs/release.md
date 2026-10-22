@@ -29,8 +29,14 @@
    (`CascadeFailure::BuiltWithoutInference` / `Load`, `cascades.rs:635-650`);
    молчаливой деградации при обещанных весах нет — fail-open на recall.
 4. Проверка контура вшита в гейт (`scripts/verify-bundle.sh`, #181):
-   1. ЗУБ А — бинарь бандла содержит орт-контур (mac/linux: `libonnxruntime`
-      в динамическом графе; win: маркер орт-статики в теле — PE-доставка =
+   1. ЗУБ А — бинарь бандла содержит орт-контур (mac: `libonnxruntime`
+      в динамическом графе — dylib-контракт сборки; linux: маркер орт-статики
+      в теле — download-контур ort-sys линкует СТАТИКОЙ, `main.rs:177-183`,
+      CI-провен `readelf -d` run 39786761298 = NEEDED без onnxruntime (#188);
+      win: маркер EP-либ win-контура (`DirectML`, pyke
+      `static_link_prerequisites`, ort-sys `static_link/mod.rs:50-54`) —
+      заголовочных путей C++ в PE нет (#188, провен r6/r7 релиз-репетиции);
+      PE-доставка =
       `bin/onnxruntime.dll` рядом с exe); mac-бандл несёт dylib 1.31.0 в
       `lib/`, бинари — rpath `@loader_path/../lib`.
    2. ЗУБ Б — live-промер смонтированного контура при доступном кеше весов:
@@ -133,7 +139,9 @@ win/mac-ячейки собирают второй бинарь шагом `just
 (`scripts/fetch-models.sh`) для live-промера ЗУБа Б; win/linux-live-промер
 смонтрованного контура в CI не смонтирован (доставка весов = +879 МБ на
 прогон), риск win/linux-сборок full-контура записан в issue #181: первый
-живой промер = эта матрица на теге.
+живой промер = ci.yml job `ort-build` (#184/#187, PR-контур; #188 перенёс
+первый промер с «тега» на PR — win линкуется, linux = download-статика,
+провен run 39786761298).
 
 Отличие от SPEC §9 (ubuntu-22.04, две ОС): раннер Linux поднят до 24.04 по
 постановке задачи шага 9, macOS-14 добавлен как третья платформа (issue #31).
@@ -278,12 +286,14 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 `release` защищена `if: startsWith(github.ref, 'refs/tags/v')`, поэтому ручной
 прогон артефакты собирает, а релиз не трогает.
 
-Прогнать матрицу до слияния нельзя: `gh workflow run release.yml --ref <ветка>`
-отвечает HTTP 404 «workflow release.yml not found on the default branch»
-(промер 21.10 на PR #76) — GitHub ищет воркфлоу в дефолтной ветке. Значит
-`windows-2022` (zip через `powershell Compress-Archive`), linux-бандл и job
-`ort-dylib` получают первый живой промер сразу после слияния (первый тег либо
-`workflow_dispatch`). До слияния локально промерен только macOS-путь: бандл
+Прогнать матрицу до слияния нельзя было: `gh workflow run release.yml --ref
+<ветка>` отвечал HTTP 404 «workflow release.yml not found on the default
+branch» (промер 21.10 на PR #76) — GitHub ищет воркфлоу в дефолтной ветке.
+С #188 (воркфлоу живёт в main) репетиция промерена: dispatch run 39791625858
+на head PR #189 — `windows-2022`/mac-ячейки dist и `ort-dylib` получают
+первый живой промер именно так (публикация на dispatch не срабатывает: job
+`release` гейтится тегом). Первый пуш воркфлоу в main = промер 25.10. До
+репетиции локально был промерен только macOS-путь: бандл
 `fasad-0.1.0-aarch64-apple-darwin-cascade-0.tar.gz`; идентификатор прогона —
 строка `SHA256SUMS.txt`:
 `854844605ad858c64e7fc1be33e4bf651192a4d0e3948eaddeb250dcde316ce9  fasad-0.1.0-aarch64-apple-darwin-cascade-0.tar.gz`.
@@ -614,8 +624,16 @@ v0.1.0-rc1 = rc 1, `v0.1.0` = rc 0 и ДВУМЯ строками `VERSION|ok`
    методику не входит: `just build-ort`/`measure-rss --full` собирают и
    гоняют example с префиксом.
 3. В CI это закрыто job `ort-dylib` (macos-14 + ubuntu-24.04): скачивание
-   официального архива v1.31.0, сверка sha256 (первичка §8 п.3), `just build-ort`,
-   проверка `otool -L`/`ldd` на наличие dylib в load commands.
+   официального архива v1.31.0, сверка sha256 (первичка §8 п.3; mac-форма =
+   hex-сверка `shasum -a 256`, linux-нога сверки = GNU `sha256sum -c`),
+   `just build-ort`, проверка `otool -L`/`ldd` на наличие dylib в load
+   commands. Латент #188 (найдён релиз-репетицией, провен run 39791625858
+   обе ноги): шаг давал `ORT_DIR=<корень архива>` против контракта рецепта
+   `ORT_LIB_PATH="${ORT_DIR}/lib"` (justfile:487) → линкер искал библиотеку не
+   в том каталоге; форма починена, job на обеих ногах = живой промер
+   динамик-линка spike. linux-РЕЛИЗ при этом = download-статика dist-матрицы
+   (не dylib, main.rs:177-183; ram-мера харнеса меряется на mac, §9;
+   динамик-контур linux = отдельное решение оператора).
 4. Windows-ячейка матрицы ort-проверки **не** содержит: в ort-доке доставка
    dll на Windows = «в PATH или рядом с exe» (там же), а промера Windows-пути
    в этой сессии не было. Компильная проверка ort-фичи на Windows есть в
@@ -627,12 +645,23 @@ v0.1.0-rc1 = rc 1, `v0.1.0` = rc 0 и ДВУМЯ строками `VERSION|ok`
    бинари получают rpath `@loader_path/../lib` — `install_name_tool
    -add_rpath`, промер `otool -L` в make-bundle/verify-bundle ЗУБ А), win —
    `bin/onnxruntime.dll` рядом с exe (PE-локатор, доставка pyke-кэша
-   build-контура `copy-dylibs`, `--ort-dll`). SPEC §9
+   build-контура `copy-dylibs`, `--ort-dll`; путь dll = КОРЕНЬ `target/` —
+   `vars::target_dir()`, первичка ort-sys `build/vars.rs:32-42` +
+   `build/dynamic_link.rs:14-20`, CI-провен win-нога run 39786761298: dll НЕ в
+   `target/release/`; релизный win-шаг берёт из корня, #188). SPEC §9
    (`libonnxruntime.so`/`onnxruntime.dll` рядом) жив: модельный путь в демоне
-   смонтирован (#14A), бандл full (#181). linux: динамическая зависимость
-   `libonnxruntime.so` в графе бинаря (readelf-нога ЗУБа А); доставка .so в
-   архив не смонтирована — раннер-контур сборки, риск #181 (первый живой
-   linux-промер на теге).
+   смонтирован (#14A), бандл full (#181). linux: СТАТИКА — download-контур
+   ort-sys линкует орт статическим архивом (первичка ort-sys
+   `build/main.rs:177-183`: `static_link_prerequisites` +
+   `rustc-link-lib=static=onnxruntime`), в ELF-графе onnxruntime НЕТ —
+   CI-провен `readelf -d`/`ldd` run 39786761298 (ort-build linux, NEEDED =
+   libstdc++/libgcc_s/libm/libc/ld-linux, .so нет); прежняя формулировка
+   «динамическая зависимость» (readelf-нога ЗУБа А) была ЛОЖНОЙ для этого
+   контура и краснила гейт ложно (#188: linux-нога ЗУБа А = маркер-форма
+   win-ноги, `LC_ALL=C grep -a 'onnxruntime/core/session'`). Доставка
+   `libonnxruntime.so` в архив не смонтирована и не нужна статике;
+   динамик-контур linux = отдельное решение оператора, не #188. Первый живой
+   linux-промер full-контура = ci.yml `ort-build` (#184/#187, PR-контур).
 
 ## Пины action'ов (промер 21.10, `gh api repos/<owner>/<repo>/releases/latest`; пересъёмка 22.10 на head `237bd1c`)
 
