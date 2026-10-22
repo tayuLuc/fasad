@@ -336,71 +336,121 @@ cp models/manifest.tsv "$stage/models/manifest.tsv"
 # блоб `include_str!` лежит целиком, `data.find(tsv)` = 7567889; строк
 # `^extractor1b\trubert…` у `strings` НЕТ), а единственная `^extractor1b$`
 # = const ROLE_LOCKR_MODEL (weights.rs:131) — зуб мерял не манифест.
-# Форма = живой промер кодом продукта, ОДНИМ прогоном демона (win-нога не
-# гоняет bin-цель дважды — «bash-шим запуска бинаря в win-матрице нет»,
-# release.yml :207-212; bin бандла = headless-контур, трей-зуб = отдельная
-# нога ниже):
-#   1) демон бандла стартует с `FASAD_MANIFEST=<файл бандла>` (контракт mock
-#      weights.rs:106-125, его же юзают e2e mock-HF);
-#   2) `GET /v1/status`: `model.lockr_revision` + `model.arbiter_revision` =
-#      revision из ЗАГРУЖЕННОГО манифеста (http.rs:274-275 первичка, vitrina
-#      #192 B), `model.manifest_records` = число записей — отпечаток ФАЙЛА;
-#   3) отпечаток ВШИТОГО считается здесь же из `models/manifest.tsv` дерева
-#      сборки (lockR/arbiter-ролевые revision + число непустых строк) —
-#      вшито include_str! этого же файла, компилятором;
-#   4) равенство = «кнопка качает то, что рядом лежит»; rev-пара вшитого
-#      = 64-hex (проверено: `@auto` в манифесте нет, unit
-#      manifest_parses_all_five_rows… запрещает его в рантайме) — сравнение
-#      с rev-полями status побайтовое.
-# Расхождение manifest.tsv ↔ бинаря ловится и краснее: пересъёмка манифеста
-# без пересборки бинаря = разные revision/records = красный зуб.
-# FASAD_TEST_CASCADE0=1 (config.rs:419-421, контур зубов Г/В): на win/linux CI
-# весов в кеше нет, полный бинарь без них не стартует (#185); флаг =
-# cascade-0-only старт, /v1/status жив (промер 22.10: present-массив 5,
-# model.revision-поля заполнены).
-# Red-контроль промёрзан 22.10 (debug-бинарь + status): mock-манифест с
-# подменённым rev-полем = отпечаток расходится, зуб красный.
+# Форма r5 (провены красных форм: r4 run 39860315995 linux+win «демон не
+# поднялся» — r4-launch требовал weights-контур, которого на win/linux CI
+# нет; mac-r4 = живой зелёный промер launch-формы с весами):
+#   1) стартует КАСКАД-0-РЕФЕРЕНС (фича off): `env -u FASAD_MODEL_DIR -u
+#      FASAD_MANIFEST FASAD_TEST_CASCADE0=1 FASAD_PORT=0` — тестовый контур
+#      env-границы #192 (config.rs:419-421: HOME-дефолт не подставляется,
+#      model_dir = None = cascade-0-only), тот же контракт, что ui_sandbox/
+#      wire_e2e; /v1/status жив (http.rs:297+, первичка полей model:
+#      lockr_revision/arbiter_revision = revision записей ROLE_LOCKR_MODEL/
+#      ROLE_ARB_WEIGHTS (http.rs:326-330), manifest_records = entries.len);
+#   2) отпечаток статуса сравнивается с awk-отпечатком `$stage/models/
+#      manifest.tsv` (тот файл include_str! зашит в референс компилятором;
+#      смена манифеста без пересборки бинаря = rev-пара/records расходятся);
+#   3) полные бинари бандла status-зубу недоступны: на win/linux CI весов
+#      нет, полный бинарь без весов = отказ старта (#185; промер 22.10 debug:
+#      LEVER+EXPLICIT-dir = Load-отказ, LEVER+unset = ModelsNotConfigured),
+#      а вшитый и бандловый манифесты печатаются ОДНИМ include_str! из
+#      одного дерева сборки (win/linux-ноги = target-c0/debug/fasad с тем же
+#      trees, что и бинарь-бинарь: тот же шаг-контур, что зуб В);
+#   4) mac-нога: FASAD_MODEL_DIR весов экспортит шаг fetch-models,
+#      манифест-зуб А = полный бандловый бинарь с весами + mock
+#      FASAD_MANIFEST=файл-бандла (контракт weights.rs:106-125, e2e
+#      mock-HF) против его же вшитого — живое «A==B» на бандловом артефакте;
+#   5) нет ни референса, ни весов = SKIPPED-строка (молчание = ложно-зелёная,
+#      класс реестра), красным не притворяемся.
+# Red-контроль промёрзан 22.10 локально (debug-референс + /v1/status +
+# tamper rev-поля awk-стороны = расходимость, red ok; зелёный = 3/3 совпал).
 manifest_probe="$(mktemp -d)"
-if [ -n "$BIN" ] && [ -x "$BIN" ]; then
+manifest_fingerprint_from_status() {
+    # $1 = url /v1/status; печатает 3 строки: lockr_rev, arbiter_rev, records.
+    # Отдельные sed на pipe: один `sed -n` с несколькими `s///p` на строке
+    # съедает её первым паттерном (дальше не доходит — промер 22.10).
+    local url="$1" j
+    j="$(curl -sS --fail --max-time 5 "$url")" || return 1
+    printf '%s\n' "$j" | sed -n 's/.*"lockr_revision":"\([^"]*\)".*/\1/p'
+    printf '%s\n' "$j" | sed -n 's/.*"arbiter_revision":"\([^"]*\)".*/\1/p'
+    printf '%s\n' "$j" | sed -n 's/.*"manifest_records":\([0-9]*\).*/\1/p'
+}
+manifest_fingerprint_from_file() {
+    # awk-отпечаток файла манифеста: rev lockR, rev arbiter(=arbiter-weights,
+    # первичка http.rs:329 ROLE_ARB_WEIGHTS), число записей.
+    local f="$1"
+    {
+        awk -F'\t' '$1=="extractor1b"{print $3; exit}' "$f"
+        awk -F'\t' '$1=="arbiter-weights"{print $3; exit}' "$f"
+        grep -vc '^#\|^$' "$f"
+    }
+}
+# ── Нога B: каскад-0-референс (win/linux CI + локаль) ───────────────────────
+c0ref="${FASAD_CASCADE0_BIN:-}"
+[ -x "./fasad-cascade0" ] && [ -z "$c0ref" ] && c0ref="./fasad-cascade0"
+if [ -n "$c0ref" ] && [ -x "$c0ref" ]; then
+    c0log="$manifest_probe/c0.log"
+    env -u FASAD_MODEL_DIR -u FASAD_MANIFEST FASAD_TEST_CASCADE0=1 FASAD_PORT=0 \
+        "$c0ref" >"$c0log" 2>&1 &
+    c0pid=$!
+    c0port=""
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        c0port="$(sed -n 's#.*listening on http://127\.0\.0\.1:\([0-9]*\)/health.*#\1#p' "$c0log" | head -1)"
+        [ -n "$c0port" ] && [ "$c0port" != "0" ] && break
+        sleep 0.5
+    done
+    if [ -z "$c0port" ] || [ "$c0port" = "0" ]; then
+        kill "$c0pid" 2>/dev/null || true
+        echo "make-bundle: ЗУБ: манифест-зуб: каскад-0-референс не поднялся (лог):" >&2
+        head -c 400 "$c0log" >&2
+        exit 1
+    fi
+    got_fp="$(manifest_fingerprint_from_status "http://127.0.0.1:${c0port}/v1/status" || true)"
+    kill "$c0pid" 2>/dev/null || true
+    wait "$c0pid" 2>/dev/null || true
+    want_fp="$(manifest_fingerprint_from_file "$stage/models/manifest.tsv")"
+    [ -n "$got_fp" ] || {
+        echo "make-bundle: ЗУБ: манифест-зуб: /v1/status не отдал model-полей (битый вшитый манифест?)" >&2
+        exit 1
+    }
+    [ "$got_fp" = "$want_fp" ] || {
+        echo "make-bundle: ЗУБ: вшитый манифест бинаря ≠ файл бандла (кнопка качает A, рядом лежит B):" >&2
+        printf '  из бинаря (status): %s\n' "$(printf '%s' "$got_fp" | tr '\n' ' ')" >&2
+        printf '  из файла   (awk):   %s\n' "$(printf '%s' "$want_fp" | tr '\n' ' ')" >&2
+        exit 1
+    }
+    echo "make-bundle: манифест-зуб ok: вшитый == models/manifest.tsv бандла (records=$(printf '%s' "$want_fp" | tail -1), rev lockR/arbiter-weights совпали; референс $(basename "$c0ref"))"
+elif [ -n "${FASAD_MODEL_DIR:-}" ] && [ -d "${FASAD_MODEL_DIR:-}" ] && [ -n "$BIN" ] && [ -x "$BIN" ]; then
+    # ── Нога A: полный бандловый бинарь с весами (mac-контур CI) ────────────
     mlog="$manifest_probe/status.log"
-    env FASAD_MANIFEST="$stage/models/manifest.tsv" FASAD_TEST_CASCADE0=1 FASAD_PORT=0 \
+    env FASAD_MANIFEST="$stage/models/manifest.tsv" FASAD_PORT=0 \
         "$BIN" >"$mlog" 2>&1 &
     mpid=$!
     mport=""
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    for _ in $(seq 1 40); do
         mport="$(sed -n 's#.*listening on http://127\.0\.0\.1:\([0-9]*\)/health.*#\1#p' "$mlog" | head -1)"
         [ -n "$mport" ] && [ "$mport" != "0" ] && break
         sleep 0.5
     done
     if [ -z "$mport" ] || [ "$mport" = "0" ]; then
         kill "$mpid" 2>/dev/null || true
-        echo "make-bundle: ЗУБ: манифест-зуб: демон бандла не поднялся (лог):" >&2
+        echo "make-bundle: ЗУБ: манифест-зуб А: бандловый демон (с весами) не поднялся (лог):" >&2
         head -c 400 "$mlog" >&2
         exit 1
     fi
-    status_json="$(curl -sS --fail --max-time 5 "http://127.0.0.1:${mport}/v1/status")"
+    got_fp="$(manifest_fingerprint_from_status "http://127.0.0.1:${mport}/v1/status" || true)"
     kill "$mpid" 2>/dev/null || true
     wait "$mpid" 2>/dev/null || true
-    rm -rf "$manifest_probe"
-    rev_lockr="$(printf '%s' "$status_json" | sed -n 's/.*"lockr_revision":"\([^"]*\)".*/\1/p')"
-    rev_arbiter="$(printf '%s' "$status_json" | sed -n 's/.*"arbiter_revision":"\([^"]*\)".*/\1/p')"
-    rec_count="$(printf '%s' "$status_json" | sed -n 's/.*"manifest_records":\([0-9]*\).*/\1/p')"
-    # Отпечаток вшитого = из файла сборки (тот, что include_str! зашил в $BIN).
-    want_lockr="$(awk -F'\t' '$1=="extractor1b"{print $3; exit}' "$stage/models/manifest.tsv")"
-    want_arbiter="$(awk -F'\t' '$1=="arbiter"{print $3; exit}' "$stage/models/manifest.tsv")"
-    want_records="$(grep -vc '^#\|^$' "$stage/models/manifest.tsv")"
-    {   [ -n "$rev_lockr" ] && [ -n "$rev_arbiter" ] && [ -n "$rec_count" ]
-        [ "$rev_lockr" = "$want_lockr" ] \
-        && [ "$rev_arbiter" = "$want_arbiter" ] \
-        && [ "$rec_count" = "$want_records" ]; } \
-        || {
-            echo "make-bundle: ЗУБ: вшитый манифест ≠ файл бандла (кнопка качает A, рядом лежит B):" >&2
-            printf '  из бинаря (status): lockr=%s arbiter=%s records=%s\n' "$rev_lockr" "$rev_arbiter" "$rec_count" >&2
-            printf '  из файла   (awk):   lockr=%s arbiter=%s records=%s\n' "$want_lockr" "$want_arbiter" "$want_records" >&2
-            exit 1
-        }
-    echo "make-bundle: манифест-зуб ok: вшитый == models/manifest.tsv бандла (records=$rec_count, rev lockR/arbiter совпали, сверка кодом продукта через /v1/status)"
+    want_fp="$(manifest_fingerprint_from_file "$stage/models/manifest.tsv")"
+    [ -n "$got_fp" ] && [ "$got_fp" = "$want_fp" ] || {
+        echo "make-bundle: ЗУБ: манифест-зуб А: бандловый демон с mock=файл бандла отдал не тот отпечаток (кнопка качает по A, витрина B):" >&2
+        printf '  status: %s\n  awk:    %s\n' "$(printf '%s' "$got_fp" | tr '\n' ' ')" "$(printf '%s' "$want_fp" | tr '\n' ' ')" >&2
+        exit 1
+    }
+    echo "make-bundle: манифест-зуб А ok: бандловый бинарь + mock=файл бандла == отпечаток файла (records=$(printf '%s' "$want_fp" | tail -1))"
+else
+    echo "make-bundle: манифест-зуб|SKIPPED|нет каскад-0-референса (FASAD_CASCADE0_BIN / ./fasad-cascade0) и нет весов для ноги А (FASAD_MODEL_DIR) — молчание = ложно-зелёная; CI win/linux экспортит референс шагом зуба В, mac CI меряется ногой А"
 fi
+rm -rf "$manifest_probe"
 # models/README.md: базовый POSIX-блок общий, win-секция (PowerShell-форма
 # команд, первенство) — только в win-бандл (#190: POSIX-форма в cmd/PowerShell
 # не исполнима; в v0.1.0 инструкция была одноформенной).
