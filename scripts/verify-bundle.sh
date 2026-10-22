@@ -285,13 +285,18 @@ bin="$stage/bin/fasad"
 # env `-u FASAD_MODEL_DIR`: на mac-контуре CI шаг fetch-models экспортирует
 # кеш в GITHUB_ENV (он же нужен зубу Б ниже) — без удаления переменных зуб Г
 # краснел бы на собственной машине (full-бинарь С весами стартует легально).
-# FASAD_TEST_CASCADE0=1 (#192-контур, config.rs:419-421): `env -u` снимает
-# ЯВНУЮ переменную, но с #192 на её место встаёт HOME-дефолт
+# FASAD_TEST_CASCADE0=1 (#192-контур env-границы, config.rs:419-421): `env -u`
+# снимает ЯВНУЮ переменную, но с #192 на её место встаёт HOME-дефолт
 # `~/.cache/fasad-models` (config.rs:422-426), и на машине с HOME (win-раннер:
 # `%USERPROFILE%` в Git-Bash, CI-провен run 39854576251 ЗУБ Г win) зуб Г
-# проверял бы не «отказ без FASAD_MODEL_DIR», а «отказ из-за HOME-кеша без
-# весов» — текст причины другой. Флаг отключает подстановку дефолта = ровно
-# тот контракт (#185), который меряет зуб: unset = ModelsNotConfigured.
+# проверял бы «отказ из-за HOME-кеша без весов», а не контракт #185 «переменная
+# не названа». Флаг отключает ТОЛЬКО подстановку дефолта: явный FASAD_MODEL_DIR
+# (зуб В) он не глотает (config.rs:419-421 = та же ветка v.filter(...);
+# cascades.rs:682 = Only the default-substitution) — локальный промер 22.10
+# (debug-бинарь feature-off): LEVER+ЯВНЫЙ каталог = refusal rc=2
+# BuiltWithoutInference (зуб В не ослаблен), LEVER+unset = cascade-0-only;
+# full-бинарь под флагом + unset = rc=2 «FASAD_MODEL_DIR не задан» (ред-контур
+# зуба Г жив).
 log="$(mktemp)"
 env -u FASAD_MODEL_DIR FASAD_TEST_CASCADE0=1 FASAD_PORT=0 "$bin" >"$log" 2>&1 &
 pid="$!"
