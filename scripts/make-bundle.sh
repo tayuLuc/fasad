@@ -321,7 +321,14 @@ cp "$LICENSES" "$stage/THIRD-PARTY-LICENSES.txt"
 # бандла запускает его БЕЗ клона репозитория.
 mkdir -p "$stage/scripts" "$stage/models"
 cp scripts/fetch-models.sh "$stage/scripts/fetch-models.sh"
+# win-доставка весов (#190): PowerShell-паритет .sh (нативный cmd/PowerShell,
+# Git-Bash = альтернатива). Едет во ВСЕ бандлы (файл безвреден на mac/linux,
+# единый SHA256SUMS-контур, README-секции выбирают носителя по ОС).
+cp scripts/fetch-models.ps1 "$stage/scripts/fetch-models.ps1"
 cp models/manifest.tsv "$stage/models/manifest.tsv"
+# models/README.md: базовый POSIX-блок общий, win-секция (PowerShell-форма
+# команд, первенство) — только в win-бандл (#190: POSIX-форма в cmd/PowerShell
+# не исполнима; в v0.1.0 инструкция была одноформенной).
 cat > "$stage/models/README.md" <<'EOF'
 # Веса каскадов 1–2 (не входят в архив намеренно)
 
@@ -334,12 +341,29 @@ git, `models/manifest.md`).
 
     ./scripts/fetch-models.sh
     export FASAD_MODEL_DIR="$HOME/.cache/fasad-models"   # тот же кеш
+EOF
+if [ "$is_win" -eq 1 ]; then
+    cat >>"$stage/models/README.md" <<'EOF'
+
+Windows — первенство PowerShell (cmd/PowerShell, без Git-Bash):
+
+    .\scripts\fetch-models.ps1
+    $env:FASAD_MODEL_DIR = "$env:USERPROFILE\.cache\fasad-models"
+
+`fetch-models.ps1` — паритет `.sh` (манифест, sha256 через `Get-FileHash`,
+URL по commit-шейа, fail-closed; кеш-раскладка идентична). Git-Bash (Git for
+Windows) — альтернатива: `./scripts/fetch-models.sh` (HOME=%USERPROFILE%,
+кеш тот же).
+EOF
+fi
+cat >>"$stage/models/README.md" <<'EOF'
 
 Скрипт качает строго по commit-шейа revision, пересчитывает sha256 каждого
 файла и сверяет с `models/manifest.tsv`; несовпадение/обрезок = отказ (exit 1),
 fail-open нет. Повторный запуск = пересчёт чексумм по кешу, без сети.
 Зеркало (например, при заблокированном HF): `FASAD_HF_HOST=https://hf-mirror.com
-./scripts/fetch-models.sh`; кеш в другое место: `--cache DIR`.
+./scripts/fetch-models.sh`; кеш в другое место: `--cache DIR` (win:
+`-HFHost https://hf-mirror.com`, `-Cache DIR`).
 
 Раскладка кеша (её читает демон, `cascades.rs`):
 
@@ -359,9 +383,82 @@ EOF
 # собранный бинарь и смонтированные веса.
 # README = базовый блок (общий) + блоки по ОС (отдельные heredoc-и, `>>`):
 # mac/win несут второй бинарь `fasad-tray`, linux — systemd-юнит (#128/#140).
+# win-контур §Запуск/§Модели = PowerShell-первенство + `bin\...`-слэш (#190:
+# POSIX-форма v0.1.0 в cmd не исполнима, промер оператора на win-стенде);
+# mac/linux = POSIX-форма. UI-строка (#191): адрес песочницы в баннере +
+# клик трея.
 # Вложенные `$( ... <<X )` внутрь heredoc не класть: кавычки/подстановки
 # считаются по правилам внешней оболочки и печатаются литералами (обожглось
 # на этом PR).
+if [ "$is_win" -eq 1 ]; then
+    # Windows — первенство: трей двойным кликом (консоли нет — отказ старта
+    # показан окном, #190), PowerShell-доставка весов, UI в браузере.
+    cat > "$stage/README.md" <<EOF
+# fasad $version ($triple, контур: $LABEL)
+
+Локальный AI-гард: стендэлон-демон, оффлайн, loopback-only.
+
+Контур этого бандла: **full** — детерминированные детекторы (чексуммы, regex,
+ахо-автомат) + обратимое маскирование (vault) + модельный путь каскадов 1–2
+(lockR-экстрактор + Decide-арбитр на ONNX, монтаж #14A). Бинарь собран с
+\`ort-inference\`; каскады 1–2 поднимаются при \`FASAD_MODEL_DIR\` с весами
+(скачивание — \`models/README.md\`, ~879 МБ, sha256-гейт). Полный контур
+требует весов: без \`FASAD_MODEL_DIR\` старт **отказывает** (fail-closed,
+код 2, молчаливой деградации до каскада-0 нет — #185); так же отказывает
+старт с названным \`FASAD_MODEL_DIR\` и несмонтировавшимися весами (у трея
+причина отказа показана окном, у консоли — в stderr).
+
+## Быстрый старт (первый запуск)
+
+1. Веса (один раз, PowerShell из каталога бандла):
+
+        .\scripts\fetch-models.ps1
+        \$env:FASAD_MODEL_DIR = "\$env:USERPROFILE\.cache\fasad-models"
+
+2. Запуск: \`bin\fasad-tray.exe\` (иконка в трее; двойной клик/пункт меню
+   «Открыть fasad UI» открывает браузер) — или консольный \`bin\fasad.exe\`.
+
+3. UI: \`http://127.0.0.1:8765/\` — кнопки «Разобрать», «Обезличить»,
+   «Развернуть», «Сброс сессии» (адрес с фактическим портом — в баннере
+   консоли, строка \`UI браузера —\`).
+
+## Запуск (консоль, PowerShell)
+
+    bin\fasad.exe                 # слушает http://127.0.0.1:8765/health
+    \$env:FASAD_PORT = 9000; bin\fasad.exe   # порт через env
+
+\`bin\fasad.exe --help\` — таблица переменных. Конфигурация — переменные
+окружения \`FASAD_*\` (бинд строго loopback): полный список держит
+\`docs/release.md\` §Запуск, первичка — \`crates/guard-daemon/src/config.rs\`.
+
+## Модели (каскады 1–2)
+
+    .\scripts\fetch-models.ps1                        # sha256-гейт по манифесту
+    \$env:FASAD_MODEL_DIR = "\$env:USERPROFILE\.cache\fasad-models"
+
+Git-Bash (Git for Windows) — альтернатива: \`./scripts/fetch-models.sh\` +
+\`export FASAD_MODEL_DIR="$HOME/.cache/fasad-models"\` (кеш тот же). Детали,
+раскладка, зеркало HF — \`models/README.md\`. Полный контур = бинарь + веса +
+\`FASAD_MODEL_DIR\`; без весов продукт не стартует (#185, причина отказа —
+окно у трея, stderr у консоли).
+
+## Файлы бандла
+
+- \`bin\fasad-tray.exe\` — демон с иконкой трея (#128): клик открывает
+  \`http://127.0.0.1:<порт>/\` в браузере (#191), меню = «Открыть fasad UI»,
+  «Выход (graceful)»; отказ старта показан **окном** (#190: двойной клик
+  консоли не имеет)
+- \`bin\fasad.exe\` — тот же демон без GUI ( консоль, \`--help\`)
+- \`bin\onnxruntime.dll\` — рантайм ORT (доставка: рядом с exe)
+- \`LICENSE\` — Apache-2.0 (текст лицензии продукта)
+- \`THIRD-PARTY-LICENSES.txt\` — сторонние лицензии (сгенерировано cargo-about)
+- \`schema.default.json\` — канон схемы классов (\`FASAD_SCHEMA\`)
+- \`scripts\fetch-models.ps1\` (PowerShell, #190) + \`scripts/fetch-models.sh\`
+  (Git-Bash) + \`models/manifest.tsv\` + \`models/README.md\` — скачивание
+  весов каскадов 1–2 по sha256-манифесту
+- \`SHA256SUMS.txt\` — sha256 всех файлов бандла
+EOF
+else
 cat > "$stage/README.md" <<EOF
 # fasad $version ($triple, контур: $LABEL)
 
@@ -381,6 +478,10 @@ cat > "$stage/README.md" <<EOF
     bin/fasad${ext}                 # слушает http://127.0.0.1:8765/health
     FASAD_PORT=9000 bin/fasad${ext}  # порт через env
 
+UI в браузере: \`http://127.0.0.1:8765/\` (кнопки «Разобрать», «Обезличить»,
+«Развернуть», «Сброс сессии»; адрес с фактическим портом — строка \`UI браузера —\` в
+баннере). \`bin/fasad --help\` — таблица переменных (#191).
+
 Конфигурация — переменные окружения \`FASAD_*\` (бинд строго loopback):
 полный список держит \`docs/release.md\` §Запуск, первичка —
 \`crates/guard-daemon/src/config.rs\`.
@@ -399,10 +500,12 @@ cat > "$stage/README.md" <<EOF
 - \`LICENSE\` — Apache-2.0 (текст лицензии продукта)
 - \`THIRD-PARTY-LICENSES.txt\` — сторонние лицензии (сгенерировано cargo-about)
 - \`schema.default.json\` — канон схемы классов (\`FASAD_SCHEMA\`)
-- \`scripts/fetch-models.sh\` + \`models/manifest.tsv\` + \`models/README.md\` —
-  скачивание весов каскадов 1–2 по sha256-манифесту
+- \`scripts/fetch-models.sh\` (паритет win: \`scripts/fetch-models.ps1\`, #190) +
+  \`models/manifest.tsv\` + \`models/README.md\` — скачивание весов каскадов
+  1–2 по sha256-манифесту
 - \`SHA256SUMS.txt\` — sha256 всех файлов бандла
 EOF
+fi
 
 if [ "$is_win" -eq 1 ] || [ "$os" = "Darwin" ]; then
     cat >>"$stage/README.md" <<EOF

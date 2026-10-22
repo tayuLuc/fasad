@@ -35,6 +35,7 @@ export FASAD_MODEL_DIR="$HOME/.cache/fasad-models"   # scripts/fetch-models.sh
 
 ```
 fasad 0.1.0 cascade-0+models, listening on http://127.0.0.1:8765/health (классов схемы: 8, vault: stateless/strict, ключ: ephemeral)
+fasad: UI браузера — http://127.0.0.1:8765/
 ```
 
 Без `FASAD_MODEL_DIR` full-бинарь не стартует (#185, код 2):
@@ -233,7 +234,8 @@ allowlist (`https://api.openai.com/…`) этот rig отвечает `403`
 
 Контур релизного бандла = **full** (#181, рюлинг оператора 22.10): бинари
 собранны с `ort-inference`, модели каскадов 1–2 скачиваются инструкцией бандла
-(`scripts/fetch-models.sh`, sha256-гейт), `FASAD_MODEL_DIR` включает монтаж;
+(`scripts/fetch-models.sh`; Windows — `scripts\fetch-models.ps1`, #190),
+`FASAD_MODEL_DIR` включает монтаж;
 full-бинарь **требует** `FASAD_MODEL_DIR`: старт без весов = отказ с текстом
 причины (код 2, `ModelsNotConfigured`), молчаливой деградации до каскада-0 нет
 — каскад-0-only = харнес/тесты, не продакшн (#185). Числа витрины §2 сняты на

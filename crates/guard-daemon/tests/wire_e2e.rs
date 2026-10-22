@@ -1743,3 +1743,166 @@ fn proxy_refusals_do_not_open_a_socket() {
     assert_eq!(reply.status, 400, "{}", reply.text());
     assert_eq!(reply.json()["error"]["code"], "policy_not_applicable");
 }
+
+// ── #191: argv-контур и UI-строка баннера ───────────────────────────────────
+// process-level контракт: разбор argv (`--help` = 0, мусор = 2) и адрес UI в
+// баннере. `Daemon::start` аргументов не передаёт, здесь — прямые `Command`.
+
+#[test]
+fn help_flag_prints_usage_to_stdout_and_exits_zero() {
+    // Дискриминатор по каналу обязателен: bad-аргумент печатает тот же текст
+    // (в stderr, rc=2), и «stdout содержит» без rc+пустого stderr ловил бы
+    // bad-ветку как зелёную (реестр false-green:print-only).
+    for flag in ["--help", "-h"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_fasad"))
+            .arg(flag)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("процесс стартует")
+            .wait_with_output()
+            .expect("процесс завершился");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{flag}: --help обязан выходить нулём"
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.is_empty(),
+            "{flag}: usage обязан в stdout, stderr пуст: {stderr}"
+        );
+        // Ключевые носители usage (мелкие строки текстов, не слова): UI-адрес,
+        // env-таблица, путь доставки весей, версия (= CARGO_PKG_VERSION).
+        for needle in [
+            "UI",
+            "FASAD_PORT",
+            "FASAD_MODEL_DIR",
+            "fetch-models",
+            env!("CARGO_PKG_VERSION"),
+        ] {
+            assert!(
+                stdout.contains(needle),
+                "{flag}: в usage нет «{needle}»:\n{stdout}"
+            );
+        }
+    }
+}
+
+#[test]
+fn unknown_argument_exits_two_with_usage_on_stderr() {
+    // Молчаливо игнорируемый аргумент (#191: argv не читался вовсе) = оператор
+    // думает, что флаг сработал. now: rc=2 + usage в stderr + сокет не поднят.
+    let out = Command::new(env!("CARGO_BIN_EXE_fasad"))
+        .arg("--ne-such-flag")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("процесс стартует")
+        .wait_with_output()
+        .expect("процесс завершился");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "bad-аргумент = код 2, как у конфига"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stdout.contains("usage") && !stdout.contains("FASAD_PORT"),
+        "usage bad-аргумента обязан в stderr, не в stdout: {stdout}"
+    );
+    assert!(
+        stderr.contains("неизвестный аргумент")
+            && stderr.contains("--ne-such-flag")
+            && stderr.contains("FASAD_PORT"),
+        "stderr обязан называть аргумент и нести usage: {stderr}"
+    );
+    assert!(
+        !stdout.contains("listening"),
+        "баннер напечатан до отказа: {stdout}"
+    );
+}
+
+#[test]
+fn banner_carries_ui_line_with_the_actual_port() {
+    // Контракт строки: «UI браузера — http://<фактический адрес>/» — порт из баннера,
+    // а не дефолт: `FASAD_PORT=0` даёт случайный порт, и UI-адрес обязан ему
+    // соответствовать (тот же смысл, что у `local_addr` в основном баннере).
+    // `Daemon::start` забирает stdout в читатель-поток (баннерный контракт
+    // `Self.addr`), поэтому строки теста приходят каналом — тот же механизм.
+    let mut d = Daemon::start(&[]);
+    let out = d.child.stdout.take();
+    let mut seen = String::new();
+    match out {
+        // `Daemon::start` вызвал `stdout.take()` для своего читателя: трубка
+        // здесь уже `None`, и вторая строка баннера живёт в буфере того
+        // потока — он гонит строки в `rx` тестового хенесса, не наружу.
+        // Значит UI-строку читаем с ЖИВОГО сокета нечем; читаем её до
+        // захвата: отдельный прямой spawn.
+        None => {}
+        Some(pipe) => {
+            let mut reader = BufReader::new(pipe);
+            for _ in 0..8 {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                seen.push_str(&line);
+                if seen.contains("UI") {
+                    break;
+                }
+            }
+        }
+    }
+    drop(d);
+    if seen.is_empty() {
+        // Прямой спавн (тот же контракт `FASAD_PORT=0`), читаем обе строки.
+        let mut child = Command::new(env!("CARGO_BIN_EXE_fasad"))
+            .env("FASAD_BIND", "127.0.0.1")
+            .env("FASAD_PORT", "0")
+            .env_remove("FASAD_MODEL_DIR")
+            .env_remove("FASAD_THREADS")
+            .env_remove("FASAD_TIMEOUT_MS")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("бинарь запускается");
+        let pipe = child.stdout.take().expect("stdout перехвачен");
+        let mut reader = BufReader::new(pipe);
+        let mut main_line = String::new();
+        for _ in 0..8 {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            seen.push_str(&line);
+            if line.contains("listening") {
+                main_line = line;
+            }
+            if seen.contains("UI") && !main_line.is_empty() {
+                break;
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        let addr = main_line
+            .split_once("listening on http://")
+            .map(|(_, r)| r.split('/').next().unwrap_or("").to_owned())
+            .unwrap_or_default();
+        assert!(!addr.is_empty(), "баннер с адресом не пришёл: {seen:?}");
+        assert!(
+            seen.contains(&format!("UI браузера — http://{addr}/")),
+            "баннер обязан нести UI-строку с фактическим адресом {addr}: {seen:?}"
+        );
+        return;
+    }
+    assert!(
+        seen.contains("UI браузера — http://"),
+        "UI-строка не найдена: {seen:?}"
+    );
+}

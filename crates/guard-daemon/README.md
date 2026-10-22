@@ -24,10 +24,14 @@ FASAD_VAULT_MODE=session FASAD_VAULT_KEY=$(openssl rand -hex 32) ./target/releas
 стартует, #185.)
 
 Баннер печатается **после** успешного бинда и показывает фактический адрес
-(`FASAD_PORT=0` → репорт занятого порта, на нём держится `tests/wire_e2e.rs`):
+(`FASAD_PORT=0` → репорт занятого порта, на нём держится `tests/wire_e2e.rs`);
+второй строкой — адрес песочницы в браузере (#191, канон `/` = корень,
+`ui::router` отдаёт его и на `/`, и на `/ui`). Разбор argv: `--help` = usage
+и код 0, НЕ-флаг аргумент = usage в stderr и код 2 (#191):
 
 ```
 fasad 0.1.0 cascade-0-only, listening on http://127.0.0.1:8765/health (классов схемы: 8, vault: session/strict, ключ: env)
+fasad: UI браузера — http://127.0.0.1:8765/
 ```
 
 Ключ — 32 байта из любого CSPRNG; `openssl rand -hex 32` в примере только как

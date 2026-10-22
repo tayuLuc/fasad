@@ -295,6 +295,14 @@ fn dependency_tree_carries_the_one_client_and_no_second_one() {
 /// x86_64-unknown-linux-gnu` зелёный, GTK-кластера в нём нет — muda
 /// пинится `default-features = false` в манифесте самого tray-icon,
 /// первичка `.crate` 0.26.1).
+///
+/// #190 добавила в список `windows`: витрина отказа старта (`src/tray/win.rs`,
+/// `MessageBoxW`) объявлена target-gated (`[target.'cfg(windows)']`) и НЕ в
+/// списке фичи `tray` — на linux-мишени она обязана отсутствовать (промер
+/// этой сессии: `cargo tree --features tray --target
+/// x86_64-unknown-linux-gnu | grep -ci windows` = 0). Класс проверки тот же,
+/// что GTK: фича GUI-витрины не имеет права приносить оконный граф туда, где
+/// её код не компилируется.
 #[test]
 fn tray_feature_tree_carries_no_browser_stack_and_no_gtk() {
     let out = run_tree_features("tray", &["--target", "x86_64-unknown-linux-gnu"]);
@@ -313,10 +321,10 @@ fn tray_feature_tree_carries_no_browser_stack_and_no_gtk() {
         );
     }
     // Отрицательная половина — без неё проверка зелёная на пустом дереве.
-    for token in ["gtk", "webkit", "reqwest", "tauri"] {
+    for token in ["gtk", "webkit", "reqwest", "tauri", "windows"] {
         assert!(
             !tree.contains(token),
-            "граф фичи tray тащит {token}: браузерная/GTK-поверхность              протекла в дерево (обещание §16: linux-дефолты гасятся              default-features = false)",
+            "граф фичи tray тащит {token}: браузерная/GTK/оконная поверхность              протекла в дерево (обещание §16: linux-дефолты гасятся              default-features = false; #190: windows-sys = target-gated, не фича)",
         );
     }
 }

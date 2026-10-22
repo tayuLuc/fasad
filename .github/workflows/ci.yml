@@ -319,6 +319,54 @@ jobs:
               fi
               ;;
           esac
+      - name: "win: fetch-models.ps1 (PowerShell-доставка весов #190: -List + mock-промер + fail-контроль)"
+        # Windows PowerShell 5.1 (`shell: powershell`) = дефолт win10/11, т.е.
+        # та среда, ради которой скрипт писан (issue #190). 879 МБ весов в CI
+        # НЕ тянутся; доказываемый контур = mock-манифест с ОДНИМ маленьким
+        # файлом (lockR config.json, 2831 Б — размер и sha256 промерены
+        # сессией #190: HEAD + live-скачивание + Get-FileHash, rev закреплён
+        # manifest.tsv). Дискриминируемость (реестр false-green): «битый sha»
+        # в mock-манифесте обязан краснить — red-контроль отдельным прогоном.
+        # mac-паритет (pwsh 7.6.7, эта сессия): -List/скачал+sha256 ok/
+        # повтор-без-сети(rc0)/битый-sha(rc1)/битый-размер(rc1)/@auto(rc1).
+        # hosts-глушилка HF = штатный CI-приём (run-as-admin на runner'e;
+        # откат в finally). Скачанный mock-файл = 2.8 КБ в RUNNER_TEMP.
+        if: matrix.os == 'windows-2022'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & scripts\fetch-models.ps1 -List
+          if ($LASTEXITCODE -ne 0) { throw "-List план red (rc=$LASTEXITCODE)" }
+          $sha = 'f4eeba88d1503a56d629195c9307d42c1acf4ce53ab88fdaecfc754fd0745cf9'
+          $rev = 'ea7610b22808c509c0c8b7c7b0f6639c19684d08'
+          $ts = [char]9
+          $cache = Join-Path $env:RUNNER_TEMP 'ps1-cache'
+          # green-нога: скачал + sha256-сверка + layout <repo>/<file>
+          $m = "mock${ts}lockR/rubert-base-pii-ner-onnx${ts}${rev}${ts}config.json${ts}${sha}${ts}2831${ts}hf${ts}CI mock #190"
+          $mp = Join-Path $env:RUNNER_TEMP 'manifest-good.tsv'
+          Set-Content -LiteralPath $mp -Value $m -Encoding UTF8
+          & scripts\fetch-models.ps1 -Manifest $mp -Cache $cache
+          if ($LASTEXITCODE -ne 0) { throw "mock-промер red (rc=$LASTEXITCODE)" }
+          $f = Join-Path $cache 'lockR\rubert-base-pii-ner-onnx\config.json'
+          if (-not (Test-Path -LiteralPath $f)) { throw "layout: нет $f (кеш-раскладка .sh-паритета)" }
+          # red-контроль ДО глушилки: битый sha в манифесте = exit 1 (гейт жив,
+          # не print-only; глушить сеть после = red-прогон ловил бы DNS-отказ,
+          # а не sha256-рассинхрон — лживая диагностика, process-rules-agent-ops)
+          $mBad = $m -replace $sha, ('0' * 64)
+          $mpBad = Join-Path $env:RUNNER_TEMP 'manifest-bad.tsv'
+          Set-Content -LiteralPath $mpBad -Value $mBad -Encoding UTF8
+          & scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache 2>&1 | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw "битый sha ПРОШЁЛ (rc=0): sha256-гейт ps1 мёртв" }
+          # повтор = без сети (кеш-хит; DNS HF заглушён на этом шаге)
+          $hostsBak = 'C:\Windows\System32\drivers\etc\hosts'
+          Add-Content -Path $hostsBak -Value '127.0.0.1 huggingface.co'
+          try {
+              & scripts\fetch-models.ps1 -Manifest $mp -Cache $cache
+              if ($LASTEXITCODE -ne 0) { throw "повтор без сети red (rc=$LASTEXITCODE)" }
+          } finally {
+              (Get-Content -LiteralPath $hostsBak) | Where-Object { $_ -notmatch 'huggingface.co' } | Set-Content -LiteralPath $hostsBak
+          }
+          Write-Output "ps1 ok: -List + mock-скачка sha256 + red-контроль (битый sha) + повтор-без-сети"
 
   python-golden:
     # Python-тулинг (gutter, рулинг 19.10: AGENTS п.6): uv-locked линт +

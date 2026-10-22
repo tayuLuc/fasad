@@ -639,6 +639,7 @@ dependencies = [
  "tower-http",
  "tray-icon",
  "ureq",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
