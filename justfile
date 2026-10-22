@@ -402,23 +402,79 @@ _version:
 _triple:
     @rustc -vV | sed -n 's/^host: //p'
 
-# Релизный бинарь. Контур = каскад-0: у guard-daemon НЕТ фичей
-# (crates/guard-daemon/Cargo.toml), `ort-inference` живёт в guard-onnx и в демоне
-# не включается — модельного пути спанов в демоне физически нет
-# (crates/guard-daemon/src/pipeline.rs, заголовок модуля). Артефакт метится
-# честно, см. docs/release.md §«Что в бандле».
+# Релизный контур = ТОЛЬКО full (рюлинг оператора 22.10, issue #181: «Нужно
+# только фулл»; cascade-0-бандл в релизе не продаём). Монтаж каскадов 1–2 в
+# HTTP-рантайме есть с #14A (`crates/guard-daemon/src/cascades.rs`):
+# `FASAD_MODEL_DIR` → LockrExtractor+DecideArbiter, бинарь без фичи при
+# названных весах краснеет (`CascadeFailure::BuiltWithoutInference`), поэтому
+# релизный бинарь собирается С фичей `ort-inference`, а метка бандла = `full`.
+# Без весов полный бинарь работает каскадом 0 — это легальный режим, а не
+# деградация (cascades.rs:639-641: `model_dir` нет → Ok, `stage()` =
+# `cascade-0-only`).
+# mac-нога: env-префикс dylib-контракта (голый release-линк с фичей краснеет
+# на `___isPlatformVersionAtLeast`, docs/model-audit-weights.md §W2 п.2, промер
+# ревью #97 + пересъёмка 22.10 в docs/release.md §ORT п.2). Дефолт `ORT_DIR`
+# совпадает с `just build-ort`/`just spike-dylib` (тот же путь локальной
+# машины); если каталога нет (win/linux-раннер), префикс не ставится: win идёт
+# download-binaries+copy-dylibs (`onnxruntime.dll` рядом с exe), linux на
+# релизной матрице линкуется по тому же правилу, что `ort-dylib` job —
+# живой промер win/linux = первая релизная матрица, риск записан в #181.
 
-# Релизный бинарь guard-daemon (контур = каскад-0).
+# Релизный бинарь guard-daemon (контур = full: ort-inference).
+#
+# `--bin fasad` обязателен (промер 22.10): без фильтра bin-целей cargo собирает
+# ОБА бинаря крейта (`fasad` + `fasad-tray`), и на win/mac-хостах это падение
+# линка трей-цели (её rpath-контракт собирается рецептом release-build-tray).
+# На linux `--bin fasad` = no-op: фича tray там compile_error (§16), второй
+# bin-цели в сборке нет.
 release-build:
-    cargo build --release -p guard-daemon
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export CARGO_FEATURE_ORT_INFERENCE=1
+    export ORT_DIR="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0}"
+    if [ -d "$ORT_DIR/lib" ]; then
+        export ORT_PREFER_DYNAMIC_LINK=1
+        export ORT_LIB_PATH="$ORT_DIR/lib"
+        echo "release-build: mac-контур dylib ($ORT_DIR/lib)"
+    fi
+    cargo build --release -p guard-daemon --features ort-inference --bin fasad
 
 # Трей-бинарь win/mac (#128 фаза 2): ДРУГОЙ bin-путь → `fasad-tray` (cargo
 # пишет бинарь по [[bin]].path, отдельного флага имени нет; `[[bin]]` ниже в
 # crates/guard-daemon/Cargo.toml). Линкуется на целевой ОС билда: linux-хост
 # эту фичу не соберёт (compile_error, §16) — рецепт для win/mac-ноги и
 # локальной машины оператора.
+# Контур #181: трей = ТОТ ЖЕ main.rs + фича `tray` (crates/guard-daemon/
+# Cargo.toml `[[bin]] name="fasad-tray"` = тот же src/main.rs), то есть трей
+# вызывает `cascades::startup` и обслуживает `/v1/analyze` тем же конвейером:
+# без `ort-inference` трей-бинарь при `FASAD_MODEL_DIR` краснеет
+# BuiltWithoutInference, и full-контур релиза требовал фичи и здесь — иначе
+# бандл нес бы два контура в одном архиве (headless=full, трей=cascade-0).
+# Фичи складываются (`--features tray,ort-inference`), env-префикс mac-контура
+# — тот же, что у release-build.
+#
+# `--bin fasad-tray` (не `--bins`): cargo перелинковывает БИНАРЬ, а не rlib,
+# когда меняются только env-аргументы линковки (фича-отпечаток орт-sys
+# `rerun-if-env-changed` в registry/.../ort-sys-2.0.0-rc.14/build/vars.rs:19
+# пересобирает КРЕЙТ, bin-цель не трогает). `--bins` пересобрал бы и
+# `target/release/fasad` тем же профилем, а `just dist` вызывает recipes
+# ПОСЛЕДОВАТЕЛЬНО (release-build → release-build-tray), и последний bin-build
+# перезаписал бы артефакт, упакованный первым. Отдельный `--bin` на рецепт =
+# два независимых артефакта, каждый линкуется своей командой (промер 22.10:
+# фасад = LC_LOAD_DYLIB @rpath/libonnxruntime.1.dylib, трей = тот же граф,
+# сборка трей-цели = `cargo build --features tray,ort-inference --bin
+# fasad-tray`, rc 0).
 release-build-tray:
-    cargo build --release -p guard-daemon --features tray
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export CARGO_FEATURE_ORT_INFERENCE=1
+    export ORT_DIR="${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0}"
+    if [ -d "$ORT_DIR/lib" ]; then
+        export ORT_PREFER_DYNAMIC_LINK=1
+        export ORT_LIB_PATH="$ORT_DIR/lib"
+        echo "release-build-tray: mac-контур dylib ($ORT_DIR/lib)"
+    fi
+    cargo build --release -p guard-daemon --features tray,ort-inference --bin fasad-tray
 
 # Сборка харнеса полного каскада (spike) релизным профилем на официальном dylib
 # ORT: контракт docs/model-audit-weights.md §W2 п.1 + docs/model-audit.md §8 (статика pyke на macOS release =
@@ -457,9 +513,25 @@ deps-licenses:
 # было бы врать про ячейку, на которой ты стоишь.
 # Девелер: dist/ в .gitignore (строка `dist/`).
 
+# Каскад-0-бинарь (без `ort-inference`) — НЕ релизный артефакт (#181: релизный
+# контур = только full), а ДИСКРИМИНАТОР: `verify-bundle.sh` ЗУБ В проверяет им
+# отказ старта при `FASAD_MODEL_DIR` (CascadeFailure::BuiltWithoutInference,
+# cascades.rs:649-650) — живой промер того, что full-метка бандла не может
+# достаться бинарю без орт-контура. Голая команда (без env-префикса): линкуется
+# статикой pyke на linux/win, на mac НЕ линкуется (release.md §ORT п.2 —
+# промеренное падение `___isPlatformVersionAtLeast`), поэтому linux-контур
+# промера. Релизный `just dist` его НЕ собирает.
+release-build-cascade0:
+    cargo build --release -p guard-daemon
+
 # Упаковка бандла (бинарь, лицензии, схема, SHA256SUMS): tar.gz на unix, zip на Windows-хосте.
 # Трей-бинарь (#128): на win/mac хостах передаём `--tray-binary` (second bin
 # `fasad-tray`); linux-ветка скрипта сама кладёт systemd-юнит (#140).
+# Контур #181: метка `full` (дефолт скрипта); mac несёт dylib из $ORT_DIR
+# (дефолт = $HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0, тот же
+# каталог, что у build-ort/spike-dylib); win несёт onnxruntime.dll из $ORT_DLL
+# (win-ячейка CI: путь к runtimes/win-x64/native из pyke-кэша ort-sys,
+# delivery-контракт ort-доки «рядом с exe»).
 dist: release-build release-build-tray deps-licenses
     #!/usr/bin/env bash
     set -euo pipefail
@@ -467,10 +539,18 @@ dist: release-build release-build-tray deps-licenses
     case "$(uname -s)" in
         MINGW* | MSYS* | CYGWIN*) ext=".exe" ;;
     esac
+    ort_dir_args=()
+    if [ "$(uname -s)" = "Darwin" ]; then
+        ort_dir_args=(--ort-dir "${ORT_DIR:-$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0}")
+    fi
+    dll_args=()
+    if [ -n "$ext" ] && [ -n "${ORT_DLL:-}" ]; then
+        dll_args=(--ort-dll "$ORT_DLL")
+    fi
     if [ "$(uname -s)" = "Darwin" ] || [ -n "$ext" ]; then
-        bash scripts/make-bundle.sh --tray-binary "target/release/fasad-tray${ext}"
+        bash scripts/make-bundle.sh --tray-binary "target/release/fasad-tray${ext}" ${ort_dir_args[@]+"${ort_dir_args[@]}"} ${dll_args[@]+"${dll_args[@]}"}
     else
-        bash scripts/make-bundle.sh
+        bash scripts/make-bundle.sh ${dll_args[@]+"${dll_args[@]}"}
     fi
 
 # Полный релизный прогон на хосте = одна ячейка матрицы CI локально.

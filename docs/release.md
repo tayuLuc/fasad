@@ -6,43 +6,77 @@
 
 ## Что в бандле
 
-Бандл = **каскад-0**. Это не маркетинговая метка, а свойство бинаря:
+Бандл = **full** (рюлинг оператора 22.10, issue #181: «Нужно только фулл»;
+каскад-0-бандл в релизе не продаётся). Каскады 1–2 смонтированы в демон
+(#14A, `crates/guard-daemon/src/cascades.rs`), и это свойство бинаря:
 
-1. `guard-daemon` не объявляет ни одной feature-флага
-   (`crates/guard-daemon/Cargo.toml`), а `ort-inference` существует только у
-   `guard-onnx` и по умолчанию выключена.
-2. Модельного пути спанов в демоне физически нет: `crates/guard-daemon/src/pipeline.rs`
-   (заголовок модуля) — каскады 1–2 живут в харнесе `spike` (`guard-onnx`), не
-   в HTTP-рантайме.
-3. `FASAD_MODEL_DIR` (`crates/guard-daemon/src/config.rs:424`) меняет только
-   метку стадии в `/health` (`"stage":"cascade-0+models"`), детекторов из
-   моделей не добавляя.
-4. Проверка контура вшита в гейт: `scripts/verify-bundle.sh` требует из
-   распакованного бандла `{"stage":"cascade-0-only",…}` и совпадения версии
-   архива с версией демона.
+1. Релизный бинарь собирается с `ort-inference` (`just release-build`;
+   mac-контур — env-префикс dylib, §«ORT-контур на macOS»). При заданном
+   `FASAD_MODEL_DIR` (`crates/guard-daemon/src/config.rs:424`) конвейер
+   вызывает каскад 1 (`LockrExtractor`) и каскад 2 (`DecideArbiter`);
+   смонтировалось — `/health` → `"stage":"cascade-0+models"`
+   (`config.rs:457-462`, `cascades.rs:125`).
+2. Полный контур = бинарь + веса + `FASAD_MODEL_DIR`. Веса (~879 МБ,
+   манифест `models/manifest.tsv`) в архив не входят: бандл несёт
+   `scripts/fetch-models.sh` + манифест + `models/README.md` (скачивание по
+   commit-шейа со сверкой sha256, fail-closed). Без весов полный бинарь
+   работает каскадом 0 — легальный режим, стадия `cascade-0-only` в
+   `/health`, это не деградация.
+3. Назвал `FASAD_MODEL_DIR`, а смонтировать нечем (бинарь без орт-контура
+   или веса битые/отсутствуют) — демон **не стартует**
+   (`CascadeFailure::BuiltWithoutInference` / `Load`, `cascades.rs:635-650`);
+   молчаливой деградации при обещанных весах нет — fail-open на recall.
+4. Проверка контура вшита в гейт (`scripts/verify-bundle.sh`, #181):
+   1. ЗУБ А — бинарь бандла содержит орт-контур (mac/linux: `libonnxruntime`
+      в динамическом графе; win: маркер орт-статики в теле — PE-доставка =
+      `bin/onnxruntime.dll` рядом с exe); mac-бандл несёт dylib 1.31.0 в
+      `lib/`, бинари — rpath `@loader_path/../lib`.
+   2. ЗУБ Б — live-промер смонтированного контура при доступном кеше весов:
+      `stage=cascade-0+models` + `person_name`-спан на ФИО-фикстуре.
+      mac-ячейка CI скачивает веса шагом `fetch-models.sh`; win/linux —
+      строка `MOUNTED|SKIPPED` с причиной (доставка весов в их CI-контуре не
+      смонтирована, #181), доказательства смонтированного контракта там —
+      unit-тесты `cascades.rs`.
+   3. ЗУБ В — дискриминатор: каскад-0-бинарь при `FASAD_MODEL_DIR` обязан
+      отказать стартом (`BuiltWithoutInference`) — против каскад-0-артефакта
+      под full-меткой.
+   4. Плюс прежние: хэши `SHA256SUMS.txt`, версия архива = версия демона,
+      тег = версия.
+5. Гард метки: `make-bundle.sh` краснеет на `--label cascade-0` — откат
+   релизного контура возможен только через смену рюлинга (issue #181), не
+   через флаг упаковки.
 
-Следствие для релиза: артефакты именуются `fasad-<version>-<triple>-cascade-0.*`,
-и «полный гард с моделями» из этого архива не собирается. Когда модели заедут
-в демон (шаг 8/9, issue #70-#71 контур), метка меняется на `full` — менять её
-надо в одном месте: `scripts/make-bundle.sh` (`--label`).
+Следствие для релиза: артефакты именуются `fasad-<version>-<triple>-full.*`.
+Метка — дефолт `--label` в `scripts/make-bundle.sh`.
 
 Состав архива (`scripts/make-bundle.sh`):
 
-1. `bin/fasad` (`.exe` на Windows) — `cargo build --release -p guard-daemon`.
+1. `bin/fasad` (`.exe` на Windows) — `just release-build`
+   (`cargo build --release -p guard-daemon --features ort-inference`).
 2. `README.md` — сгенерированная ориентировка пользователя + ссылка на репозиторий.
 3. `LICENSE` — Apache-2.0 (текст лицензии продукта).
 4. `THIRD-PARTY-LICENSES.txt` — `just deps-licenses` (cargo-about, см. ниже).
 5. `schema.default.json` — канон схемы классов (`config/schema.default.json`,
    `FASAD_SCHEMA`).
 6. `SHA256SUMS.txt` — sha256 всех файлов бандла; рядом с архивом лежит
-   `fasad-…-cascade-0.<ext>.sha256` (хэш самого архива).
-7. Платформенный контур запуска (решение оператора 21.10, issue #128):
+   `fasad-…-full.<ext>.sha256` (хэш самого архива).
+7. `scripts/fetch-models.sh` + `models/manifest.tsv` + `models/README.md` —
+   скачивание весов каскадов 1–2 по sha256-манифесту (#181; веса в архив не
+   входят, см. п.2 выше).
+8. mac: `lib/libonnxruntime.1.dylib` — официальный dylib 1.31.0 (тот же
+   архив и sha256, что проверяет job `ort-dylib`), доставка рантайма внутри
+   бандла (`--ort-dir`, rpath-чин install_name_tool); win:
+   `bin/onnxruntime.dll` (`--ort-dll`, из pyke-кэша build-контура, доставка
+   «рядом с exe»).
+9. Платформенный контур запуска (решение оператора 21.10, issue #128):
    **linux-бандл = headless-демон под systemd** (консольный запуск, юнит
    `contrib/systemd/fasad.service` в бандле — #140, бинд loopback по дефолту —
    `config.rs`), трей в linux-артефакт не входит; **win/mac-бандлы несут
-   tray-бинарь** `bin/fasad-tray` (feature `tray` ON, иконка статуса — #128
-   фаза 2, PR-контур `crates/guard-daemon/src/tray.rs`: клик = открыть UI
-   браузером ОС, меню = «Выход (graceful)» = shutdown-канал демона, tooltip =
+   tray-бинарь** `bin/fasad-tray` (features `tray,ort-inference` — #181:
+   трей = тот же `main.rs` с монтажом #14A, в full-бандле оба бинаря одного
+   контура; иконка статуса — #128 фаза 2, PR-контур
+   `crates/guard-daemon/src/tray.rs`: клик = открыть UI браузером ОС, меню =
+   «Выход (graceful)» = shutdown-канал демона, tooltip =
    `fasad: <счётчик отказов> / <stage>` без ПДн). На стороне зависимостей это
    зафиксировано в [dep-verify-crates.md](dep-verify-crates.md) §16: `tray-icon`
    берётся с `default-features = false` (linux-дефолт `libappindicator` =
@@ -79,14 +113,20 @@
 
 | runner | triple | архив | контур |
 | --- | --- | --- | --- |
-| ubuntu-24.04 | x86_64-unknown-linux-gnu | tar.gz | headless + systemd-юнит (#140) |
-| windows-2022 | x86_64-pc-windows-msvc | zip | + `bin/fasad-tray.exe` (#128) |
-| macos-14 | aarch64-apple-darwin | tar.gz | + `bin/fasad-tray` (#128) |
+| ubuntu-24.04 | x86_64-unknown-linux-gnu | tar.gz | full headless + systemd-юнит (#140) |
+| windows-2022 | x86_64-pc-windows-msvc | zip | full + `bin/fasad-tray.exe` + `bin/onnxruntime.dll` (#128/#181) |
+| macos-14 | aarch64-apple-darwin | tar.gz | full + `bin/fasad-tray` + `lib/libonnxruntime.1.dylib` (#128/#181) |
 
 win/mac-ячейки собирают второй бинарь шагом `just release-build-tray`
-(фича `tray`); linux-ячейка его не собирает физически (§16) и несёт
-`contrib/systemd/fasad.service`; зуб «бандл несёт контур своей ОС» —
-`scripts/verify-bundle.sh` п.5.
+(features `tray,ort-inference`); linux-ячейка его не собирает физически (§16)
+и несёт `contrib/systemd/fasad.service`; зуб «бандл несёт контур своей ОС» —
+`scripts/verify-bundle.sh` п.5, зуб «бинарь = орт-контур» — ЗУБ А того же
+скрипта (#181). mac-ячейка дополнительно ставит dylib 1.31.0 (шаг с sha256,
+первичка §8 п.3 [model-audit.md](model-audit.md)) и скачивает веса
+(`scripts/fetch-models.sh`) для live-промера ЗУБа Б; win/linux-live-промер
+смонтрованного контура в CI не смонтирован (доставка весов = +879 МБ на
+прогон), риск win/linux-сборок full-контура записан в issue #181: первый
+живой промер = эта матрица на теге.
 
 Отличие от SPEC §9 (ubuntu-22.04, две ОС): раннер Linux поднят до 24.04 по
 постановке задачи шага 9, macOS-14 добавлен как третья платформа (issue #31).
@@ -128,16 +168,26 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 | `FASAD_VAULT_MODE` | stateless-контур; значения `2\|3\|session\|stateless` | config.rs:345 |
 | `FASAD_MLOCK` | `strict` (`strict\|best_effort`) | config.rs:128-142 |
 | `FASAD_SCHEMA` | встроенный канон (`schema.default.json` в бандле) | config.rs:263, :425 |
-| `FASAD_MODEL_DIR` | нет = стадия `cascade-0-only` | config.rs:424 |
+| `FASAD_MODEL_DIR` | нет = стадия `cascade-0-only`; задан = `cascade-0+models` на full-бинаре (отказ старта, если смонтировать нечем) | config.rs:424, cascades.rs:635-650 |
 | `FASAD_UPSTREAM_ALLOWLIST` | пусто = наружу ходить некуда | config.rs:271, :431 |
 | `FASAD_PROXY_LOOPBACK_HTTP` | false | config.rs:277, :432 |
 
-5. Ответы: `/health` (версия, стадия контура, режим залочкивания),
+5. Модели каскадов 1–2 (контур full, #181): скачивание из каталога бандла —
+   `./scripts/fetch-models.sh` (sha256-гейт по `models/manifest.tsv`,
+   commit-шейа revision, кеш `~/.cache/fasad-models`, зеркало
+   `FASAD_HF_HOST`), затем `export FASAD_MODEL_DIR="$HOME/.cache/fasad-models"`.
+   Детали и раскладка — `models/README.md` бандла и §«Как включить монтаж
+   каскадов 1–2» в `crates/guard-daemon/README.md` (владелец деталей).
+   `FASAD_TIMEOUT_MS=3000` (дефолт) на смонтированном контуре вмещает не
+   каждый запрос Decide-серой зоны — на полном тексте держите ≥ 5 000
+   (промер ревью #97, `crates/guard-daemon/README.md` §env).
+6. Ответы: `/health` (версия, стадия контура, режим залочкивания),
    `/v1/analyze` (массив спанов, поле `entity_type` — промер живого ответа
    21.10), `/v1/anonymize` (`{text, spans}`, спаны берутся из `/v1/analyze`;
    голый `{"text":…}` = 400, `vault.rs::AnonymizeRequest`).
-6. Никакой телеметрии: сетевой вызов наружу только по явному
-   `FASAD_UPSTREAM_ALLOWLIST` (AGENTS, инварианты).
+7. Никакой телеметрии: сетевой вызов наружу только по явному
+   `FASAD_UPSTREAM_ALLOWLIST` (AGENTS, инварианты). Скачивание весов —
+   явное действие пользователя скриптом `fetch-models.sh`, не рантайм.
 
 ### Совместимость с main (промер 21.10, PR #76)
 
@@ -162,6 +212,10 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    пуст, 16 имён).
 
 ## Как выпустить
+
+Порядок публикаций (#181, решение оператора): тег `v0.1.0` ставится ПОСЛЕ
+мерджа full-контура, его ревью и проде-тестов релизного контура — артефакты
+`-full` светятся только на теге (`release.yml` триггер `push: tags: v*`).
 
 1. Поднять версию в `[workspace.package] version` (единый источник,
    `Cargo.toml`) + прогнать `cargo update -w`? — нет: `Cargo.lock` регенерится
@@ -305,7 +359,9 @@ v0.1.0-rc1 = rc 1, `v0.1.0` = rc 0 и ДВУМЯ строками `VERSION|ok`
    влитые PR сдвинули строки первички #76). `OMP_NUM_THREADS` не рычаг: вендорный
    `libonnxruntime` osx-arm64 без OpenMP, переменную не читает (первичка
    правки к рюлингу — `otool`/`strings`, ревью #73).
-2. Каскад-0 (публикуемый бинарь): пик 3.5 MiB (`ps -o rss`) / 1.7 MiB
+2. Каскад-0-фаза публикуемого бинаря (`just measure-rss` в job dist: релизный
+   full-бинарь, старт без `FASAD_MODEL_DIR` — стадия `cascade-0-only`, #181):
+   пик 3.5 MiB (`ps -o rss`) / 1.7 MiB
    (`footprint phys_footprint`) после прогрева — пересъёмка 22.10 на head
    `237bd1c`, четыре прогона `just measure-rss --cascade0 --skip-build`
    (основной + три повтора), все `peak_mib=3.5`, idle 2.6–2.7/1.4; первичка
@@ -551,9 +607,18 @@ v0.1.0-rc1 = rc 1, `v0.1.0` = rc 0 и ДВУМЯ строками `VERSION|ok`
    в этой сессии не было. Компильная проверка ort-фичи на Windows есть в
    `ci.yml` (`cargo clippy -p guard-onnx --all-targets --features ort-inference`
    в матрице обеих ОС).
-5. В бандл `-cascade-0` dylib **не** кладётся: бинарь его не грузит (п.1–3
-   раздела «Что в бандле»). Пункт SPEC §9 про `libonnxruntime.so`/`onnxruntime.dll`
-   внутри архива становится живым вместе с модельным путём в демоне.
+5. Релизный бандл `full` несёт библиотеку рантайма: mac —
+   `lib/libonnxruntime.1.dylib` (официальный архив 1.31.0, sha256 §8 п.3; CI
+   скачивает шаг-в-шаг с job `ort-dylib`, `make-bundle.sh --ort-dir`;
+   бинари получают rpath `@loader_path/../lib` — `install_name_tool
+   -add_rpath`, промер `otool -L` в make-bundle/verify-bundle ЗУБ А), win —
+   `bin/onnxruntime.dll` рядом с exe (PE-локатор, доставка pyke-кэша
+   build-контура `copy-dylibs`, `--ort-dll`). SPEC §9
+   (`libonnxruntime.so`/`onnxruntime.dll` рядом) жив: модельный путь в демоне
+   смонтирован (#14A), бандл full (#181). linux: динамическая зависимость
+   `libonnxruntime.so` в графе бинаря (readelf-нога ЗУБа А); доставка .so в
+   архив не смонтирована — раннер-контур сборки, риск #181 (первый живой
+   linux-промер на теге).
 
 ## Пины action'ов (промер 21.10, `gh api repos/<owner>/<repo>/releases/latest`; пересъёмка 22.10 на head `237bd1c`)
 
@@ -595,8 +660,10 @@ sha tag-объекта нельзя, он не resolvable в `uses:`.
 1. union-recall N≥150 (гейт §5 п.7) — не трогался.
 2. README продукта (витрина, §10 п.9 часть B) — не в объёме задачи.
 3. Финальный чек-лист SPEC §11 — за родителем.
-4. Модельный путь в демоне (issue #70/#71 контур) — вне объёма; до него
-   бандл остаётся `-cascade-0`.
+4. Модельный путь в демоне — смонтирован (#14A), релизный контур = full
+   (#181): бандл несёт орт-бинари + доставку рантайма + инструкцию весов.
+   Не смонтировано: доставка весов в win/linux-ячейки CI (879 МБ на прогон;
+   mac-ячейка промеряет смонтированный контур живьём, verify ЗУБ Б).
 5. Windows-метод RAM-гейта — не реализован (см. §RAM п.5).
 6. Подпись артефактов (cosign/sigstore, attestation) — не делалась.
 7. Идемпотентность публикации: повторный прогон по существующему релизу

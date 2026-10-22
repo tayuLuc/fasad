@@ -3,11 +3,23 @@ name: release
 # SPEC §10 п.9 (шаг 9): релиз по тегу `v*`.
 #
 # Матрица: ubuntu-24.04, windows-2022, macos-14 (#31 третья платформа).
-# Контур бандла — каскад-0: `guard-daemon` не имеет фичи `ort-inference`
-# (crates/guard-daemon/Cargo.toml), модельного пути спанов в демоне нет
-# (crates/guard-daemon/src/pipeline.rs, заголовок модуля), поэтому артефакт
-# метится `-cascade-0` честно, а орт-контур проверяется отдельной job'ой
-# `ort-dylib` (сборка харнеса каскадов 1–2 на официальном dylib ORT).
+# Контур бандла = full (рюлинг оператора 22.10, issue #181: «Нужно только
+# фулл»): релизные бинари собираются с `ort-inference` (шаг `just
+# release-build`/`just release-build-tray`), монтаж каскадов 1–2 в
+# HTTP-рантайме — `crates/guard-daemon/src/cascades.rs` (#14A). mac-нога
+# линкуется на официальный dylib 1.31.0 (env ORT_* ниже, контракт
+# docs/model-audit.md §8; скачивание архива + sha256 = тот же шаг, что job
+# `ort-dylib`) и несёт `lib/libonnxruntime.1.dylib` в бандле
+# (scripts/make-bundle.sh --ort-dir + install_name_tool -add_rpath).
+# win/linux: доставка runtime-библиотеки — onnxruntime.dll в bin/ (win,
+# --ort-dll из pyke-кэша build-контура) / динамика-по-пути (linux); первый
+# живой промер win/linux full-контура = эта матрица, риск записан в #181.
+# Веса (879 МБ) в бандл НЕ входят: бандл несёт scripts/fetch-models.sh +
+# models/manifest.tsv + models/README.md (sha256-гейт); mac-ячейка скачивает
+# веса шагом ниже и промеряет смонтированный контур в verify-bundle (ЗУБ Б).
+# Артефакты метятся `-full`; каскад-0-бандл в релизе не продаётся.
+# Job `ort-dylib` (харнес spike на dylib) остаётся: RAM-контур харнеса
+# (docs/model-audit.md §10 меряется демоном, харнес — §9 п.3/measure --full).
 #
 # Пины action'ов — SHA + комментарий с живым промером (первичка: `gh api
 # repos/<owner>/<repo>/releases/latest`, промер 21.10.2026):
@@ -104,12 +116,49 @@ jobs:
         uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: just, cargo-about
-      - name: "Релизный бинарь (каскад-0, профиль release: lto=fat, strip)"
+      - name: "Установка официального dylib ORT 1.31.0 (mac-контур сборки)"
+        # Контракт §W2 п.1: mac release-бинарь с ort-inference линкуется
+        # только на официальный dylib (pyke-статика = SIGSEGV в release).
+        # Скачивание + sha256 = тот же шаг-контракт, что job `ort-dylib`
+        # (матричные ort_archive/ort_sha256 первичка docs/model-audit.md §8
+        # п.3). mac-ячейка: dylib нужен И сборке (env-префикс), И бандлу
+        # (make-bundle --ort-dir), поэтому шаг именно здесь.
+        # Формат сверки — канон `sha256sum -c` (две строки, два пробела),
+        # BSD/GNU читают одинаково (урок #76 D3: sed-вырезка ломала формат).
+        if: matrix.os == 'macos-14'
+        run: |
+          set -euo pipefail
+          url="https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-osx-arm64-1.31.0.tgz"
+          curl -sSfL --retry 3 -A "fasad-release-ci/1.0" -o "$RUNNER_TEMP/ort.tgz" "$url"
+          printf '%s  %s\n' "1031b36dd3bdaa8d976a6130d9cf2a05e9be320b93ae804f8427b91dc3432afc" "$RUNNER_TEMP/ort.tgz" > "$RUNNER_TEMP/ort.sum"
+          ( cd "$RUNNER_TEMP" && sha256sum -c ort.sum )
+          mkdir -p "$RUNNER_TEMP/ort"
+          tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP/ort"
+          echo "ORT_DIR=$RUNNER_TEMP/ort/onnxruntime-osx-arm64-1.31.0" >> "$GITHUB_ENV"
+      - name: "Релизный бинарь (full: ort-inference; профиль release: lto=fat, strip)"
+        # Контур #181 (рюлинг оператора 22.10: «Нужно только фулл»). mac:
+        # ORT_DIR из шага выше → рецепт ставит env-префикс dylib-контракта.
+        # win/linux: каталога $ORT_DIR/lib нет → рецепт линкует без префикса
+        # (win: pyke-download + copy-dylibs, delivery dll рядом с exe;
+        # linux: download-binaries статик + динамика libonnxruntime.so;
+        # ПЕРВЫЙ живой промер этих веток = эта матрица, риск #181).
         run: just release-build
-      - name: "Трей-бинарь win/mac (feature tray, #128)"
+      - name: "Веса каскадов 1–2 (mac: доставка в кеш для ЗУБа Б verify)"
+        # mac-контур промеряет смонтированный контур живьём (verify-bundle
+        # ЗУБ Б: stage=cascade-0+models + person_name-спан). 879 МБ с HF,
+        # sha256-гейт манифеста (fail-closed). Linux: доставка не смонтирована
+        # (verify ЗУБ Б = unit-доказательства; win/linux HF-кеш в релизной
+        # матрице = +2×879 МБ трафика на каждый тег, решение #181).
+        if: matrix.os == 'macos-14'
+        run: |
+          bash scripts/fetch-models.sh --no-rewrite
+          echo "FASAD_MODEL_DIR=$HOME/.cache/fasad-models" >> "$GITHUB_ENV"
+      - name: "Трей-бинарь win/mac (features tray,ort-inference, #128/#181)"
         # Linux пропускает: фича физически несобираема на linux
         # (compile_error в tray-icon без libappindicator/ksni —
         # docs/dep-verify-crates.md §16), linux-контур = systemd (#140).
+        # #181: трей = тот же main.rs (монтаж #14A), собирается С ort-inference
+        # — в full-бандле оба бинаря одного контура.
         if: matrix.os != 'ubuntu-24.04'
         run: just release-build-tray
       - name: "Linux-бандл: systemd-юнит (#140)"
@@ -118,7 +167,12 @@ jobs:
         # контура в воркфлоу: юнит едет в бандл, а не в air.
         if: matrix.os == 'ubuntu-24.04'
         run: ls -la contrib/systemd/fasad.service
-      - name: RAM-гейт каскада-0 (SPEC §10 п.9, метод в выводе)
+      - name: RAM-гейт каскад-0-фазы релизного демона (SPEC §10 п.9, метод в выводе)
+        # Контур замера = каскад-0-фазы демона (#181): релизный бинарь
+        # (full, шаг release-build) без FASAD_MODEL_DIR стартует стадией
+        # cascade-0-only, RAM-контур замера не двигается (полный смонтированный
+        # контур меряется §10: пики 825.7–1466.5 MiB против бюджета 1843.2,
+        # verdict ok — docs/model-audit.md §10 п.3/п.4).
         # Windows-ветки метода замера (PowerShell Get-Process) не реализовано:
         # scripts/measure-rss.sh на неизмеренной ОС падает с exit 2 и явной
         # причиной, а не рисует ноль (rc=2 промерен шимом `uname` = FreeBSD,
@@ -131,12 +185,67 @@ jobs:
         # выходит rc=1 (плюс причина в stderr), и step падает. До правки OVER
         # только печатался, rc был 0 и шаг зеленел при превышении бюджета —
         # класс false-green «print-only landing test» (реестр 15/18).
+        # `--skip-build`: артефакт уже собран шагом release-build (full);
+        # пересборка здесь каскад-0-фичей затёрла бы его в target/ (класс
+        # #139) и обрушила verify-зубы А/В ниже.
         if: matrix.os != 'windows-2022'
         run: just measure-rss --skip-build
-      - name: "Бандл: бинарь + LICENSE + README + схема + лицензии + SHA256SUMS"
+      - name: "Каскад-0-референс зуба В (win/linux: дискриминатор против full-метки)"
+        # verify-bundle ЗУБ В проверяет живым прогомом: бинарь БЕЗ ort-inference
+        # при FASAD_MODEL_DIR обязан отказать стартом (BuiltWithoutInference).
+        # В mac-контуре target/release/fasad = full-бинарь, референс строится
+        # отдельной командой в отдельный target-dir (класс #139: пересборка в
+        # общий target затёрла бы релизный артефакт). На mac референс в CI не
+        # строится: там live-нога (ЗУБ Б) сильнее, зуб В = local-промер
+        # (just release-build-cascade0 + cp).
+        # win/linux: доставка весов в CI не смонтирована; BuiltWithoutInference
+        # срабатывает ДО чтения весов (cascades.rs:649-650), зуб прогоняется с
+        # несуществующим каталогом — референс = target-c0/debug/fasad (дефолт
+        # без env-префикса = download-binaries, на linux/mac линкуется; на win
+        # голая линковка pyke-статикой = промеренный риск #181, шаг не красным,
+        # а continue-on-error: отсутствие референса = SKIPPED-строка в verify,
+        # не ложная красная матрица до первого win-промера).
+        if: matrix.os != 'macos-14'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build -p guard-daemon --target-dir target-c0
+          echo "FASAD_CASCADE0_BIN=$PWD/target-c0/debug/fasad" >> "$GITHUB_ENV"
+      - name: "win-контур: onnxruntime.dll из pyke-кэша (delivery рядом с exe)"
+        # win-бинарь линкуется pyke-статикой (build.rs rpath-ветка =
+        # macos|linux), рантайм = onnxruntime.dll РЯДОМ с exe (ort-дока
+        # setup/linking: «in PATH or next to the exe»; PE RUNPATH нет).
+        # ort-sys `copy-dylibs` (build/dynamic_link.rs:14-24, промер 22.10)
+        # в build-контуре кладёт dll в target/release/ — берём её оттуда;
+        # отсутствие = красным (бинарь собран, а рантайма нет = бандл, который
+        # не стартует; риск win-ветки записан в #181).
+        if: matrix.os == 'windows-2022'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -f target/release/onnxruntime.dll ] \
+              || { echo "ОШИБКА: target/release/onnxruntime.dll нет — win-бинарь орт-контурный (release-build), а copy-dylibs его не положил"; exit 1; }
+          echo "ORT_DLL=$PWD/target/release/onnxruntime.dll" >> "$GITHUB_ENV"
+      - name: "Linux-контур: runtime-библиотека орта в артефактах сборки"
+        # linux-полный путь: ort-sys download-binaries, рантайм-поиск =
+        # LD_LIBRARY_PATH/системный каталог (per ort-дока); доставка в бандле
+        # НЕ смонтирована (#181: linux-ячейка промеряется ЗУБОМ А
+        # (readelf) + unit-доказательствами, живой mounted-промер = mac).
+        # Шаг фиксирует факт сборки динамической зависимости в логе матрицы.
+        if: matrix.os == 'ubuntu-24.04'
+        shell: bash
+        run: readelf -d -l target/release/fasad | grep -i onnxruntime
+      - name: "Бандл: бинарь + LICENSE + README + схема + лицензии + модели-инструкция + SHA256SUMS (контур full, #181)"
         run: just dist
-      - name: "Проверка бандла: распаковка, запуск, /health, сверка хэшей + тег↔версия"
+      - name: "Проверка бандла: распаковка, запуск, /health, орт-зубы А/Б/В, хэши + тег↔версия"
         env:
+          # Кеш весов mac-ноги (шаг fetch-models пишет GITHUB_ENV; job-level
+          # env шага не переопределяется пустой ссылкой на себя — GITHUB_ENV
+          # живёт в окружении процесса шага, шаг без env-блока его видит).
+          # mac-промер зуба Б живой, win/linux: кеша нет → `MOUNTED|SKIPPED`
+          # с причиной (первичка verify-bundle.sh, ЗУБ Б/В #181).
+          FASAD_THREADS: "2"
           # Зуб «тег == [workspace.package] version»: на тег-триггере в скрипт
           # уходит github.ref_name, на workflow_dispatch — пустая строка, и
           # скрипт сам печатает `VERSION|SKIPPED` (проверка не запрашивалась), а
@@ -150,7 +259,7 @@ jobs:
       - name: Upload bundle
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: fasad-${{ github.ref_name }}-${{ matrix.target }}-cascade-0
+          name: fasad-${{ github.ref_name }}-${{ matrix.target }}-full
           path: |
             dist/fasad-*.tar.gz
             dist/fasad-*.zip
@@ -159,7 +268,11 @@ jobs:
 
   ort-dylib:
     # Сборка каскадов 1–2 (харнес spike) релизным профилем на официальном dylib
-    # ONNX Runtime. Причина job'ы: на macOS статика pyke в release-профиле
+    # ONNX Runtime — RAM-контур харнеса (docs/model-audit.md §9 п.3,
+    # `measure-rss --full`). С #181 релизные бинари dist-матрицы собираются
+    # полным контуром тем же dylib-префиксом (шаг ORT-установки в job `dist`),
+    # эта job остаётся: spike-контур мер (харнес) здесь, продукт — в dist.
+    # Причина job'ы: на macOS статика pyke в release-профиле
     # SIGSEGV'ит (docs/model-audit-weights.md §W2 п.1, промер ×5), рабочий путь — официальный
     # dylib 1.31.0 + `ORT_PREFER_DYNAMIC_LINK=1` (per первичка ort:
     # https://ort.pyke.io/setup/linking — compile-time dynamic linking =
@@ -331,13 +444,20 @@ jobs:
         run: |
           set -euo pipefail
           cat >notes.md <<'NOTES'
-          Контур бандлов: **каскад-0** (детерминированные детекторы + vault).
-          Модельный путь (каскады 1–2, ONNX) в демоне ещё не сведён — см.
-          `docs/release.md` §«Что в бандле» и `docs/model-audit.md` §Release RSS
-          (замеры RAM с методом). Сборки: `x86_64-unknown-linux-gnu`
-          (ubuntu-24.04), `x86_64-pc-windows-msvc` (windows-2022),
-          `aarch64-apple-darwin` (macos-14). Каждый бандл несёт
-          `THIRD-PARTY-LICENSES.txt` (cargo-about) и `SHA256SUMS.txt`.
+          Контур бандлов: **full** (рюлинг оператора 22.10, issue #181) —
+          детерминированные детекторы + vault + модельный путь каскадов 1–2
+          (lockR + Decide на ONNX, монтаж #14A). Бандл несёт бинарь(ы) с
+          `ort-inference`, инструкцию скачивания весов (`scripts/fetch-models.sh`
+          + `models/manifest.tsv`, sha256-гейт, ~879 МБ с Hugging Face — веса в
+          архив не входят), mac — `lib/libonnxruntime.1.dylib` (1.31.0), win —
+          `bin/onnxruntime.dll`. Без весов демон работает каскадом 0 (стадия в
+          `/health`); с `FASAD_MODEL_DIR` и несмонтировавшимися весами старт
+          отказывает. Метрики: RAM — `docs/model-audit.md` §9 (каскад-0-фаза)
+          и §10 (смонтированный контур), латентность — `docs/model-audit-inference.md`
+          §I1. Сборки: `x86_64-unknown-linux-gnu` (ubuntu-24.04),
+          `x86_64-pc-windows-msvc` (windows-2022), `aarch64-apple-darwin`
+          (macos-14). Каждый бандл несёт `THIRD-PARTY-LICENSES.txt` (cargo-about)
+          и `SHA256SUMS.txt`.
           NOTES
           shopt -s nullglob
           files=(artifacts/*)

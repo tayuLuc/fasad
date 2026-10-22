@@ -15,6 +15,25 @@
 #   SHA256SUMS.txt → хэши всех файлов бандла, формат sha256sum -c
 #              (scripts/make-bundle.sh)
 #
+# Контур релиза #181 (рюлинг оператора 22.10: «нужно только фулл»): бандл =
+# `full` — бинарь собран с `ort-inference`, см. docs/release.md §«Что в
+# бандле». П.5 проверяет полный контур:
+#   ЗУБ А (всегда): бинарь бандла содержит орт-контур — mac/linux:
+#     динамическая зависимость от libonnxruntime в otool -L / readelf -d;
+#     win: маркер орт-статики в теле бинаря (MSVC-линк, delivery = dll рядом
+#     с exe — build.rs rpath-ветка = macos|linux).
+#   ЗУБ Б (при mounted-контуре): FASAD_MODEL_DIR=<кеш весов> → демон стартует
+#     и /health говорит "stage":"cascade-0+models" (fallback: нет весов в CI →
+#     SKIPPED-строка, молчание = ложно-зелёная проверка, класс реестра).
+#   ЗУБ В (win/linux): "FASAD_MODEL_DIR на cascade-0-бинаре = отказ старта" —
+#     каскад-0-бинарь (собранный БЕЗ фичи) при названном model_dir краснеет
+#     BuiltWithoutInference (cascades.rs:649-650, тест :1615-1631) = зуб
+#     против каскад-0-артефакта под full-меткой в CI без весов; на full-
+#     артефакте он обратный и НЕ запускается (staged-бинарь орт-контурный,
+#     mounted-проверка = ЗУБ Б).
+#   ЗУБ Г: FASAD_MODEL_DIR НЕ задан → stage=cascade-0-only — легальная стадия
+#     полного бинаря без весов, не «контур бандла» (первичка config.rs:457).
+#
 # use: scripts/verify-bundle.sh [--dist DIR] [--keep] [--expect-version ТЕГ]
 #
 # --expect-version (он же env FASAD_EXPECT_VERSION) — зуб «тег == версия»
@@ -135,6 +154,12 @@ cleanup() {
         kill "$tray_pid" 2>/dev/null || true
         wait "$tray_pid" 2>/dev/null || true
     fi
+    # Смонтированный демон ЗУБа Б (#181) — тот же контракт: die-путь ноги Б
+    # не имеет права оставить демона с грузом 879 МБ живым.
+    if [ -n "${mpid:-}" ]; then
+        kill "$mpid" 2>/dev/null || true
+        wait "$mpid" 2>/dev/null || true
+    fi
     if [ "$KEEP" -eq 0 ]; then
         rm -rf "$tmp"
     else
@@ -247,11 +272,43 @@ done
 
 health="$(curl -sS --fail --max-time 5 "http://127.0.0.1:${port}/health")"
 printf 'HEALTH|%s\n' "$health"
-# Контур бандла метится в двух местах: имя артефакта (-cascade-0) и /health.
-# Расхождение = бандл подписан не тем, чем является.
+# Контур бандла метится в двух местах: имя артефакта (-full, #181) и /health.
+# Стадия без весов = cascade-0-only — легальная стадия ПОЛНОГО бинаря
+# (`FASAD_MODEL_DIR` не задан → конвейер каскада 0, cascades.rs:639-641),
+# а не метка «бинарь без орта»: контур бинаря доказывает ЗУБ А ниже
+# (орт-зависимость в артефакте), наличие весов доказывает ЗУБ Б
+# (stage=cascade-0+models на смонтированном). Расхождение метки архива и
+# контура бинаря = бандл подписан не тем, чем является.
 printf '%s' "$health" | grep -q '"stage":"cascade-0-only"' || {
-    die "/health не подтверждает контур cascade-0-only"
+    die "/health без весов не подтверждает cascade-0-only (ожидаемая стартовая стадия full-бинаря без FASAD_MODEL_DIR)"
 }
+# ── ЗУБ А: бинарь бандла = орт-контур (full) ────────────────────────────────
+# Та же логика, что full_probe в make-bundle.sh (первичка ort-sys
+# build/dynamic_link.rs/static_link): mac/linux — динамическая зависимость,
+# win — маркер орт-статики в теле (PE-локатор не несёт RUNPATH; доставка =
+# onnxruntime.dll рядом с exe). Инструмент спрашивается у АРТЕФАКТА, env
+# вызывающего не влияет (тот же принцип, что preflight measure-rss.sh #170 б).
+case "$(uname -s)" in
+    Darwin)
+        otool -L "$bin" | grep -qi onnxruntime \
+            || die "ЗУБ А: bin/fasad без libonnxruntime в графе = бандл не full (release-контур #181)"
+        [ -f "$stage/lib/libonnxruntime.1.dylib" ] \
+            || die "ЗУБ А: mac-full-бандл без lib/libonnxruntime.1.dylib (доставка рантайма, docs/release.md §Матрица)"
+        otool -L "$stage/lib/libonnxruntime.1.dylib" | grep -q "current version 1.31.0" \
+            || die "ЗУБ А: dylib в бандле не 1.31.0 (контракт ort-dylib: официальный архив 1.31.0)"
+        printf 'ORT|ok|mac: dylib в бандле + rpath-контур (lib/libonnxruntime.1.dylib)\n'
+        ;;
+    Linux)
+        readelf -d -l "$bin" 2>/dev/null | grep -qi onnxruntime \
+            || die "ЗУБ А: bin/fasad без libonnxruntime в динамическом графе = бандл не full (release-контур #181)"
+        printf 'ORT|ok|linux: динамический libonnxruntime\n'
+        ;;
+    MINGW* | MSYS* | CYGWIN*)
+        LC_ALL=C grep -qa 'onnxruntime/core/session' "$bin" 2>/dev/null \
+            || die "ЗУБ А: bin/fasad.exe без орт-статики в теле = бандл не full (release-контур #181, win = MSVC-статик)"
+        printf 'ORT|ok|win: маркер орт-статики в bin/fasad.exe\n'
+        ;;
+esac
 ver_archive="$(printf '%s' "$(basename "$arch")" | sed -n 's/^fasad-\([0-9][0-9.]*\)-.*/\1/p')"
 ver_health="$(printf '%s' "$health" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
 [ "$ver_archive" = "$ver_health" ] || {
@@ -304,6 +361,175 @@ printf 'ANALYZE|inn10=ok\n'
 
 kill "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true
+
+# ── ЗУБ Б/В: полный контур с весами (FASAD_MODEL_DIR) ───────────────────────
+# Контур #181: релизный бандл = full (рюлинг оператора 22.10), и гейт обязан
+# видеть mounted-стадию live, а не только каскад-0. Первичка:
+# `Config::stage()` (config.rs:457-462) = `cascade-0+models` при model_dir,
+# отказ старта full-бинаря без весов = cascades.rs (`Load`, нет файла),
+# отказ cascade-0-бинаря при model_dir = BuiltWithoutInference
+# (cascades.rs:649-650).
+#
+# Две ноги, обе честные:
+#   Б (live, если веси доступны): FASAD_MODEL_DIR=<кеш> → старт /health →
+#     stage=cascade-0+models + живой модельный спан (person_name). Кеш =
+#     $FASAD_MODEL_DIR (env вызывающего; в CI его экспортирует шаг доставки
+#     весов job dist), дефолт ~/.cache/fasad-models. Нет весов в кеше
+#     (файл-проверка ниже, раскладка cascades.rs:744-749) → SKIPPED-строка
+#     с причиной, НЕ молчание (класс print-only/false-green).
+#   В (на каждой ОС, до ноги Б): бинарь БЕЗ орт-контура при FASAD_MODEL_DIR
+#     обязан ОТКАЗАТЬСЯ стартовать (CascadeFailure::BuiltWithoutInference,
+#     cascades.rs:649-650; unit-доказательство :1615-1631). Живой промер
+#     делает тот же дискриминатор, что unit: каскад-0-бинарь (собранный без
+#     фичи) + названные веса = exit≠0, сокет не биндится. staged-бинарь
+#     full-бандла этот тест не проходит (он орт-контурный), поэтому зуб В
+#     гоняется на ЛОКАЛЬНОМ cascade-0-артефакте (`just release-build-cascade0`
+#     = cargo build --release -p guard-daemon, без env-префикса), если он есть
+#     в target/release; нет артефакта — SKIPPED-строка с причиной.
+# Старт смонтированного демона = loading весов (STARTUP_LOAD_BUDGET_MS =
+# 120 000, cascades.rs), бюджеты readiness = 30 с; убитый демонами trap
+# идемпотентен ( cleanup() расширяется mpid-веткой).
+model_dir="${FASAD_MODEL_DIR:-$HOME/.cache/fasad-models}"
+lockr_model="$model_dir/lockR/rubert-base-pii-ner-onnx/model.optimized.fp16.onnx"
+decide_model="$model_dir/onnx-community/GLiNER2.5-Decide-ONNX/onnx/model_q4f16.onnx"
+weights_present=0
+if [ -f "$lockr_model" ] && [ -f "$decide_model" ]; then
+    weights_present=1
+fi
+
+# ── ЗУБ В: cascade-0-бинарь + FASAD_MODEL_DIR = отказ старта ────────────────
+# Референс каскад-0-бинаря ИЩЕТСЯ, а не берётся по умолчанию из
+# target/release/fasad: в релизном контуре #181 этот путь = ПОЛНЫЙ бинарь
+# (`just release-build`), и гонять на нём «ожидание отказа» = ложно-красный
+# промер (full-бинарь с весами стартует OK — промер 22.10: зуб В на
+# полном target вис 90 с, цикл ожидания rc «навсегда»). Кандидаты:
+#   1) $FASAD_CASCADE0_BIN (явный; CI-контур win/linux: шаг
+#      `cargo build --release -p guard-daemon` (без env-префикса) кладёт
+#      каскад-0-артефакт в target/release/fasad и экспортит путь сюда);
+#   2) ./fasad-cascade0 в cwd (локальная подготовка:
+#      `just release-build-cascade0` + cp артефакта).
+# Отличение каскад-0-артефакта от орт-бинаря — тем же дискриминатором, что
+# full_probe make-bundle.sh (win-нога: маркер орт-статики в теле; mac/linux:
+# отсутствие динамической зависимости; `otool`/`readelf` есть только на своих
+# ОС). Не найден/не распознан = SKIPPED-строка с причиной, не молчание.
+c0bin="${FASAD_CASCADE0_BIN:-}"
+[ -n "$c0bin" ] || c0bin="./fasad-cascade0"
+if [ ! -x "$c0bin" ]; then
+    c0bin=""
+fi
+if [ -n "$c0bin" ]; then
+    c0_is_cascade0=0
+    case "$(uname -s)" in
+        Darwin)
+            otool -L "$c0bin" 2>/dev/null | grep -qi onnxruntime || c0_is_cascade0=1
+            ;;
+        Linux)
+            readelf -d -l "$c0bin" 2>/dev/null | grep -qi onnxruntime || c0_is_cascade0=1
+            ;;
+        MINGW* | MSYS* | CYGWIN*)
+            LC_ALL=C grep -qa 'onnxruntime/core/session' "$c0bin" 2>/dev/null || c0_is_cascade0=1
+            ;;
+    esac
+    if [ "$c0_is_cascade0" -eq 0 ]; then
+        printf 'CASCADE0-GUARD|SKIPPED|%s содержит орт-контур = не каскад-0-референс (зуб В требует бинарь БЕЗ фичи: FASAD_CASCADE0_BIN / just release-build-cascade0)\n' "$c0bin"
+    elif [ "$weights_present" -ne 1 ]; then
+        printf 'CASCADE0-GUARD|SKIPPED|весов нет в %s: BuiltWithoutInference проверяется и на несуществующем каталоге, но контур держит единство кеша; промер с пустым каталогом = unit cascades.rs:1615-1631\n' "$model_dir"
+    else
+        c0log="$(mktemp)"
+        # Отказ = фоновый запуск + цикл до смерти процесса; rc читаем из
+        # `wait` через `|| c0rc=$?` (не `c0rc="$(wait …)"`: `set -e` валит
+        # скрипт на nonzero-команде присваивания — промер 22.10: verify
+        # краснел rc=2 на ЗЕЛЁНОМ зубе, код отказа утекал в код скрипта;
+        # и не `cmd && a || b` с фоном: гонка `kill -0` до fork).
+        # `wait` — без редиректа stderr: `2>/dev/null` на встроенной wait
+        # переводит её в «недожидную» (bash: not waiting, промер 22.10),
+        # следующая за ней команда под `set -e` умирала молча.
+        FASAD_PORT=0 FASAD_MODEL_DIR="$model_dir" nice -n 10 "$c0bin" >"$c0log" 2>&1 &
+        c0pid="$!"
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            kill -0 "$c0pid" 2>/dev/null || break
+            sleep 0.5
+        done
+        if kill -0 "$c0pid" 2>/dev/null; then
+            # Живой сокет при FASAD_MODEL_DIR = зуб красным (каскад-0 не имеет
+            # права обслуживать с обещанными весами). Убиваем и красим.
+            kill "$c0pid" 2>/dev/null || true
+            wait "$c0pid" 2>/dev/null || true
+            rm -f "$c0log"
+            die "CASCADE0-GUARD: бинарь без орт-контура поднялся с FASAD_MODEL_DIR = BuiltWithoutInference не сработал (cascades.rs:649)"
+        fi
+        # `wait` БЕЗ редиректа stderr: `2>/dev/null` на встроенной wait
+        # переводит её в «недожидную» (bash: not waiting, промер 22.10),
+        # следующая за ней команда под `set -e` умирала молча.
+        c0rc=0
+        wait "$c0pid" || c0rc=$?
+        # Причина читается ДО удаления лога: `rm` до grep = «умер, но причину
+        # нечем назвать» (grep по удалённому = die на правильном отказе,
+        # промер 22.10).
+        if [ "$c0rc" -eq 0 ]; then
+            rm -f "$c0log"
+            die "CASCADE0-GUARD: каскад-0-бинарь завершился rc=0 с FASAD_MODEL_DIR (ожидание: отказ старта)"
+        fi
+        c0tail="$(head -c 400 "$c0log")"
+        grep -qi "ort-inference" "$c0log" \
+            || die "CASCADE0-GUARD: каскад-0 при FASAD_MODEL_DIR умер (rc=$c0rc), но в stderr нет BuiltWithoutInference/ort-inference: $c0tail"
+        rm -f "$c0log"
+        printf 'CASCADE0-GUARD|ok|rc=%s|отказ старта с FASAD_MODEL_DIR (BuiltWithoutInference)\n' "$c0rc"
+    fi
+else
+    printf 'CASCADE0-GUARD|SKIPPED|нет каскад-0-референса (FASAD_CASCADE0_BIN / ./fasad-cascade0; в win/linux-контуре CI его готовит шаг сборки, в mac-локальном прогоне — just release-build-cascade0 + cp)\n'
+fi
+
+# ── ЗУБ Б: live-промер смонтированного контура ──────────────────────────────
+if [ "$weights_present" -eq 1 ]; then
+    mlog="$(mktemp)"
+    FASAD_PORT=0 FASAD_MODEL_DIR="$model_dir" FASAD_THREADS="${FASAD_THREADS:-2}" \
+        FASAD_TIMEOUT_MS=10000 nice -n 10 "$bin" >"$mlog" 2>&1 &
+    mpid="$!"
+    # Контур trap-ловушки один (второй `trap … EXIT` заменяет первый — урок F6
+    # этого скрипта), поэтому смонтированный демон регистрируется в общей
+    # cleanup(): mpid объявлен до trap и убивается на ЛЮБОМ выходе, включая
+    # die-пути ноги Б.
+    mport=""
+    for _ in $(seq 1 60); do
+        mport="$(sed -n 's#.*listening on http://127\.0\.0\.1:\([0-9]*\)/health.*#\1#p' "$mlog" | head -1)"
+        [ -n "$mport" ] && [ "$mport" != "0" ] && break
+        kill -0 "$mpid" 2>/dev/null \
+            || { cat "$mlog" >&2; die "ЗУБ Б: смонтированный демон умер на старте (кеш $model_dir)"; }
+        sleep 0.5
+    done
+    [ -n "$mport" ] && [ "$mport" != "0" ] \
+        || { cat "$mlog" >&2; die "ЗУБ Б: смонтированный демон не поднялся за 30 с (кеш $model_dir)"; }
+    mhealth="$(curl -sS --fail --max-time 10 "http://127.0.0.1:${mport}/health")" \
+        || die "ЗУБ Б: смонтированный демон не ответил на /health (порт $mport)"
+    printf 'HEALTH|mounted|%s\n' "$mhealth"
+    printf '%s' "$mhealth" | grep -q '"stage":"cascade-0+models"' \
+        || die "ЗУБ Б: /health с FASAD_MODEL_DIR не подтверждает cascade-0+models: $mhealth"
+    # Живой ФИО-промер (ГЛАВНЫЙ промер контура, #181): бинарь+веса+
+    # FASAD_MODEL_DIR обязан ДАВАТЬ модельный спан, а не только честную метку.
+    manalyze="$(curl -sS --fail --max-time 60 -H 'content-type: application/json' \
+        -H 'x-guard-policy: mask' -X POST "http://127.0.0.1:${mport}/v1/analyze" \
+        -d '{"text":"Иванов Пётр Сергеевич, паспорт 4507 123456, ИНН 2482014338"}')" \
+        || die "ЗУБ Б: /v1/analyze смонтированного демона не ответил (порт $mport)"
+    printf 'ANALYZE|mounted|%s\n' "$manalyze"
+    printf '%s' "$manalyze" | grep -q '"person_name"' \
+        || die "ЗУБ Б: ФИО-спан (person_name) не найден на смонтированном контуре — модельный путь не жив: $manalyze"
+    printf 'MOUNTED|ok|stage=cascade-0+models|person_name=ok|кеш=%s\n' "$model_dir"
+    rm -f "$mlog"
+else
+    # Нет весов. На mac это красным: mac-контур релиза обязан нести доставку
+    # весов (шаг fetch-models в release.yml job dist, #181) — отсутствие =
+    # дефект контура. На win/linux доставка весов в CI намеренно не
+    # смонтирована (риск #181: win/linux HF-кеш в матрице = +900 МБ трафика
+    # на каждый релиз-прогон), live-нога = SKIPPED c явной причиной; unit-
+    # доказательство смонтированного контракта = cargo-тесты cascades/config.
+    case "$(uname -s)" in
+        Darwin)
+            die "ЗУБ Б: mac без весов в кеше ($model_dir) — доставка весов в mac-контуре смонтирована (fetch-models шаг release.yml); отсутствие = красным, не SKIPPED"
+            ;;
+    esac
+    printf 'MOUNTED|SKIPPED|весов нет в %s — win/linux-контур CI без доставки весов (#181); unit-доказательства: cascades.rs startup-тесты\n' "$model_dir"
+fi
 
 # 5. Платформенный контур (#128/#140): бандл обязан нести ровно то, что
 #    обещает его ОС. Развилка — ОС ХОСТА ПРОВЕРКИ (бандл проверяется на своей

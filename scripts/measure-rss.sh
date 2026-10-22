@@ -657,7 +657,14 @@ run_full() {
 }
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
-    echo "BUILD|cargo build --release -p guard-daemon"
+    # Каскад-0 КОНТУР ЗАМЕРА остаётся каскад-0-артефактом (фича off, #181):
+    # release.yml RAM-гейт = `just measure-rss --skip-build` (release.yml:135),
+    # артефакт ему поставляет шаг `just release-build` = полный бинарь, старт
+    # без FASAD_MODEL_DIR даёт на нём ту же каскад-0-стадию — число замера
+    # не двигается. Пересборка здесь релизным контуром (с фичей) перетёрла бы
+    # target/release/fasad (класс #139: ключ --features в общий профиль
+    # перетирает артефакт) и уронила бы verify-зуб В (каскад-0-артефакт).
+    echo "BUILD|cargo build --release -p guard-daemon (каскад-0 артефакт замера; релизный бинарь = full, just release-build)"
     cargo build --release -p guard-daemon
 fi
 [ "$RUN_CASCADE0" -eq 1 ] && run_cascade0

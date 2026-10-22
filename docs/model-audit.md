@@ -96,6 +96,20 @@ IO|out|arbiter|logits|Tensor<f32>(batch, markers)
    `ort-dylib`/`spike-dylib`. Релизный прогон 19.10 (сырой /tmp/mg48-49.out):
    exit=1 (GatherElements-заглушка §W2 п.3 — до живых marker_positions шага 4b), env_init
    37.8–40.3 ms, rss_after_load_arbiter 379.4–387.4 MiB — бюджет-гейт release закрыт.
+ 5. Релизный бандл = full-контур (#181, рюлинг оператора 22.10): `just
+    release-build`/`just release-build-tray` собирают бинари демона с
+    `ort-inference` тем же dylib-префиксом (mac), бандл несёт
+    `lib/libonnxruntime.1.dylib` (официальный архив п.3, копия `cp -L` из
+    `--ort-dir`) и rpath `@loader_path/../lib` на бинарях
+    (`install_name_tool -add_rpath`; промер 22.10: `otool -l` собранного
+    бинаря = `@rpath/libonnxruntime.1.dylib` + LC_RPATH `@loader_path/../lib`,
+    запуск из чистого распакованного архива = старт с весами без env-путей к
+    ORT). Контракт «бандл не линкует pyke-статику» (§W2 п.1, mac-release
+    SIGSEGV) держится зубом А `verify-bundle.sh`: динамическая зависимость в
+    графе + dylib 1.31.0 в `lib/` + версия библиотеки в arch header.
+    Двойной rpath-защита: build.rs кладёт `-Wl,-rpath,$ORT_DIR/lib`
+    (dev-контур), упаковка добавляет `@loader_path/../lib` только при его
+    отсутствии в load commands.
 
 ## 9. Release RSS (шаг 9, релизный контур, SPEC §10 п.9)
 
@@ -294,7 +308,9 @@ IO|out|arbiter|logits|Tensor<f32>(batch, markers)
 
 ## 10. Release RSS демона с примонтированными каскадами 1–2 (шаг 9A/9B, issue #14A)
 
-Соседняя §9 (#76) — релизный контур на каскаде 0; эта секция при rebase на неё
+Соседняя §9 (#76) — релизный контур без весов (стадия `cascade-0-only`;
+с #181 публикуемый бинарь = full-контур, §9 меряет его каскад-0-фазу, эта
+секция — его смонтированную фазу); эта секция при rebase на неё
 передвинута с §9 на §10, содержимое не менялось, кроме пункта 8 (стык первичек
 по `FASAD_THREADS`) и переименования метрики стационара (§10.2).
 
