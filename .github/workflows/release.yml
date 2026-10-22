@@ -512,33 +512,36 @@ jobs:
         # Контур харнеса (контракт §W2 п.1: pyke-статика в mac release
         # SIGSEGV'ит, рабочий путь = официальный dylib + ORT_PREFER_DYNAMIC_LINK;
         # spike dlopen'ит RSS-мост по SPIKE_DYLIB, орт-символы = динамик-линк
-        # `-lonnxruntime`, ort-sys main.rs:49-51). mac = продукт-мера (§9);
-        # linux-нога = динамик spike на официальном linux-dylib (linux-РЕЛИЗ =
-        # download-статика dist-матрицы, main.rs:177-183; доставка linux-
-        # рантайма = отдельное решение оператора, #188).
-        # КОНТРАКТ ПУТИ (#188, провен релиз-репетиций run 39791625858/
-        # 39795161065/39798415641): шаг обязан выставлять `ORT_LIB_PATH =
-        # каталог библиотеки` = `<архив>/lib` (в архивах 1.31.0:
-        # lib/libonnxruntime.dylib + .1.dylib + .1.31.0.dylib — промер
-        # распаковки 25.10 в этой сессии, обе платформы). Прежняя env-форма
-        # `ORT_DIR=<корень архива>` + рецепт `build-ort` (`ORT_LIB_PATH=
-        # "${ORT_DIR}/lib"`, justfile:487) давали -L корня → «library
-        # 'onnxruntime' not found» / «unable to find library -lonnxruntime»
-        # на обеих ногах, все три репетиции. Локальный ред-грин-промер 25.10
-        # (macos-14, этот хост, CARGO_BUILD_JOBS=2, ruling 22.10):
-        # корень-форма = «ld: library not found», lib-форма = Finished 45 с,
-        # `otool -L` spike = `@rpath/libonnxruntime.1.dylib 1.31.0`.
-        # `ORT_DIR` (корень) остаётся для бандла/mac-шагов; линк-контракт
-        # здесь = явный `ORT_LIB_PATH` (первичка ort-sys vars.rs:5 +
-        # main.rs:48-52: SYSTEM_LIB_PATH = ORT_LIB_PATH | ORT_LIB_LOCATION).
+        # `-lonnxruntime`, ort-sys main.rs:49-51: `-L <ORT_LIB_PATH>`).
+        # mac = продукт-мера (§9); linux-нога = динамик spike на официальном
+        # linux-dylib (linux-РЕЛИЗ = download-статика dist-матрицы,
+        # main.rs:177-183; доставка linux-рантайма = отдельное решение
+        # оператора, #188).
+        # КОНТРАКТ ПУТИ (#188): `ORT_LIB_PATH` = КАТАЛОГ БИБЛИОТЕКИ
+        # (`<архив>/lib`; промер распаковки 25.10 в сессии, обе платформы:
+        # mac lib/libonnxruntime.dylib, linux lib/libonnxruntime.so).
+        # РЕЦЕПТ `build-ort` (justfile:487) ПЕРЕПРИСВАИВАЕТ
+        # `ORT_LIB_PATH="${ORT_DIR:-…/lib}"`: при шаговом `ORT_DIR` (корень
+        # архива) рецепт затирает шаговый ORT_LIB_PATH значением КОРНЯ →
+        # линк-строка `-L <корень>` → «library not found» (провен CI: все
+        # три репетиции 39791625858/39795161065/39798415641 на обеих ногах;
+        # локальный красно-зелёный промер 25.10 на этом хосте, ruling 22.10
+        # JOBS=2: expansion-форма рецепта с root-ORT_DIR = rc=101 «library
+        # not found», явный `ORT_LIB_PATH=<архив>/lib` = Finished 36-45 с +
+        # `otool -L` = `@rpath/libonnxruntime.1.dylib 1.31.0`). Поэтому шаг
+        # зовёт РАЗВЁРНУЮ форму рецепта (те же env/команда, что justfile:487,
+        # без переприсваивания) — контракт docs/model-audit.md §8 п.4
+        # («ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=<dir>/lib cargo build
+        # --release --features ort-inference») в точности.
         env:
-          # Корень распакованного архива = имя самого архива без .tgz
-          # (промер локальной распаковки 21.10: onnxruntime-osx-arm64-1.31.0/,
-          # onnxruntime-linux-x64-1.31.0/); каталоги `ort_dir` заданы в матрице
-          # рядом с `ort_archive`, чтобы они не разъезжались.
-          ORT_DIR: ${{ runner.temp }}/ort/${{ matrix.ort_dir }}
+          # Каталог библиотеки = `<архив>/lib` (имя архива без .tgz =
+          # ort_dir матрицы, промер 21.10).
           ORT_LIB_PATH: ${{ runner.temp }}/ort/${{ matrix.ort_dir }}/lib
-        run: just build-ort
+        run: |
+          set -euo pipefail
+          [ -d "$ORT_LIB_PATH" ] || { echo "ОШИБКА: нет каталога библиотек $ORT_LIB_PATH (архив распакован шагом выше)"; exit 1; }
+          export ORT_PREFER_DYNAMIC_LINK=1
+          cargo build --release --features ort-inference --example spike
       - name: "Проверка линковки: dylib прописан в load commands"
         env:
           ORT_DIR: ${{ runner.temp }}/ort/${{ matrix.ort_dir }}
