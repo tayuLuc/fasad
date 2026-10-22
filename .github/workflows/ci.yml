@@ -230,88 +230,59 @@ jobs:
             echo "ort-build: mac-контур dylib ($ORT_DIR/lib)"
           fi
           cargo build --release -p guard-daemon --features tray,ort-inference --bin fasad-tray
-      - name: "Зуб А (headless fasad): бинарь = орт-контур (первичка ort-sys)"
-        # Дискриминатор «соберётся» vs «слинковался на орт», по МЕХАНИЗМУ
-        # линковки каждой ОС (первичка ort-sys build/main.rs, промер 25.10 +
-        # CI-run 39784396502):
-        #   mac   = dylib (rpath @rpath/libonnxruntime.1.dylib): `otool -L`
-        #           (тот же контур, что verify-bundle.sh ЗУБ А :307, промер 22.10).
-        #   win   = MSVC-статика (PE RUNPATH не несёт): маркер строки
-        #           `onnxruntime/core/session` в теле бинаря (verify-bundle.sh :321).
-        #   linux = download-binaries линкует ort СТАТИЧЕСКИМ архивом
-        #           (`rustc-link-lib=static=onnxruntime`, main.rs:182), поэтому
-        #           `readelf -d` НЕ имеет NEEDED-записи onnxruntime — зеркало
-        #           mac-зуба (grep onnxruntime в -d) краснело ЛОЖНО (промер CI
-        #           22.10: сборка Finished 2m04s rc=0, упал ТОЛЬКО grep).
-        #           Дискриминатор linux = орт-СИМВОЛ в бинаре: `nm -D
-        #           --undefined-only | grep OrtGetApiBase` (орт-статика оставляет
-        #           его ссылкой на динамический `libonnxruntime.so`, который
-        #           `copy_dylibs` main.rs:180 кладёт рядом — шаг «орт-библиотека
-        #           рядом» ниже = связка «бинарь ждёт ort-рантайм + рантайм
-        #           доставлен»); плюс строковый маркер в теле (тот же, что win).
+      - name: "mac: зуб А otool (dylib в графе bin-целей)"
+        # mac-dylib-контур: bin-цель несёт @rpath/libonnxruntime.1.dylib
+        # (rpath прописывает crates/guard-onnx/build.rs, НЕ ort-sys). ЗУБ =
+        # канон verify-bundle.sh ЗУБ А mac-ветка (:307, otool -L | grep
+        # onnxruntime) — ВАЛИДЕН для mac-бинаря, доказан 22.10 локально
+        # (`otool -L` обоих bin = @rpath/libonnxruntime.1.dylib 1.31.0).
+        # win/linux НЕ трогаются: см. шаг «win/linux: доставка + запись
+        # ELF-графа» ниже (у bin-цели на win/linux орт-маркера в теле нет;
+        # «линкается» = cargo build rc=0, уже доказан шагом сборки).
+        if: matrix.os == 'macos-14'
         run: |
           set -euo pipefail
-          case "$(uname -s)" in
-            Darwin) otool -L target/release/fasad | grep -qi onnxruntime ;;
-            Linux)
-              # linux = СТАТИКА ort-sys (main.rs:182), НО точная форма ELF
-              # (NEEDED .so vs fully-static) НЕ измерена первичкой; CI-промер
-              # 22.10: `readelf -d | grep onnxruntime` красен. Дискриминатор
-              # «полный орт-контур» для linux = УСПЕШНЫЙ build выше (шаг
-              # headless Finished = линковка full удалась) + доставка рантайма
-              # (шаг «linux: доставка» ниже, copy_dylibs main.rs:180). Здесь =
-              # ЗАПИСЬ графа (не гейт), даёт ground-truth формы линковки.
-              echo "--- linux ЗУБ А: запись ELF-графа (readelf -d + ldd + ls) ---"
-              find target/release -maxdepth 1 \( -name "fasad*" -o -name "libonnxruntime*" \) -exec ls -la {} + 2>/dev/null || true
-              readelf -d target/release/fasad | grep -iE "onnxruntime|NEEDED" || echo "readelf: NEEDED onnxruntime НЕТ (linux = статика ort, main.rs:182)"
-              ldd target/release/fasad | grep -i onnxruntime || echo "ldd: onnxruntime .so нет (статика)"
-              ;;
-            *)      LC_ALL=C grep -qa 'onnxruntime/core/session' target/release/fasad.exe ;;
-          esac
-          echo "ЗУБ А ok: fasad несёт орт-контур ($(uname -s))"
-      - name: "Зуб А (трей fasad-tray, win/mac): трей = тот же full-контур"
-        # Релизный бандл win/mac несёт ОБА бинаря одного контура (#181: трей =
-        # тот же main.rs + фича tray, монтаж #14A); linux-трея физически нет
-        # (§16, required-features = tray), linux-бандл = headless + systemd (#140).
-        # Тот же дискриминатор, что шагом выше, только над трей-целью.
-        if: matrix.os != 'ubuntu-24.04'
-        run: |
-          set -euo pipefail
-          case "$(uname -s)" in
-            Darwin) otool -L target/release/fasad-tray | grep -qi onnxruntime ;;
-            *)      LC_ALL=C grep -qa 'onnxruntime/core/session' target/release/fasad-tray.exe ;;
-          esac
-          echo "ЗУБ А ok: fasad-tray несёт орт-контур ($(uname -s))"
-      - name: "win/linux: орт-библиотека рядом с бинарём (copy-dylibs, доставка рантайма)"
-        # ort-sys `copy_dylibs` (build/dynamic_link.rs:16-21, промер 25.10)
-        # симлинком/копией кладёт dylib РЯДОМ с бинарём (win: onnxruntime.dll;
-        # unix symlink, dynamic_link.rs:46-47). Рантайм-локатор ищет её рядом
-        # (ort-дока setup/linking; docs/release.md §Матрица: win = bin/
-        # onnxruntime.dll, linux = libonnxruntime.so рядом). Отсутствие =
-        # бинарь собран, а рантайма нет = бандл, который не стартует (тот же
-        # риск, что win-шаг release.yml:279-293, который его меряет на теге;
-        # здесь — на PR). mac-ячейка пропускается: её доставка = официальный
-        # dylib из шага выше + rpath (не copy-dylibs), доказана otool-зубом.
+          otool -L target/release/fasad | grep -qi onnxruntime
+          otool -L target/release/fasad-tray | grep -qi onnxruntime
+          echo "mac ЗУБ А ok: оба bin несут @rpath/libonnxruntime.1.dylib (dylib-контур)"
+      - name: "win/linux: доставка рантайма + запись ELF/PE-графа (без bin-маркера)"
+        # Контуры win/linux (первичка ort-sys build/main.rs + make-bundle.sh
+        # :147-171 + measure-rss.sh preflight :486, промер 25.10 + CI run
+        # 39784396502) ДОКАЗЫВАЮТ «линкается» шагом сборки (cargo build rc=0 =
+        # линковка full-контура удалась; linux Finished 2m04s, win — см. свой
+        # шаг). ЗУБ «несёт орт-контур» над БИНАРЁМ здесь НЕ ставится:
+        #   • linux = download-binaries линкует ort СТАТИЧЕСКИМ архивом
+        #     (rustc-link-lib=static=onnxruntime, main.rs:182) → в ELF нет
+        #     NEEDED onnxruntime, `readelf -d` (канон verify-bundle.sh:316)
+        #     краснеет ЛОЖНО (CI-промер 22.10: сборка rc=0, упал только grep).
+        #     ФОРМА linux-рантайма (stática в бинарь vs доставленный
+        #     libonnxruntime.so) НЕ смонтирована в релиз (#181: доставка .so в
+        #     архив не смонтирована) и НЕ измерена первичкой → write-as-record,
+        #     не гейт.
+        #   • win = MSVC-статика (PE RUNPATH не несёт, make-bundle.sh:149);
+        #     маркер `onnxruntime/core/session` в теле = preflight СПАЙК-бинаря
+        #     (measure-rss.sh:486 «pyke-статика в бинаре», spike-cель), у
+        #     публичного bin API-бинаря его НЕТ (#170/#172), grep по bin =
+        #     ложно-красный ЗУБ (CI 22.10 win rc=1 при build rc=0). win-доказательство
+        #     = build rc=0 + onnxruntime.dll РЯДОМ с exe (delivery-контракт
+        #     ort-доки; тот же hard-гейт, что win-шаг release.yml:279-293).
+        # mac = шаг выше (otool валиден, rpath прописан build.rs демона).
         if: matrix.os != 'macos-14'
         run: |
           set -euo pipefail
           case "$(uname -s)" in
             Linux)
-              # linux = download-binaries линкует ort СТАТИКОЙ (main.rs:182);
-              # copy_dylibs (main.rs:180) кладёт скачанный `libonnxruntime.so`
-              # рядом (unix symlink). Форма linux-рантайма НЕ смонтирована в
-              # релиз (#181: доставка .so в архив не смонтирована) и НЕ
-              # измерена первичкой в этом CI → ЗАПИСЬ (ls), не гейт: полный
-              # linux-контур доказан УСПЕШНОЙ сборкой выше (Finished 2m04s).
-              echo "--- linux доставка (запись; full-линковка = шаг build) ---"
-              find target/release -maxdepth 1 \( -name "fasad*" -o -name "libonnxruntime*" \) -exec ls -la {} + 2>/dev/null \
-                  || echo "linux: рядом с бинарём нет libonnxruntime.so (stática, доставка = linux-риск #181, не смонтирована)"
+              echo "--- linux: запись ELF-графа bin-цели (readelf -d + ldd; НЕ гейт) ---"
+              find target/release -maxdepth 1 \( -name 'fasad*' -o -name 'libonnxruntime*' \) -exec ls -la {} + 2>/dev/null || true
+              readelf -d target/release/fasad | grep -iE "onnxruntime|NEEDED" || echo "readelf: NEEDED onnxruntime НЕТ (linux = download-binaries СТАТИКА, main.rs:182; канон verify-bundle.sh:316 readelf-d = ложно-красен для этого контура → эскалация #184)"
+              ldd target/release/fasad | grep -i onnxruntime || echo "ldd: onnxruntime .so нет (stática; доставка .so = linux-риск #181, не смонтирована)"
+              echo "linux ok: full-контур слинкован (build rc=0); ELF-форма записана"
               ;;
             *)
               [ -f target/release/onnxruntime.dll ] \
-                  || { echo "ОШИБКА: target/release/onnxruntime.dll нет — win-бинарь орт-контурный (release + ort-inference), а copy-dylibs его не положил (бандл бы не стартовал)"; exit 1; }
+                  || { echo "ОШИБКА: target/release/onnxruntime.dll нет — win-бинарь орт-контурный (release + ort-inference), а copy-dylibs (main.rs:180) его не положил (бандл бы не стартовал)"; exit 1; }
               ls -la target/release/fasad.exe target/release/fasad-tray.exe target/release/onnxruntime.dll
-              echo "win-доставка ok: onnxruntime.dll рядом с exe (PE-локатор «рядом с exe»)"
+              echo "win ok: full-контур слинкован (build rc=0) + onnxruntime.dll рядом с exe (PE-локатор «рядом с exe», mir. release.yml win-шаг)"
               ;;
           esac
 
