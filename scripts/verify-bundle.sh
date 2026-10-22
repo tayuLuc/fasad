@@ -177,19 +177,35 @@ case "$arch" in
     *.tar.gz) tar -xzf "$arch" -C "$tmp" ;;
     *.zip)
         # Windows-раннер (git bash) обязан распаковать архив тем же семейством
-        # инструментов, что его собрал: Expand-Archive. Python — НЕТ: AGENTS п.6
-        # не пускает Python в контур сборки, а на windows-2022 `python3` в
-        # Git Bash не гарантирован. Порядок: unzip (есть на macOS/Linux-разработке)
-        # → powershell (Windows) → явный отказ.
-        if command -v unzip >/dev/null 2>&1; then
-            unzip -q "$arch" -d "$tmp"
-        elif command -v powershell.exe >/dev/null 2>&1; then
+        # инструментов, что его собрал (make-bundle: powershell
+        # Compress-Archive). Python — НЕТ: AGENTS п.6 не пускает Python в
+        # контур сборки, а на windows-2022 `python3` в Git Bash не гарантирован.
+        # Порядок (#188): powershell (собиравший инструмент = канон) → bsdtar
+        # (в составе Git for Windows: /usr/bin/bsdtar, libarchive умеет zip) →
+        # unzip → явный отказ.
+        # Почему powershell ПЕРВЫМ, а не unzip (провен релиз-репетиции run
+        # 39810796923 dist-windows, шаг «Проверка бандла»):
+        # `Compress-Archive` пишет разделители путей ОБРАТНЫМИ слэшами
+        # (`bin\fasad.exe` как ИМЯ ФАЙЛА, а не каталог), а `unzip` на это
+        # роняет warning и не раскладывает дерево — verify-bundle умирал
+        # rc=1 на пустой распаковке («в архиве нет каталога бандла»), НЕ
+        # доходя до зубов. Expand-Archive = тулинг, которым архив собран
+        # (round-trip инвариант), он же нормализует сепараторы.
+        if command -v powershell.exe >/dev/null 2>&1; then
             powershell.exe -NoProfile -Command \
                 "Expand-Archive -LiteralPath '$(cygpath -w "$arch" 2>/dev/null || printf '%s' "$arch")' -DestinationPath '$(cygpath -w "$tmp" 2>/dev/null || printf '%s' "$tmp")'"
+        elif command -v bsdtar >/dev/null 2>&1; then
+            bsdtar -xf "$arch" -C "$tmp"
+        elif command -v unzip >/dev/null 2>&1; then
+            unzip -q "$arch" -d "$tmp"
         else
-            printf 'verify-bundle: ОШИБКА: нет ни unzip, ни powershell.exe — архив %s нечем распаковать\n' "$arch" >&2
+            printf 'verify-bundle: ОШИБКА: нет ни powershell.exe, ни bsdtar, ни unzip — архив %s нечем распаковать\n' "$arch" >&2
             exit 1
         fi
+        # Зуб пустой распаковки (#188): молчаливая пустая распаковка = все
+        # зубы ниже краснеют с неочевидной причиной; здесь — с именем архива.
+        [ -n "$(ls -A "$tmp" 2>/dev/null)" ] \
+            || die "архив $arch распаковался ПУСТО (инструмент: см. ветку выше) — бандл не проверялся"
         ;;
     *)
         printf 'verify-bundle: ОШИБКА: неизвестный формат архива: %s\n' "$arch" >&2
