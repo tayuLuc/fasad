@@ -372,7 +372,13 @@ jobs:
           $mBad = $m -replace $sha, ('0' * 64)
           $mpBad = Join-Path $env:RUNNER_TEMP 'manifest-bad.tsv'
           Set-Content -LiteralPath $mpBad -Value $mBad -Encoding ASCII
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache 2>$null
+          # `2>&1 | Out-Null`: PowerShell 5.1 turns ANY stderr line of a
+          # native command into a NativeCommandError record when
+          # $ErrorActionPreference = 'Stop' (step-level, CI-proven run
+          # 6e1d307: `2>$null` did NOT prevent it — the redirect target is
+          # not a pipe; the classic fix IS the pipe). The pipeline tail
+          # ($LASTEXITCODE of the native command) is what we assert.
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache 2>&1 | Out-Null
           $redRc = $LASTEXITCODE
           if ($redRc -eq 0) { throw "corrupt sha PASSED (rc=0): ps1 sha256 gate is dead" }
           # repeat = offline (cache hit): sinkhole HF in hosts (runner is an
