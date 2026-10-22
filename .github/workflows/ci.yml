@@ -388,9 +388,22 @@ jobs:
           } finally {
               $ErrorActionPreference = $prevEAP
           }
+          # Verdict signature in the tail = ASCII marker 'sha256' from the
+          # Write-Fail line. PS 5.1 decodes a native command's stderr console
+          # stream with the [Console]::OutputEncoding (OEM codepage), so the
+          # Cyrillic part of the message is mojibake in the pipeline (CI-
+          # proven 94bec2e: the step's own log renders the message fine,
+          # while the CAPTURED pipeline variable showed no match — a local
+          # repro of the 5.1 codepage decode is impossible on this mac
+          # (pwsh 7 = UTF-8 always), so the marker is ASCII (a stable part
+          # of the message under any codepage). It covers the diagnosis:
+          # rc=1 +
+          # 'sha256' = sha256-gate red, rc=1 without it = crash, not verdict.
+          # Case-sensitive match: a crash stack carries the invoked path
+          # (fetch-models.ps1), which case-insensitively contains 'sha256'.
           if ($redRc -eq 0) { throw "corrupt sha PASSED (rc=0): ps1 sha256 gate is dead" }
-          if (-not (($redTail | Out-String) -match 'sha256')) {
-              throw "red leg rc=$redRc without sha256-verdict in stderr: gate reason missing"
+          if (-not (($redTail | Out-String) -cmatch 'sha256')) {
+              throw "red leg rc=$redRc without sha256-verdict in tail: gate reason missing"
           }
           # repeat = offline (cache hit): sinkhole HF in hosts (runner is an
           # admin context; reverted in finally)
