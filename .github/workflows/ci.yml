@@ -336,92 +336,89 @@ jobs:
         run: |
           # #190: native Windows weight delivery, CI shelf. PowerShell 5.1
           # (shell: powershell = the win10/11 default, the issue #190 target).
-          # STEP BODY IS PURE ASCII (lesson of run 39829067427: the runner
+          # STEP BODY IS PURE ASCII (lesson of CI run 39829067427: the runner
           # writes the powershell step body to a temp .ps1 WITHOUT a BOM, and
           # PS 5.1 reads Cyrillic UTF-8 bytes as ANSI => parser error. Repo
           # .ps1 files keep Cyrillic because they carry a BOM; step bodies
           # cannot). 879 MB weights are NOT pulled in CI: mock manifest with
           # ONE small file lockR/config.json (2831 B, sha256/rev/size
           # measured this session: HEAD + live download + Get-FileHash).
+          # Child invocations pass EXACTLY THREE path params and no
+          # switches: PS 5.1 `powershell.exe -File` argument binding is
+          # fragile (CI-proven 9e55e06: `-File ... -Manifest $mpBad
+          # -Cache $cache -RedMarker $redMarker` lost the $mpBad value ->
+          # "Missing an argument for parameter 'Manifest'", child rc=1,
+          # marker never written; the mac pwsh sim of the same command is
+          # green = 5.1-only parser behavior, unreproducible here). The red
+          # child needs only the three paths; switches would only add
+          # binding surface.
           $ErrorActionPreference = 'Stop'
           & scripts\fetch-models.ps1 -List
           if ($LASTEXITCODE -ne 0) { throw "-List plan red (rc=$LASTEXITCODE)" }
           $sha = 'f4eeba88d1503a56d629195c9307d42c1acf4ce53ab88fdaecfc754fd0745cf9'
           $rev = 'ea7610b22808c509c0c8b7c7b0f6639c19684d08'
           $ts = [char]9
-          # Manifest lines are ASCII on purpose: Set-Content -Encoding UTF8 on
-          # PS 5.1 writes a BOM, Get-Content 5.1 does not strip it from the
-          # LAST line, and the BOM stuck to the `source` field of the last
-          # row (CI-proven run 39829067427: source='hf BOM' red).
+          # Temp root: absolute paths from $env:TEMP, with the 8.3 short
+          # form as literals for child invocations (guaranteed free of
+          # spaces when the long path contains spaces; on the runner both
+          # forms are space-free). $env:RUNNER_TEMP is bash-side only
+          # (CI-proven 7e4fd02: null under shell: powershell ->
+          # Set-Content -LiteralPath MissingArgument).
+          $root = Join-Path $env:TEMP 'fasad190'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $cache = Join-Path $root 'cache'
+          $mp = Join-Path $root 'good.tsv'
+          $mpBad = Join-Path $root 'bad.tsv'
+          $redMarker = Join-Path $root 'red-verdict.txt'
+          $fso = New-Object -ComObject Scripting.FileSystemObject
+          $rootShort = $fso.GetFolder($root).ShortPath
+          $mpBadShort = Join-Path $rootShort 'bad.tsv'
+          $cacheShort = Join-Path $rootShort 'cache'
+          $markerShort = Join-Path $rootShort 'red-verdict.txt'
+          # Manifest lines are ASCII on purpose: Set-Content -Encoding UTF8
+          # on PS 5.1 writes a BOM, Get-Content 5.1 does not strip it from
+          # the LAST line, and the BOM stuck to the `source` field of the
+          # last row (CI-proven run 39829067427: source='hf BOM' red).
           $m = "mock${ts}lockR/rubert-base-pii-ner-onnx${ts}${rev}${ts}config.json${ts}${sha}${ts}2831${ts}hf${ts}CI-mock-190"
-          # $cache/$mp/$redMarker via $env:TEMP, NOT $env:RUNNER_TEMP:
-          # RUNNER_TEMP is populated for bash shells, empty under
-          # `shell: powershell` on windows-2022 (CI-proven 7e4fd02:
-          # Set-Content -LiteralPath got a null path -> "Cannot bind
-          # argument" MissingArgument, the red child never wrote the
-          # marker; the earlier -Cache $env:RUNNER_TEMP/... call worked
-          # only because fetch-models.ps1 calls New-Item -Force on the
-          # cache dir, which created C:\ps1-cache). TEMP is canonical
-          # for both shells.
-          $cache = Join-Path $env:TEMP 'ps1-cache'
-          $redMarker = Join-Path $env:TEMP 'red-verdict.txt'
-          Remove-Item -LiteralPath $redMarker -Force -EA SilentlyContinue
-          $mp = Join-Path $env:TEMP 'manifest-good.tsv'
           Set-Content -LiteralPath $mp -Value $m -Encoding ASCII
           & scripts\fetch-models.ps1 -Manifest $mp -Cache $cache
           if ($LASTEXITCODE -ne 0) { throw "mock run red (rc=$LASTEXITCODE)" }
           $f = Join-Path $cache 'lockR\rubert-base-pii-ner-onnx\config.json'
           if (-not (Test-Path -LiteralPath $f)) { throw "layout: missing $f (cache layout = .sh parity)" }
           # red-control BEFORE the hosts sinkhole: corrupt sha in the mock
-          # manifest must exit 1 (gate alive, not print-only). Write-Fail in
-          # fetch-models.ps1 writes to [Console]::Error (NOT Write-Error):
-          # under the step's EAP=Stop a Write-Error in the child's parent
-          # scope aborts before exit code propagation, and a child process'
-          # stderr under EAP=Stop becomes NativeCommandError killing the STEP
-          # (CI-proven runs 39829067427, 6e1d307). Console stream = plain
-          # stderr: rc reaches $LASTEXITCODE, no PowerShell error records.
-          # EAP=Continue around the red leg as belt-and-braces, restored in
-          # finally; the verdict is asserted on TWO legs: rc + sha256
-          # signature in the captured tail (rc=1 from the gate, not from an
-          # unrelated crash - fail-closed diagnostics). In-process `&` on the
-          # .ps1 is NOT the form: `exit 1` in a dot/call scope exits the
-          # CALLER, so the step would die on the red line (rc=1 swallowed;
-          # CI-proven 3d5565a: gate PASSED rc=0 means the child ran and the
-          # parent kept going - the reverse: child scope). Child process +
-          # piped stdout: $LASTEXITCODE = child exit code, 2>&1 keeps the
-          # verdict visible to the two-leg assert (mac-sim pwsh: redRc=1,
-          # tail contains the reason, parent survives, outer rc=0).
-          # Verdict marker travels in a FILE, not the console pipe: PS 5.1
-          # console capture of a child's streams is hostile to non-ANSI
-          # bytes (CI-proven: rc=1 lands through every pipe form, the
-          # Cyrillic line never reaches the parent's pipeline variable as
-          # matchable text). The child writes its FAIL|sha256| line to
-          # -RedMarker as UTF-8; the parent asserts rc=1 + the ASCII token
-          # in the file - a crash before Write-Fail leaves no file.
+          # manifest must exit 1 (gate alive, not print-only). The red child
+          # gets SHORT-PATH literals + `exit $LASTEXITCODE` propagation, and
+          # writes its FAIL|sha256| verdict line to -RedMarker (a file):
+          # every console-capture form (pipe, 2>&1, Out-Null) proved to lose
+          # the verdict text AND/OR the exit code in PS 5.1 (CI-proven runs
+          # 3d5565a: child `exit 1` exited the CALLER scope, step died on
+          # the red line, gate saw rc=0; 6e1d307: NativeCommandError from
+          # the child's stderr killed the step under EAP=Stop; 93ca423/b873292:
+          # rc=1 landed, captured text = empty; 9e55e06: -File lost the
+          # $mpBad expansion, MissingArgument). The marker file cannot lie:
+          # only Write-Fail writes it, and a crash before Write-Fail leaves
+          # no file. EAP=Continue for the leg (restored in finally) so no
+          # error record kills the step; the verdict is asserted on TWO
+          # legs: rc=1 AND the lowercase ASCII token 'sha256' inside the
+          # marker (case-SENSITIVE: a crash stack names the invoked path
+          # fetch-models.ps1 whose capital F does not match -crash and
+          # verdict separate). fail-closed diagnostics, no lies about the
+          # reason of failure.
+          $mBad = $m -replace $sha, ('0' * 64)
+          Set-Content -LiteralPath $mpBad -Value $mBad -Encoding ASCII
           $prevEAP = $ErrorActionPreference
           try {
               $ErrorActionPreference = 'Continue'
               Remove-Item -LiteralPath $redMarker -Force -EA SilentlyContinue
-              $null = powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache -RedMarker $redMarker
+              $null = powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\fetch-models.ps1 -Manifest $mpBadShort -Cache $cacheShort -RedMarker $markerShort
               $redRc = $LASTEXITCODE
           } finally {
               $ErrorActionPreference = $prevEAP
           }
-          # The verdict tail must carry the ASCII token 'sha256' from the
-          # Write-Fail verdict line (stdout: PS 5.1 turns a child's raw
-          # stderr lines into ErrorRecords that never land in the parent's
-          # pipeline variable - CI-proven 93ca423: rc=1, captured tail
-          # empty; stdout of a native process IS the pipe text).
-          # Case-SENSITIVE -cmatch: the invoked path (fetch-models.ps1)
-          # appears in crash stacks and carries 'sha256' only
-          # case-insensitively (Fetch), while the verdict line prints the
-          # token lowercase: verdict vs crash is separated by case.
-          # Diagnosis: rc=1 + token = sha256-gate red; rc=1 without token =
-          # crash, not a verdict (fail-closed, no lies about the reason).
           if ($redRc -eq 0) { throw "corrupt sha PASSED (rc=0): ps1 sha256 gate is dead" }
           $tailStr = ''
           if (Test-Path -LiteralPath $redMarker) {
-              $tailStr = (Get-Content -LiteralPath $redMarker -Raw) + [char]10
+              $tailStr = (Get-Content -LiteralPath $redMarker -Raw)
           }
           if (-not ($tailStr -cmatch 'sha256')) {
               throw "red leg rc=$redRc without sha256-verdict file: gate reason missing"
