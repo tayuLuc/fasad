@@ -11,6 +11,9 @@
 //! из текста запроса (`ПДн`). Печатается только место в коде.
 
 #![forbid(unsafe_code)]
+// #190: bin НЕ наследует остров либы — вызов `guard_daemon::tray::win`
+// идёт через публичный safe-API либы (`forbid` bin-крифта цел: промер
+// сессии — island под bin-forbid красен E0453, под lib-deny зелёный).
 #![warn(clippy::unwrap_used)]
 
 use guard_daemon::Health;
