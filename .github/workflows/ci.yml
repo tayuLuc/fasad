@@ -88,6 +88,221 @@ jobs:
       - run: just test
       - run: just deny
 
+  ort-build:
+    # ═════ #184: живая ЛИНКОВКА релизного full-контура на win/linux/mac ═════
+    # Причина job'ы: ci.yml выше НЕ линкует onnxruntime ни на одной ОС — под
+    # `ort-inference` там только clippy-строки = check без линковки (комментарий
+    # build-test выше; первичка ci.yml после #31). Релизный контур #181/#183
+    # (`just release-build` / `just release-build-tray` = release-профиль +
+    # `--features ort-inference`, и `tray,ort-inference` для трея) собирался
+    # ВПЕРВЫЕ на матрице release.yml, то есть НА ТЕГЕ (docs/release.md §Матрица:
+    # «первый живой промер win/linux full = эта матрица на теге», риск записан в
+    # #181). Промер 25.10: `gh api .../actions/runs` по этому репозиторию не
+    # содержит НИ ОДНОГО прогона job `release`/workflow `release` — тег ещё не
+    # ставился, т.е. win/linux full-ликовка = NEVER MEASURED. Это job переводит
+    # первый промер на PR/merge: тег перестаёт быть первым.
+    #
+    # Команды = ТЕ ЖЕ, что релизный рецепт, только развёрнутые (в этом job `just`
+    # не ставим; env-префикс mac-контракта = строки рецепта release-build):
+    #   cargo build --release -p guard-daemon --features ort-inference --bin fasad
+    #   cargo build --release -p guard-daemon --features tray,ort-inference --bin fasad-tray  (win/mac)
+    # `--bin fasad` ОБЯЗАТЕЛЕН: без фильтра bin-целей cargo собирает ОБА бинаря,
+    # и на win/mac это падение линка трей-цели (её rpath-контракт собирается
+    # отдельным рецептом — комментарий `release-build` в justfile).
+    #
+    # linux: bin-цель `fasad-tray` имеет `required-features = ["tray"]`, а фича
+    # `tray` на linux ФИЗИЧЕСКИ несобираема (`compile_error` в tray-icon 0.26.1
+    # без libappindicator/ksni, docs/dep-verify-crates.md §16; красная строка
+    # build-test выше её меряет). Linux-ячейка строит ТОЛЬКО headless `fasad` =
+    # ровно linux-релизный бандл (#140: linux = systemd-юнит, трея в архиве нет).
+    #
+    # mac: голый release-линк bin-цели pyke-статикой красен на
+    # `___isPlatformVersionAtLeast` (docs/model-audit-weights.md §W2 п.2,
+    # docs/release.md §ORT п.1: `-Wl,-undefined,dynamic_lookup` build.rs даёт
+    # ТОЛЬКО example-цели — `crates/guard-onnx/build.rs:102`; у bin-цели его нет).
+    # Поэтому mac-ячейка скачивает официальный dylib 1.31.0 и линкуется с
+    # env-префиксом dylib-контракта; sha256-пин = ТОТ ЖЕ, что шаг mac-контурa в
+    # release.yml job `dist` и job `ort-dylib` (первичка docs/model-audit.md §8
+    # п.3) — пиновано в одно место, дубль строки осознан (воркфлоу не шарят
+    # шагов без composite-правок = отдельный атом).
+    #
+    # Локальный промер mac-ветки (25.10, macos-14, rustc 1.99.1,
+    # CARGO_BUILD_JOBS=2, warm target/ + dylib 1.31.0 по пути рецепта):
+    #   headless `--bin fasad` rc=0 за 44 с; трей `--bin fasad-tray` rc=0 за 167 с;
+    #   `otool -L` обоих бинарей = `@rpath/libonnxruntime.1.dylib
+    #   (compatibility version 1.0.0, current version 1.31.0)` — mac-контур
+    #   доказан локально (ZУБ mac), CI-нога mac = дубль-подтверждение.
+    # linux/win = промеренные ячейки ЭТОЙ job (CI-провен): linux-контур =
+    # download-binaries-статика ort-sys (cdn.pyke.io, build/download/dist.tsv),
+    # win-контур = MSVC-статика pyke-архива `x86_64-pc-windows-msvc+directml`
+    # (dist.tsv:11, промер 25.10). КРАСНЫЙ win = ПЕРВЫЙ В ИСТОРИИ живой промер
+    # MSVC-ликовки full-контура → эскалация оператору в #184 (win-релиз под
+    # вопросом); вслепую внешнее MSVC-кольцо (mt.exe/SDK-пути) НЕ чинить.
+    #
+    # Бюджет (рулинг 21.10 про локальные прогоны; CI платит своими ядрами):
+    # job ОТДЕЛЬНАЯ, НЕ строка в build-test-матрице: там контракт = debug +
+    # тесты (hot-кэш: 61–166 с на ячейку, промер run 39780831184), а release +
+    # две bin-цели с ортом удорожали бы КАЖДУЮ из 3 существующих ног; здесь же
+    # 3 новые параллельные ноги = wall-clock PR не растягивается сверх их own
+    # длительности. Холодный первый прогон = полная release-сборка (mac-оценка
+    # нижней границы 2m46s warm-локаль, cold-release ≈ 8–15 мин — ОЦЕНКА, не
+    # промер; живойrc/время = этот прогон).
+    #
+    # Кэш: Swatinem/rust-cache ДОБАВЛЕН сюда. Пин 6323deb102c3… (тот же plain
+    # commit, что build-test:45) даёт КЛЮЧ С JOB-ID: первичка action.yml
+    # pinned-коммита — `add-job-id-key` default "true" → `GITHUB_JOB` входит в
+    # primary key (src/config.ts:80-93 того же коммита), т.е. ключ build-test
+    # НЕВОССТАНОВИМ для ort-build без `shared-key`; `shared-key` же сменил бы
+    # контракт существующих трёх ног = вне рамок атома. Итог: ort-build стартует
+    # с cold-кэша, дальше греет СВОЙ job-scoped кэш. Замечание владельцу ci.yml:
+    # feature-контур в ключ не входит НИКАК (hash-нога ключа = manifest/lockfile
+    # + rust env, не `--features`), т.е. debug-кэш build-test и release-кэш
+    # ort-build различаются только job-id + profile-путями внутри target/.
+    # Пин 6323deb102c3 (v2-линейка, ярлык как build-test:45) и НЕ d1527c8
+    # (v2.9.3 из release.yml): release.yml пинован строго и с `lookup-only: true`
+    # (zizmor cache-poisoning для публикующего контура, comment release.yml);
+    # здесь job не публикует НИЧЕГО (permissions: {}) и пишет кэш для PR-контура.
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-14]
+    runs-on: '${{ matrix.os }}'
+    defaults:
+      run:
+        # Windows-2022 без явного shell гоняет `just`/bash-ломаные строки через
+        # cmd (тот же класс дефекта, что описан в `defaults.run` job `dist`
+        # release.yml:96-101): здесь все шаги — bash.
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # known-red F1 (artipacked): токен в .git/config не нужен — job не пушит.
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (composite, без токена)
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (plain commit, тот же пин, что build-test:45)
+      - name: "mac: официальный dylib ORT 1.31.0 + сверка sha256 (пин = release.yml)"
+        if: matrix.os == 'macos-14'
+        run: |
+          set -euo pipefail
+          url="https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-osx-arm64-1.31.0.tgz"
+          curl -sSfL --retry 3 -A "fasad-ci-ort-build/1.0" -o "$RUNNER_TEMP/ort.tgz" "$url"
+          # Сверка = ПРЯМОЙ хэш файла против пина (не `sha256sum -c`): CI-промер
+          # 22.10 этой job — macos-14-раннер НЕ имеет `sha256sum` (exit 127,
+          # `command not found`), а BSD-mac несёт `shasum -a 256`. Урок #76 D3
+          # (формат `-c`-файла ломал гейт) обход entirely: сравниваем две hex-
+          # строки без parsing. Тот же пин sha256, что release.yml dist:133.
+          # ЭСКАЛАЦИЯ (issue #184): release.yml `dist`-mac-шаг (:134) и job
+          # `ort-dylib`-mac (:403) используют голое `sha256sum -c` с комментарием
+          # «BSD /sbin/sha256sum» — на macos-14-раннере бинаря НЕТ (промер этой
+          # job, run 39784396502 job 119843610877, line 8 rc=127). Оба mac-шага
+          # release.yml НЕ промерены живьём (workflow `release` не запускался ни
+          # разу, gh api runs = пусто 25.10); фикс release.yml = вне рамок #184.
+          actual="$(shasum -a 256 "$RUNNER_TEMP/ort.tgz" | cut -d' ' -f1)"
+          expected="1031b36dd3bdaa8d976a6130d9cf2a05e9be320b93ae804f8427b91dc3432afc"
+          [ "$actual" = "$expected" ] \
+              || { echo "ОШИБКА: sha256 dylib = $actual, ожидание $expected"; exit 1; }
+          echo "sha256 ok: dylib 1.31.0 = пин release.yml ($actual)"
+          mkdir -p "$RUNNER_TEMP/ort"
+          tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP/ort"
+          echo "ORT_DIR=$RUNNER_TEMP/ort/onnxruntime-osx-arm64-1.31.0" >> "$GITHUB_ENV"
+      - name: "Headless fasad: release + ort-inference (linux = весь релизный контур)"
+        run: |
+          set -euo pipefail
+          # env-префикс mac-контракта = тот же тест, что рецепт `release-build`
+          # (`[ -d "$ORT_DIR/lib" ]`): на win/linux ORT_DIR не выставлен →
+          # префикс НЕ ставится = download-binaries-статика (релизная ветка).
+          if [ -n "${ORT_DIR:-}" ] && [ -d "$ORT_DIR/lib" ]; then
+            export ORT_PREFER_DYNAMIC_LINK=1
+            export ORT_LIB_PATH="$ORT_DIR/lib"
+            echo "ort-build: mac-контур dylib ($ORT_DIR/lib)"
+          fi
+          cargo build --release -p guard-daemon --features ort-inference --bin fasad
+      - name: "Трей fasad-tray: release + tray,ort-inference (win/mac; linux §16)"
+        # Релизный бандл win/mac несёт ОБА бинаря одного контура (#181: трей =
+        # тот же main.rs, монтаж #14A), linux-бандл = headless + systemd (#140).
+        if: matrix.os != 'ubuntu-24.04'
+        run: |
+          set -euo pipefail
+          if [ -n "${ORT_DIR:-}" ] && [ -d "$ORT_DIR/lib" ]; then
+            export ORT_PREFER_DYNAMIC_LINK=1
+            export ORT_LIB_PATH="$ORT_DIR/lib"
+            echo "ort-build: mac-контур dylib ($ORT_DIR/lib)"
+          fi
+          cargo build --release -p guard-daemon --features tray,ort-inference --bin fasad-tray
+      - name: "mac: зуб А otool (dylib в графе bin-целей)"
+        # mac-dylib-контур: bin-цель несёт @rpath/libonnxruntime.1.dylib
+        # (rpath прописывает crates/guard-onnx/build.rs, НЕ ort-sys). ЗУБ =
+        # канон verify-bundle.sh ЗУБ А mac-ветка (:307, otool -L | grep
+        # onnxruntime) — ВАЛИДЕН для mac-бинаря, доказан 22.10 локально
+        # (`otool -L` обоих bin = @rpath/libonnxruntime.1.dylib 1.31.0).
+        # win/linux НЕ трогаются: см. шаг «win/linux: доставка + запись
+        # ELF-графа» ниже (у bin-цели на win/linux орт-маркера в теле нет;
+        # «линкается» = cargo build rc=0, уже доказан шагом сборки).
+        if: matrix.os == 'macos-14'
+        run: |
+          set -euo pipefail
+          otool -L target/release/fasad | grep -qi onnxruntime
+          otool -L target/release/fasad-tray | grep -qi onnxruntime
+          echo "mac ЗУБ А ok: оба bin несут @rpath/libonnxruntime.1.dylib (dylib-контур)"
+      - name: "win/linux: доставка рантайма + запись ELF/PE-графа (без bin-маркера)"
+        # Контуры win/linux (первичка ort-sys build/main.rs + make-bundle.sh
+        # :147-171 + measure-rss.sh preflight :486, промер 25.10 + CI run
+        # 39784396502) ДОКАЗЫВАЮТ «линкается» шагом сборки (cargo build rc=0 =
+        # линковка full-контура удалась; linux Finished 2m04s, win — см. свой
+        # шаг). ЗУБ «несёт орт-контур» над БИНАРЁМ здесь НЕ ставится:
+        #   • linux = download-binaries линкует ort СТАТИЧЕСКИМ архивом
+        #     (rustc-link-lib=static=onnxruntime, main.rs:182) → в ELF нет
+        #     NEEDED onnxruntime, `readelf -d` (канон verify-bundle.sh:316)
+        #     краснеет ЛОЖНО (CI-промер 22.10: сборка rc=0, упал только grep).
+        #     ФОРМА linux-рантайма (stática в бинарь vs доставленный
+        #     libonnxruntime.so) НЕ смонтирована в релиз (#181: доставка .so в
+        #     архив не смонтирована) и НЕ измерена первичкой → write-as-record,
+        #     не гейт.
+        #   • win = MSVC-статика (PE RUNPATH не несёт, make-bundle.sh:149);
+        #     маркер `onnxruntime/core/session` в теле = preflight СПАЙК-бинаря
+        #     (measure-rss.sh:486 «pyke-статика в бинаре», spike-цель), у
+        #     публичного bin API-бинаря его НЕТ (#170/#172), grep по bin =
+        #     ложно-красный ЗУБ (CI run 39785650206 win: build Finished 3m40s
+        #     + tray 2m07s rc=0 = win full-контур ЛИНКУЕТСЯ, MSVC/pyke-статик).
+        #     win-доказательство атома = build rc=0. `onnxruntime.dll рядом с
+        #     exe` здесь НЕ гейт: copy_dylibs (main.rs:180) пишет в
+        #     vars::target_dir() = КОРЕНЬ target/ (vars.rs:32-42), а не
+        #     target/release/, и только в download-ветке (кэш-хит ort-sys на
+        #     трей-шаге = copy не реранится) → hard-гейт на target/release/*.dll
+        #     = ложно-красен (CI 22.10 win rc=1 при build rc=0). Реальная win-
+        #     доставка = релизный шаг release.yml:279-293 (берёт dll из pyke-
+        #     кэша build-контура), ЕЁ промер = на теге, вне рамок #184.
+        # mac = шаг выше (otool валиден, rpath прописан build.rs демона).
+        if: matrix.os != 'macos-14'
+        run: |
+          set -euo pipefail
+          case "$(uname -s)" in
+            Linux)
+              echo "--- linux: запись ELF-графа bin-цели (readelf -d + ldd; НЕ гейт) ---"
+              find target/release -maxdepth 1 \( -name 'fasad*' -o -name 'libonnxruntime*' \) -exec ls -la {} + 2>/dev/null || true
+              readelf -d target/release/fasad | grep -iE "onnxruntime|NEEDED" || echo "readelf: NEEDED onnxruntime НЕТ (linux = download-binaries СТАТИКА, main.rs:182; канон verify-bundle.sh:316 readelf-d = ложно-красен для этого контура → эскалация #184)"
+              ldd target/release/fasad | grep -i onnxruntime || echo "ldd: onnxruntime .so нет (stática; доставка .so = linux-риск #181, не смонтирована)"
+              echo "linux ok: full-контур слинкован (build rc=0); ELF-форма записана"
+              ;;
+            *)
+              echo "--- win: запись артефактов (dll-доставка = релизный шаг release.yml, вне #184) ---"
+              ls -la target/release/fasad.exe target/release/fasad-tray.exe
+              echo "win ok: full-контур ЛИНКУЕТСЯ (build rc=0, MSVC+pyke-статик, CI run 39785650206)."
+              # Запись (не гейт): где реально оказался onnxruntime.dll после
+              # copy_dylibs (target_dir = корень target/, vars.rs:32). Релизный
+              # win-шаг (release.yml:279-293) берёт dll из pyke-кэша build-
+              # контура, не из target/release/ → здесь её отсутствие = НЕ
+              # дефект линковки (линка = build rc=0), а вопрос доставки = #181.
+              if [ -f target/release/onnxruntime.dll ]; then
+                  echo "win: onnxruntime.dll в target/release/ (рядом с exe)"
+              else
+                  echo "win: onnxruntime.dll НЕ в target/release/ — copy_dylibs пишет в target/ (vars.rs:32), доставка рантайма = релизный шаг release.yml (#181, не #184); линковка full = build rc=0"
+                  find target -maxdepth 2 -name 'onnxruntime.dll' 2>/dev/null | head -3 || true
+              fi
+              ;;
+          esac
+
   python-golden:
     # Python-тулинг (gutter, рулинг 19.10: AGENTS п.6): uv-locked линт +
     # побайтовая воспроизводимость golden-датасета на ВСЕХ ТРЁХ ОС (#31:
