@@ -380,10 +380,19 @@ jobs:
           # piped stdout: $LASTEXITCODE = child exit code, 2>&1 keeps the
           # verdict visible to the two-leg assert (mac-sim pwsh: redRc=1,
           # tail contains the reason, parent survives, outer rc=0).
+          # Verdict marker travels in a FILE, not the console pipe: PS 5.1
+          # console capture of a child's streams is hostile to non-ANSI
+          # bytes (CI-proven: rc=1 lands through every pipe form, the
+          # Cyrillic line never reaches the parent's pipeline variable as
+          # matchable text). The child writes its FAIL|sha256| line to
+          # -RedMarker as UTF-8; the parent asserts rc=1 + the ASCII token
+          # in the file - a crash before Write-Fail leaves no file.
           $prevEAP = $ErrorActionPreference
           try {
               $ErrorActionPreference = 'Continue'
-              $redTail = powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache 2>&1
+              $redMarker = Join-Path $env:RUNNER_TEMP 'red-verdict.txt'
+              Remove-Item -LiteralPath $redMarker -Force -EA SilentlyContinue
+              $null = powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache -RedMarker $redMarker
               $redRc = $LASTEXITCODE
           } finally {
               $ErrorActionPreference = $prevEAP
@@ -400,8 +409,12 @@ jobs:
           # Diagnosis: rc=1 + token = sha256-gate red; rc=1 without token =
           # crash, not a verdict (fail-closed, no lies about the reason).
           if ($redRc -eq 0) { throw "corrupt sha PASSED (rc=0): ps1 sha256 gate is dead" }
-          if (-not (($redTail -join [char]10) -cmatch 'sha256')) {
-              throw "red leg rc=$redRc without sha256-verdict in tail: gate reason missing"
+          $tailStr = ''
+          if (Test-Path -LiteralPath $redMarker) {
+              $tailStr = (Get-Content -LiteralPath $redMarker -Raw) + [char]10
+          }
+          if (-not ($tailStr -cmatch 'sha256')) {
+              throw "red leg rc=$redRc without sha256-verdict file: gate reason missing"
           }
           # repeat = offline (cache hit): sinkhole HF in hosts (runner is an
           # admin context; reverted in finally)

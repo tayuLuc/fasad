@@ -47,7 +47,15 @@ param(
     [string]$Cache,
     [string]$HFHost,
     [switch]$List,
-    [switch]$Help
+    [switch]$Help,
+    # Служебный CI-канал (#190): путь файла, куда Write-Fail пишет вердикт-
+    # строку UTF-8 ДО вывода в консоль. PS 5.1 консольный capture потока
+    # нативного скрипта с кириллицей непрозрачен родителю (CI-провены
+    # 94bec2e/93ca423/b873292: rc доходит, текст вердикта в pipeline-
+    # переменную родителя не попадает никогда) → red-гейт CI читает маркер
+    # из файла. Пользовательский запуск параметр не задаёт = поведение 1:1
+    # прежнее; absent = no-op.
+    [string]$RedMarker
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,13 +68,16 @@ function Write-Fail([string]$Message) {
     # чистый stderr-поток: exit 1 доходит до $LASTEXITCODE любого родителя;
     # метод безобъектный (InvokeMethodOnNull в доке PS5.1 про [Console] не
     # касается вызова статического метода класса System).
-    # Ключевое слово ASCII-канона «sha256» = маркер вердикта. Канал —
-    # STDOUT, не stderr: PowerShell 5.1 (win-CI-провен 93ca423: rc=1 доходит,
-    # захваченный хвост пуст) переводит stderr-строки нативного скрипта в
-    # ErrorRecords, которые в pipeline-переменную родителя не пишутся;
-    # stdout-поток нативки в пайп = нативный текст. Формат строки — канон
-    # verdict-строк харнеса (`FAIL|gate|детали`, spike/recall/restore);
-    # человек видит и её, и подробную кириллическую причину выше.
+    if ($RedMarker) {
+        # Сначала файл (CI-канал), потом консоль: файл обязан быть записан
+        # даже если консоль-стрим убит redirect'ом родителя.
+        Set-Content -LiteralPath $RedMarker -Value ('fetch-models: FAIL|sha256|gate: ' + $Message) -Encoding UTF8
+    }
+    # Вердиктная строка — канон verdict-формата харнеса (`FAIL|гейт|детали`,
+    # spike/recall/restore), ASCII-токен «sha256» = сигнатура для red-гейта
+    # CI (файловый канал -RedMarker: PS 5.1 console-capture кириллицы
+    # родителю = непрозрачный шум, CI-провены 94bec2e…b873292; stdout-копия
+    # = человеку в интерактивном прогоне).
     Write-Output ('fetch-models: FAIL|sha256|gate: ' + $Message)
     exit 1
 }
