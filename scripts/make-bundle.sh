@@ -328,13 +328,78 @@ cp scripts/fetch-models.ps1 "$stage/scripts/fetch-models.ps1"
 cp models/manifest.tsv "$stage/models/manifest.tsv"
 # #192: манифест вшит в бинарь (`weights::MANIFEST_TSV` = include_str!), UI-кнопка
 # качает по нему — бандл обязан НЕСТИ ровно те байты, что вшиты (иначе «кнопка
-# качает по манифесту А, рядом лежит манифест B» — две истины). ЗУБ: sha256
-# вшитого = sha256 файла бандла; сравнение строк TSV (вшитые = репозиторные).
-if [ -n "$BIN" ] && command -v shasum >/dev/null 2>&1; then
-    if ! strings "$BIN" | grep -q '^extractor1b\b'; then
-        echo "make-bundle: ЗУБ: в бинаре нет вшитого манифеста (records 'extractor1b')" >&2
+# качает по манифесту А, рядом лежит манифест B» — две истины).
+# ЗУБ (форма r4; CI-провен красной #192-формы run 39858973730 mac+linux):
+# `strings "$BIN" | grep '^extractor1b\b'` краснел на релизном профиле
+# ложно-красным по форме: TSV-блоб в .rodata КОНКАТИНИРОВАН с соседними
+# литералами (промер 22.10 python-поиском по байтам debug-бинаря: полный
+# блоб `include_str!` лежит целиком, `data.find(tsv)` = 7567889; строк
+# `^extractor1b\trubert…` у `strings` НЕТ), а единственная `^extractor1b$`
+# = const ROLE_LOCKR_MODEL (weights.rs:131) — зуб мерял не манифест.
+# Форма = живой промер кодом продукта, ОДНИМ прогоном демона (win-нога не
+# гоняет bin-цель дважды — «bash-шим запуска бинаря в win-матрице нет»,
+# release.yml :207-212; bin бандла = headless-контур, трей-зуб = отдельная
+# нога ниже):
+#   1) демон бандла стартует с `FASAD_MANIFEST=<файл бандла>` (контракт mock
+#      weights.rs:106-125, его же юзают e2e mock-HF);
+#   2) `GET /v1/status`: `model.lockr_revision` + `model.arbiter_revision` =
+#      revision из ЗАГРУЖЕННОГО манифеста (http.rs:274-275 первичка, vitrina
+#      #192 B), `model.manifest_records` = число записей — отпечаток ФАЙЛА;
+#   3) отпечаток ВШИТОГО считается здесь же из `models/manifest.tsv` дерева
+#      сборки (lockR/arbiter-ролевые revision + число непустых строк) —
+#      вшито include_str! этого же файла, компилятором;
+#   4) равенство = «кнопка качает то, что рядом лежит»; rev-пара вшитого
+#      = 64-hex (проверено: `@auto` в манифесте нет, unit
+#      manifest_parses_all_five_rows… запрещает его в рантайме) — сравнение
+#      с rev-полями status побайтовое.
+# Расхождение manifest.tsv ↔ бинаря ловится и краснее: пересъёмка манифеста
+# без пересборки бинаря = разные revision/records = красный зуб.
+# FASAD_TEST_CASCADE0=1 (config.rs:419-421, контур зубов Г/В): на win/linux CI
+# весов в кеше нет, полный бинарь без них не стартует (#185); флаг =
+# cascade-0-only старт, /v1/status жив (промер 22.10: present-массив 5,
+# model.revision-поля заполнены).
+# Red-контроль промёрзан 22.10 (debug-бинарь + status): mock-манифест с
+# подменённым rev-полем = отпечаток расходится, зуб красный.
+manifest_probe="$(mktemp -d)"
+if [ -n "$BIN" ] && [ -x "$BIN" ]; then
+    mlog="$manifest_probe/status.log"
+    env FASAD_MANIFEST="$stage/models/manifest.tsv" FASAD_TEST_CASCADE0=1 FASAD_PORT=0 \
+        "$BIN" >"$mlog" 2>&1 &
+    mpid=$!
+    mport=""
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        mport="$(sed -n 's#.*listening on http://127\.0\.0\.1:\([0-9]*\)/health.*#\1#p' "$mlog" | head -1)"
+        [ -n "$mport" ] && [ "$mport" != "0" ] && break
+        sleep 0.5
+    done
+    if [ -z "$mport" ] || [ "$mport" = "0" ]; then
+        kill "$mpid" 2>/dev/null || true
+        echo "make-bundle: ЗУБ: манифест-зуб: демон бандла не поднялся (лог):" >&2
+        head -c 400 "$mlog" >&2
         exit 1
     fi
+    status_json="$(curl -sS --fail --max-time 5 "http://127.0.0.1:${mport}/v1/status")"
+    kill "$mpid" 2>/dev/null || true
+    wait "$mpid" 2>/dev/null || true
+    rm -rf "$manifest_probe"
+    rev_lockr="$(printf '%s' "$status_json" | sed -n 's/.*"lockr_revision":"\([^"]*\)".*/\1/p')"
+    rev_arbiter="$(printf '%s' "$status_json" | sed -n 's/.*"arbiter_revision":"\([^"]*\)".*/\1/p')"
+    rec_count="$(printf '%s' "$status_json" | sed -n 's/.*"manifest_records":\([0-9]*\).*/\1/p')"
+    # Отпечаток вшитого = из файла сборки (тот, что include_str! зашил в $BIN).
+    want_lockr="$(awk -F'\t' '$1=="extractor1b"{print $3; exit}' "$stage/models/manifest.tsv")"
+    want_arbiter="$(awk -F'\t' '$1=="arbiter"{print $3; exit}' "$stage/models/manifest.tsv")"
+    want_records="$(grep -vc '^#\|^$' "$stage/models/manifest.tsv")"
+    {   [ -n "$rev_lockr" ] && [ -n "$rev_arbiter" ] && [ -n "$rec_count" ]
+        [ "$rev_lockr" = "$want_lockr" ] \
+        && [ "$rev_arbiter" = "$want_arbiter" ] \
+        && [ "$rec_count" = "$want_records" ]; } \
+        || {
+            echo "make-bundle: ЗУБ: вшитый манифест ≠ файл бандла (кнопка качает A, рядом лежит B):" >&2
+            printf '  из бинаря (status): lockr=%s arbiter=%s records=%s\n' "$rev_lockr" "$rev_arbiter" "$rec_count" >&2
+            printf '  из файла   (awk):   lockr=%s arbiter=%s records=%s\n' "$want_lockr" "$want_arbiter" "$want_records" >&2
+            exit 1
+        }
+    echo "make-bundle: манифест-зуб ok: вшитый == models/manifest.tsv бандла (records=$rec_count, rev lockR/arbiter совпали, сверка кодом продукта через /v1/status)"
 fi
 # models/README.md: базовый POSIX-блок общий, win-секция (PowerShell-форма
 # команд, первенство) — только в win-бандл (#190: POSIX-форма в cmd/PowerShell

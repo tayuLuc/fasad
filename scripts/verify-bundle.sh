@@ -650,8 +650,15 @@ case "$os" in
             tray_bin="$stage/bin/fasad-tray.exe"
         }
         # Нога 1 (#185): трей без весов = отказ старта (rc≠0, причина, баннера нет).
+        # FASAD_TEST_CASCADE0=1 = тот же #192-контур env-границы, что зубу Г
+        # выше: `env -u` + HOME-дефолт (config.rs:422-426) на win-раннере
+        # подменял бы мерку «переменная не названа» на «HOME-кеш без весов»
+        # (CI-провен run 39856985952 win: трей поднимался на
+        # C:\Users\runneradmin\.cache/fasad-models). Дискриминатор зуба
+        # сохранён (полный бинарь + флаг + unset = rc=2 ModelsNotConfigured,
+        # промер 22.10 в комментарии ноги headless).
         tray_log="$(mktemp)"
-        env -u FASAD_MODEL_DIR FASAD_PORT=0 "$tray_bin" >"$tray_log" 2>&1 &
+        env -u FASAD_MODEL_DIR FASAD_TEST_CASCADE0=1 FASAD_PORT=0 "$tray_bin" >"$tray_log" 2>&1 &
         tray_pid="$!"
         trc=0
         for _ in 1 2 3 4 5 6 7 8 9 10; do
