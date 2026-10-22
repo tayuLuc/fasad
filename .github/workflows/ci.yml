@@ -330,7 +330,7 @@ jobs:
         # mac-паритет (pwsh 7.6.7, эта сессия): -List/скачал+sha256 ok/
         # повтор-без-сети(rc0)/битый-sha(rc1)/битый-размер(rc1)/@auto(rc1).
         # hosts-глушилка HF = штатный CI-приём (run-as-admin на runner'e;
-        # откат в finally). Скачанный mock-файл = 2.8 КБ в RUNNER_TEMP.
+        # откат в finally). Скачанный mock-файл = 2.8 КБ в $env:TEMP.
         if: matrix.os == 'windows-2022'
         shell: powershell
         run: |
@@ -349,13 +349,24 @@ jobs:
           $sha = 'f4eeba88d1503a56d629195c9307d42c1acf4ce53ab88fdaecfc754fd0745cf9'
           $rev = 'ea7610b22808c509c0c8b7c7b0f6639c19684d08'
           $ts = [char]9
-          $cache = Join-Path $env:RUNNER_TEMP 'ps1-cache'
           # Manifest lines are ASCII on purpose: Set-Content -Encoding UTF8 on
           # PS 5.1 writes a BOM, Get-Content 5.1 does not strip it from the
           # LAST line, and the BOM stuck to the `source` field of the last
           # row (CI-proven run 39829067427: source='hf BOM' red).
           $m = "mock${ts}lockR/rubert-base-pii-ner-onnx${ts}${rev}${ts}config.json${ts}${sha}${ts}2831${ts}hf${ts}CI-mock-190"
-          $mp = Join-Path $env:RUNNER_TEMP 'manifest-good.tsv'
+          # $cache/$mp/$redMarker via $env:TEMP, NOT $env:RUNNER_TEMP:
+          # RUNNER_TEMP is populated for bash shells, empty under
+          # `shell: powershell` on windows-2022 (CI-proven 7e4fd02:
+          # Set-Content -LiteralPath got a null path -> "Cannot bind
+          # argument" MissingArgument, the red child never wrote the
+          # marker; the earlier -Cache $env:RUNNER_TEMP/... call worked
+          # only because fetch-models.ps1 calls New-Item -Force on the
+          # cache dir, which created C:\ps1-cache). TEMP is canonical
+          # for both shells.
+          $cache = Join-Path $env:TEMP 'ps1-cache'
+          $redMarker = Join-Path $env:TEMP 'red-verdict.txt'
+          Remove-Item -LiteralPath $redMarker -Force -EA SilentlyContinue
+          $mp = Join-Path $env:TEMP 'manifest-good.tsv'
           Set-Content -LiteralPath $mp -Value $m -Encoding ASCII
           & scripts\fetch-models.ps1 -Manifest $mp -Cache $cache
           if ($LASTEXITCODE -ne 0) { throw "mock run red (rc=$LASTEXITCODE)" }
@@ -390,7 +401,6 @@ jobs:
           $prevEAP = $ErrorActionPreference
           try {
               $ErrorActionPreference = 'Continue'
-              $redMarker = Join-Path $env:RUNNER_TEMP 'red-verdict.txt'
               Remove-Item -LiteralPath $redMarker -Force -EA SilentlyContinue
               $null = powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache -RedMarker $redMarker
               $redRc = $LASTEXITCODE
