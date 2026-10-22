@@ -650,20 +650,25 @@ case "$os" in
             tray_bin="$stage/bin/fasad-tray.exe"
         }
         # Нога 1 (#185): трей без весов = отказ старта (rc≠0, причина, баннера нет).
-        # FASAD_TEST_CASCADE0=1 = тот же #192-контур env-границы, что зубу Г
-        # выше: `env -u` + HOME-дефолт (config.rs:422-426) на win-раннере
-        # подменял бы мерку «переменная не названа» на «HOME-кеш без весов»
-        # (CI-провен run 39856985952 win: трей поднимался на
-        # C:\Users\runneradmin\.cache/fasad-models). Дискриминатор зуба
-        # сохранён (полный бинарь + флаг + unset = rc=2 ModelsNotConfigured,
-        # промер 22.10 в комментарии ноги headless).
+        # FASAD_TEST_CASCADE0=1 (контур env-границы #192, config.rs:419-421,
+        # тот же, что зубу Г headless): env -u снимает явную переменную, а
+        # без флага на неё встаёт HOME-дефолт (config.rs:422-426):
+        # CI-провен r2 run 39856985952 win — трей поднимался на
+        # C:\Users\runneradmin\.cache/fasad-models (флаг = отказ).
+        # r5 run 39861721435 win/win+mac: с флагом трей умирал, но НЕ ЗА
+        # ОКНО readiness (ниже) — die-ветка «поднялся» срабатывала на живом
+        # процессе в тот момент, когда отказ ещё не прошёл полный цикл
+        # трея (win: stderr двойного клика = никуда, #190; форма отказа
+        # трей-ветки медленнее headless: MessageBox-контур islands
+        # tray/win.rs + tray-цикл). Форма readiness = цикл до СМЕРТИ
+        # процесса 24×0.5 с (12 с), красным = живой после 12 с.
         tray_log="$(mktemp)"
         env -u FASAD_MODEL_DIR FASAD_TEST_CASCADE0=1 FASAD_PORT=0 "$tray_bin" >"$tray_log" 2>&1 &
         tray_pid="$!"
         trc=0
-        for _ in 1 2 3 4 5 6 7 8 9 10; do
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do
             kill -0 "$tray_pid" 2>/dev/null || break
-            sleep 0.3
+            sleep 0.5
         done
         if kill -0 "$tray_pid" 2>/dev/null; then
             kill "$tray_pid" 2>/dev/null || true
