@@ -150,7 +150,9 @@ jobs:
         # (verify ЗУБ Б = unit-доказательства; win/linux HF-кеш в релизной
         # матрице = +2×879 МБ трафика на каждый тег, решение #181).
         if: matrix.os == 'macos-14'
-        run: bash scripts/fetch-models.sh --no-rewrite
+        run: |
+          bash scripts/fetch-models.sh --no-rewrite
+          echo "FASAD_MODEL_DIR=$HOME/.cache/fasad-models" >> "$GITHUB_ENV"
       - name: "Трей-бинарь win/mac (features tray,ort-inference, #128/#181)"
         # Linux пропускает: фича физически несобираема на linux
         # (compile_error в tray-icon без libappindicator/ksni —
@@ -238,9 +240,12 @@ jobs:
         run: just dist
       - name: "Проверка бандла: распаковка, запуск, /health, орт-зубы А/Б/В, хэши + тег↔версия"
         env:
-          # mac-кеш весов шага fetch-models (дефолт скрипта ~/.cache/...
-          # = тот же; явная передача = контракт «CI знает, где лежат веса»).
-          FASAD_MODEL_DIR: ${{ matrix.os == 'macos-14' && format('{0}/.cache/fasad-models', runner.home) || '' }}
+          # Кеш весов mac-ноги (шаг fetch-models пишет GITHUB_ENV; job-level
+          # env шага не переопределяется пустой ссылкой на себя — GITHUB_ENV
+          # живёт в окружении процесса шага, шаг без env-блока его видит).
+          # mac-промер зуба Б живой, win/linux: кеша нет → `MOUNTED|SKIPPED`
+          # с причиной (первичка verify-bundle.sh, ЗУБ Б/В #181).
+          FASAD_THREADS: "2"
           # Зуб «тег == [workspace.package] version»: на тег-триггере в скрипт
           # уходит github.ref_name, на workflow_dispatch — пустая строка, и
           # скрипт сам печатает `VERSION|SKIPPED` (проверка не запрашивалась), а
