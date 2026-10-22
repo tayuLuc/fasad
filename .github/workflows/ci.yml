@@ -389,21 +389,16 @@ jobs:
               $ErrorActionPreference = $prevEAP
           }
           # The verdict tail must carry the ASCII token 'sha256' from the
-          # Write-Fail line (the message itself is Cyrillic, its hex fields
-          # are ASCII: "sha256 ... (manifest <hex64>, actual <hex64>, file
-          # ...)"). PS 5.1 decodes a native command's stderr with the
-          # console OEM codepage: the Cyrillic part of the message arrives
-          # as mojibake in the captured pipeline string (CI-proven 94bec2e:
-          # the step log rendered fine while the variable match missed;
-          # pwsh 7 cannot reproduce it - UTF-8 by default), so the assert
-          # is on the ASCII token. Case-SENSITIVE -cmatch: the invoked path
-          # (fetch-models.ps1) shows up in crash stacks and contains the
-          # token case-insensitively; the Write-Fail line prints 'sha256'
-          # in lowercase, a crash path prints it inside 'Fetch' (capital
-          # F) - case-sensitivity separates verdict from crash. Diagnosis:
-          # rc=1 + token = sha256-gate red, rc=1 without token = crash,
-          # not verdict (fail-closed, process-rules-agent-ops: no lies
-          # about the reason of failure).
+          # Write-Fail verdict line (stdout: PS 5.1 turns a child's raw
+          # stderr lines into ErrorRecords that never land in the parent's
+          # pipeline variable - CI-proven 93ca423: rc=1, captured tail
+          # empty; stdout of a native process IS the pipe text).
+          # Case-SENSITIVE -cmatch: the invoked path (fetch-models.ps1)
+          # appears in crash stacks and carries 'sha256' only
+          # case-insensitively (Fetch), while the verdict line prints the
+          # token lowercase: verdict vs crash is separated by case.
+          # Diagnosis: rc=1 + token = sha256-gate red; rc=1 without token =
+          # crash, not a verdict (fail-closed, no lies about the reason).
           if ($redRc -eq 0) { throw "corrupt sha PASSED (rc=0): ps1 sha256 gate is dead" }
           if (-not (($redTail -join [char]10) -cmatch 'sha256')) {
               throw "red leg rc=$redRc without sha256-verdict in tail: gate reason missing"

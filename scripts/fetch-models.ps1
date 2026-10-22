@@ -60,12 +60,14 @@ function Write-Fail([string]$Message) {
     # чистый stderr-поток: exit 1 доходит до $LASTEXITCODE любого родителя;
     # метод безобъектный (InvokeMethodOnNull в доке PS5.1 про [Console] не
     # касается вызова статического метода класса System).
-    # Ключевое слово ASCII-канона «sha256» = маркер вердикта (CI-гейт ищет
-    # его в захваченном хвосте: кириллица в stderr-потоке нативки декодируется
-    # родителем в codepage-мусор, hex/ASCII-остаток живёт под любой кодовой
-    # страницей; lowercase-форма = сигнатура вердикта, crash-стек её не
-    # содержит в регистроточном совпадении).
-    [Console]::Error.WriteLine('fetch-models: FAIL: sha256/size gate: ' + $Message)
+    # Ключевое слово ASCII-канона «sha256» = маркер вердикта. Канал —
+    # STDOUT, не stderr: PowerShell 5.1 (win-CI-провен 93ca423: rc=1 доходит,
+    # захваченный хвост пуст) переводит stderr-строки нативного скрипта в
+    # ErrorRecords, которые в pipeline-переменную родителя не пишутся;
+    # stdout-поток нативки в пайп = нативный текст. Формат строки — канон
+    # verdict-строк харнеса (`FAIL|gate|детали`, spike/recall/restore);
+    # человек видит и её, и подробную кириллическую причину выше.
+    Write-Output ('fetch-models: FAIL|sha256|gate: ' + $Message)
     exit 1
 }
 
