@@ -285,8 +285,15 @@ bin="$stage/bin/fasad"
 # env `-u FASAD_MODEL_DIR`: на mac-контуре CI шаг fetch-models экспортирует
 # кеш в GITHUB_ENV (он же нужен зубу Б ниже) — без удаления переменных зуб Г
 # краснел бы на собственной машине (full-бинарь С весами стартует легально).
+# FASAD_TEST_CASCADE0=1 (#192-контур, config.rs:419-421): `env -u` снимает
+# ЯВНУЮ переменную, но с #192 на её место встаёт HOME-дефолт
+# `~/.cache/fasad-models` (config.rs:422-426), и на машине с HOME (win-раннер:
+# `%USERPROFILE%` в Git-Bash, CI-провен run 39854576251 ЗУБ Г win) зуб Г
+# проверял бы не «отказ без FASAD_MODEL_DIR», а «отказ из-за HOME-кеша без
+# весов» — текст причины другой. Флаг отключает подстановку дефолта = ровно
+# тот контракт (#185), который меряет зуб: unset = ModelsNotConfigured.
 log="$(mktemp)"
-env -u FASAD_MODEL_DIR FASAD_PORT=0 "$bin" >"$log" 2>&1 &
+env -u FASAD_MODEL_DIR FASAD_TEST_CASCADE0=1 FASAD_PORT=0 "$bin" >"$log" 2>&1 &
 pid="$!"
 rc=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do

@@ -213,11 +213,18 @@ jobs:
         # mac/linux: FASAD_MODEL_DIR не выставлен ни в одном env-блоке (шаг
         # fetch-models пишет GITHUB_ENV, и он же используется зубом Б
         # verify-bundle — здесь env-блок шага явно удаляет переменную).
+        # FASAD_TEST_CASCADE0=1 (#192, config.rs:419-421): `env -u` снимает
+        # ЯВНУЮ переменную, а с #192 на её место встаёт HOME-дефолт
+        # `~/.cache/fasad-models` (config.rs:422-426) — на раннере с HOME зуб
+        # мерил бы «HOME-кеш без весов», а не контракт #185 «переменная не
+        # названа» (CI-провен run 39854576251: mac-нога поднялась на
+        # HOME-кеше весов шага fetch-models, `stage=cascade-0+models`).
+        # Флаг отключает подстановку дефолта = прежний контракт env-границы.
         if: matrix.os != 'windows-2022'
         shell: bash
         run: |
           set -euo pipefail
-          env -u FASAD_MODEL_DIR FASAD_PORT=0 \
+          env -u FASAD_MODEL_DIR FASAD_TEST_CASCADE0=1 FASAD_PORT=0 \
               target/release/fasad >refusal.log 2>&1 &
           pid="$!"
           rc=0
