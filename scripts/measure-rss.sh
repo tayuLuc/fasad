@@ -25,20 +25,32 @@
 # затирает шейды рядом с бинарём = SIGSEGV 139.
 #
 # Выход: строки `RSS|<контур>|<точка>|<значение MiB>|<метод>` и вердикт
-# `BUDGET|<контур>|ok|peak_mib=…|budget_mib=1843.2` (SPEC §1 ≤1.8 ГБ = 1843.2 MiB).
-# Вердикт считается по КОНСЕРВАТИВНОМУ пику (max по точкам), не по медиане —
-# бэджет safety-critical, см. docs/model-audit-weights.md §W2.6 п.5.
+# `BUDGET|<контур>|ok|peak_max_mib=…|budget_mib=1843.2` (SPEC §1 ≤1.8 ГБ =
+# 1843.2 MiB). Вердикт считается по КОНСЕРВАТИВНОМУ пику — бэджет
+# safety-critical, см. docs/model-audit-weights.md §W2.6 п.5.
+#
+# Контур `--full` (issue #170 а): прогон харнеса повторяется N раз
+# (`FASAD_RSS_REPEATS`, default 3) и печатает ДВЕ свёртки —
+# `RSS|full|peak_median|…` (репрезентативное число в документ: первичка #168
+# показала полосу одиночных срезов до 550 MiB на ОДНОМ sha, одиночное число
+# среди неё не является числом прогона) и `RSS|full|peak_max|…`
+# (консервативная свёртка). ВЕРДИТ GATE — по peak_max, семантика гейта не
+# менялась; медиана в гейт не входит никогда.
 #
 # Код возврата — часть контракта (класс false-green «print-only landing test»,
 # реестр 15/18): вердикт OVER обязан валить скрипт, а не только печататься.
 #   0 = все прогнанные контуры дали ok;
 #   1 = хотя бы один контур дал OVER (строка `BUDGET|…|OVER|…` + причина в stderr)
 #       ЛИБО отказ прогона (die);
-#   2 = метод замера не реализован на этой ОС (см. docs/release.md §RAM п.5).
+#   2 = метод замера не реализован на этой ОС (docs/release.md §RAM п.5) ЛИБО
+#       артефакт непригоден (preflight-зуб контура --full, §RAM п.8, issue #170 б).
 #       Ветка печатает причину в stderr и выходит двойкой НАПРЯМУЮ, минуя die:
 #       die = exit 1, через неё обещание «2» было бы ложным (ревью #98 R1:
 #       промер шимом `uname` = FreeBSD давал rc=1 при трёх местах,
 #       утверждавших rc=2 — шапка, release.yml:111, docs §RAM п.5).
+#       С #170 б у двойки появился ВТОРОЙ носитель (preflight spike-бинаря на
+#       dylib-контракт §W2 п.1): тот же класс «артефакт непригоден, прогон не
+#       начинался», §RAM п.8.
 # Прежняя версия печатала OVER и выходила rc=0: шаг «RAM-гейт» в
 # .github/workflows/release.yml зеленел при превышении бюджета (первичка: die()
 # была единственным выходом с кодом, а verdict-строки в run_cascade0/run_full
@@ -69,7 +81,9 @@
 #      рычаг бюджета — нужен, чтобы зуб гейта промерялся живым прогоном:
 #      `BUDGET_MIB=0.001 … → rc=1` без изменения кода). Значение валидируется
 #      по `^[0-9]+([.][0-9]+)?$`; мусор = rc=1 с именем переменной (fail-open
-#      закрыт ревью #98 R2: awk-сравнение «abc» = 0 = зелёный гейт)
+#      закрыт ревью #98 R2: awk-сравнение «abc» = 0 = зелёный гейт), и
+#      FASAD_RSS_REPEATS (default 3 — число повторов контура --full, валидация
+#      по `^[1-9][0-9]*$`, мусор = rc=1; issue #170 а)
 
 set -euo pipefail
 
@@ -91,6 +105,17 @@ GATE_FAIL=0
 # OMP_NUM_THREADS на вендорном libonnxruntime osx-arm64 инертен (первичка
 # ревью #73: otool/strings), поэтому рулим флагом `--threads`.
 SPIKE_THREADS="${FASAD_SPIKE_THREADS:-2}" # SPEC §1 п.1: «<2 ГБ», бюджет-гейт §5.6 = 1.8 GiB
+# Число повторов t2-прогона контура --full (issue #170 а). Первичка #168:
+# полоса ОДИНОЧНЫХ срезов на ОДНОМ sha до 550 MiB (e02c203 = 870.3 / 1420.9),
+# т.е. одиночное число = lucky slice и в документ не пишется. Значение по
+# умолчанию 3 (медиана нечётной выборки = средний элемент, без арифметики);
+# рычаг из env — ради экономии CPU на разведочных прогонах и ради промера
+# свёрток (`FASAD_RSS_REPEATS=1` = одна точка, медиана = max = сам прогон).
+# Значение валидируется ниже, ПОСЛЕ определения `die` (там же, где валидация
+# BUDGET_MIB): промер правки #170 показал, что вызов `die` до её определения
+# даёт `command not found` и rc=127 — «отказ с именем переменной» превращается
+# в отказ без причины.
+FULL_REPEATS="${FASAD_RSS_REPEATS:-3}"
 RUN_CASCADE0=0
 RUN_FULL=0
 SKIP_BUILD=0
@@ -112,13 +137,26 @@ die() {
 # BUDGET_MIB=abc давало `BUDGET|cascade0|ok|budget_mib=abc` при rc=0 —
 # опечатка в env (разделитель в «1,843.2») зелёнила релизный контур. Политика
 # проекта: мусор в числовом env = отказ, а не молчаливый ноль (docs/release.md
-# §RAM п.10). Отказ = rc=1 через die: причина — сломанный env, а не превышение
+# §RAM п.12). Отказ = rc=1 через die: причина — сломанный env, а не превышение
 # бюджета, путать их с OVER (rc=1 + слово OVER в stderr) нельзя.
 # Формат = строка цифр с одной опциональной десятичной точкой: отрицательное,
 # пустое, «1.», «.5», «1.2.3», «1e3» — отказ.
 case "$BUDGET_MIB" in
     '' | *[!0-9.]* | .* | *. | *.*.*)
         die "BUDGET_MIB=$BUDGET_MIB: не число (ожидается вид 1843.2 — целое или десятичное, без разделителей и знака)"
+        ;;
+esac
+
+# Валидация FASAD_RSS_REPEATS — тем же приёмом, что BUDGET_MIB выше (ревью #98
+# R2: fail-open закрыт отказом с именем переменной, а не молчаливым фолбэком).
+# Формат — натуральное число `^[1-9][0-9]*$`: ноль, «1.5», «-1», «abc», пустое =
+# отказ. Мусор здесь дороже мусора в бюджете: `N=abc` в `[ "$i" -le "$N" ]`
+# дал бы арифметическую ошибку bash (rc=1 без причины), `N=0` — ноль прогонов,
+# медиану и max по ПУСТОЙ выборке и зелёный вердикт по несуществующему промеру
+# (ложно-зелёный гейт, реестр 15/18).
+case "$FULL_REPEATS" in
+    '' | *[!0-9]* | 0*)
+        die "FASAD_RSS_REPEATS=$FULL_REPEATS: не натуральное число (ожидается 1, 2, 3 … — целое положительное)"
         ;;
 esac
 
@@ -154,7 +192,10 @@ usage() {
 использование: scripts/measure-rss.sh [опции]
 
   --cascade0   контур каскада-0: релизный бинарь демона (default, если не указано ничего)
-  --full       контур полного каскада: харнес spike --arb --lockr (нужны веса + dylib ORT)
+  --full       контур полного каскада: харнес spike --arb --lockr (нужны веса + dylib ORT);
+               гонит FASAD_RSS_REPEATS повторов (default 3), печатает peak_median
+               (в документ) и peak_max (в гейт) и требует dylib-контракт §W2 п.1
+               на spike-бинаре (голый контур = rc=2, лечится just build-ort)
   --skip-build не собирать, брать готовые артефакты в target/release
   --doc-rows   в конце напечатать markdown-строки для docs/model-audit.md §9
                (генерируются из артефакта прогона, не перепечатываются от руки)
@@ -262,6 +303,30 @@ track_peak() {
     if [ -z "${PEAK:-}" ] || awk -v a="$value" -v b="$PEAK" 'BEGIN { exit !(a > b) }'; then
         PEAK="$value"
     fi
+}
+
+# median_of <число> … — медиана по числовым аргументам, формат %.1f.
+# Нечётное N = средний элемент; чётное = среднее двух средних — по числам
+# прогона, арифметика ровно из того, что напечатали повторы (rule: выведенное
+# число обязано называть схему; здесь схема = N-повторов-медиана, N в INFO).
+median_of() {
+    printf '%s\n' "$@" | sort -g | awk '
+        { v[NR] = $1 }
+        END {
+            if (NR == 0) exit
+            printf "%.1f", (NR % 2) ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2
+        }'
+}
+
+# max_of <число> … — max по числовым аргументам, формат %.1f. Консервативная
+# свёртка повторов того же контура: семантика «peak = max по точкам» (шапка
+# скрипта, §W2.6 п.5) просто поднимается на уровень повторов — гейт обязан
+# видеть худший срез, медиана гейтом быть не может (issue #170 а:
+# полоса одиночных срезов до 550 MiB на ОДНОМ sha, первичка #168).
+max_of() {
+    printf '%s\n' "$@" | sort -g | awk '
+        { if (m == "" || $1 > m) m = $1 }
+        END { if (m != "") printf "%.1f", m }'
 }
 
 # ── контур 1: каскад-0 (релизный бинарь демона) ──────────────────────────────
@@ -379,6 +444,131 @@ run_cascade0() {
 }
 
 # ── контур 2: полный каскад 1–2 (харнес spike, орт-сессии) ───────────────────
+
+# preflight_spike_ort <путь-к-бинарю> — ЗУБ против ложно-красного контура
+# (issue #170 б, первичка #168-бисек f4945c93, signal B).
+#
+# Причина зуба. Контур `--full` берёт ГОТОВЫЙ `target/release/examples/spike`
+# и НЕ пересобирает его (`--skip-build`, да и без него строка сборки ниже
+# трогает только guard-daemon). Бинарь, собранный «голым» `cargo build
+# --release --example spike --features ort-inference` БЕЗ env
+# `ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=…` (контракт
+# docs/model-audit-weights.md §W2 п.1), слинкован со СТАТИКОЙ pyke 1.23: в его
+# динамическом графе (`otool -L`) строки `libonnxruntime` нет, а сам орт вшит в
+# бинарь. Такой бинарь в прогоне даёт SIGSEGV rc=139 — контур краснеет по
+# причине сборки, а не по RAM, и в реестре ложно-красных это ровно «молча взять
+# чужой бинарь».
+#
+# Зуб ДВУХНОГИЙ (промер 22.10, артефакты в теле PR #170):
+#   нога 1 (RED): в бинаре есть статика pyke — маркер `onnxruntime/core/session`
+#     (путь из строк вендорного артефакта ort-sys; `LC_ALL=C grep -a` по бинарю:
+#     голый spike = 4 совпадения, build-ort spike = 0, релизный каскад-0 = 0).
+#     Есть статика + нет динамического dylib = голый контур → rc=2.
+#   нога 2 (GREEN, молчаливая): динамического dylib нет И статики нет = бинарь
+#     орта не содержит ВООБЩЕ (релизный каскад-0, `just release-build`: фича
+#     `ort-inference` выключена, модельного пути в демоне нет —
+#     crates/guard-daemon/src/pipeline.rs). Это НЕ голый контур, а другой
+#     продукт: краснеть ему нельзя — релизный CI-контур (`just measure-rss
+#     --skip-build`, release.yml:135) ходит сюда же и Today green именно потому,
+#     что каскад-0 в орте не нуждается. Одноногая проверка («нет dylib =
+#     красный») дала бы ложно-красный релизный гейт — промер этой правки на
+#     релизном бинаре: rc=2, т.е. релиз перестал бы собираться.
+#
+# Зуб спрашивает САМ бинарь, а не env вызывающего: `ORT_PREFER_DYNAMIC_LINK`
+# в окружении прогона может стоять любым, вердикт обязан зависеть от артефакта.
+# Формулировка отказа называет лечимое действие (`just build-ort`), а не
+# «прогон не удался» (kernel-закон «отказ обязан называть истинную причину»).
+#
+# Реализация: otool — штатный читатель Mach-O-графов на macOS (первичка ревью
+# #73: тот же инструмент мерял `OMP_NUM_THREADS`-инертность вендорного dylib);
+# на Linux — `readelf -d`, при его отсутствии `ldd`. Инструмента нет = явный
+# WARN-skip, а не провал: краснеть от отсутствия утилиты = тот же ложно-красный
+# класс, который зуб закрывает.
+#
+# Код возврата вызывающего: refusal = rc=2 — тот же класс, что «метод замера не
+# реализован» (шапка скрипта, docs/release.md §RAM п.12 а, п.8): артефакт непригоден,
+# прогон не начинался. die (rc=1) зарезервирован за «прогон не удался», путать
+# сборочный диагноз с провалом прогона нельзя.
+preflight_spike_ort() {
+    bin="$1"
+    # Нога 1: статика pyke в бинаре. `LC_ALL=C` — grep по бинарю с локалью
+    # UTF-8 даёт «binary file matches» вместо кода совпадения на некоторых
+    # реализациях; `-a` treating binary as text.
+    if LC_ALL=C grep -qa 'onnxruntime/core/session' "$bin" 2>/dev/null; then
+        static_pyke=1
+    else
+        static_pyke=0
+    fi
+    deps=""
+    case "$OS" in
+        Darwin)
+            if command -v otool >/dev/null 2>&1; then
+                deps="$(otool -L "$bin" 2>/dev/null || true)"
+            else
+                printf 'WARN|full|preflight=partial|otool нет в PATH — динамическая нога зуба НЕ промерена (статическая нога жива: pyke-статика ловится grep по бинарю)\n'
+            fi
+            ;;
+        Linux)
+            if command -v readelf >/dev/null 2>&1; then
+                deps="$(readelf -d "$bin" 2>/dev/null || true)"
+            elif command -v ldd >/dev/null 2>&1; then
+                deps="$(ldd "$bin" 2>/dev/null || true)"
+            else
+                printf 'WARN|full|preflight=partial|ни readelf, ни ldd нет в PATH — динамическая нога зуба НЕ промерена (статическая нога жива)\n'
+            fi
+            ;;
+    esac
+    dynamic_ort=0
+    [ -n "$deps" ] && printf '%s\n' "$deps" | grep -qi 'libonnxruntime' && dynamic_ort=1
+    if [ "$dynamic_ort" -eq 1 ]; then
+        printf 'INFO|full|preflight=ort_dynamic|бинарь линкуется на динамический libonnxruntime (контракт §W2 п.1 выполнен)\n'
+        return 0
+    fi
+    if [ "$static_pyke" -eq 0 ]; then
+        printf 'INFO|full|preflight=no_ort|бинарь орта не содержит (ни динамики, ни pyke-статики) — это релизный каскад-0, зуб его НЕ краснит\n'
+        return 0
+    fi
+    printf 'measure-rss: ОШИБКА: spike собран голым контуром (pyke-статика, §W2 п.1) — just build-ort\n' >&2
+    printf 'measure-rss: ОШИБКА: в %s вшита статика pyke (маркер onnxruntime/core/session) и нет динамического libonnxruntime — прогон дал бы SIGSEGV rc=139 (реестр ложно-красных: молча брать чужой бинарь = ложно-красный RAM-гейт)\n' "$bin" >&2
+    return 2
+}
+
+# run_full_once — ОДИН прогон харнеса; печатает METRIC/BUDGET-строки харнеса и
+# пишет в артефакт ($ROWS_FILE) ровно одну строку `RSS|full|peak_both_models|…`,
+# которую видят `--doc-rows` и парсер повторов (issue #170 а: N повторов не
+# должны размножать артефакт-строки — строка одна, их значения собираются в
+# медиану и max).
+# Возвращает через глобалы RUN_PEAK (число MiB) и RUN_RC (rc харнеса):
+# 0 = прогон удался, 1 = прогон умер (харнес не напечатал peak / упал).
+run_full_once() {
+    ex="$1"
+    lib="$2"
+    peak=""
+    out="$(mktemp)"
+    set +e
+    ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="$ORT_DIR/lib" \
+        "$ex" --arb-budget --arb --lockr --threads "$SPIKE_THREADS" >"$out" 2>&1
+    RUN_RC="$?"
+    set -e
+    grep -E '^(METRIC\|rss|BUDGET\||ERROR)' "$out" || true
+    if [ "$RUN_RC" -ne 0 ]; then
+        printf 'measure-rss: ОШИБКА: харнес.full exited rc=%s (см. docs/model-audit-weights.md §W2: SIGSEGV 139 = нарушен dylib-контракт)\n' "$RUN_RC" >&2
+        rm -f "$out"
+        RUN_PEAK=""
+        return 1
+    fi
+    peak="$(grep -oE 'METRIC\|rss_peak_mib_both_models\|[0-9.]+' "$out" | tail -1 | cut -d'|' -f3)"
+    rm -f "$out"
+    if [ -z "$peak" ]; then
+        printf 'measure-rss: ОШИБКА: харнес не напечатал rss_peak_mib_both_models (контракт METRIC нарушен)\n' >&2
+        RUN_PEAK=""
+        return 1
+    fi
+    RUN_PEAK="$peak"
+    emit_line "RSS|full|peak_both_models|$peak|spike task_info TASK_VM_INFO.internal (macOS) / VmRSS (Linux)"
+    return 0
+}
+
 run_full() {
     ex="$TARGET_DIR/examples/spike"
     [ -x "$ex" ] || die "нет харнеса $ex — собери: just build-ort (spike --features ort-inference, dylib-контракт)"
@@ -386,32 +576,67 @@ run_full() {
     lib="$(find "$ORT_DIR/lib" -maxdepth 1 -name 'libonnxruntime*.dylib' -o -maxdepth 1 -name 'libonnxruntime*.so' 2>/dev/null | head -1)"
     [ -n "$lib" ] || die "в $ORT_DIR/lib нет libonnxruntime* (docs/model-audit.md §8 п.3)"
 
-    # --arb-budget = обе модели в ОДНОМ процессе, пик по всем точкам: контракт
-    # docs/model-audit-weights.md §W2.6 п.5 (именно эта точка закрывает бюджет SPEC §1).
-    # Пул потоков инференса = FASAD_SPIKE_THREADS (по умолчанию 2): ruling
-    # оператора от 21.10 «не нагружать CPU ноута» (ORT-сессии спайка по
-    # умолчанию гоняют threads=4, spike.rs:158 `unwrap_or(4)`; это собственный
-    # рычаг харнеса — OMP_NUM_THREADS на вендорном onnxruntime инертен,
-    # поправка ревью #73). Метод замера не меняется, но потоки — часть
-    # методики: пик двух моделей на них реагирует (промер 21.10: threads=4 →
-    # 976.3 MiB, threads=2 → 889.1 MiB, docs/model-audit.md §9 п.4), поэтому
-    # число печатается в INFO-строке, а бюджет-вердикт считается по max.
-    printf 'INFO|full|harness=spike --arb-budget --arb --lockr --threads %s|ort_dylib=%s\n' "$SPIKE_THREADS" "$lib"
-    out="$(mktemp)"
-    set +e
-    ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH="$ORT_DIR/lib" \
-        "$ex" --arb-budget --arb --lockr --threads "$SPIKE_THREADS" >"$out" 2>&1
-    rc="$?"
-    set -e
-    grep -E '^(METRIC\|rss|BUDGET\||ERROR)' "$out" || true
-    [ "$rc" -eq 0 ] || die "харнес.full exited rc=$rc (см. docs/model-audit-weights.md §W2: SIGSEGV 139 = нарушен dylib-контракт)"
-    peak="$(grep -oE 'METRIC\|rss_peak_mib_both_models\|[0-9.]+' "$out" | tail -1 | cut -d'|' -f3)"
-    [ -n "$peak" ] || die "харнес не напечатал rss_peak_mib_both_models (контракт METRIC нарушен)"
-    emit_line "RSS|full|peak_both_models|$peak|spike task_info TASK_VM_INFO.internal (macOS) / VmRSS (Linux)"
-    verdict="$(awk -v p="$peak" -v b="$BUDGET_MIB" 'BEGIN { print (p <= b) ? "ok" : "OVER" }')"
-    emit_line "BUDGET|full|$verdict|peak_mib=$peak|budget_mib=$BUDGET_MIB|tool=spike METRIC (in-process)"
-    gate_fail_if_over "$verdict" full "$peak"
-    rm -f "$out"
+    # ЗУБ (issue #170 б) — ДО прогонов: дешевле сдохнуть на сборочном диагнозе,
+    # чем открутить N прогонов и выдать rc=139 как «RAM-проблему».
+    preflight_spike_ort "$ex" || exit 2
+
+    # N повторов (issue #170 а, первичка #168: на ОДНОМ sha полоса одиночных
+    # срезов до 550 MiB — e02c203 870.3/1420.9; одиночное число посреди полосы
+    # не является числом прогона). Каждый повтор = полный прогон харнеса;
+    # свёртки ДВЕ и обе печатаются:
+    #   peak_median — репрезентативное число в документ (rule kernel: медиана
+    #     прогонов, не lucky slice);
+    #   peak_max    — ГЕЙТ: консервативная свёртка, семантика не меняется
+    #     (бэджет safety-critical, §W2.6 п.5; v0.1.0-бюджет = консервативный
+    #     max, решение оператора #168).
+    # Повтор не обязан быть зелёным: прогон умерший = отказ контура (rc=1), а не
+    # «медиана по выжившим» — медиана по N-1 при N=3 была бы подменой выборки.
+    # Массив, а не строка: свёртки вызываются как `median_of "${PEAKS[@]}"`,
+    # т.е. каждое число = отдельный аргумент. Строка-накопитель требовала бы
+    # НЕЗАКАВЫЧЕННОГО расширения (`median_of $peaks`), а это SC2086 — и нога CI
+    # `BASH_SHELLCHECK` (MegaLinter, lint.yml:37, без `-S severity`) краснеет от
+    # info-класса ровно как от warning (промер 22.10 локально: `shellcheck -x`
+    # без `-S` даёт 3 × SC2086 на строке-накопителе).
+    PEAKS=()
+    i=1
+    while [ "$i" -le "$FULL_REPEATS" ]; do
+        printf 'INFO|full|run=%s/%s|harness=spike --arb-budget --arb --lockr --threads %s|ort_dylib=%s\n' \
+            "$i" "$FULL_REPEATS" "$SPIKE_THREADS" "$lib"
+        if run_full_once "$ex" "$lib"; then
+            PEAKS+=("$RUN_PEAK")
+        else
+            die "прогон $i/$FULL_REPEATS не удался (rc=$RUN_RC) — свёртка по неполной выборке невозможна"
+        fi
+        i=$((i + 1))
+    done
+
+    [ "${#PEAKS[@]}" -eq "$FULL_REPEATS" ] ||
+        die "собрано ${#PEAKS[@]} чисел повторов из $FULL_REPEATS — свёртка по неполной выборке невозможна"
+    peak_median="$(median_of "${PEAKS[@]}")"
+    peak_max="$(max_of "${PEAKS[@]}")"
+    [ -n "$peak_median" ] && [ -n "$peak_max" ] ||
+        die "свёртка дала пустое число (пики: ${PEAKS[*]})"
+    # Список срезов через `;` — разделитель полей строки здесь `|`, а `;` — он же
+    # терминатор команды в shell: вставлять в вывод список, собранный из чисел
+    # прогона, нельзя (строка с `;` в выводе = подарок тому, кто её eval'ом
+    # прочитает). Формат `1419.6 1789.7 1790.5`, разделитель — пробел.
+    # `repeats=N` и ровно N чисел в `slices=` — парность поля проверяется
+    # глазами по строке (parser'ы строк здесь нет, и заводить его под вывод =
+    # вторая ложь при рассинхроне).
+    printf 'INFO|full|repeats=%s|slices=%s\n' "$FULL_REPEATS" "${PEAKS[*]}"
+
+    # Точка-значения (в артефакт → в --doc-rows): медиана и max отдельными
+    # строками, обе с методом. Прежнее имя `peak_both_models` НЕ переиспользуется
+    # под медиану: у него задокументированная семантика «пик одного прогона»
+    # (docs/release.md §RAM п.6), подмена смысла под прежним именем = ложно
+    # зелёное чтение старых строк из новых.
+    emit_line "RSS|full|peak_median|$peak_median|median of $FULL_REPEATS spike runs, task_info TASK_VM_INFO.internal (macOS) / VmRSS (Linux)"
+    emit_line "RSS|full|peak_max|$peak_max|max of $FULL_REPEATS spike runs (гейт-свёртка), task_info TASK_VM_INFO.internal (macOS) / VmRSS (Linux)"
+    # Вердикт = по max, не по медиане (шапка скрипта: «вердикт считается по
+    # КОНСЕРВАТИВНОМУ пику»; поле в строке так и названо — peak_max_mib).
+    verdict="$(awk -v p="$peak_max" -v b="$BUDGET_MIB" 'BEGIN { print (p <= b) ? "ok" : "OVER" }')"
+    emit_line "BUDGET|full|$verdict|peak_max_mib=$peak_max|peak_median_mib=$peak_median|repeats=$FULL_REPEATS|budget_mib=$BUDGET_MIB|tool=spike METRIC (in-process)"
+    gate_fail_if_over "$verdict" full "$peak_max"
 }
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
@@ -425,7 +650,21 @@ if [ "$DOC_ROWS" -eq 1 ]; then
     printf '| контур | точка | MiB | метод |\n| --- | --- | --- | --- |\n'
     awk -F"|" '$1 == "RSS" { printf "| `%s` | `%s` | %s | %s |\n", $2, $3, $4, $5 }' "$ROWS_FILE"
     printf '\n'
-    awk -F"|" '$1 == "BUDGET" { printf "`BUDGET|%s|%s|%s|%s|%s`\n", $2, $3, $4, $5, $6 }' "$ROWS_FILE"
+    awk -F"|" '$1 == "BUDGET" {
+        s = sprintf("`BUDGET|%s|%s", $2, $3)
+        for (i = 4; i <= NF; i++) s = s sprintf("|%s", $i)
+        print s "`"
+    }' "$ROWS_FILE"
+    # Полоса срезов (issue #170 а): все N чисел прогона — то, что запрещает
+    # называть одиночный срез числом прогона (первичка #168). Числа идут через
+    # запятую: `;` в выводе = терминатор команды для любого, кто строку
+    # eval'ом прочитает.
+    awk -F"|" '$1 == "INFO" && $3 ~ /^repeats=/ {
+        n = $3; sub(/^repeats=/, "", n)
+        sl = $4; sub(/^slices=/, "", sl); gsub(/[[:space:]]+$/, "", sl); gsub(/[[:space:]]+/, " ", sl)
+        printf "\nполоса срезов контура full: %s (N=%s, t2; медиана = peak_median, гейт = peak_max)\n", sl, n
+    }' "$ROWS_FILE"
+    printf '\n'
     printf '\nпромер: %s, ОС %s/%s, метод: %s; потоки: демон FASAD_THREADS=%s, харнес FASAD_SPIKE_THREADS=%s\n' \
         "$(date -u +%F)" "$OS" "$(uname -m)" "$RSS_TOOL" "${FASAD_THREADS:-2}" "$SPIKE_THREADS"
     printf 'профиль сборки: [profile.release] (lto=fat, codegen-units=1) — docs/model-audit.md §9 п.3\n'
