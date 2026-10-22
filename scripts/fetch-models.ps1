@@ -60,7 +60,12 @@ function Write-Fail([string]$Message) {
     # чистый stderr-поток: exit 1 доходит до $LASTEXITCODE любого родителя;
     # метод безобъектный (InvokeMethodOnNull в доке PS5.1 про [Console] не
     # касается вызова статического метода класса System).
-    [Console]::Error.WriteLine('fetch-models: ОШИБКА: ' + $Message)
+    # Ключевое слово ASCII-канона «sha256» = маркер вердикта (CI-гейт ищет
+    # его в захваченном хвосте: кириллица в stderr-потоке нативки декодируется
+    # родителем в codepage-мусор, hex/ASCII-остаток живёт под любой кодовой
+    # страницей; lowercase-форма = сигнатура вердикта, crash-стек её не
+    # содержит в регистроточном совпадении).
+    [Console]::Error.WriteLine('fetch-models: FAIL: sha256/size gate: ' + $Message)
     exit 1
 }
 
