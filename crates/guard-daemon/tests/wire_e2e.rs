@@ -31,6 +31,23 @@ struct Daemon {
 
 impl Daemon {
     fn start(env: &[(&str, &str)]) -> Self {
+        // #185: full-бинарь (feature `ort-inference`) без весов не стартует —
+        // молчаливый cascade-0-only убит стартовым отказом. Файл про проводной
+        // протокол каскада 0 (тесты проверяют ответы каскада-0: ФИО-спан
+        // модели ломали бы их ожидания ещё до #185, ревью #87), поэтому
+        // live-нога = feature-off бинарь; на ort-контуре файл печатает
+        // явную SKIPPED-строку и выходит rc=0 (молчание = ложно-зелёная
+        // проверка, класс реестра; контракт SKIP-строки — cascade_failclosed).
+        // Тот же контур CI-реальности: ort-фича в cargo-матрице CI не
+        // линкуется (ci.yml:31-34), live-контур = feature-off.
+        if cfg!(feature = "ort-inference") {
+            eprintln!(
+                "SKIP|wire_e2e|full-бинарь (#185) без весов не стартует, а live-контур \
+                 файла = каскад-0-ожидания (ревью #87): ort-контур покрыт unit \
+                 cascades::tests + e2e-отказом full_bin_without_model_dir_*"
+            );
+            std::process::exit(0);
+        }
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fasad"));
         cmd.env("FASAD_BIND", "127.0.0.1")
             .env("FASAD_PORT", "0")
@@ -540,6 +557,52 @@ fn oversized_body_comes_back_as_413_envelope_on_the_wire() {
         !reply.text().contains("Failed to buffer"),
         "наружу ушёл текст axum вместо нашего конверта: {}",
         reply.text()
+    );
+}
+
+#[test]
+fn full_bin_without_model_dir_refuses_to_start_before_binding() {
+    // Рюлинг оператора 22.10 (#185), живой e2e-дискриминатор отказа:
+    // feature-сборка (`cargo test --features ort-inference`) без
+    // `FASAD_MODEL_DIR` обязана дать rc=2 + текст причины + НЕ напечатанный
+    // баннер: молчаливый `cascade-0-only` в релизном контуре = тихая
+    // деградация защиты. Feature-off сборка (харнес/тестовый контур, #181)
+    // без весов легально поднимается каскадом 0 — проверяем обе ноги,
+    // red-сигнал живёт на нужной ноге.
+    let feature_on = cfg!(feature = "ort-inference");
+    let out = Command::new(env!("CARGO_BIN_EXE_fasad"))
+        .env("FASAD_BIND", "127.0.0.1")
+        .env("FASAD_PORT", "0")
+        // Наследуемый env машины с весами монтировал бы каскады и прятал
+        // ровно проверяемую ветку (тот же класс, что `Daemon::start`, ревью #87).
+        .env_remove("FASAD_MODEL_DIR")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("процесс стартует");
+    if !feature_on {
+        // Нога OFF: каскад-0-бинарь поднимается; процесс убиваем, ждём, читаем.
+        let pid = out.id();
+        drop(out);
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+        return;
+    }
+    let out = out.wait_with_output().expect("процесс завершился");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "отказ старта = код 2, как у конфига"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("FASAD_MODEL_DIR"),
+        "причина обязана называть переменную: {err}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("listening"),
+        "баннер напечатан до отказа: {stdout}"
     );
 }
 

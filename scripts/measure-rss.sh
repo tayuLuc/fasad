@@ -3,14 +3,20 @@
 #
 # Два контура, два способа замера — они НЕ смешиваются в одном числе:
 #
-#   cascade-0  релизный бинарь `fasad` (cargo build --release -p guard-daemon),
-#              старт на loopback, прогрев живыми /v1/analyze, RSS процесса меряется
+#   cascade-0  бинарь `fasad` (cargo build --release -p guard-daemon, фича
+#              `ort-inference` ВЫКЛЮЧЕНА), старт на loopback без весов, прогрев
+#              живыми /v1/analyze, RSS процесса меряется
 #              системными средствами: macOS `footprint -p PID` (phys_footprint =
 #              «Память» из монитора активности) + `ps -o rss` (resident, KB);
 #              Linux — `ps -o rss` и /proc/<pid>/status VmRSS. Метод печатается в
 #              каждой строке вывода, потому что три числа про один процесс
 #              отличаются в разы и «RSS» без метода — не измерение (memory law:
 #              «formatted number is not a fact»).
+#              Рюлинг #185 (22.10): full-бинарь (с фичей) без `FASAD_MODEL_DIR`
+#              ОТКАЗЫВАЕТСЯ стартовать (`ModelsNotConfigured`), поэтому контур
+#              меряется каскад-0-АРТЕФАКТОМ (фича off) — прежняя форма «full-бинарь
+#              без FASAD_MODEL_DIR даёт ту же стадию» убита правкой старта;
+#              релизный full-контур с весами меряет scripts/measure-daemon-rss.sh.
 #
 #   full       полный каскад 1–2 (орт-сессии lockR + Decide): харнес `spike` из
 #              guard-onnx, RSS считается внутри процесса (macOS task_info
@@ -658,12 +664,15 @@ run_full() {
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
     # Каскад-0 КОНТУР ЗАМЕРА остаётся каскад-0-артефактом (фича off, #181):
-    # release.yml RAM-гейт = `just measure-rss --skip-build` (release.yml:135),
-    # артефакт ему поставляет шаг `just release-build` = полный бинарь, старт
-    # без FASAD_MODEL_DIR даёт на нём ту же каскад-0-стадию — число замера
-    # не двигается. Пересборка здесь релизным контуром (с фичей) перетёрла бы
+    # release.yml RAM-гейт = `just measure-rss --skip-build` (release.yml:192);
+    # артефакт ему поставляет шаг `--cascade0` (release-build-cascade0).
+    # Рюлинг #185: full-бинарь (шаг release-build) без FASAD_MODEL_DIR больше
+    # НЕ стартует (ModelsNotConfigured, cascades.rs::startup) — прежняя форма
+    # «полный бинарь даёт ту же каскад-0-стадию» убита правкой старта, и
+    # контур меряется каскад-0-артефактом, объявленным в имени замера.
+    # Пересборка здесь релизным контуром (с фичей) перетёрла бы
     # target/release/fasad (класс #139: ключ --features в общий профиль
-    # перетирает артефакт) и уронила бы verify-зуб В (каскад-0-артефакт).
+    # перетирает артефакт) и уронила бы verify-зубы А/Б ниже.
     echo "BUILD|cargo build --release -p guard-daemon (каскад-0 артефакт замера; релизный бинарь = full, just release-build)"
     cargo build --release -p guard-daemon
 fi
