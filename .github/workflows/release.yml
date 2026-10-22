@@ -390,8 +390,11 @@ jobs:
     # SIGSEGV'ит (docs/model-audit-weights.md §W2 п.1, промер ×5), рабочий путь — официальный
     # dylib 1.31.0 + `ORT_PREFER_DYNAMIC_LINK=1` (per первичка ort:
     # https://ort.pyke.io/setup/linking — compile-time dynamic linking =
-    # ORT_LIB_PATH + ORT_PREFER_DYNAMIC_LINK=1; доставка рантайма на macOS/Linux —
-    # rpath `@loader_path`/`$ORIGIN` или каталог рядом с бинарём, там же).
+    # ORT_LIB_PATH + ORT_PREFER_DYNAMIC_LINK=1; доставка рантайма на macOS —
+    # rpath `@loader_path`). linux-нога spike СНЯТА (#188): spike-линк
+    # `-lonnxruntime` требует mac-обвязки dynamic_lookup (build.rs:99, nit #6
+    # ревью #9), а linux-релиз = download-статика dist-матрицы (не dylib);
+    # linux-контур харнеса = не-продукт, ram-мера меряется на mac (§9).
     # Хэши архивов — первичка docs/model-audit.md §8 п.3 (промер 19.10), не SPEC.
     name: ort-dylib (${{ matrix.os }})
     permissions:

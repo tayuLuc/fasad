@@ -301,16 +301,20 @@ jobs:
               ls -la target/release/fasad.exe target/release/fasad-tray.exe
               echo "win ok: full-контур ЛИНКУЕТСЯ (build rc=0, MSVC+pyke-статик, CI run 39785650206)."
               # Запись (не гейт): где реально оказался onnxruntime.dll после
-              # copy_dylibs (target_dir = корень target/, vars.rs:32). Релизный
-              # win-шаг (release.yml, #188) берёт dll из КОРНЯ target/ (тот же
-              # vars.rs:32) → здесь её отсутствие в target/release/ = НЕ
-              # дефект линковки (линка = build rc=0), а вопрос доставки = #181.
+              # copy_dylibs (target_dir = корень target/, vars.rs:32; write-through
+              # только при `!out_path.exists()`, dynamic_link.rs:40 — на кэш-хите
+              # ort-sys в ЭТОМ job dll не перегенерируется, промер run 39791571559:
+              # «dll НЕ в target/ и НЕ в target/release/» при build rc=0 и
+              # Compiling ort-sys; cold-провен = run 39786761298 win-нога).
+              # Релизный win-шаг (release.yml, #188) берёт dll из КОРНЯ target/
+              # (тот же vars.rs:32) в СВОЁМ cold-прогоне → отсутствие dll здесь
+              # = НЕ дефект (линка = build rc=0), вопрос доставки = #181.
               if [ -f target/onnxruntime.dll ]; then
                   echo "win: onnxruntime.dll в target/ (copy_dylibs → vars::target_dir = корень, vars.rs:32) — релизный win-шаг берёт отсюда (#188)"
               elif [ -f target/release/onnxruntime.dll ]; then
                   echo "win: onnxruntime.dll в target/release/ (рядом с exe)"
               else
-                  echo "win: onnxruntime.dll НЕ в target/ и НЕ в target/release/ — copy_dylibs пишет в target/ (vars.rs:32), доставка рантайма = релизный шаг release.yml (#181, не #184); линковка full = build rc=0"
+                  echo "win: onnxruntime.dll НЕ в target/ и НЕ в target/release/ (кэш-хит ort-sys = copy не реранится; copy_dylibs пишет в target/, vars.rs:32); доставка = релизный шаг release.yml (#181/#188); линковка full = build rc=0"
                   find target -maxdepth 2 -name 'onnxruntime.dll' 2>/dev/null | head -3 || true
               fi
               ;;
