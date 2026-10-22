@@ -230,12 +230,19 @@ allowlist (`https://api.openai.com/…`) этот rig отвечает `403`
 
 ## 3. Контур запуска (#146)
 
+Контур релизного бандла = **full** (#181, рюлинг оператора 22.10): бинари
+собранны с `ort-inference`, модели каскадов 1–2 скачиваются инструкцией бандла
+(`scripts/fetch-models.sh`, sha256-гейт), `FASAD_MODEL_DIR` включает монтаж;
+без весов работает каскад-0 (стадия в `/health`). Числа витрины §2 сняты на
+смонтированном контуре и остаются её первичкой.
+
 Три артефакта бандла — три контура запуска (первичка —
 [docs/release.md](docs/release.md) §«Linux: установка systemd-юнита» и
 §«Матрица сборки», юнит — `contrib/systemd/fasad.service`):
 
 - **win/mac — трей-бинарь.** Бандлы win/mac несут второй бинарь
-  `bin/fasad-tray[.exe]` (сборка `just release-build-tray`, фича `tray`): тот
+  `bin/fasad-tray[.exe]` (сборка `just release-build-tray`, features
+  `tray,ort-inference` — тот же контур, что headless, #181): тот
   же демон плюс иконка статуса — клик открывает `http://127.0.0.1:<порт>/ui`
   браузером ОС, меню = «Выход (graceful)» = shutdown-канал демона, tooltip =
   `fasad: <счётчик отказов> / <stage>` без ПДн. Запуск — исполнением бинаря;
