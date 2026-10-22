@@ -291,7 +291,19 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 
 Гейт `workflow_dispatch` есть (ручной прогон матрицы без публикации): job
 `release` защищена `if: startsWith(github.ref, 'refs/tags/v')`, поэтому ручной
-прогон артефакты собирает, а релиз не трогает.
+прогон артефакты собирает, а релиз не трогает. На dispatch (`ref_name` = имя
+ветки) зуб тега↔версии = `VERSION|SKIPPED` (env `FASAD_EXPECT_VERSION` пуст,
+release.yml:428); имя артефакта dispatch-прогона несёт версию
+`[workspace.package]` (`fasad-0.1.1-<triple>-full.*`), не имя ветки
+(make-bundle.sh:126-130). Репетиция v0.1.1 (PR #197, dispatch на ветку v11):
+зелёный контур = run 39865012131 (5/5 job, ассеты mac/win/linux, mac-leg
+манифест-зуба А + linux/win leg B через `FASAD_CASCADE0_BIN`); красные
+предшествующие прогоны 39854576251/39856985952/39858973730/39860315995/
+39861721435/39863245106 — латенты #192-контура (HOME-дефолт веса́й в зубах
+`env -u FASAD_MODEL_DIR` = `FASAD_TEST_CASCADE0=1`-контур config.rs:419-421;
+strings-форма манифест-зуба = живой /v1/status-промер; win-отказ трея =
+модальный MessageBoxW #190 = `FASAD_WIN_NO_UI=1`), каждая строка — в
+CHANGELOG v0.1.1.
 
 Прогнать матрицу до слияния нельзя было: `gh workflow run release.yml --ref
 <ветка>` отвечал HTTP 404 «workflow release.yml not found on the default
