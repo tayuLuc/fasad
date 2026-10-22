@@ -27,14 +27,19 @@
 #   0 = вердикт ok ЛИБО пропуск замера («нет весов» = skip, а не зелёный);
 #   1 = вердикт over (бюджет превышен) ЛИБО демон не поднялся ЛИБО мусор в
 #       числовом env (`BUDGET_MIB` не число — отказ до замера, ревью #98 R2);
-#   2 = нет бинаря.
+#   2 = нет бинаря ЛИБО бинарь собран голым контуром без динамического орта
+#       (preflight-зуб issue #170 б — «артефакт непригоден, прогон не
+#       начинался»; тот же класс, что «нет бинаря»).
 # До этой правки вердикт over только печатался, а скрипт выходил rc=0 — тот же
 # класс false-green «print-only landing test» (реестр 15/18), что в
 # measure-rss.sh. Скрипт НЕ вызывается из CI-контура: упоминается только в
 # docs как метод промера — три файла, пять строк (grep `measure-daemon-rss`
 # по дереву, переснято 21.10): crates/guard-daemon/README.md:110 (раздел про
 # монтаж каскадов 1–2), docs/model-audit.md §10 (метод; §-ссылка вместо строковой) и
-# docs/release.md:274/308/313 (§RAM п.7, зуб, п.10) — прежняя формулировка
+# docs/release.md §RAM п.8 (зуб preflight, #170 б), п.9 (зуб вердикта) и п.12 б
+# (валидация BUDGET_MIB) — прежняя форма «release.md:274/308/313» была
+# строковой и поехала на первой же правке документа (пересъёмка 22.10: из трёх
+# ссылок ни одна не попадала в §RAM). Прежняя формулировка
 # «только в README» была ложью о покрытии (ревью #98, нит 3; «мест три» —
 # неточно по строкам: файлов три, строк пять, ревью #98 D6).
 # Но живой гейт обязан быть единым: у двух скриптов с одним вердиктом
@@ -52,7 +57,7 @@ BUDGET_MIB="${BUDGET_MIB:-1843.2}"
 # вердикт считает awk: не-числовой b переводит сравнение `p <= b` в
 # лексикографику — «48.3» <= «abc» истинно ('4' < 'a') → при BUDGET_MIB=abc
 # печаталось `METRIC|budget|abc|verdict|ok` и rc=0. Мусор в числовом env =
-# отказ с именем переменной и значением (rc=1; docs/release.md §RAM п.10).
+# отказ с именем переменной и значением (rc=1; docs/release.md §RAM п.12).
 # Идём ДО проверки бинаря: сломанный env — диагноз про запуск, а не про среду.
 if [[ ! "$BUDGET_MIB" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
   echo "measure-daemon-rss: ОШИБКА: BUDGET_MIB=$BUDGET_MIB: не число (ожидается вид 1843.2 — целое или десятичное, без разделителей и знака)" >&2
@@ -82,6 +87,74 @@ cleanup() {
   rm -f "$LOG" "$RSS_LOG"
 }
 trap cleanup EXIT
+
+# ── preflight-зуб на динамический орт (issue #170 б) ─────────────────────────
+# Класс тот же, что в scripts/measure-rss.sh `preflight_spike_ort` (там — полная
+# аргументация и промеры): скрипт берёт ГОТОВЫЙ бинарь и гоняет его с
+# примонтированными каскадами 1–2. Бинарь, собранный «голым» контуром —
+# `cargo build --release -p guard-daemon --features ort-inference` БЕЗ env
+# `ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=…` (контракт
+# docs/model-audit-weights.md §W2 п.1) — несёт pyke-статику: в динамическом
+# графе (`otool -L` на macOS, `readelf -d`/`ldd` на Linux) строки
+# `libonnxruntime` нет, орт вшит в бинарь, прогон даёт SIGSEGV.
+# ЗУБ ПРОМЕРЕН (issue #170 б, артефакты в теле PR): голый spike → rc=2 со
+# строкой причины; с выключенным зубом тот же бинарь = `Segmentation fault: 11`
+# и `METRIC|error|демон не слушает` — т.е. краснеет НЕПРАВИЛЬНЫЙ диагноз;
+# релизный бинарь каскада-0 → зуб зелёный (см. вторую ногу ниже).
+# ДВЕ НОГИ (важно): релизный каскад-0 (`just release-build`, фича
+# `ort-inference` ВЫКЛЮЧЕНА) орта не содержит вообще — ни динамики, ни статики.
+# Одноногая проверка «нет dylib = красный» краснила бы его rc=2, а это ровно
+# тот ложно-красный класс, который зуб и закрывает (промер правки #170 на
+# релизном бинаре: rc=2 → после второй ноги зелёный). Красный — только
+# комбинация «статика pyke ЕСТЬ» + «динамического орта НЕТ».
+# rc=2 = «артефакт непригоден, прогон не начинался» (тот же класс, что «нет
+# бинаря» выше); rc=1 зарезервирован за вердиктом over и за упавшим прогоном.
+# Инструмента нет = WARN-skip по динамической ноге (статическая нога — grep по
+# бинарю — жива всегда): краснеть от отсутствия утилиты нельзя.
+# Рычаг `FASAD_RSS_ORT_PREFLIGHT=0` — промер самого зуба на заведомо голом
+# артефакте (показать, что краснит именно он), по умолчанию включён.
+ORT_PREFLIGHT="${FASAD_RSS_ORT_PREFLIGHT:-1}"
+if [[ "$ORT_PREFLIGHT" == "1" ]]; then
+  static_pyke=0
+  if LC_ALL=C grep -qa 'onnxruntime/core/session' "$BIN" 2>/dev/null; then
+    static_pyke=1
+  fi
+  deps=""
+  case "$(uname -s)" in
+    Darwin)
+      if command -v otool >/dev/null 2>&1; then
+        deps="$(otool -L "$BIN" 2>/dev/null || true)"
+      else
+        echo "WARN|preflight|otool нет в PATH — динамическая нога зуба НЕ промерена (статическая жива)"
+      fi
+      ;;
+    Linux)
+      if command -v readelf >/dev/null 2>&1; then
+        deps="$(readelf -d "$BIN" 2>/dev/null || true)"
+      elif command -v ldd >/dev/null 2>&1; then
+        deps="$(ldd "$BIN" 2>/dev/null || true)"
+      else
+        echo "WARN|preflight|ни readelf, ни ldd нет в PATH — динамическая нога зуба НЕ промерена (статическая жива)"
+      fi
+      ;;
+    *)
+      echo "WARN|preflight|OS=$(uname -s): динамическая нога зуба не реализована (реализованы Darwin/Linux)"
+      ;;
+  esac
+  dynamic_ort=0
+  if [[ -n "$deps" ]] && printf '%s\n' "$deps" | grep -qi 'libonnxruntime'; then
+    dynamic_ort=1
+  fi
+  if [[ "$dynamic_ort" == "1" ]]; then
+    echo "METRIC|preflight|ort_dynamic"
+  elif [[ "$static_pyke" == "0" ]]; then
+    echo "METRIC|preflight|no_ort|бинарь орта не содержит — релизный каскад-0, зуб не краснит"
+  else
+    echo "measure-daemon-rss: ОШИБКА: spike собран голым контуром (pyke-статика, §W2 п.1) — just build-ort" >&2
+    echo "measure-daemon-rss: ОШИБКА: в $BIN вшита статика pyke (маркер onnxruntime/core/session) и нет динамического libonnxruntime — прогон с примонтированными каскадами 1–2 дал бы SIGSEGV (реестр ложно-красных: молча брать чужой бинарь = ложно-красный RAM-гейт)" >&2
+    exit 2
+  fi
+fi
 
 echo "METRIC|method|ps-rss-sampling-100ms|threads|$THREADS|reqs|$REQS|bin|$BIN"
 FASAD_MODEL_DIR="$MODEL_DIR" FASAD_THREADS="$THREADS" FASAD_PORT="$PORT" \
