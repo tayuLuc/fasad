@@ -88,6 +88,193 @@ jobs:
       - run: just test
       - run: just deny
 
+  ort-build:
+    # ═════ #184: живая ЛИНКОВКА релизного full-контура на win/linux/mac ═════
+    # Причина job'ы: ci.yml выше НЕ линкует onnxruntime ни на одной ОС — под
+    # `ort-inference` там только clippy-строки = check без линковки (комментарий
+    # build-test выше; первичка ci.yml после #31). Релизный контур #181/#183
+    # (`just release-build` / `just release-build-tray` = release-профиль +
+    # `--features ort-inference`, и `tray,ort-inference` для трея) собирался
+    # ВПЕРВЫЕ на матрице release.yml, то есть НА ТЕГЕ (docs/release.md §Матрица:
+    # «первый живой промер win/linux full = эта матрица на теге», риск записан в
+    # #181). Промер 25.10: `gh api .../actions/runs` по этому репозиторию не
+    # содержит НИ ОДНОГО прогона job `release`/workflow `release` — тег ещё не
+    # ставился, т.е. win/linux full-ликовка = NEVER MEASURED. Это job переводит
+    # первый промер на PR/merge: тег перестаёт быть первым.
+    #
+    # Команды = ТЕ ЖЕ, что релизный рецепт, только развёрнутые (в этом job `just`
+    # не ставим; env-префикс mac-контракта = строки рецепта release-build):
+    #   cargo build --release -p guard-daemon --features ort-inference --bin fasad
+    #   cargo build --release -p guard-daemon --features tray,ort-inference --bin fasad-tray  (win/mac)
+    # `--bin fasad` ОБЯЗАТЕЛЕН: без фильтра bin-целей cargo собирает ОБА бинаря,
+    # и на win/mac это падение линка трей-цели (её rpath-контракт собирается
+    # отдельным рецептом — комментарий `release-build` в justfile).
+    #
+    # linux: bin-цель `fasad-tray` имеет `required-features = ["tray"]`, а фича
+    # `tray` на linux ФИЗИЧЕСКИ несобираема (`compile_error` в tray-icon 0.26.1
+    # без libappindicator/ksni, docs/dep-verify-crates.md §16; красная строка
+    # build-test выше её меряет). Linux-ячейка строит ТОЛЬКО headless `fasad` =
+    # ровно linux-релизный бандл (#140: linux = systemd-юнит, трея в архиве нет).
+    #
+    # mac: голый release-линк bin-цели pyke-статикой красен на
+    # `___isPlatformVersionAtLeast` (docs/model-audit-weights.md §W2 п.2,
+    # docs/release.md §ORT п.1: `-Wl,-undefined,dynamic_lookup` build.rs даёт
+    # ТОЛЬКО example-цели — `crates/guard-onnx/build.rs:102`; у bin-цели его нет).
+    # Поэтому mac-ячейка скачивает официальный dylib 1.31.0 и линкуется с
+    # env-префиксом dylib-контракта; sha256-пин = ТОТ ЖЕ, что шаг mac-контурa в
+    # release.yml job `dist` и job `ort-dylib` (первичка docs/model-audit.md §8
+    # п.3) — пиновано в одно место, дубль строки осознан (воркфлоу не шарят
+    # шагов без composite-правок = отдельный атом).
+    #
+    # Локальный промер mac-ветки (25.10, macos-14, rustc 1.99.1,
+    # CARGO_BUILD_JOBS=2, warm target/ + dylib 1.31.0 по пути рецепта):
+    #   headless `--bin fasad` rc=0 за 44 с; трей `--bin fasad-tray` rc=0 за 167 с;
+    #   `otool -L` обоих бинарей = `@rpath/libonnxruntime.1.dylib
+    #   (compatibility version 1.0.0, current version 1.31.0)` — mac-контур
+    #   доказан локально (ZУБ mac), CI-нога mac = дубль-подтверждение.
+    # linux/win = промеренные ячейки ЭТОЙ job (CI-провен): linux-контур =
+    # download-binaries-статика ort-sys (cdn.pyke.io, build/download/dist.tsv),
+    # win-контур = MSVC-статика pyke-архива `x86_64-pc-windows-msvc+directml`
+    # (dist.tsv:11, промер 25.10). КРАСНЫЙ win = ПЕРВЫЙ В ИСТОРИИ живой промер
+    # MSVC-ликовки full-контура → эскалация оператору в #184 (win-релиз под
+    # вопросом); вслепую внешнее MSVC-кольцо (mt.exe/SDK-пути) НЕ чинить.
+    #
+    # Бюджет (рулинг 21.10 про локальные прогоны; CI платит своими ядрами):
+    # job ОТДЕЛЬНАЯ, НЕ строка в build-test-матрице: там контракт = debug +
+    # тесты (hot-кэш: 61–166 с на ячейку, промер run 39780831184), а release +
+    # две bin-цели с ортом удорожали бы КАЖДУЮ из 3 существующих ног; здесь же
+    # 3 новые параллельные ноги = wall-clock PR не растягивается сверх их own
+    # длительности. Холодный первый прогон = полная release-сборка (mac-оценка
+    # нижней границы 2m46s warm-локаль, cold-release ≈ 8–15 мин — ОЦЕНКА, не
+    # промер; живойrc/время = этот прогон).
+    #
+    # Кэш: Swatinem/rust-cache ДОБАВЛЕН сюда. Пин 6323deb102c3… (тот же plain
+    # commit, что build-test:45) даёт КЛЮЧ С JOB-ID: первичка action.yml
+    # pinned-коммита — `add-job-id-key` default "true" → `GITHUB_JOB` входит в
+    # primary key (src/config.ts:80-93 того же коммита), т.е. ключ build-test
+    # НЕВОССТАНОВИМ для ort-build без `shared-key`; `shared-key` же сменил бы
+    # контракт существующих трёх ног = вне рамок атома. Итог: ort-build стартует
+    # с cold-кэша, дальше греет СВОЙ job-scoped кэш. Замечание владельцу ci.yml:
+    # feature-контур в ключ не входит НИКАК (hash-нога ключа = manifest/lockfile
+    # + rust env, не `--features`), т.е. debug-кэш build-test и release-кэш
+    # ort-build различаются только job-id + profile-путями внутри target/.
+    # Пин 6323deb102c3 (v2-линейка, ярлык как build-test:45) и НЕ d1527c8
+    # (v2.9.3 из release.yml): release.yml пинован строго и с `lookup-only: true`
+    # (zizmor cache-poisoning для публикующего контура, comment release.yml);
+    # здесь job не публикует НИЧЕГО (permissions: {}) и пишет кэш для PR-контура.
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-14]
+    runs-on: '${{ matrix.os }}'
+    defaults:
+      run:
+        # Windows-2022 без явного shell гоняет `just`/bash-ломаные строки через
+        # cmd (тот же класс дефекта, что описан в `defaults.run` job `dist`
+        # release.yml:96-101): здесь все шаги — bash.
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # known-red F1 (artipacked): токен в .git/config не нужен — job не пушит.
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (composite, без токена)
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (plain commit, тот же пин, что build-test:45)
+      - name: "mac: официальный dylib ORT 1.31.0 + сверка sha256 (пин = release.yml)"
+        if: matrix.os == 'macos-14'
+        run: |
+          set -euo pipefail
+          url="https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-osx-arm64-1.31.0.tgz"
+          curl -sSfL --retry 3 -A "fasad-ci-ort-build/1.0" -o "$RUNNER_TEMP/ort.tgz" "$url"
+          # Канон `sha256sum -c` = ДВА пробела, обе поля из формата (урок #76 D3:
+          # BSD sed съедает следующий аргумент как суффикс бэкапа, гейт умирал ДО
+          # сверки хэша; форма читаема GNU и BSD одинаково — comment release.yml).
+          printf '%s  %s\n' "1031b36dd3bdaa8d976a6130d9cf2a05e9be320b93ae804f8427b91dc3432afc" "$RUNNER_TEMP/ort.tgz" > "$RUNNER_TEMP/ort.sum"
+          ( cd "$RUNNER_TEMP" && sha256sum -c ort.sum )
+          mkdir -p "$RUNNER_TEMP/ort"
+          tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP/ort"
+          echo "ORT_DIR=$RUNNER_TEMP/ort/onnxruntime-osx-arm64-1.31.0" >> "$GITHUB_ENV"
+      - name: "Headless fasad: release + ort-inference (linux = весь релизный контур)"
+        run: |
+          set -euo pipefail
+          # env-префикс mac-контракта = тот же тест, что рецепт `release-build`
+          # (`[ -d "$ORT_DIR/lib" ]`): на win/linux ORT_DIR не выставлен →
+          # префикс НЕ ставится = download-binaries-статика (релизная ветка).
+          if [ -n "${ORT_DIR:-}" ] && [ -d "$ORT_DIR/lib" ]; then
+            export ORT_PREFER_DYNAMIC_LINK=1
+            export ORT_LIB_PATH="$ORT_DIR/lib"
+            echo "ort-build: mac-контур dylib ($ORT_DIR/lib)"
+          fi
+          cargo build --release -p guard-daemon --features ort-inference --bin fasad
+      - name: "Трей fasad-tray: release + tray,ort-inference (win/mac; linux §16)"
+        # Релизный бандл win/mac несёт ОБА бинаря одного контура (#181: трей =
+        # тот же main.rs, монтаж #14A), linux-бандл = headless + systemd (#140).
+        if: matrix.os != 'ubuntu-24.04'
+        run: |
+          set -euo pipefail
+          if [ -n "${ORT_DIR:-}" ] && [ -d "$ORT_DIR/lib" ]; then
+            export ORT_PREFER_DYNAMIC_LINK=1
+            export ORT_LIB_PATH="$ORT_DIR/lib"
+            echo "ort-build: mac-контур dylib ($ORT_DIR/lib)"
+          fi
+          cargo build --release -p guard-daemon --features tray,ort-inference --bin fasad-tray
+      - name: "Зуб А (headless fasad): бинарь = орт-контур (контур verify-bundle.sh)"
+        # Дискриминатор «соберётся» vs «слинковался на орт» = канон ЗУБа А
+        # scripts/verify-bundle.sh:299-325 (первичка ort-sys build/dynamic_link.rs
+        # + static_link, инструмент спрашивается у АРТЕФАКТА): mac/linux =
+        # динамическая зависимость libonnxruntime в otool -L / readelf -d;
+        # win = маркер орт-статики в теле (`grep -a onnxruntime/core/session`,
+        # PE-локатор RUNPATH не несёт). Тот же контур = красным, если фича
+        # `ort-inference` тихо выключена (бинарь cascade-0, а не full).
+        run: |
+          set -euo pipefail
+          case "$(uname -s)" in
+            Darwin) otool -L target/release/fasad | grep -qi onnxruntime ;;
+            Linux)  readelf -d -l target/release/fasad | grep -qi onnxruntime ;;
+            *)      LC_ALL=C grep -qa 'onnxruntime/core/session' target/release/fasad.exe ;;
+          esac
+          echo "ЗУБ А ok: fasad несёт орт-контур ($(uname -s))"
+      - name: "Зуб А (трей fasad-tray, win/mac): трей = тот же full-контур"
+        # Релизный бандл win/mac несёт ОБА бинаря одного контура (#181: трей =
+        # тот же main.rs + фича tray, монтаж #14A); linux-трея физически нет
+        # (§16, required-features = tray), linux-бандл = headless + systemd (#140).
+        # Тот же дискриминатор, что шагом выше, только над трей-целью.
+        if: matrix.os != 'ubuntu-24.04'
+        run: |
+          set -euo pipefail
+          case "$(uname -s)" in
+            Darwin) otool -L target/release/fasad-tray | grep -qi onnxruntime ;;
+            *)      LC_ALL=C grep -qa 'onnxruntime/core/session' target/release/fasad-tray.exe ;;
+          esac
+          echo "ЗУБ А ok: fasad-tray несёт орт-контур ($(uname -s))"
+      - name: "win/linux: орт-библиотека рядом с бинарём (copy-dylibs, доставка рантайма)"
+        # ort-sys `copy_dylibs` (build/dynamic_link.rs:16-21, промер 25.10)
+        # симлинком/копией кладёт dylib РЯДОМ с бинарём (win: onnxruntime.dll;
+        # unix symlink, dynamic_link.rs:46-47). Рантайм-локатор ищет её рядом
+        # (ort-дока setup/linking; docs/release.md §Матрица: win = bin/
+        # onnxruntime.dll, linux = libonnxruntime.so рядом). Отсутствие =
+        # бинарь собран, а рантайма нет = бандл, который не стартует (тот же
+        # риск, что win-шаг release.yml:279-293, который его меряет на теге;
+        # здесь — на PR). mac-ячейка пропускается: её доставка = официальный
+        # dylib из шага выше + rpath (не copy-dylibs), доказана otool-зубом.
+        if: matrix.os != 'macos-14'
+        run: |
+          set -euo pipefail
+          case "$(uname -s)" in
+            Linux)
+              [ -f target/release/libonnxruntime.so ] \
+                  || { echo "ОШИБКА: target/release/libonnxruntime.so нет — copy-dylibs не положил linux-рантайм рядом с бинарём"; exit 1; }
+              echo "linux-доставка ok: libonnxruntime.so рядом с fasad (runtime-локатор по пути)"
+              ;;
+            *)
+              [ -f target/release/onnxruntime.dll ] \
+                  || { echo "ОШИБКА: target/release/onnxruntime.dll нет — win-бинарь орт-контурный, а copy-dylibs его не положил (бандл бы не стартовал)"; exit 1; }
+              ls -la target/release/fasad.exe target/release/fasad-tray.exe target/release/onnxruntime.dll
+              echo "win-доставка ok: onnxruntime.dll рядом с exe (PE-локатор «рядом с exe»)"
+              ;;
+          esac
+
   python-golden:
     # Python-тулинг (gutter, рулинг 19.10: AGENTS п.6): uv-locked линт +
     # побайтовая воспроизводимость golden-датасета на ВСЕХ ТРЁХ ОС (#31:
