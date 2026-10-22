@@ -273,7 +273,14 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release -p guard-daemon --target-dir target-c0
-          FASAD_RSS_TARGET="$PWD/target-c0/release" just measure-rss --skip-build
+          # env -u FASAD_MODEL_DIR (#188, провен релиз-репетиции run 39795161065
+          # mac-нога): шаг «Веса каскадов 1–2» пишет FASAD_MODEL_DIR в GITHUB_ENV,
+          # и он наследуется ЭТИМ шагом — каскад-0-артефакт замера (фича off) при
+          # названных весах отказывается стартовать (BuiltWithoutInference,
+          # cascades.rs:649-650), и measure-rss краснеет «демон умер на старте».
+          # Зуб #185 выше делает то же самое через `env -u` — та же причина.
+          env -u FASAD_MODEL_DIR FASAD_RSS_TARGET="$PWD/target-c0/release" \
+              just measure-rss --skip-build
       - name: "Каскад-0-референс зуба В (win/linux: дискриминатор против full-метки)"
         # verify-bundle ЗУБ В проверяет живым прогомом: бинарь БЕЗ ort-inference
         # при FASAD_MODEL_DIR обязан отказать стартом (BuiltWithoutInference).
@@ -296,36 +303,47 @@ jobs:
           set -euo pipefail
           cargo build -p guard-daemon --target-dir target-c0
           echo "FASAD_CASCADE0_BIN=$PWD/target-c0/debug/fasad" >> "$GITHUB_ENV"
-      - name: "win-контур: onnxruntime.dll из pyke-кэша (delivery рядом с exe)"
+      - name: "win-контур: onnxruntime.dll контура сборки (delivery рядом с exe)"
         # win-бинарь линкуется pyke-статикой (build.rs rpath-ветка =
         # macos|linux), рантайм = onnxruntime.dll РЯДОМ с exe (ort-дока
         # setup/linking: «in PATH or next to the exe»; PE RUNPATH нет).
-        # Путь dll (#188, CI-провен run 39786761298 win-нога ort-build):
-        # `copy_dylibs` (орт-sys build/dynamic_link.rs:14-20, промер 22.10)
-        # пишет в `vars::target_dir()` (vars.rs:32-42) = КОРЕНЬ target/, НЕ в
-        # target/release/; и только в download-ветке build-скрипта (main.rs:179-
-        # 180), а на cache-hit она не реранится. Прежний путь
-        # `target/release/onnxruntime.dll` = ложно-красный гейт (класс #184:
-        # win-шаг ort-build зафиксировал отсутствие dll в target/release/ при
-        # build rc=0); delivery-контур = `just dist` → make-bundle `--ort-dll`
-        # из $ORT_DLL (justfile:547-555) → bin/onnxruntime.dll в бандле.
-        # Отсутствие dll = красным: бинарь собран, а рантайма нет = бандл,
-        # который не стартует (риск win-ветки записан в #181).
+        # Путь dll (#188, CI-провены): `copy_dylibs` (орт-sys
+        # build/dynamic_link.rs:14-20, промер 22.10) пишет в
+        # `vars::target_dir()` (vars.rs:32-42) = КОРЕНЬ target/, НЕ в
+        # target/release/; на кэш-хите ort-sys не реранится вовсе
+        # (write-through `!out_path.exists()`, dynamic_link.rs:40).
+        # РЕАЛЬНОСТЬ win-контра (провен релиз-репетиции run 39795161065
+        # dist-windows): dll НЕТ ни в `target/`, ни в `target/release/` при
+        # rc=0 сборки release-профиля (find глубже = пусто по всему target/:
+        # см. строку лога) — pyke-win дистрибутив линкуется MSVC-статикой
+        # (`rustc-link-lib=static=onnxruntime`, main.rs:183), dll-артефакт
+        # в нём для RUNTIME НЕ обязателен: exe со статик-ортом не грузит
+        # onnxruntime.dll (PE-графа без неё: make-bundle.sh:184-189).
+        # Динамик-контура win (pyke import-lib, `ORT_LIB_LOCATION`) в нашем
+        # релизе нет. ПРЕЖНИЙ hard-гейт (отсутствие dll = красным,
+        # «бинарь собран, а рантайма нет») = ложно-красный для статик-контура
+        # (тот же класс, что linux readelf-гейт #188); шаг = ЗАПИСЬ
+        # расположения dll (INFO): есть → берём в бандл `--ort-dll`
+        # (make-bundle кладёт bin/onnxruntime.dll рядом с exe), нет → в бандл
+        # идёт статик-екзешник (раннер-доказательство: ЗУБ А verify-bundle
+        # маркер-форма win-ноги, провен 39795161065 win dist дошёл до
+        # «Бандл» без dll-гейта). Доставка win-рантайма = вопрос контура
+        # линковки (статик vs динамик), закрыт первичкой: Статик.
         if: matrix.os == 'windows-2022'
         shell: bash
         run: |
           set -euo pipefail
-          dll=""
-          for p in target/onnxruntime.dll target/release/onnxruntime.dll; do
-              if [ -f "$p" ]; then dll="$p"; break; fi
-          done
-          if [ -z "$dll" ]; then
-              echo "ОШИБКА: onnxruntime.dll нет ни в target/, ни в target/release/ — win-бинарь орт-контурный (release-build), а copy-dylibs не оставил dll" >&2
-              find target -maxdepth 2 -name '*.dll' 2>/dev/null | head -10
-              exit 1
+          # Единственный носитель факта «dll есть» = ls/find из самого шага
+          # (exit code `[ -f ]` при `set -e` внутри if — не источник истины).
+          dll="$(find target -maxdepth 2 -name 'onnxruntime.dll' -print -quit 2>/dev/null || true)"
+          if [ -n "$dll" ]; then
+              echo "win: onnxruntime.dll = $dll (copy_dylibs → vars::target_dir, vars.rs:32) — в бандл через --ort-dll"
+              echo "ORT_DLL=$PWD/$dll" >> "$GITHUB_ENV"
+          else
+              echo "win INFO: onnxruntime.dll в target-контуре НЕ найдена (провен run 39795161065: нет ни в target/, ни в target/release/) — win-релиз = pyke MSVC-статика (ort-sys main.rs:183), рантайм-библиотека exe не нужна; бандл = статик-екзешник (ЗУБ А verify = маркер-форма win-ноги, #188)."
+              echo "--- полный поиск dll по target/ (запись, не гейт) ---"
+              find target -name 'onnxruntime*.dll' 2>/dev/null | head -10 || true
           fi
-          echo "win: onnxruntime.dll = $dll (copy_dylibs → vars::target_dir = корень target/, vars.rs:32)"
-          echo "ORT_DLL=$PWD/$dll" >> "$GITHUB_ENV"
       - name: "Linux-контур: запись ELF-графа (статика download-контура, #188)"
         # linux-полный путь: ort-sys download-binaries линкует орт СТАТИКОЙ
         # (первичка ort-sys build/main.rs:177-183: static_link_prerequisites +
@@ -391,10 +409,10 @@ jobs:
     # dylib 1.31.0 + `ORT_PREFER_DYNAMIC_LINK=1` (per первичка ort:
     # https://ort.pyke.io/setup/linking — compile-time dynamic linking =
     # ORT_LIB_PATH + ORT_PREFER_DYNAMIC_LINK=1; доставка рантайма на macOS —
-    # rpath `@loader_path`). linux-нога spike СНЯТА (#188): spike-линк
-    # `-lonnxruntime` требует mac-обвязки dynamic_lookup (build.rs:99, nit #6
-    # ревью #9), а linux-релиз = download-статика dist-матрицы (не dylib);
-    # linux-контур харнеса = не-продукт, ram-мера меряется на mac (§9).
+    # rpath `@loader_path`). linux-нога = spike на официальном linux-dylib
+    # (репетиция динамик-линка; linux-РЕЛИЗ = download-статика dist-матрицы,
+    # main.rs:177-183, и её ЗУБ = маркер-форма #188; доставка linux-рантайма =
+    # отдельное решение оператора). Рам-мера харнеса = mac (§9).
     # Хэши архивов — первичка docs/model-audit.md §8 п.3 (промер 19.10), не SPEC.
     name: ort-dylib (${{ matrix.os }})
     permissions:
@@ -471,43 +489,39 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ort"
           tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP/ort"
           ls -1 "$RUNNER_TEMP/ort"
-      - name: "Сборка spike с ort-inference (release, dylib; mac-контур)"
-        # mac = живой dylib-контур харнеса (контракт §W2 п.1: pyke-статика в
-        # release SIGSEGV'ит, рабочий путь = официальный dylib +
-        # ORT_PREFER_DYNAMIC_LINK; spike dlopen'ит dylib по полному пути
-        # SPIKE_DYLIB — crates/guard-onnx/build.rs). linux-нога СНЯТА (#188,
-        # провен релиз-репетиции run 39791625858 обе ноги):
-        #   • linux: `ORT_LIB_PATH=<архив>` (без /lib) → ort-sys берёт
-        #     `-L <архив> -lonnxruntime`, а `libonnxruntime.so.1.31.0` лежит в
-        #     `<архив>/lib` (linker-строка лога: `-L /tmp/…/onnxruntime-linux-
-        #     x64-1.31.0` → «unable to find library -lonnxruntime»).
-        #   • mac: та же форма `-lonnxruntime` + dynamic_lookup НЕ сработала
-        #     («ld: library 'onnxruntime' not found», провен 39791625858) —
-        #     живой контракт харнеса = dlopen по SPIKE_DYLIB (build.rs),
-        #     фиктивная `-lonnxruntime` линкуется ТОЛЬКО с mac-обвязкой
-        #     (`-Wl,-undefined,dynamic_lookup` + rss_mach.o, build.rs:99-103)
-        #     — на mac шаг зелёный, на linux её нет (nit #6 ревью #9: «Linux-
-        #     веть spike в dynamic_lookup не нуждается»).
-        #   • linux-релизный контур = НЕ dylib: dist-матрица линкует download-
-        #     статику (main.rs:177-183), linux-нога харнеса = не релизный
-        #     контракт (ram-контур меряется на mac, docs/model-audit.md §9);
-        #     динамик-контур linux = отдельное решение оператора (#188).
+      - name: "Сборка spike с ort-inference (release, dylib; mac/linux)"
+        # Контур харнеса (контракт §W2 п.1: pyke-статика в mac release
+        # SIGSEGV'ит, рабочий путь = официальный dylib + ORT_PREFER_DYNAMIC_LINK;
+        # spike dlopen'ит RSS-мост по SPIKE_DYLIB, орт-символы = динамик-линк
+        # `-lonnxruntime`, ort-sys main.rs:49-51). mac = продукт-мера (§9);
+        # linux-нога = репетиция динамик-линкуемого spike (доставка linux
+        # рантайма в релиз НЕ смонтирована — ЗУБ linux-релиза = маркер-форма,
+        # #188; динамик-контур linux = отдельное решение оператора).
+        # Латент, найденный репетицией (провен run 39791625858 обе ноги,
+        # исправлен в #188): шаг давал `ORT_DIR=<корень архива>`, а рецепт
+        # `build-ort` (justfile:487) подставляет `${ORT_DIR}/lib` — орт-sys
+        # искал библиотеку в корне архива: mac «ld: library 'onnxruntime' not
+        # found», linux «unable to find library -lonnxruntime». Форма ниже =
+        # контракт рецепта (justfile:297/371/382/487: ORT_DIR = корень,
+        # библиотека в его `lib/`, промер 21.10), та же, что dist-шага
+        # (`[ -d "$ORT_DIR/lib" ]`, justfile:435).
         env:
           # Корень распакованного архива = имя самого архива без .tgz
           # (промер локальной распаковки 21.10: onnxruntime-osx-arm64-1.31.0/,
           # onnxruntime-linux-x64-1.31.0/); каталоги `ort_dir` заданы в матрице
           # рядом с `ort_archive`, чтобы они не разъезжались.
           ORT_DIR: ${{ runner.temp }}/ort/${{ matrix.ort_dir }}
-        if: matrix.os == 'macos-14'
         run: just build-ort
-      - name: "Проверка линковки: dylib прописан в load commands (mac)"
+      - name: "Проверка линковки: dylib прописан в load commands"
         env:
           ORT_DIR: ${{ runner.temp }}/ort/${{ matrix.ort_dir }}
-        if: matrix.os == 'macos-14'
         run: |
           set -euo pipefail
           bin=target/release/examples/spike
-          otool -L "$bin" | grep -i onnxruntime
+          case "$(uname -s)" in
+            Darwin) otool -L "$bin" | grep -i onnxruntime ;;
+            Linux) ldd "$bin" | grep -i onnxruntime ;;
+          esac
           echo "ort-dylib ok: spike линкуется на официальный dylib 1.31.0 (не на pyke-статику)"
 
   release:
