@@ -393,7 +393,7 @@ jobs:
           # stream with the [Console]::OutputEncoding (OEM codepage), so the
           # Cyrillic part of the message is mojibake in the pipeline (CI-
           # proven 94bec2e: the step's own log renders the message fine,
-          # while the CAPTURED pipeline variable showed no match — a local
+          # while the CAPTURED pipeline variable showed no match: a local
           # repro of the 5.1 codepage decode is impossible on this mac
           # (pwsh 7 = UTF-8 always), so the marker is ASCII (a stable part
           # of the message under any codepage). It covers the diagnosis:
