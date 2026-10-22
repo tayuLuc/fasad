@@ -228,10 +228,23 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 байт-в-байт, gzip пишет mtime входящих файлов, и четыре сборки одного дерева
 21.10 дали четыре разных числа: 1 728 002 Б (прежняя запись в этом абзаце),
 1 728 016 Б, 1 727 997 Б и 1 728 001 Б (прогон `just release` на head `43158f7`).
-`shasum -a 256 -c SHA256SUMS.txt` = OK; `scripts/verify-bundle.sh` = rc 0 (прогон
-21.10: `ANALYZE|spans=1`, `ANALYZE|inn10=ok`); позитивные контроли: подменённый
+Пересъёмка 22.10 на head `237bd1c` (`just release-build` + `just
+release-build-tray` + `make-bundle --tray-binary`, mac-контур #128: бандл
+несёт `bin/fasad` + `bin/fasad-tray`, потому в размере он не сравним с
+прежней полосой ~1.7 МБ): три упаковки одного дерева дали 3 873 029 /
+3 873 030 / 3 873 031 Б — разброс ±1 Б = gzip-mtime, закон абзаца
+подтверждён; идентификатор прогона — `SHA256SUMS.txt` архива
+`d8c83510d1f34f74e207a52a97616600afbdad5b2545eaf443e5accf1c6c6c1b`.
+`shasum -a 256 -c SHA256SUMS.txt` = OK (6/6 файлов); `scripts/verify-bundle.sh` = rc 0 (пересъёмка
+22.10: `ANALYZE|spans=1`, `ANALYZE|inn10=ok`, `HEALTH|…stage":"cascade-0-only"…`,
+`TRAY|ok|port=60864`); позитивные контроли: подменённый
 байт в `bin/fasad` = rc 1, ИНН с битой чексуммой в проверочном запросе = rc 1. Посадка зуба
-«тег == версия» (п.4a, промер 21.10 на этом дереве): `FASAD_EXPECT_VERSION=v9.9.9`
+«тег == версия» (п.4a, промер 21.10 на этом дереве; контроль 22.10 на `237bd1c`
+повторил все ветки: v9.9.9 = rc 1 с двумя строками причины, пре-релиз
+v0.1.0-rc1 = rc 1, `v0.1.0` = rc 0 и ДВУМЯ строками `VERSION|ok`
+(`…|workspace.package=0.1.0` + `…|daemon=0.1.0`), без аргумента = rc 0 +
+`VERSION|SKIPPED`):
+`FASAD_EXPECT_VERSION=v9.9.9`
 против `Cargo.toml = 0.1.0` = rc 1 с двумя строками причины; тот же прогон с
 `v0.1.0` = rc 0 и ДВУМЯ строками `VERSION|ok` (`…|workspace.package=0.1.0` +
 `…|daemon=0.1.0`, п.4a); без аргумента = rc 0 и строка
@@ -259,9 +272,23 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 5. Скобки в шаблоне тройные: двойные `{{x}}` HTML-экранируют (живой прогон дал
    `BSD 3-Clause &quot;New&quot;` в текстовом файле).
 6. Флаг `--fail`: нераспознанная лицензия = красный гейт, а не дырка в бандле.
-7. Прогон 21.10 (macOS, `--workspace --offline --fail`): 6043 строки, 197
-   записей «пакет → версия», 7 лицензионных наборов (Apache-2.0 124, MIT 38,
-   ISC 18, BSD-3-Clause 6, Zlib 2, CDLA-Permissive-2.0 1, Unicode-3.0 1).
+7. Прогон 22.10 на head `237bd1c` (macOS arm64, cargo-about 0.9.2, `just
+   deps-licenses` = `cargo about generate -c about.toml --workspace --offline
+   --fail about.hbs`, rc=0; артефакт `dist/THIRD-PARTY-LICENSES.txt` sha256
+   `9dabadec8c48cc0ac25e175050ca1267cbbc9f0f0309b866114bff5f2ee42c21`, два
+   повтора генерации побайтово совпали): 5187 строк (`wc -l`), 174 записи
+   «пакет → версия» (формула первички — `grep -c '^  - '`, она же печатается
+   в хвосте `just deps-licenses`), 6 лицензионных наборов (Apache-2.0 111,
+   MIT 35, ISC 18, BSD-3-Clause 2, CDLA-Permissive-2.0 1, Unicode-3.0 1 —
+   блок «Краткий обзор» артефакта; по блокам «Используют:» 168 `used_by`-
+   записей, 148 уникальных пар «имя+версия» — счётчики `overview` идут по
+   лицензионным множествам, 20 пакетов несут по две лицензии).
+   Прежняя запись «прогон 21.10: 6043 строки, 197 записей, 7 наборов (…
+   Zlib 2 …)» снята пересъёмкой #106: дерево уехало (с #146 на win/mac
+   едет `tray-icon`+`muda`-дерево), Zlib-набора в текущем бандле нет
+   (первичка: `grep -ci zlib` по артефакту = 0), наборов 6. Число лицензий
+   на Linux-ячейке матрицы (x-cache) не переснималось — промер локальный,
+   macOS.
 
 ## RAM
 
@@ -278,20 +305,34 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    влитые PR сдвинули строки первички #76). `OMP_NUM_THREADS` не рычаг: вендорный
    `libonnxruntime` osx-arm64 без OpenMP, переменную не читает (первичка
    правки к рюлингу — `otool`/`strings`, ревью #73).
-2. Каскад-0 (публикуемый бинарь): пик 3.4 MiB (`ps -o rss`) / 1.6 MiB
-   (`footprint phys_footprint`) после прогрева. Число потоков этому контуру не
+2. Каскад-0 (публикуемый бинарь): пик 3.5 MiB (`ps -o rss`) / 1.7 MiB
+   (`footprint phys_footprint`) после прогрева — пересъёмка 22.10 на head
+   `237bd1c`, четыре прогона `just measure-rss --cascade0 --skip-build`
+   (основной + три повтора), все `peak_mib=3.5`, idle 2.6–2.7/1.4; первичка
+   чисел — `--doc-rows`-блок прогона, docs/model-audit.md §9 п.1.
+   Число потоков этому контуру не
    фактор — по причине п.1 (стадия `cascade-0-only`, рычаг инертен): три прогона
    при `FASAD_THREADS=8` дают 3.3/3.3/3.4 MiB, прогон при `=2` — 3.4 MiB (N=4,
-   21.10; прежде здесь стояло одиночное неавторитетное 2.8 — снято по ревью #76,
+   21.10, прежняя база, снята пересъёмкой 22.10; прежде здесь стояло
+   одиночное неавторитетное 2.8 — снято по ревью #76,
    F4). На смонтированном пути (#87) это уже не так: там сравнение потоков —
    отдельный промер, docs/model-audit.md §10 п.8. Бюджет SPEC §1 (1843.2 MiB) не
    задействован и на 1 %.
 3. Полный каскад 1–2 (харнес `spike`, релизный профиль, официальный dylib ORT
-   1.31.0): пик двух моделей в одном процессе 976.3 MiB (`--threads 4`,
-   53 % бюджета) и 889.1 MiB (`--threads 2`, 48 %); для бюджета держим max.
-   Промеры 21.10, метод и сырые строки — docs/model-audit.md §9.
-4. Профиль: бюджет-гейт раньше был закрыт dev-числом 1434.6 MiB (docs/model-audit-weights.md §W2.6 п.5),
-   релизный профиль даёт 976.3 — оговорка профиля по этой точке снята.
+   1.31.0): пересъёмка 22.10 на head `237bd1c` (методика CI-контрактная,
+   `just measure-rss --full --skip-build`, `--threads 2`): пики 1527.7 и
+   1524.5 MiB (83 % бюджета, вердикт `ok` в обоих), полная t4-пара харнеса
+   1396.9 (76 %). Прежние 976.3 (`--threads 4`) / 889.1 (`--threads 2`,
+   промеры 21.10) на этом дереве НЕ воспроизводятся (рост +420.6…+638.6,
+   причина не промерена — сырые строки и разбор в docs/model-audit.md §9
+   п.2); для бюджета держим max = 1527.7.
+   Метод и сырые строки — docs/model-audit.md §9.
+4. Профиль: бюджет-гейт раньше был закрыт dev-числом 1434.6 MiB (docs/model-audit-weights.md §W2.6 п.5);
+   релизный профиль 21.10 давал 976.3 («dev = верх» было подтверждено).
+   Пересъёмка 22.10 подтверждение ОТЗЫВАЕТ: полный релизный прогон на этом
+   дереве = 1330.6–1527.7, верх ВЫШЕ dev-числа — оговорка профиля по этой
+   точке не подтверждена, бюджет планируем по max релизных прогонов
+   (docs/model-audit.md §9 п.3).
 5. Windows: **не промерено**. `scripts/measure-rss.sh` на `MINGW*`/`MSYS*`
    падает exit 2 с явной причиной (реализованы Darwin/Linux); PowerShell-метод
    (`Get-Process` `WorkingSet64`/`PrivateMemorySize64`) не реализован, шаг
@@ -380,6 +421,22 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    `ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=$HOME/onnxruntime-dylib/onnxruntime-osx-arm64-1.31.0/lib cargo build --release --features ort-inference --example spike`
    = exit 0 за 4m05s, линкуется на `libonnxruntime.1.31.0.dylib`, полный
    прогон `--arb-budget --arb --lockr` = exit 0 (числа RAM — §9).
+   Контроль 22.10 на head `237bd1c`: та же команда = rc 0; `otool -L`
+   target/release/examples/spike → `@rpath/libonnxruntime.1.dylib (current
+   version 1.31.0)`; полный харнес-прогон = rc 0 (числа — §9 пересъёмки).
+   Пара контроля (п.1 этого же раздела, два binary-пути, 22.10): голый
+   `cargo build --release -p guard-daemon --features ort-inference` (без
+   env-префикса) падает в линке ровно на обещанном символе — `ld: Undefined
+   symbols: ___isPlatformVersionAtLeast ... host_utils.mm.o` (pyke-статика,
+   §W2 п.2); тот же голый путь для example-цели
+   `cargo build --release --features ort-inference --example spike` линкуется
+   (rc 0): build.rs крейта даёт example-цели
+   `-Wl,-undefined,dynamic_lookup` (`crates/guard-onnx/build.rs:102`), и
+   хелпер резолвится в рантайме из dlopen'нутого орт-контура; у bin-цели
+   этого link-arg нет — отсюда падение. Голый example-путь остаётся
+   pyke-статическим (release-SIGSEGV-контракт п.1, §W2 п.1), в релизную
+   методику не входит: `just build-ort`/`measure-rss --full` собирают и
+   гоняют example с префиксом.
 3. В CI это закрыто job `ort-dylib` (macos-14 + ubuntu-24.04): скачивание
    официального архива v1.31.0, сверка sha256 (первичка §8 п.3), `just build-ort`,
    проверка `otool -L`/`ldd` на наличие dylib в load commands.
@@ -392,7 +449,7 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
    раздела «Что в бандле»). Пункт SPEC §9 про `libonnxruntime.so`/`onnxruntime.dll`
    внутри архива становится живым вместе с модельным путём в демоне.
 
-## Пины action'ов (промер 21.10, `gh api repos/<owner>/<repo>/releases/latest`)
+## Пины action'ов (промер 21.10, `gh api repos/<owner>/<repo>/releases/latest`; пересъёмка 22.10 на head `237bd1c`)
 
 | action | пин в release.yml | живой latest на момент промера |
 | --- | --- | --- |
@@ -400,11 +457,11 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 | actions/upload-artifact | `cf430e03…` # v7.0.2 | v7.0.2 |
 | actions/download-artifact | `9000827c…` # v8.0.2 | v8.0.2 |
 | Swatinem/rust-cache | `d1527c8f…` # v2.9.3 | v2.9.3 |
-| taiki-e/install-action | `8cca0918…` # v2.87.29 | v2.87.29 (совпадает с ci.yml) |
+| taiki-e/install-action | `8cca0918…` # v2.87.29 | **v2.87.30** (пересъёмка 22.10: latest уехал на патч; пин `8cca0918…` = v2.87.29 валиден, апгрейд пина — не этот PR) |
 | dtolnay/rust-toolchain | `b725eda5…` («toolchain: stable», 2026-10-16) | v1 |
 
 Пин dtolnay/rust-toolchain сделан коммитом осознанно: moving-тег `v1` существует
-(`releases/latest` = v1, `git/ref/tags/v1` → commit `683b588c487a`, промер 21.10),
+(`releases/latest` = v1, `git/ref/tags/v1` → commit `683b588c487a`, промер 21.10; пересъёмка 22.10: `releases/latest` = v1, тот же sha `683b588c487a`),
 но он и есть движущаяся цель — `v1` едет вместе со `stable`, а релизному контуру
 нужна воспроизводимость по sha. Прежняя скобка «мажорных тегов нет» (найдена
 ревью #76, F3) утверждала обратное и удалена; первоисточник формулировки —
