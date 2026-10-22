@@ -1103,6 +1103,9 @@ mod tests {
             ("ОГРНИП 313777542563312 ИП", "ogrnip"),
             ("карта 4575503590352993 на оплату", "card_pan"),
         ];
+        // Страж-реестр #178 (член 23, #138-класс): длина уже в типе `[(_); 6]`,
+        // счётчик дублирует её машиной, а не комментарием.
+        assert_eq!(cases.len(), 6, "реестр golden-значений уехал");
         for (text, class) in cases {
             let hits = scan(text, &schema());
             assert!(
@@ -1156,6 +1159,9 @@ mod tests {
                 "ES6987181615681144316009",
             ),
         ];
+        // Страж-реестр #178 (член 23, #138-класс): 4 СНИЛС-перемычки +
+        // 2 карты + ИНН + ОГРН + 4 IBAN.
+        assert_eq!(cases.len(), 12, "реестр форматированных форм уехал");
         for (text, gold) in cases {
             let hits = scan(text, &schema());
             let found = hits
@@ -1249,6 +1255,9 @@ mod tests {
             "телефон 12.345.678-901",
             "телефон +7 900 123-45-67",
         ];
+        // Страж-реестр #178 (реестр false-green, член 23): пустой/урезанный
+        // массив фикстур = зелёная лажь (#138-класс). Число литералом.
+        assert_eq!(cases.len(), 12, "реестр фикстур word-break #131 уехал");
         for text in cases {
             let hits = scan(text, &schema);
             assert!(hits.is_empty(), "{text:?} дал спаны: {hits:?}");
@@ -1323,6 +1332,15 @@ mod tests {
             // одной группы, в окно не входит, вето его не сдвигает —
             // `digit_runs` берёт число как есть (ИНН-10 base-FP #102).
         ];
+        // Страж-реестр #178 (реестр false-green, член 23): пустой массив
+        // фикстур = зелёная лажь (#138-класс: страж жил с cases=[] два коммита,
+        // фикстуры были вынесены комментариями). Число записано литералом —
+        // любая выемка фиксации красит тест, а не озеленяет его.
+        assert_eq!(
+            cases.len(),
+            25,
+            "реестр zero-canon/leading-фикстур #138+#158 уехал (пустой массив = зелёная лажь)"
+        );
         for text in cases {
             let hits = scan(text, &schema);
             assert!(
@@ -1345,14 +1363,17 @@ mod tests {
     #[test]
     fn single_digit_canon_veto_covers_nonzero_repdigits() {
         let schema = schema();
-        for text in [
+        let cases = [
             "888888888888",
             "8888888888888888",
             "6666666666666",
             "22222222222222222",
             "карта 888888888888",
             "111111111111",
-        ] {
+        ];
+        // Страж-реестр #178 (член 23, #138-класс): число литералом.
+        assert_eq!(cases.len(), 6, "реестр repdigit-фикстур #158 уехал");
+        for text in cases {
             let hits = scan(text, &schema);
             assert!(hits.is_empty(), "{text:?} дал спаны: {hits:?}");
         }
@@ -1363,7 +1384,7 @@ mod tests {
     #[test]
     fn two_digit_leading_group_still_glues() {
         let schema = schema();
-        for (text, class) in [
+        let cases = [
             ("ИНН 24/82/01/43/38", "inn"),
             ("карта 2204.9947.4132.0000", "card_pan"),
             ("карта 2204/9947/4132/0000", "card_pan"),
@@ -1380,7 +1401,11 @@ mod tests {
             // «ИНН 24.82.01.43.38» и «БИК 04.4525225» — #159: join-вето равных
             // 2-групп (2+2 → календарь, 2+7), этиология документированного
             // вето 6+6 (#102); base-огонь «82.01.43.38» = артефакт окна.
-        ] {
+        ];
+        // Страж-реестр #178 (член 23, #138-класс): число литералом; страж
+        // обязан оставаться НЕ пустым — он держит узкость leading-рамки.
+        assert_eq!(cases.len(), 6, "реестр two-digit-фикстур #138 уехал");
+        for (text, class) in cases {
             let hits = scan(text, &schema);
             assert!(
                 hits.iter().any(|h| h.class.as_str() == class),
@@ -1422,6 +1447,9 @@ mod tests {
             ("4575503590352993", "4575 5035 9035 2993", "card_pan", true),
             ("4575503590352994", "4575 5035 9035 2994", "card_pan", false),
         ];
+        // Страж-реестр #178 (член 23, #138-класс): 3 валидные + 3 невалидные
+        // пары, обе ветки (слитная/форматированная) прогоняются на каждой.
+        assert_eq!(pairs.len(), 6, "реестр пар «слитно/группами» уехал");
         for (plain, formatted, class, expect) in pairs {
             let hit = |s: &str| {
                 scan(s, &schema)
@@ -1492,6 +1520,8 @@ mod tests {
                 &["card_pan"][..],
             ),
         ];
+        // Страж-реестр #178 (член 23, #138-класс): 5 рамок окна.
+        assert_eq!(cases.len(), 5, "реестр window-frame-фикстур уехал");
         for (text, banned) in cases {
             let hits = scan(text, &schema());
             for b in banned {
@@ -1672,6 +1702,8 @@ mod tests {
             ("ОГРНИП 313777542563312 ИП", "ogrnip"),
             ("карта 4575503590352993 на оплату", "card_pan"),
         ];
+        // Страж-реестр #178 (член 23, #138-класс): длина в типе, счётчик — машиной.
+        assert_eq!(cases.len(), 6, "реестр base64-golden-значений уехал");
         for (payload, class) in cases {
             let token = b64(payload.as_bytes());
             let text = format!("приложение {token} конец");
@@ -1930,6 +1962,10 @@ mod tests {
                 "маркер vault (граница не пробельная)",
             ),
         ];
+        // Страж-реестр #178 (член 23, #138-класс): base64-negative-реестр —
+        // 18 форм, ни одна не обязана давать спан; пустой массив = зелёная
+        // лажь (тот же класс, что поймано r3-ревью #138).
+        assert_eq!(cases.len(), 18, "base64-negative-реестр уехал");
         for (text, what) in cases {
             let hits = scan(&text, &schema());
             assert!(hits.is_empty(), "{what}: {text:?} дал {hits:?}");

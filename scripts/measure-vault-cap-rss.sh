@@ -35,8 +35,10 @@
 # Код возврата (тот же контракт, что у measure-daemon-rss.sh — реестр
 # false-green 15/18, «print-only landing test»):
 #   0 = вердикт ok;
-#   1 = вердикт over ЛИБО демон не поднялся ЛИБО мусор в числовом env;
-#   2 = нет бинаря.
+#   1 = вердикт over ЛИБО демон не поднялся;
+#   2 = нет бинаря ЛИБО мусор в числовом env («артефакт непригоден»:
+#       решение #178, docs/release.md §RAM п.11 б — «не промерено» ≠ «не
+#       прошло»; у measure-rss.sh / measure-daemon-rss.sh те же носители).
 
 set -euo pipefail
 
@@ -48,14 +50,14 @@ SESSIONS="${1:-256}"
 REQS="${2:-4}"
 
 if [[ ! "$BUDGET_MIB" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-  echo "measure-vault-cap-rss: ОШИБКА: BUDGET_MIB=$BUDGET_MIB: не число (ожидается вид 1843.2)" >&2
-  exit 1
+  echo "measure-vault-cap-rss: ОШИБКА: артефакт непригоден: BUDGET_MIB=$BUDGET_MIB: не число (ожидается вид 1843.2)" >&2
+  exit 2
 fi
 for v in SESSIONS REQS THREADS; do
   n="${!v}"
   if [[ ! "$n" =~ ^[0-9]+$ ]] || [[ "$n" == "0" ]]; then
-    echo "measure-vault-cap-rss: ОШИБКА: $v=$n: ожидается положительное целое" >&2
-    exit 1
+    echo "measure-vault-cap-rss: ОШИБКА: артефакт непригоден: $v=$n: ожидается положительное целое" >&2
+    exit 2
   fi
 done
 if [[ ! -x "$BIN" ]]; then
