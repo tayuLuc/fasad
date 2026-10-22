@@ -121,7 +121,7 @@ jobs:
     # docs/release.md §ORT п.1: `-Wl,-undefined,dynamic_lookup` build.rs даёт
     # ТОЛЬКО example-цели — `crates/guard-onnx/build.rs:102`; у bin-цели его нет).
     # Поэтому mac-ячейка скачивает официальный dylib 1.31.0 и линкуется с
-    # env-префиксом dylib-контракта; sha256-пин = ТОТ ЖЕ, что шаг mac-контурa в
+    # env-префиксом dylib-контракта; sha256-пин = ТОТ ЖЕ, что шаг mac-контура в
     # release.yml job `dist` и job `ort-dylib` (первичка docs/model-audit.md §8
     # п.3) — пиновано в одно место, дубль строки осознан (воркфлоу не шарят
     # шагов без composite-правок = отдельный атом).
@@ -148,6 +148,12 @@ jobs:
     # нижней границы 2m46s warm-локаль, cold-release ≈ 8–15 мин — ОЦЕНКА, не
     # промер; живойrc/время = этот прогон).
     #
+    # Живой бюджет первого cold-прогона (#187, run 39786761298 job-durations):
+    # linux 1m01s, mac 3m32s, win 5m51s. Гейт timeout-minutes: 30 (нити ревью
+    # dc4ee82f) = ~5-кратная дистанция от худшей ячейки (win); вилка
+    # «оценка 8–15» промерена снизу — на warm-кэше job станет ещё быстрее,
+    # 30 мин покрывают деградацию без ложно-красного обрыва.
+    #
     # Кэш: Swatinem/rust-cache ДОБАВЛЕН сюда. Пин 6323deb102c3… (тот же plain
     # commit, что build-test:45) даёт КЛЮЧ С JOB-ID: первичка action.yml
     # pinned-коммита — `add-job-id-key` default "true" → `GITHUB_JOB` входит в
@@ -168,6 +174,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-2022, macos-14]
     runs-on: '${{ matrix.os }}'
+    timeout-minutes: 30
     defaults:
       run:
         # Windows-2022 без явного shell гоняет `just`/bash-ломаные строки через
@@ -191,13 +198,15 @@ jobs:
           # 22.10 этой job — macos-14-раннер НЕ имеет `sha256sum` (exit 127,
           # `command not found`), а BSD-mac несёт `shasum -a 256`. Урок #76 D3
           # (формат `-c`-файла ломал гейт) обход entirely: сравниваем две hex-
-          # строки без parsing. Тот же пин sha256, что release.yml dist:133.
-          # ЭСКАЛАЦИЯ (issue #184): release.yml `dist`-mac-шаг (:134) и job
-          # `ort-dylib`-mac (:403) используют голое `sha256sum -c` с комментарием
+          # строки без parsing. Тот же пин sha256, что dist-шаг release.yml:126-137
+          # (шаг сверки mac-контра; гейт sha256 = :134 на f5dcb54).
+          # ЭСКАЛАЦИЯ (issue #184 → #188): release.yml `dist`-mac-шаг (:134) и job
+          # `ort-dylib`-mac (:403) использовали голое `sha256sum -c` с комментарием
           # «BSD /sbin/sha256sum» — на macos-14-раннере бинаря НЕТ (промер этой
           # job, run 39784396502 job 119843610877, line 8 rc=127). Оба mac-шага
-          # release.yml НЕ промерены живьём (workflow `release` не запускался ни
-          # разу, gh api runs = пусто 25.10); фикс release.yml = вне рамок #184.
+          # release.yml НЕ были промерены живьём (workflow `release` не запускался
+          # ни разу, gh api runs = пусто 25.10); фикс = #188 — та же hex-форма
+          # (этот шаг = зелёный прообраз, CI-провен run 39786761298 mac-нога).
           actual="$(shasum -a 256 "$RUNNER_TEMP/ort.tgz" | cut -d' ' -f1)"
           expected="1031b36dd3bdaa8d976a6130d9cf2a05e9be320b93ae804f8427b91dc3432afc"
           [ "$actual" = "$expected" ] \
@@ -255,10 +264,12 @@ jobs:
         #     (rustc-link-lib=static=onnxruntime, main.rs:182) → в ELF нет
         #     NEEDED onnxruntime, `readelf -d` (канон verify-bundle.sh:316)
         #     краснеет ЛОЖНО (CI-промер 22.10: сборка rc=0, упал только grep).
-        #     ФОРМА linux-рантайма (stática в бинарь vs доставленный
+        #     ФОРМА linux-рантайма (статика в бинарь vs доставленный
         #     libonnxruntime.so) НЕ смонтирована в релиз (#181: доставка .so в
         #     архив не смонтирована) и НЕ измерена первичкой → write-as-record,
-        #     не гейт.
+        #     не гейт. Решение атома #188: linux = СТАТИКА, ЗУБ релиза =
+        #     маркер-форма win-ноги (verify-bundle.sh), динамик-контур =
+        #     отдельное решение оператора.
         #   • win = MSVC-статика (PE RUNPATH не несёт, make-bundle.sh:149);
         #     маркер `onnxruntime/core/session` в теле = preflight СПАЙК-бинаря
         #     (measure-rss.sh:486 «pyke-статика в бинаре», spike-цель), у
@@ -271,8 +282,8 @@ jobs:
         #     target/release/, и только в download-ветке (кэш-хит ort-sys на
         #     трей-шаге = copy не реранится) → hard-гейт на target/release/*.dll
         #     = ложно-красен (CI 22.10 win rc=1 при build rc=0). Реальная win-
-        #     доставка = релизный шаг release.yml:279-293 (берёт dll из pyke-
-        #     кэша build-контура), ЕЁ промер = на теге, вне рамок #184.
+        #     доставка = релизный шаг release.yml (#188: путь = корень
+        #     target/, тот же vars.rs:32), ЕЁ промер = на теге, вне рамок #184.
         # mac = шаг выше (otool валиден, rpath прописан build.rs демона).
         if: matrix.os != 'macos-14'
         run: |
@@ -281,8 +292,8 @@ jobs:
             Linux)
               echo "--- linux: запись ELF-графа bin-цели (readelf -d + ldd; НЕ гейт) ---"
               find target/release -maxdepth 1 \( -name 'fasad*' -o -name 'libonnxruntime*' \) -exec ls -la {} + 2>/dev/null || true
-              readelf -d target/release/fasad | grep -iE "onnxruntime|NEEDED" || echo "readelf: NEEDED onnxruntime НЕТ (linux = download-binaries СТАТИКА, main.rs:182; канон verify-bundle.sh:316 readelf-d = ложно-красен для этого контура → эскалация #184)"
-              ldd target/release/fasad | grep -i onnxruntime || echo "ldd: onnxruntime .so нет (stática; доставка .so = linux-риск #181, не смонтирована)"
+              readelf -d target/release/fasad | grep -iE "onnxruntime|NEEDED" || echo "readelf: NEEDED onnxruntime НЕТ (linux = download-binaries СТАТИКА, main.rs:182; канон verify-bundle.sh:316 readelf-d = ложно-красен для этого контура → фикс ЗУБа = #188, маркер-форма win-ноги)"
+              ldd target/release/fasad | grep -i onnxruntime || echo "ldd: onnxruntime .so нет (статика; доставка .so = linux-риск #181, не смонтирована)"
               echo "linux ok: full-контур слинкован (build rc=0); ELF-форма записана"
               ;;
             *)
@@ -291,13 +302,15 @@ jobs:
               echo "win ok: full-контур ЛИНКУЕТСЯ (build rc=0, MSVC+pyke-статик, CI run 39785650206)."
               # Запись (не гейт): где реально оказался onnxruntime.dll после
               # copy_dylibs (target_dir = корень target/, vars.rs:32). Релизный
-              # win-шаг (release.yml:279-293) берёт dll из pyke-кэша build-
-              # контура, не из target/release/ → здесь её отсутствие = НЕ
+              # win-шаг (release.yml, #188) берёт dll из КОРНЯ target/ (тот же
+              # vars.rs:32) → здесь её отсутствие в target/release/ = НЕ
               # дефект линковки (линка = build rc=0), а вопрос доставки = #181.
-              if [ -f target/release/onnxruntime.dll ]; then
+              if [ -f target/onnxruntime.dll ]; then
+                  echo "win: onnxruntime.dll в target/ (copy_dylibs → vars::target_dir = корень, vars.rs:32) — релизный win-шаг берёт отсюда (#188)"
+              elif [ -f target/release/onnxruntime.dll ]; then
                   echo "win: onnxruntime.dll в target/release/ (рядом с exe)"
               else
-                  echo "win: onnxruntime.dll НЕ в target/release/ — copy_dylibs пишет в target/ (vars.rs:32), доставка рантайма = релизный шаг release.yml (#181, не #184); линковка full = build rc=0"
+                  echo "win: onnxruntime.dll НЕ в target/ и НЕ в target/release/ — copy_dylibs пишет в target/ (vars.rs:32), доставка рантайма = релизный шаг release.yml (#181, не #184); линковка full = build rc=0"
                   find target -maxdepth 2 -name 'onnxruntime.dll' 2>/dev/null | head -3 || true
               fi
               ;;

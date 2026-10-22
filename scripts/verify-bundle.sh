@@ -18,10 +18,12 @@
 # Контур релиза #181 (рюлинг оператора 22.10: «нужно только фулл»): бандл =
 # `full` — бинарь собран с `ort-inference`, см. docs/release.md §«Что в
 # бандле». П.5 проверяет полный контур:
-#   ЗУБ А (всегда): бинарь бандла содержит орт-контур — mac/linux:
-#     динамическая зависимость от libonnxruntime в otool -L / readelf -d;
-#     win: маркер орт-статики в теле бинаря (MSVC-линк, delivery = dll рядом
-#     с exe — build.rs rpath-ветка = macos|linux).
+#   ЗУБ А (всегда): бинарь бандла содержит орт-контур — mac: динамическая
+#     зависимость от libonnxruntime в otool -L (dylib-контракт); linux/win:
+#     маркер орт-статики в теле бинаря (linux = download-binaries СТАТИКА,
+#     ort-sys main.rs:177-183, CI-провен readelf run 39786761298, #188;
+#     win = MSVC-линк, delivery = dll рядом с exe — build.rs rpath-ветка =
+#     macos|linux).
 #   ЗУБ Б (при mounted-контуре): FASAD_MODEL_DIR=<кеш весов> → демон стартует
 #     и /health говорит "stage":"cascade-0+models" (fallback: нет весов в CI →
 #     SKIPPED-строка, молчание = ложно-зелёная проверка, класс реестра).
@@ -297,9 +299,9 @@ grep -q "listening" "$log" \
 rm -f "$log"
 printf 'REFUSAL|ok|rc=%s|full-бинарь без FASAD_MODEL_DIR = отказ старта (#185, ModelsNotConfigured)\n' "$rc"
 # ── ЗУБ А: бинарь бандла = орт-контур (full) ────────────────────────────────
-# Та же логика, что full_probe в make-bundle.sh (первичка ort-sys
-# build/dynamic_link.rs/static_link): mac/linux — динамическая зависимость,
-# win — маркер орт-статики в теле (PE-локатор не несёт RUNPATH; доставка =
+# Та же логика, что full_probe в make-bundle.sh: mac — динамическая зависимость
+# (dylib-контракт, rpath), linux/win — маркер орт-статики в теле бинаря
+# (download-binaries/MSVC линкуют орт СТАТИКОЙ; доставка win-рантайма =
 # onnxruntime.dll рядом с exe). Инструмент спрашивается у АРТЕФАКТА, env
 # вызывающего не влияет (тот же принцип, что preflight measure-rss.sh #170 б).
 case "$(uname -s)" in
@@ -313,9 +315,21 @@ case "$(uname -s)" in
         printf 'ORT|ok|mac: dylib в бандле + rpath-контур (lib/libonnxruntime.1.dylib)\n'
         ;;
     Linux)
-        readelf -d -l "$bin" 2>/dev/null | grep -qi onnxruntime \
-            || die "ЗУБ А: bin/fasad без libonnxruntime в динамическом графе = бандл не full (release-контур #181)"
-        printf 'ORT|ok|linux: динамический libonnxruntime\n'
+        # Форма зуба (#188) = маркер в теле, та же, что win-нога ниже.
+        # Прежний readelf-гейт краснел ЛОЖНО: linux-контур релиза =
+        # ort-sys download-binaries, а он линкует орт СТАТИКОЙ (первичка
+        # ort-sys build/main.rs:177-183: static_link_prerequisites +
+        # `rustc-link-lib=static=onnxruntime`), в ELF-графе onnxruntime НЕТ —
+        # CI-провен run 39786761298 (ort-build linux, ci.yml): `readelf -d`
+        # bin-цели = NEEDED libstdc++/libgcc_s/libm/libc/ld-linux, .so через
+        # `ldd` нет. Дискриминатор маркера = тот же, что preflight
+        # measure-rss.sh #170 б: релизный каскад-0 (бинарь БЕЗ фичи,
+        # release.yml-шаг target-c0) = 0 совпадений, орт-бинарь = >0
+        # (вендорные пути onnxruntime/core/… из static_link_prerequisites,
+        # ort-sys main.rs:177, промер win-ноги #181/#184).
+        LC_ALL=C grep -qa 'onnxruntime/core/session' "$bin" 2>/dev/null \
+            || die "ЗУБ А: bin/fasad без орт-статики в теле = бандл не full (release-контур #181, linux = download-binaries статика, ort-sys main.rs:182)"
+        printf 'ORT|ok|linux: маркер орт-статики в bin/fasad (download-binaries статика; readelf-д = CI-провен run 39786761298, NEEDED без onnxruntime)\n'
         ;;
     MINGW* | MSYS* | CYGWIN*)
         LC_ALL=C grep -qa 'onnxruntime/core/session' "$bin" 2>/dev/null \

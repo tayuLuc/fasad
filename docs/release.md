@@ -29,8 +29,11 @@
    (`CascadeFailure::BuiltWithoutInference` / `Load`, `cascades.rs:635-650`);
    молчаливой деградации при обещанных весах нет — fail-open на recall.
 4. Проверка контура вшита в гейт (`scripts/verify-bundle.sh`, #181):
-   1. ЗУБ А — бинарь бандла содержит орт-контур (mac/linux: `libonnxruntime`
-      в динамическом графе; win: маркер орт-статики в теле — PE-доставка =
+   1. ЗУБ А — бинарь бандла содержит орт-контур (mac: `libonnxruntime`
+      в динамическом графе — dylib-контракт сборки; linux: маркер орт-статики
+      в теле — download-контур ort-sys линкует СТАТИКОЙ, `main.rs:177-183`,
+      CI-провен `readelf -d` run 39786761298 = NEEDED без onnxruntime (#188);
+      win: маркер орт-статики в теле — PE-доставка =
       `bin/onnxruntime.dll` рядом с exe); mac-бандл несёт dylib 1.31.0 в
       `lib/`, бинари — rpath `@loader_path/../lib`.
    2. ЗУБ Б — live-промер смонтированного контура при доступном кеше весов:
@@ -133,7 +136,9 @@ win/mac-ячейки собирают второй бинарь шагом `just
 (`scripts/fetch-models.sh`) для live-промера ЗУБа Б; win/linux-live-промер
 смонтрованного контура в CI не смонтирован (доставка весов = +879 МБ на
 прогон), риск win/linux-сборок full-контура записан в issue #181: первый
-живой промер = эта матрица на теге.
+живой промер = ci.yml job `ort-build` (#184/#187, PR-контур; #188 перенёс
+первый промер с «тега» на PR — win линкуется, linux = download-статика,
+провен run 39786761298).
 
 Отличие от SPEC §9 (ubuntu-22.04, две ОС): раннер Linux поднят до 24.04 по
 постановке задачи шага 9, macOS-14 добавлен как третья платформа (issue #31).
@@ -627,12 +632,23 @@ v0.1.0-rc1 = rc 1, `v0.1.0` = rc 0 и ДВУМЯ строками `VERSION|ok`
    бинари получают rpath `@loader_path/../lib` — `install_name_tool
    -add_rpath`, промер `otool -L` в make-bundle/verify-bundle ЗУБ А), win —
    `bin/onnxruntime.dll` рядом с exe (PE-локатор, доставка pyke-кэша
-   build-контура `copy-dylibs`, `--ort-dll`). SPEC §9
+   build-контура `copy-dylibs`, `--ort-dll`; путь dll = КОРЕНЬ `target/` —
+   `vars::target_dir()`, первичка ort-sys `build/vars.rs:32-42` +
+   `build/dynamic_link.rs:14-20`, CI-провен win-нога run 39786761298: dll НЕ в
+   `target/release/`; релизный win-шаг берёт из корня, #188). SPEC §9
    (`libonnxruntime.so`/`onnxruntime.dll` рядом) жив: модельный путь в демоне
-   смонтирован (#14A), бандл full (#181). linux: динамическая зависимость
-   `libonnxruntime.so` в графе бинаря (readelf-нога ЗУБа А); доставка .so в
-   архив не смонтирована — раннер-контур сборки, риск #181 (первый живой
-   linux-промер на теге).
+   смонтирован (#14A), бандл full (#181). linux: СТАТИКА — download-контур
+   ort-sys линкует орт статическим архивом (первичка ort-sys
+   `build/main.rs:177-183`: `static_link_prerequisites` +
+   `rustc-link-lib=static=onnxruntime`), в ELF-графе onnxruntime НЕТ —
+   CI-провен `readelf -d`/`ldd` run 39786761298 (ort-build linux, NEEDED =
+   libstdc++/libgcc_s/libm/libc/ld-linux, .so нет); прежняя формулировка
+   «динамическая зависимость» (readelf-нога ЗУБа А) была ЛОЖНОЙ для этого
+   контура и краснила гейт ложно (#188: linux-нога ЗУБа А = маркер-форма
+   win-ноги, `LC_ALL=C grep -a 'onnxruntime/core/session'`). Доставка
+   `libonnxruntime.so` в архив не смонтирована и не нужна статике;
+   динамик-контур linux = отдельное решение оператора, не #188. Первый живой
+   linux-промер full-контура = ci.yml `ort-build` (#184/#187, PR-контур).
 
 ## Пины action'ов (промер 21.10, `gh api repos/<owner>/<repo>/releases/latest`; пересъёмка 22.10 на head `237bd1c`)
 
