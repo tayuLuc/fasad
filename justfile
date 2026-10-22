@@ -502,7 +502,20 @@ deps-licenses:
     set -euo pipefail
     command -v cargo-about >/dev/null 2>&1 || { echo "cargo-about не установлен (cargo install --locked --features cli cargo-about) — гейт НЕИСПОЛНЕН, не провален"; exit 2; }
     mkdir -p dist
-    cargo about generate -c about.toml --workspace --offline --fail about.hbs -o dist/THIRD-PARTY-LICENSES.txt
+    # Контур флага (#188, провен релиз-репетиции run 39798415641, все три
+    # dist-ноги): `--offline` красит CI-контур — `cargo metadata` требует
+    # скачивания crate, отсутствующего в warm-кэше матрицы (провен «failed to
+    # download bumpalo v3.20.3» ubuntu/win/mac; bumpalo = транзитив wasm-цепи,
+    # в target-сборку матрицы не попадает, в lock — есть). Air-gap-контракт
+    # AGENTS — про продукт (рантайм), а лицензионный гейт в CI сеть имеет
+    # (curl-шаги скачивают). Рычаг DEPS_OFFLINE=1 = offline-форма для
+    # оффлайн-машины оператора (локальный репертуар скачан); дефолт = online.
+    offline_flag=""
+    if [ "${DEPS_OFFLINE:-0}" = "1" ]; then offline_flag="--offline"; fi
+    # Флаг = shell-переменная рецепта (just-шаблон с двойными фигурными
+    # скобками здесь не используется намеренно).
+    # shellcheck disable=SC2086
+    cargo about generate -c about.toml --workspace $offline_flag --fail about.hbs -o dist/THIRD-PARTY-LICENSES.txt
     echo "deps-licenses ok: $(wc -l < dist/THIRD-PARTY-LICENSES.txt | tr -d ' ') строк, $(grep -c '^  - ' dist/THIRD-PARTY-LICENSES.txt | tr -d ' ') записей пакет→версия→лицензия"
 
 # Упаковка бандла (бинарь + LICENSE + README-ссылка + схема + лицензии +
