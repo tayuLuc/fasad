@@ -548,9 +548,9 @@ dist: release-build release-build-tray deps-licenses
         dll_args=(--ort-dll "$ORT_DLL")
     fi
     if [ "$(uname -s)" = "Darwin" ] || [ -n "$ext" ]; then
-        bash scripts/make-bundle.sh --tray-binary "target/release/fasad-tray${ext}" "${ort_dir_args[@]}" "${dll_args[@]}"
+        bash scripts/make-bundle.sh --tray-binary "target/release/fasad-tray${ext}" ${ort_dir_args[@]+"${ort_dir_args[@]}"} ${dll_args[@]+"${dll_args[@]}"}
     else
-        bash scripts/make-bundle.sh "${dll_args[@]}"
+        bash scripts/make-bundle.sh ${dll_args[@]+"${dll_args[@]}"}
     fi
 
 # Полный релизный прогон на хосте = одна ячейка матрицы CI локально.
