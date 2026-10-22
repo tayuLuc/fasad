@@ -283,12 +283,14 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 `release` защищена `if: startsWith(github.ref, 'refs/tags/v')`, поэтому ручной
 прогон артефакты собирает, а релиз не трогает.
 
-Прогнать матрицу до слияния нельзя: `gh workflow run release.yml --ref <ветка>`
-отвечает HTTP 404 «workflow release.yml not found on the default branch»
-(промер 21.10 на PR #76) — GitHub ищет воркфлоу в дефолтной ветке. Значит
-`windows-2022` (zip через `powershell Compress-Archive`), linux-бандл и job
-`ort-dylib` получают первый живой промер сразу после слияния (первый тег либо
-`workflow_dispatch`). До слияния локально промерен только macOS-путь: бандл
+Прогнать матрицу до слияния нельзя было: `gh workflow run release.yml --ref
+<ветка>` отвечал HTTP 404 «workflow release.yml not found on the default
+branch» (промер 21.10 на PR #76) — GitHub ищет воркфлоу в дефолтной ветке.
+С #188 (воркфлоу живёт в main) репетиция промерена: dispatch run 39791625858
+на head PR #189 — `windows-2022`/mac-ячейки dist и `ort-dylib` получают
+первый живой промер именно так (публикация на dispatch не срабатывает: job
+`release` гейтится тегом). Первый пуш воркфлоу в main = промер 25.10. До
+репетиции локально был промерен только macOS-путь: бандл
 `fasad-0.1.0-aarch64-apple-darwin-cascade-0.tar.gz`; идентификатор прогона —
 строка `SHA256SUMS.txt`:
 `854844605ad858c64e7fc1be33e4bf651192a4d0e3948eaddeb250dcde316ce9  fasad-0.1.0-aarch64-apple-darwin-cascade-0.tar.gz`.
@@ -618,9 +620,15 @@ v0.1.0-rc1 = rc 1, `v0.1.0` = rc 0 и ДВУМЯ строками `VERSION|ok`
    pyke-статическим (release-SIGSEGV-контракт п.1, §W2 п.1), в релизную
    методику не входит: `just build-ort`/`measure-rss --full` собирают и
    гоняют example с префиксом.
-3. В CI это закрыто job `ort-dylib` (macos-14 + ubuntu-24.04): скачивание
-   официального архива v1.31.0, сверка sha256 (первичка §8 п.3), `just build-ort`,
-   проверка `otool -L`/`ldd` на наличие dylib в load commands.
+3. В CI это закрыто job `ort-dylib` (macos-14; с #188 — провен релиз-
+   репетиции run 39791625858): скачивание официального архива v1.31.0, сверка
+   sha256 (первичка §8 п.3; mac-форма = hex-сверка `shasum -a 256`, linux-нога
+   сверки = GNU `sha256sum -c`), `just build-ort`, проверка `otool -L` на
+   наличие dylib в load commands. Linux-нога spike СНЯТА в #188: spike-линк
+   `-lonnxruntime` живёт только с mac-обвязкой dynamic_lookup
+   (`crates/guard-onnx/build.rs:99`, nit #6 ревью #9), а linux-релизный контур
+   = download-статика dist-матрицы, не dylib (ram-контур харнеса меряется на
+   mac, §9); динамик-контур linux = отдельное решение оператора.
 4. Windows-ячейка матрицы ort-проверки **не** содержит: в ort-доке доставка
    dll на Windows = «в PATH или рядом с exe» (там же), а промера Windows-пути
    в этой сессии не было. Компильная проверка ort-фичи на Windows есть в
