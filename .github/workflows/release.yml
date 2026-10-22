@@ -344,7 +344,7 @@ jobs:
               echo "--- полный поиск dll по target/ (запись, не гейт) ---"
               find target -name 'onnxruntime*.dll' 2>/dev/null | head -10 || true
           fi
-      - name: "Linux-контур: запись ELF-графа (статика download-контура, #188)"
+      - name: "Linux-контур: запись ELF-графа + доставка libonnxruntime.so (#188)"
         # linux-полный путь: ort-sys download-binaries линкует орт СТАТИКОЙ
         # (первичка ort-sys build/main.rs:177-183: static_link_prerequisites +
         # `rustc-link-lib=static=onnxruntime`). CI-провен run 39786761298
@@ -355,11 +355,20 @@ jobs:
         # «динамика-по-пути» (заголовок job :14-15) = ложное утверждение о
         # форме рантайма. linux-решение атома = СТАТИКА; доставка
         # libonnxruntime.so (динамик-контур) = отдельное решение оператора, не
-        # этот PR. Шаг = запись графа (INFO), не гейт: линковка full = rc=0
+        # этот PR. Шаг = ЗАПИСЬ графа (INFO), не гейт: линковка full = rc=0
         # шага сборки выше, ЗУБ «несёт орт» = маркер-форма verify-bundle
-        # (scripts/verify-bundle.sh, linux-нога ЗУБа А, #188).
+        # (linux-нога ЗУБа А, #188).
+        # Ниже — ЗАПИСЬ официального libonnxruntime.so 1.31.0 в артефакты job
+        # (не в бандл): linux-бандл = статика, доставка .so в архив не
+        # смонтирована (#181, mac = mounted-контур, linux = unit-доказательства
+        # + ЗУБ А); запись даёт ручной промер динамики на linux-машине, не
+        # меняя контур релиза. Шаг standalone (своё скачивание + sha256 =
+        # канон, тот же пин, что матрица ort-dylib / первичка docs/model-audit.md
+        # §8 п.3) и `continue-on-error`: артефакт-запись не имеет права красить
+        # релизную матрицу (класс «запись ≠ гейт»).
         if: matrix.os == 'ubuntu-24.04'
         shell: bash
+        continue-on-error: true
         run: |
           set -euo pipefail
           echo "--- linux: запись ELF-графа bin-цели (readelf -d + ldd; НЕ гейт) ---"
@@ -368,6 +377,16 @@ jobs:
           ldd target/release/fasad | grep -i onnxruntime \
               || echo "ldd: onnxruntime .so нет (linux = download-binaries СТАТИКА, ort-sys main.rs:182; CI-провен run 39786761298)"
           echo "linux ok: full-контур слинкован (build rc=0); ELF-форма записана (статика)"
+          url="https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-linux-x64-1.31.0.tgz"
+          curl -sSfL --retry 3 -A "fasad-release-ci/1.0" -o "$RUNNER_TEMP/ort-linux.tgz" "$url"
+          printf '%s  %s\n' "cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57" "$RUNNER_TEMP/ort-linux.tgz" > "$RUNNER_TEMP/ort-linux.sum"
+          ( cd "$RUNNER_TEMP" && sha256sum -c ort-linux.sum )
+          mkdir -p "$RUNNER_TEMP/ort"
+          tar -xzf "$RUNNER_TEMP/ort-linux.tgz" -C "$RUNNER_TEMP/ort"
+          mkdir -p ort-runtime
+          cp "$RUNNER_TEMP/ort/onnxruntime-linux-x64-1.31.0/lib/"libonnxruntime.so* ort-runtime/
+          ls -la ort-runtime
+          echo "linux INFO: официальный libonnxruntime.so 1.31.0 записан в артефакты job (в бандл НЕ входит, #181/#188)"
       - name: "Бандл: бинарь + LICENSE + README + схема + лицензии + модели-инструкция + SHA256SUMS (контур full, #181)"
         run: just dist
       - name: "Проверка бандла: распаковка, запуск, /health, орт-зубы А/Б/В, хэши + тег↔версия"
@@ -494,23 +513,31 @@ jobs:
         # SIGSEGV'ит, рабочий путь = официальный dylib + ORT_PREFER_DYNAMIC_LINK;
         # spike dlopen'ит RSS-мост по SPIKE_DYLIB, орт-символы = динамик-линк
         # `-lonnxruntime`, ort-sys main.rs:49-51). mac = продукт-мера (§9);
-        # linux-нога = репетиция динамик-линкуемого spike (доставка linux
-        # рантайма в релиз НЕ смонтирована — ЗУБ linux-релиза = маркер-форма,
-        # #188; динамик-контур linux = отдельное решение оператора).
-        # Латент, найденный репетицией (провен run 39791625858 обе ноги,
-        # исправлен в #188): шаг давал `ORT_DIR=<корень архива>`, а рецепт
-        # `build-ort` (justfile:487) подставляет `${ORT_DIR}/lib` — орт-sys
-        # искал библиотеку в корне архива: mac «ld: library 'onnxruntime' not
-        # found», linux «unable to find library -lonnxruntime». Форма ниже =
-        # контракт рецепта (justfile:297/371/382/487: ORT_DIR = корень,
-        # библиотека в его `lib/`, промер 21.10), та же, что dist-шага
-        # (`[ -d "$ORT_DIR/lib" ]`, justfile:435).
+        # linux-нога = динамик spike на официальном linux-dylib (linux-РЕЛИЗ =
+        # download-статика dist-матрицы, main.rs:177-183; доставка linux-
+        # рантайма = отдельное решение оператора, #188).
+        # КОНТРАКТ ПУТИ (#188, провен релиз-репетиций run 39791625858/
+        # 39795161065/39798415641): шаг обязан выставлять `ORT_LIB_PATH =
+        # каталог библиотеки` = `<архив>/lib` (в архивах 1.31.0:
+        # lib/libonnxruntime.dylib + .1.dylib + .1.31.0.dylib — промер
+        # распаковки 25.10 в этой сессии, обе платформы). Прежняя env-форма
+        # `ORT_DIR=<корень архива>` + рецепт `build-ort` (`ORT_LIB_PATH=
+        # "${ORT_DIR}/lib"`, justfile:487) давали -L корня → «library
+        # 'onnxruntime' not found» / «unable to find library -lonnxruntime»
+        # на обеих ногах, все три репетиции. Локальный ред-грин-промер 25.10
+        # (macos-14, этот хост, CARGO_BUILD_JOBS=2, ruling 22.10):
+        # корень-форма = «ld: library not found», lib-форма = Finished 45 с,
+        # `otool -L` spike = `@rpath/libonnxruntime.1.dylib 1.31.0`.
+        # `ORT_DIR` (корень) остаётся для бандла/mac-шагов; линк-контракт
+        # здесь = явный `ORT_LIB_PATH` (первичка ort-sys vars.rs:5 +
+        # main.rs:48-52: SYSTEM_LIB_PATH = ORT_LIB_PATH | ORT_LIB_LOCATION).
         env:
           # Корень распакованного архива = имя самого архива без .tgz
           # (промер локальной распаковки 21.10: onnxruntime-osx-arm64-1.31.0/,
           # onnxruntime-linux-x64-1.31.0/); каталоги `ort_dir` заданы в матрице
           # рядом с `ort_archive`, чтобы они не разъезжались.
           ORT_DIR: ${{ runner.temp }}/ort/${{ matrix.ort_dir }}
+          ORT_LIB_PATH: ${{ runner.temp }}/ort/${{ matrix.ort_dir }}/lib
         run: just build-ort
       - name: "Проверка линковки: dylib прописан в load commands"
         env:
