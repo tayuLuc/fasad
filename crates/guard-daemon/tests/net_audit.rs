@@ -321,10 +321,27 @@ fn tray_feature_tree_carries_no_browser_stack_and_no_gtk() {
         );
     }
     // Отрицательная половина — без неё проверка зелёная на пустом дереве.
-    for token in ["gtk", "webkit", "reqwest", "tauri", "windows"] {
+    // Класс-токены (оконный/браузерный/GTK), сверка по целому имени пакета,
+    // НЕ подстрокой: `tree.contains("windows")` краснел бы на легальных
+    // win-транзитивах linux-дерева (`windows-link` — win-бэкенд tray-icon,
+    // CI-провен build-test windows 39829067427) — ложь о причине отказа.
+    // `windows-sys` на linux-мишени в дереве НЕТ (target-gated, промер
+    // `cargo tree --features tray --target x86_64-unknown-linux-gnu | grep
+    // windows-sys` = 0, эта сессия).
+    let pkgs: Vec<String> = tree
+        .lines()
+        .map(|l| {
+            l.trim_start()
+                .split([' ', '('])
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    for token in ["gtk", "webkit", "reqwest", "tauri", "windows-sys"] {
         assert!(
-            !tree.contains(token),
-            "граф фичи tray тащит {token}: браузерная/GTK/оконная поверхность              протекла в дерево (обещание §16: linux-дефолты гасятся              default-features = false; #190: windows-sys = target-gated, не фича)",
+            !pkgs.iter().any(|p| p == token),
+            "граф фичи tray тащит пакет {token}: браузерная/GTK/оконная поверхность              протекла в дерево (обещание §16: linux-дефолты гасятся              default-features = false; #190: windows-sys = target-gated, не фича)",
         );
     }
 }

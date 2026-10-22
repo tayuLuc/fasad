@@ -57,6 +57,15 @@
 /// Показать отказ старта окном (`MB_ICONERROR | MB_SETFOREGROUND`), дождаться «ОК».
 ///
 /// Возврат не значим: после показа процесс уходит с `EXIT_BAD_CONFIG`.
+///
+/// Окно поднимается ТОЛЬКО в GUI-контуре (решение #190 по первичке
+/// подсистемы): у обоих bin атрибута `windows_subsystem` нет = console по
+/// умолчанию (grep `crates/` = 0, промер этой сессии), т.е. у любого bin,
+/// запущенного из cmd/PowerShell,stderr виден оператору, а модалка на
+/// таймаутном/сервисном контуре = блокировка. Консоль закрывается вместе с
+/// процессом двойного клика — это ровно тот случай, для которого окно:
+/// вызывающий (`main.rs::refuse_startup`) зовёт функцию под
+/// `all(feature = "tray", windows)` = только `fasad-tray.exe`.
 pub fn show_startup_failure(caption: &str, message: &str) {
     fn to_wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()

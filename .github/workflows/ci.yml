@@ -351,12 +351,23 @@ jobs:
           if (-not (Test-Path -LiteralPath $f)) { throw "layout: нет $f (кеш-раскладка .sh-паритета)" }
           # red-контроль ДО глушилки: битый sha в манифесте = exit 1 (гейт жив,
           # не print-only; глушить сеть после = red-прогон ловил бы DNS-отказ,
-          # а не sha256-рассинхрон — лживая диагностика, process-rules-agent-ops)
+          # а не sha256-рассинхрон — лживая диагностика, process-rules-agent-ops).
+          # Вызов в подобласти с EAP=Continue: Write-Fail пишет Write-Error, а
+          // шаг-level `$ErrorActionPreference='Stop'` (GitHub: шаг = один скрипт)
+          # превращал ожидаемо-красный прогон в падение шага на строке
+          # Write-Error (CI-провен run 39829067427: red-контроль красен =
+          # вердикт верный, канал red = падение скрипта, не $LASTEXITCODE).
           $mBad = $m -replace $sha, ('0' * 64)
           $mpBad = Join-Path $env:RUNNER_TEMP 'manifest-bad.tsv'
           Set-Content -LiteralPath $mpBad -Value $mBad -Encoding UTF8
-          & scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache 2>&1 | Out-Null
-          if ($LASTEXITCODE -eq 0) { throw "битый sha ПРОШЁЛ (rc=0): sha256-гейт ps1 мёртв" }
+          # red-прогон = дочерний powershell сContinue (промер pwsh 7.6.7
+          # сессией: в EAP=Stop-процессе Write-Fail красит родителя на строке
+          # Write-Error ДО чтения $LASTEXITCODE; EAP-флаги процесса:
+          # `-File`=Stop, `-Command`=Continue (mac-промер: тот же red
+          # печатает Write-Error-шум и выходит 0) → дочерний процесс с
+          # -File = детерминированный канал rc, шум в stderr безвреден)
+          $redRc = powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\fetch-models.ps1 -Manifest $mpBad -Cache $cache 2>$null; $redRc = $LASTEXITCODE
+          if ($redRc -eq 0) { throw "битый sha ПРОШЁЛ (rc=0): sha256-гейт ps1 мёртв" }
           # повтор = без сети (кеш-хит; DNS HF заглушён на этом шаге)
           $hostsBak = 'C:\Windows\System32\drivers\etc\hosts'
           Add-Content -Path $hostsBak -Value '127.0.0.1 huggingface.co'
