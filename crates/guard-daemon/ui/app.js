@@ -742,10 +742,13 @@ function chatTokens(text) {
   //   (`[PERSON_NAME_1_9A31C2D4]`, шапка vault.rs:12/31); ревью #203 §4:
   //   шаблон с `#` в session-режиме молча считал ноль = счётчик «токенов
   //   раскрыто» врал нулём; тест-пара `chat_token_counter_counts_both_forms`.
-  // Список классов = id схемы (первичка config/schema.default.json), а не
-  // «любая скобка»: `[Телефон:12345678901]` (формат SPEC §3) в счётчик не
-  // попадает. Литерал regex (unicode-escape'ы = hit'ы скана языка).
-  var reSession = /\[(?:person_name|inn|snils|card_pan|phone|email|address|passport)_\d+_[^\]\n]*\]/g;
+  // Шаблон = `[КЛАСС_н_nonce]` (не список классов): `(?i)` обязателен —
+  // id схемы малы (inn, person_name), а РЕАЛЬНЫЕ метки session-режима
+  // ЗАГЛАВНЫЕ: `Grammar::LABEL` = алфавит `A-Z0-9_` (vault.rs:240,914),
+  // класс в метке верхним регистром (промер #203: `[PERSON_NAME_1_SOHIKRAL]`
+  // = 23 метки демо; строгий regex по schema-ids = 0 = счётчик врал).
+  // `[Телефон:…]` (формат SPEC §3) не совпадает: двоеточие не `_\d+_`.
+  var reSession = /\[[a-z][a-z0-9_]*_\d+_[^\]\n]*\]/gi;
   return (text.match(/\[\[[^\]\n]*\]\]/g) || []).length +
     (text.match(reSession) || []).length;
 }

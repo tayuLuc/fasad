@@ -859,7 +859,9 @@ fn chat_token_counter_counts_both_forms() {
     // session `[КЛАСС_н_nonce]` = первичка vault.rs:12/31, ПОДЧЁРКИВАНИЕ) и
     // на формат-подстановке `[Телефон:…]` (SPEC §3), которая считаться НЕ
     // должна. Прежний паттерн с `#` в session-режиме = «токенов раскрыто: 0»
-    // при N подмен (ревью #203 §4.4). Ожидаемый промер: [2,2] (2 stateless + 2 session-метки, формат-подстановка не считается).
+    // при N подмен (ревью #203 §4.4). Ожидаемый промер: [2,3] (2 stateless +
+    // 3 session-метки ЗАГЛАВНЫМИ классами: реальная форма `Grammar::LABEL`,
+    // vault.rs:240/914, алфавит A-Z0-9_; формат-подстановка не считается).
     let app = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"));
     let fixture = include_str!("fixtures/chat_tokens_runner.js");
     let out = run_js_fixture(fixture, app);
@@ -867,7 +869,7 @@ fn chat_token_counter_counts_both_forms() {
         eprintln!("SKIP chat_token_counter: ни node, ни osascript недоступны");
         return;
     }
-    assert_eq!(out.trim(), "[2,2]", "счётчик токенов (обе формы): {out}");
+    assert_eq!(out.trim(), "[2,3]", "счётчик токенов (обе формы): {out}");
 }
 
 /// Запуск фикстуры-раннера (#203 §4): node (argv = [script, app]), фолбэк

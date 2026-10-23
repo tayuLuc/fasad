@@ -16,9 +16,14 @@ var src = app.slice(i, app.indexOf("\n}", i) + 3);
 var f = new Function("text", src + " return chatTokens(text);");
 var stateless = "x [[F0#NoIMUf3sHWFZPhjj0Hk-uw]] y [[F0#abc-def_123]] z";
 var tPhone = String.fromCharCode(1058, 1077, 1083, 1077, 1092, 1086, 1085);
+// РЕАЛЬНАЯ форма session-метки = ЗАГЛАВНЫЙ класс (Grammar::LABEL алфавит
+// A-Z0-9_, vault.rs:240/914): `[PERSON_NAME_1_SOHIKRAL]` (промер #203:
+// живой anonymize 48/48 меток верхним регистром); фикстура была
+// строчная [inn_2_ABCDEF01] = regex `(?i)` ловил её и без кириллического
+// промера (2/2 зелёный при реальном нуле) — первичка, не plausibility.
 var session =
-  "A [PERSON_NAME_1_9A31C2D4], B [inn_2_ABCDEF01], " +
-  "C [phone_3_112233445566], [" + tPhone + ":12345678901]";
+  "A [PERSON_NAME_1_SOHIKRAL], B [INN_2_7QZ3X9], " +
+  "C [PHONE_3_112233445566], [" + tPhone + ":12345678901]";
 var out = JSON.stringify([f(stateless), f(session)]);
 if (typeof process !== "undefined" && process.argv) {
   console.log(out);
