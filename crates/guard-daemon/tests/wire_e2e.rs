@@ -617,41 +617,50 @@ fn full_bin_without_model_dir_refuses_to_start_before_binding() {
 /// смодулирована env-мишенью (`FASAD_TEST_TRAY_CONTOUR`, primary: main.rs —
 /// симуляция compile-time-мишени, НЕ решения; `tray`-сборка = tray-check/
 /// verify-bundle), каталог весов = tmp-пусто (HOME-изолят #192-контур),
-/// НОГА = feature-off (CI-матрица): бинарь `fasad` (каскад-0-двойник) +
-/// env-мишень `FASAD_TEST_TRAY_CONTOUR` (симуляция compile-time-мишени
-/// `tray`/win/mac; решение `startup_pending_contour` от фичи НЕ зависит —
-/// unit-контур `pending_gate_is_tray_only_and_model_failures_only`) +
-/// tmp-пустой HOME: feature-off резолв = None, `startup` =
-/// `BuiltWithoutInference` (НЕ доставка, §2.1-контур), решётка = false →
-/// rc=2 (headless fail-closed на битом бинаре, дискриминатор «pending чинит
-/// ДОСТАВКУ, не бинарь»).
+/// НОГА = feature-off (CI-матрица, харнес-контур файла): env-мишень
+/// `FASAD_TEST_TRAY_CONTOUR` (симуляция compile-time-мишени `tray`/win/mac;
+/// решение `startup_pending_contour` от фичи НЕ зависит — unit-контур
+/// `pending_gate_is_tray_only_and_model_failures_only`) +
+/// `FASAD_TEST_CASCADE0` + tmp-пустой HOME = харнес cascade-0 (#185):
+/// `startup` = Ok, stage `cascade-0-only` (харнес легален), НЕ pending
+/// (решётка не трогает успешный старт) и НЕ rc=2 (флаг = харнес-контур,
+/// дефолт не подставлен, `BuiltWithoutInference` нет). Дискриминатор
+/// «харнес #185 цел на трей-мишени с флагом» (#203 §2.1): stage-зуб
+/// X-Stage + /v1/analyze = 200 (каскад-0 жив, не 503 pending).
 #[test]
-fn pending_headless_contour_refuses_built_without_inference() {
+fn pending_flag_on_tray_contour_keeps_the_cascade0_harness() {
     let home = std::env::temp_dir().join(format!("fasad198-hw-{}", std::process::id()));
     std::fs::create_dir_all(&home).expect("HOME-изолят создаётся");
-    let out = Command::new(env!("CARGO_BIN_EXE_fasad"))
-        .env("FASAD_BIND", "127.0.0.1")
-        .env("FASAD_PORT", "0")
-        .env("FASAD_TEST_TRAY_CONTOUR", "1")
-        .env("FASAD_TEST_CASCADE0", "1")
-        .env("HOME", &home)
-        .env_remove("FASAD_MODEL_DIR")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("бинарь запускается")
-        .wait_with_output()
-        .expect("дожидается");
+    let d = Daemon::start(&[
+        ("FASAD_TEST_TRAY_CONTOUR", "1"),
+        ("FASAD_TEST_CASCADE0", "1"),
+        ("HOME", home.to_str().expect("HOME путь utf-8")),
+    ]);
+    let h = call(&d.addr, "GET", "/health", &[], b"");
+    assert_eq!(h.status, 200, "харнес cascade-0 поднят");
     assert_eq!(
-        out.status.code(),
-        Some(2),
-        "rc=2 на bit-бинаре (не pending)"
+        h.json()["stage"],
+        "cascade-0-only",
+        "флаг на трей-мишени = каскад-0-харнес, НЕ pending/не rc=2 (#203 §2.1)"
+    );
+    let a = call(
+        &d.addr,
+        "POST",
+        "/v1/analyze",
+        &[("content-type", "application/json")],
+        format!(r#"{{"text":"{TWO_SPAN_TEXT}"}}"#).as_bytes(),
+    );
+    assert_eq!(a.status, 200, "каскад-0-харнес анализирует (#185)");
+    assert_ne!(
+        a.json()["error"]["code"].as_str(),
+        Some("models_pending"),
+        "pending-код на харнесе = ложь stage (#203 §2.1)"
     );
     std::fs::remove_dir_all(&home).ok();
 }
 
 /// #198: живой pending-контур ТРЕЙ-МИШЕНИ (орт-фича: полный бинарь, живой
-/// двойной клик win/mac без весов = ModelsNotConfigured → решётка = true).
+/// двойной клик win/mac без весов = `ModelsNotConfigured` → решётка = true).
 /// Feature-off (CI-матрица) = SKIPPED-контракт файла (полного бинаря там
 /// нет; HTTP-контур pending покрывают `cascade_http` + unit `http` на
 /// lib-роутере, live = этот тест на ort-ноге + mac-промер).
