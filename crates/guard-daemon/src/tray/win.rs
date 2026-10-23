@@ -54,8 +54,13 @@
 // `unwrap_used` для своей области.
 #![allow(unsafe_code)]
 
-/// Return-коды `MB_ABORTRETRYIGNORE` (#198): первичка winuser.h — `IDABORT`=3,
-/// `IDRETRY`=4, `IDIGNORE`=5 (кнопка X = IDIGNORE, уходящий молча, как «ОК»).
+/// Return-код `MB_ABORTRETRYIGNORE` «Отмена» (#198): первичка winuser.h —
+/// `IDABORT`=3, `IDRETRY`=4, `IDIGNORE`=5 (кнопка X = IDIGNORE, уходящий
+/// молча, как «ОК»). Используется ОБА: `IDRETRY` = ветка «открыть
+/// инструкцию», `IDABORT` = явная проверка «ухода по кнопке ОК» (ниже,
+/// debug_assert ветки = контракт против смены стиля окна; CI-провен win run
+/// 40035548437: `IDABORT` никогда не читался = `dead_code`, «тавтология
+/// !=IDABORT» ревью §2.2 убрана вместе с использованием).
 /// Модульный скоуп острова (не `fn`-local): items-after-statements = гейт
 /// tray-check (CI-провен win run 40022333775).
 const IDABORT: i32 = 3;
@@ -135,7 +140,13 @@ pub fn show_startup_failure(caption: &str, message: &str) {
     // не обязано владеть браузером).
     // `IDRETRY`(4) — единственный канон «открыть»; `IDABORT`(3)=OK и
     // `IDIGNORE`(5)=X = уход молча (ревью #203 §2.2: прежняя проверка
-    // `&& answer != IDABORT` = тавтология, 4≠3 всегда).
+    // `&& answer != IDABORT` = тавтология, 4≠3 всегда). Явный `debug_assert`
+    // ветки = контракт стиля окна (кнопки ABORT/RETRY/IGNORE гарантируют
+    // {3,4,5}: любое иное = сборка сломана, не пользовательский исход).
+    debug_assert!(
+        matches!(answer, IDABORT | IDRETRY | 5),
+        "MB_ABORTRETRYIGNORE вернул {answer}: контракт кнопок сломан"
+    );
     if answer == IDRETRY {
         open_instruction_url();
     }
