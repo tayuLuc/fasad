@@ -839,6 +839,85 @@ fn fetch_endpoint_contract_offline() {
     }
 }
 
+/// JS-зуб счётчика токенов чата (#203 §4, нить e): паттерн `chatTokens`
+/// обязан считать ОБЕ формы меток vault — stateless `[[F0#…]]`
+/// (`MARKER_PREFIX`, `token.rs:117`) и session `[КЛАСС_н_nonce]` с ПОДЧЕРКИВАНИЕМ
+/// (первичка `vault.rs:12/31`: `[PERSON_NAME_1_9A31C2D4]`), и НЕ считать
+/// формат-подстановку `[Телефон:12345678901]` (SPEC §3). Прежний шаблон с `#`
+/// в session-режиме давал «токенов раскрыто: 0» при N подмен — счётчик врал
+/// нулём (ревью #203 §4.4); мутация паттерна краснит этот зуб.
+///
+/// Движок: `node` в PATH (win/linux-раннеры CI), иначе `/usr/bin/osascript -l
+/// JavaScript` (mac-раннер). Оба исполняют ОДИН скрипт-файл (расхождение
+/// движков = красный, не print-only-зелёный, false-green-реестр). Нет ни
+/// одного — print SKIP (файл-контракт: живой промер; молча не проходит).
+#[test]
+fn chat_token_counter_counts_both_forms() {
+    // JS-движок-зуб #203 §4 (нить e): фикстура tests/fixtures/
+    // chat_tokens_runner.js меряет `chatTokens` из ui/app.js НА ОБЕИХ формах
+    // меток vault (stateless `[[F0#…]]` = token.rs:117 MARKER_PREFIX;
+    // session `[КЛАСС_н_nonce]` = первичка vault.rs:12/31, ПОДЧЁРКИВАНИЕ) и
+    // на формат-подстановке `[Телефон:…]` (SPEC §3), которая считаться НЕ
+    // должна. Прежний паттерн с `#` в session-режиме = «токенов раскрыто: 0»
+    // при N подмен (ревью #203 §4.4). Ожидаемый промер: [2,2] (2 stateless + 2 session-метки, формат-подстановка не считается).
+    let app = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"));
+    let fixture = include_str!("fixtures/chat_tokens_runner.js");
+    let out = run_js_fixture(fixture, app);
+    if out.trim().is_empty() {
+        eprintln!("SKIP chat_token_counter: ни node, ни osascript недоступны");
+        return;
+    }
+    assert_eq!(out.trim(), "[2,2]", "счётчик токенов (обе формы): {out}");
+}
+
+/// Запуск фикстуры-раннера (#203 §4): node (argv = [script, app]), фолбэк
+/// osascript JXA (argv в `-f`-скрипт не пробрасывается — первичка JXA-провен,
+/// `-f` = не флаг: man osascript; путь app = литерал `__APP_PATH__`, который
+/// тест подставляет в tmp-копию скрипта). Ошибка движка = panic (не тихий
+/// SKIP); отсутствие ОБОИХ = пустая строка (зуб печатает SKIP сам).
+fn run_js_fixture(fixture: &str, app: &std::path::Path) -> String {
+    let dir = std::env::temp_dir().join(format!("fasad203-ct-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("tmp создаётся");
+    let script = dir.join("runner.js");
+    std::fs::write(
+        &script,
+        fixture.replace("__APP_PATH__", &app.display().to_string()),
+    )
+    .expect("скрипт пишется");
+    match std::process::Command::new("node")
+        .arg(&script)
+        .arg(app)
+        .output()
+    {
+        Ok(v) if v.status.success() => {
+            std::fs::remove_dir_all(&dir).ok();
+            return String::from_utf8_lossy(&v.stdout).into_owned();
+        }
+        Ok(v) => panic!("node: {}", String::from_utf8_lossy(&v.stderr)),
+        Err(_) => {}
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let v = std::process::Command::new("/usr/bin/osascript")
+            .args(["-l", "JavaScript"])
+            .arg(&script)
+            .output()
+            .expect("osascript есть на mac-раннере");
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            v.status.success(),
+            "JXA: {}",
+            String::from_utf8_lossy(&v.stderr)
+        );
+        String::from_utf8_lossy(&v.stdout).into_owned()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        String::new()
+    }
+}
+
 /// #202: демо-документ + чат-панель — DOM/JS-контракты и покрытие классов.
 #[test]
 fn ui_demo_document_and_chat_panel() {
@@ -849,6 +928,9 @@ fn ui_demo_document_and_chat_panel() {
         "demoNoAuto",
         "btnChat",
         "btnReveal",
+        // #203 §4: ручной цикл без прокси (вставка ответа своего чата).
+        "btnRevealPaste",
+        "chatPaste",
         "outChat",
         "outChatRevealed",
         "upstream",
@@ -880,6 +962,21 @@ fn ui_demo_document_and_chat_panel() {
     assert!(
         js.contains("/v1/deanonymize"),
         "раскрытие ответа не через deanonymize"
+    );
+    // #203 §4: кнопка вставки = отдельный обработчик (source="paste"),
+    // читает #chatPaste, а не буфер стрима.
+    assert!(
+        js.contains(r#"$("chatPaste").value"#) && js.contains("revealChatAnswer(\"paste\")"),
+        "нет пути раскрытия вставленного текста (#203 §4)"
+    );
+    // #203 §4: подсказка про короткие куски (прокси) и ручной полный путь.
+    assert!(
+        js.contains("≤3") || t.contains("≤3"),
+        "UI не называет бюджет прокси-кнопки (#84)"
+    );
+    assert!(
+        t.contains("Скопировать обезличенный") && t.contains("Раскрыть вставленный"),
+        "README-контур цикла (полный путь через вставку) пропал из UI"
     );
     assert!(
         js.contains("demoAutofillOnLoad"),

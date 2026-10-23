@@ -30,6 +30,18 @@
    каскад-0-обман); двойной клик по иконке доходит до кнопки доставки.
    `MessageBox` отказа win-трея (#190) остаётся на НЕмодельных отказах
    (схема/vault/конфиг) и += кнопка «Открыть инструкцию» (#198).
+   Форма «переменная не задана» = та же для unset HOME/USERPROFILE:
+   desktop-контур (#192 резолвит каталог по HOME, win — по USERPROFILE)
+   при unset = НЕ rc=2, а ожидающий старт трея (решётка `startup_pending*`
+   берёт отказ доставки; промер ревью #203 §2.3: `env -i` без HOME на
+   трей-бинаре = pending UI). Headless-бинарь при unset HOME = rc=2,
+   строка #192 в таблице выше про него и остаётся.
+   `FASAD_TEST_CASCADE0=1` (харнес-флаг #185) на ЛЮБОЙ мишени = каскад-0
+   семантика (#203 §2.1, симметрия): на трей-мишени с флагом раньше
+   всходил ALIVE `models-pending` (stage харнесу врёт); теперь трей +
+   флаг = Some(каталог) только при смонтированном HOME-дефолте (зуб
+   `weights::tests::layout_complete_counts_five_of_five_only` +
+   `cascades::tests::pending_gate_is_tray_only_and_model_failures_only`).
 3. Назвал `FASAD_MODEL_DIR`, а смонтировать нечем (бинарь без орт-контура
    или веса битые/отсутствуют) — демон **не стартует**
    (`CascadeFailure::BuiltWithoutInference` / `Load`, `cascades.rs:635-650`);

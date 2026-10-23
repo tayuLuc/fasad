@@ -100,10 +100,6 @@ pub fn show_startup_failure(caption: &str, message: &str) {
         return;
     }
     // `MB_ICONERROR`(16) | `MB_SETFOREGROUND`(65536) |
-    // `MB_ABORTRETRYIGNORE`(3, #198: три канона = уйти / открыть / уйти);
-    // `MB_OK` = 0 и в сумму не входит (константы windows-sys того же
-    // модуля; литералы — чтобы остров не тягнул лишние пути импорта).
-    // `MB_ICONERROR`(16) | `MB_SETFOREGROUND`(65536) |
     // `MB_ABORTRETRYIGNORE`(3, #198: три канона = уйти / открыть инструкцию /
     // уйти через X); `MB_OK` = 0 и в сумму не входит (константы windows-sys
     // того же модуля; литералы — чтобы остров не тягнул лишние пути импорта).
@@ -137,7 +133,10 @@ pub fn show_startup_failure(caption: &str, message: &str) {
     // Открытие = `cmd /C start` (та же первичка, что `open_browser_command`
     // tray.rs: win-ассоциация http; spawn без wait, stdio в null — окно
     // не обязано владеть браузером).
-    if answer == IDRETRY && answer != IDABORT {
+    // `IDRETRY`(4) — единственный канон «открыть»; `IDABORT`(3)=OK и
+    // `IDIGNORE`(5)=X = уход молча (ревью #203 §2.2: прежняя проверка
+    // `&& answer != IDABORT` = тавтология, 4≠3 всегда).
+    if answer == IDRETRY {
         open_instruction_url();
     }
 }

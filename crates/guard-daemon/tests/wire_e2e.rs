@@ -616,13 +616,45 @@ fn full_bin_without_model_dir_refuses_to_start_before_binding() {
 /// #198 живая нога ожидающего старта (орт-контур `wire_e2e`): трей-решётка
 /// смодулирована env-мишенью (`FASAD_TEST_TRAY_CONTOUR`, primary: main.rs —
 /// симуляция compile-time-мишени, НЕ решения; `tray`-сборка = tray-check/
-/// verify-bundle), каталог весов = tmp-пусто (HOME-изолят #192-контур,
-/// `FASAD_TEST_CASCADE0` НЕ ставим: он отключает подстановку дефолта —
-/// решётка обязана резолвить HOME-дефолт как живой win/mac-двойной-клик).
-/// Ожидание: демон ПОДНЯЛСЯ (баннер), `/health` = stage models-pending,
-/// `/v1/analyze` = 503 `models_pending` (не 200-обман каскадом 0, не 500),
-/// `/v1/status` = 200 (витрина карточки весов), UI = 200. Feature-off
-/// сборка (CI-матрица) = SKIPPED-контракт файла.
+/// verify-bundle), каталог весов = tmp-пусто (HOME-изолят #192-контур),
+/// НОГА = feature-off (CI-матрица): бинарь `fasad` (каскад-0-двойник) +
+/// env-мишень `FASAD_TEST_TRAY_CONTOUR` (симуляция compile-time-мишени
+/// `tray`/win/mac; решение `startup_pending_contour` от фичи НЕ зависит —
+/// unit-контур `pending_gate_is_tray_only_and_model_failures_only`) +
+/// tmp-пустой HOME: feature-off резолв = None, `startup` =
+/// `BuiltWithoutInference` (НЕ доставка, §2.1-контур), решётка = false →
+/// rc=2 (headless fail-closed на битом бинаре, дискриминатор «pending чинит
+/// ДОСТАВКУ, не бинарь»).
+#[test]
+fn pending_headless_contour_refuses_built_without_inference() {
+    let home = std::env::temp_dir().join(format!("fasad198-hw-{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("HOME-изолят создаётся");
+    let out = Command::new(env!("CARGO_BIN_EXE_fasad"))
+        .env("FASAD_BIND", "127.0.0.1")
+        .env("FASAD_PORT", "0")
+        .env("FASAD_TEST_TRAY_CONTOUR", "1")
+        .env("FASAD_TEST_CASCADE0", "1")
+        .env("HOME", &home)
+        .env_remove("FASAD_MODEL_DIR")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("бинарь запускается")
+        .wait_with_output()
+        .expect("дожидается");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "rc=2 на bit-бинаре (не pending)"
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// #198: живой pending-контур ТРЕЙ-МИШЕНИ (орт-фича: полный бинарь, живой
+/// двойной клик win/mac без весов = ModelsNotConfigured → решётка = true).
+/// Feature-off (CI-матрица) = SKIPPED-контракт файла (полного бинаря там
+/// нет; HTTP-контур pending покрывают `cascade_http` + unit `http` на
+/// lib-роутере, live = этот тест на ort-ноге + mac-промер).
 #[test]
 fn pending_tray_contour_serves_ui_and_refuses_model_routes() {
     if !cfg!(feature = "ort-inference") {

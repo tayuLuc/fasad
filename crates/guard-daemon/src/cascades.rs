@@ -718,6 +718,18 @@ pub fn is_model_delivery_failure(failure: &CascadeFailure) -> bool {
     )
 }
 
+/// Чистый предикат «полный `model_dir` смонтирован» (#198, симметрия
+/// харнес-контура, ревью #203 §2.1): `FASAD_TEST_CASCADE0` на трей-мишени
+/// обязан давать каскад-0-семантику (харнес-инвариант #185), а не третий
+/// исход `models-pending`, где stage харнесу врёт. Формулировка без env:
+/// вызывающий (`Config::from_env`) спрашивает её, когда флаг выставлен.
+#[must_use]
+pub fn harness_dir_fully_mounted(model_dir: &Option<std::path::PathBuf>) -> bool {
+    model_dir
+        .as_deref()
+        .is_some_and(crate::weights::layout_complete)
+}
+
 /// Решётка ожидающего старта (#198): полный отказ модельного пути на
 /// desktop-контуре (фича `tray`, win/mac) НЕ есть отказ старта: демон
 /// поднимает HTTP (UI + `/v1/status` + `/v1/models/fetch` живут), stage =

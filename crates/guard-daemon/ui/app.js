@@ -289,6 +289,7 @@ async function analyze() {
     $("outBack").textContent = "";
     $("roundtrip").hidden = true;
     chatText = "";
+    $("chatPaste").value = "";
     $("outChat").textContent = "";
     $("outChatRevealed").textContent = "";
     $("btnReveal").disabled = true;
@@ -364,6 +365,7 @@ async function resetSession() {
     $("outBack").textContent = "";
     $("roundtrip").hidden = true;
     chatText = "";
+    $("chatPaste").value = "";
     $("outChat").textContent = "";
     $("outChatRevealed").textContent = "";
     $("btnReveal").disabled = true;
@@ -578,7 +580,14 @@ $("btnCopy").addEventListener("click", copyMasked);
 $("btnDemo").addEventListener("click", setDemoText);
 $("demoNoAuto").addEventListener("change", toggleDemoNoAuto);
 $("btnChat").addEventListener("click", sendToChat);
-$("btnReveal").addEventListener("click", revealChatAnswer);
+$("btnReveal").addEventListener("click", function () { revealChatAnswer("stream"); });
+// #203 §4: «Раскрыть вставленный» = ручной цикл без прокси (вставка из своего
+// чата). Активность = non-empty вставка (pending-контур ловится 503-отказом
+// деанона, текст ошибки = честный).
+$("btnRevealPaste").addEventListener("click", function () { revealChatAnswer("paste"); });
+$("chatPaste").addEventListener("input", function () {
+  $("btnRevealPaste").disabled = $("chatPaste").value === "";
+});
 
 /* #201 п.3: копирование обезличенного = главный практический выход.
    Clipboard API (self-origin; CSP без new permission-директив, write —
@@ -727,23 +736,19 @@ function saveChatPrefs() {
 }
 
 function chatTokens(text) {
-  // Токены vault-режима: stateless = [[F0#шифр]], session = [ФИО#метка]
-  // (первичка mask-replacement конструктора, vault.rs: класс-префикс =
-  // entity_type схемы + `#` + индекс/шифр; «ФИО» — канон первички #201).
-  // Универсальный шаблон (латиница/кириллица/цифры/_ классом), а не список
-  // классов: новый класс схемы не должен молча выпадать из счётчика.
-  // Класс-префикс метки: кириллица/латиница/цифры/_ (escape-последовательности,
-  // скан языка не видит букв в строке-паттерне; смысл тот же).
-  var cls = "[A-Za-z\u0410-\u042f\u0430-\u044f\u0401\u04510-9_]+#";
-  var re = new RegExp("\\[" + cls + "[^\\]\\n]*\\]", "g");
-  // Класс = НЕпереводимая строка-паттерн (только кириллица в source = hit
-  // скана языка): литерал regex, escape-формы не читаемы (тот же язык, что
-  // в index.html), проверка живым промером ниже (net-контракт ui_sandbox).
-  var reSession = /\[[A-Za-z\u0410-\u042f\u0430-\u044f\u0401\u04510-9_]+#[^\]\n]*\]/g;
+  // Токены vault-режима — ОБЕ формы, первичка vault.rs:
+  //   stateless = `[[F0#base64url]]` (MARKER_PREFIX, token.rs:117),
+  //   session   = `[КЛАСС_н_nonce]` — ПОДЧЕРКИВАНИЕ, не `#`
+  //   (`[PERSON_NAME_1_9A31C2D4]`, шапка vault.rs:12/31); ревью #203 §4:
+  //   шаблон с `#` в session-режиме молча считал ноль = счётчик «токенов
+  //   раскрыто» врал нулём; тест-пара `chat_token_counter_counts_both_forms`.
+  // Список классов = id схемы (первичка config/schema.default.json), а не
+  // «любая скобка»: `[Телефон:12345678901]` (формат SPEC §3) в счётчик не
+  // попадает. Литерал regex (unicode-escape'ы = hit'ы скана языка).
+  var reSession = /\[(?:person_name|inn|snils|card_pan|phone|email|address|passport)_\d+_[^\]\n]*\]/g;
   return (text.match(/\[\[[^\]\n]*\]\]/g) || []).length +
     (text.match(reSession) || []).length;
 }
-
 async function sendToChat() {
   const up = $("upstream").value.trim();
   if (up === "") {
@@ -761,6 +766,7 @@ async function sendToChat() {
     ],
   };
   chatText = "";
+  $("chatPaste").value = "";
   $("outChat").textContent = "";
   $("outChatRevealed").textContent = "";
   $("btnReveal").disabled = true;
@@ -828,14 +834,28 @@ async function sendToChat() {
   }
 }
 
-async function revealChatAnswer() {
-  if (chatText === "") return;
+async function revealChatAnswer(source) {
+  const text = source === "paste" ? $("chatPaste").value : chatText;
+  if (text === "") {
+    chatStatus(
+      source === "paste" ? "вставь ответ из своего чата в поле выше" : "сначала «В чат через прокси»",
+      "err",
+    );
+    return;
+  }
   try {
-    const res = await api("/v1/deanonymize", { text: chatText });
+    // session-режим = X-Session-ID подставляет api() (vault-сессия вкладки);
+    // stateless = ключ в самом токене [[F0#…]] (деанон без сессии живёт).
+    const res = await api("/v1/deanonymize", { text: text });
     const n = res.data.substituted;
     $("outChatRevealed").textContent = res.data.text;
-    chatStatus("токенов раскрыто: " + n + headerLine(res.headers) +
-      (n > 0 ? " — сверь окна: смысл цел, ПДн были только в токенах" : " — токенов в ответе не найдено"));
+    chatStatus(
+      "токенов в ответе: " + chatTokens(text) + " | токенов раскрыто: " + n +
+      headerLine(res.headers) +
+      (n > 0
+        ? " — сверь окна: смысл цел, ПДн были только в токенах"
+        : " — токенов в ответе не найдено"),
+    );
   } catch (err) {
     chatStatus("раскрытие: " + (err instanceof ApiError ? err.message : err), "err");
   }

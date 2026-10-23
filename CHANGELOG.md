@@ -13,6 +13,10 @@
 - Текст отказа старта (#199) называет ПУТЬ докачки: «скачай веса: UI (→ «Скачать веса») или scripts/fetch-models.sh / .ps1» — в `CascadeFailure::{Load, ModelsNotConfigured}` (unit-зуб), в stderr `refuse_startup` и в `MessageBox`.
 
 ### Fixed
+- UI-чат #202 (ревью #203 §4): «Раскрыть вставленный» = ручной цикл полного документа (поле вставки ответа из своего чата; прокси-кнопка = короткие куски, бюджет = подмены в окне экстрактора #84: промер ≲3 stateless / ≲12 session), подсказка в панели + README §1 оба пути. Счётчик «токенов» чата теперь считает ОБЕ формы меток (паттерн с `#` не видел `[КЛАСС_н_nonce]` = «токенов раскрыто: 0» при N подмен в session-режиме, первичка vault.rs:12); JS-зуб `chat_token_counter_counts_both_forms` (node/JXA fixture-раннер).
+- `FASAD_TEST_CASCADE0=1` на трей-мишени = ALIVE `models-pending` (stage харнесу врал, ревью #203 §2.1) — флаг симметричен: каскад-0-семантика на любой мишени, Some(каталог) = смонтированный HOME-дефолт (зуб `layout_complete_counts_five_of_five_only`).
+- win.rs: дубль комментария style + тавтология `answer == IDRETRY && answer != IDABORT` (4≠3 всегда, §2.2). release.md: «HOME unset» = факт решётки (трей = pending, headless = rc=2, §2.3); config.rs-ссылка на несуществующий тест → реальные имена (§2.4).
+### Fixed
 - Транзитив `ctutils` 0.4.2 → 0.4.5 (`cargo update ctutils`): RUSTSEC-2026-0385 (non-constant-time mask, crypto-failure, первичка advisory-db: patched >=0.4.4) — красный `just deny` CI-провен run 40020710741; `ignore`-список deny.toml остался пустым (контур «дыра краснит, не заминается»).
 - ЗУБ Г (трей) verify-bundle: win-контур отказа = ожидающий UI (#198), unix/mac-нога = живой промер pending (stage/503/витрина); SKIPPED-контур win = стенд #197.
 - Баннер ожидающего старта печатает честный stage (`models-pending`), а не `cfg.stage()` (промер mac: `cascade-0+models` на несмонтированном = ложь витрины, поймано живым прогоном этой сессии).
