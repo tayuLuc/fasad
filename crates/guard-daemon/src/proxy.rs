@@ -523,6 +523,12 @@ impl Client {
 /// HTTP-обработчик маршрута `POST /v1/chat/completions`.
 pub async fn handle(State(st): State<AppState>, req: Request) -> Response {
     let started = Instant::now();
+    // #198: ожидающий старт закрывает и прокси-контур — forward-контур без
+    // каскадов = «защиты нет, пересылаем» (fail-closed: запрос наружу не
+    // уходит), отказ своим кодом вместо тишины.
+    if let Some(refusal) = st.model_refusal() {
+        return refusal.into_response();
+    }
     let (headers, body) = match http::read_body(st.clone(), req).await {
         Ok(pair) => pair,
         Err(err) => return err.into_response(),

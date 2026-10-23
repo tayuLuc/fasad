@@ -419,6 +419,32 @@ impl Config {
                 "FASAD_MODEL_DIR" if std::env::var("FASAD_TEST_CASCADE0").is_ok() => {
                     v.filter(|s| !s.trim().is_empty())
                 }
+                // #198: симметричный ЗУБ — трей desktop-доставки (win/mac,
+                // feature `tray`) с РЕЗОЛВНУТЫМ HOME-дефолтом, где раскладка
+                // 5/5 СМОНТИРОВАНА, обязан стартовать МОНТИРОВАННЫМ
+                // (model_dir=Some → mount → cascade-0+models). Ветка живёт
+                // ВЫШЕ базовой (#192) именно потому, что match берёт первую
+                // совпавшую ветку: смонтированный дефолт = Some(dir), пустой
+                // дефолт = НЕ эта ветка (guard `layout_complete` ложный) →
+                // базовая #192 = Some(default-dir) → `startup` Load-отказ →
+                // pending-решётка main (#198 core). На feature-off/иной
+                // мишени guard ложный всегда (cfg! константа) = прежнее
+                // поведение (#185/#192 контуры целы: юнит
+                // `tray_full_default_mounts_when_complete_and_stays_pending_when_not`).
+                "FASAD_MODEL_DIR"
+                    if v.as_deref().is_none_or(|x| x.trim().is_empty())
+                        && cfg!(all(
+                            feature = "tray",
+                            any(target_os = "windows", target_os = "macos")
+                        ))
+                        && std::env::var("FASAD_TEST_CASCADE0").is_err() =>
+                {
+                    std::env::var("HOME").ok().as_deref().and_then(|h| {
+                        default_model_dir_from_home(Some(h)).and_then(|p| {
+                            crate::weights::layout_complete(&p).then(|| p.display().to_string())
+                        })
+                    })
+                }
                 "FASAD_MODEL_DIR" => v.filter(|s| !s.trim().is_empty()).or_else(|| {
                     std::env::var("HOME").ok().as_deref().and_then(|h| {
                         default_model_dir_from_home(Some(h)).map(|p| p.display().to_string())

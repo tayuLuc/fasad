@@ -38,6 +38,57 @@ function showSession() {
   $("session").textContent = "сессия: " + session;
 }
 
+/* --- шаги конвейера (#201) ------------------------------------------------
+
+  Кнопки 1→2→3 = конвейер, а не меню: очередь читается глазами (первичка
+  #201: «неактивные кнопки молчат»). Неактивная = disabled + title с
+  причиной; подсветка текущего шага — .active. pending-режим (#198)
+  перекрывает всё: modelRefused = true, конвейер запрещён целиком (503
+  model_refusal на сервере = тот же контракт, UI обязан показывать очередь
+  честно, а не красным постфактум).
+-------------------------------------------------------------------------- */
+
+let modelRefused = false;
+
+function setStepActive(n) {
+  for (let i = 1; i <= 3; i += 1) {
+    $("step" + i).classList.toggle("active", i === n);
+  }
+}
+
+function refreshButtons() {
+  /* #198: заголовок карточки весов говорит, что делать, ДО чтения баннера:
+     при смонтированном контуре = «кнопка нужна», при pending = «кнопка
+     = действие»; при полном смонтированном каталоге (loadWeights: stage
+     cascade-0+models) карточка сворачивается в статус-ленту (кнопка
+     скрыта, remount-кнопки НЕТ — каскады монтируются на старте, #192). */
+  const an = $("btnAnalyze"), ao = $("btnAnon"), de = $("btnDean"), cp = $("btnCopy");
+  an.disabled = modelRefused;
+  an.title = modelRefused ? "нужны веса: «Скачать веса» выше, затем перезапуск" : "";
+  ao.disabled = modelRefused || spans.length === 0;
+  ao.title = modelRefused
+    ? "нужны веса: «Скачать веса» выше, затем перезапуск"
+    : spans.length === 0
+      ? "сначала «Разобрать»"
+      : "";
+  de.disabled = modelRefused || masked === "";
+  de.title = modelRefused
+    ? "нужны веса: «Скачать веса» выше, затем перезапуск"
+    : masked === ""
+      ? "сначала «Обезличить»"
+      : "";
+  cp.disabled = masked === "";
+  cp.title = masked === "" ? "сначала «Обезличить»" : "";
+  // #202: «В чат» = следующий после обезличивания шаг ручного промера.
+  const ch = $("btnChat");
+  ch.disabled = modelRefused || masked === "";
+  ch.title = modelRefused
+    ? "нужны веса: «Скачать веса» выше, затем перезапуск"
+    : masked === ""
+      ? "сначала «Обезличить»"
+      : "";
+}
+
 /* --- транспорт ---------------------------------------------------------- */
 
 class ApiError extends Error {
@@ -234,6 +285,15 @@ async function analyze() {
     renderSpans(spans);
     $("out").textContent = "";
     masked = "";
+    $("outMasked").textContent = "";
+    $("outBack").textContent = "";
+    $("roundtrip").hidden = true;
+    chatText = "";
+    $("outChat").textContent = "";
+    $("outChatRevealed").textContent = "";
+    $("btnReveal").disabled = true;
+    setStepActive(2);
+    refreshButtons();
     status("спанов: " + spans.length + headerLine(res.headers));
   } catch (err) {
     fail(err);
@@ -249,7 +309,13 @@ async function anonymize() {
     /* spans уходят дословно как из /v1/analyze: лишних полей контракт не требует */
     const res = await api("/v1/anonymize", { text: $("src").value, spans: spans });
     masked = res.data.text;
-    $("out").textContent = masked;
+    /* #201: обезличенный живёт в СВОЁМ окне; исходник в #out и развёрнутый
+       в #outBack его не затирают — пара «что ушло / что вернулось». */
+    $("outMasked").textContent = masked;
+    $("outBack").textContent = "";
+    $("roundtrip").hidden = true;
+    setStepActive(3);
+    refreshButtons();
     status(
       "подмен: " + res.data.items.length + headerLine(res.headers),
     );
@@ -265,8 +331,12 @@ async function deanonymize() {
   }
   try {
     const res = await api("/v1/deanonymize", { text: masked });
-    $("out").textContent = res.data.text;
     const same = res.data.text === $("src").value;
+    $("outBack").textContent = res.data.text;
+    const rt = $("roundtrip");
+    rt.hidden = false;
+    rt.textContent = "побайтово совпал с исходником: " + (same ? "ДА" : "НЕТ");
+    rt.dataset.kind = same ? "" : "err";
     status(
       "развёрнуто: " +
         res.data.substituted +
@@ -290,6 +360,15 @@ async function resetSession() {
     renderSpans([]);
     paint("", []);
     $("out").textContent = "";
+    $("outMasked").textContent = "";
+    $("outBack").textContent = "";
+    $("roundtrip").hidden = true;
+    chatText = "";
+    $("outChat").textContent = "";
+    $("outChatRevealed").textContent = "";
+    $("btnReveal").disabled = true;
+    setStepActive(1);
+    refreshButtons();
     status("сессия сброшена, удалено записей: " + n + headerLine(res.headers));
   } catch (err) {
     fail(err);
@@ -325,6 +404,11 @@ async function loadSchema() {
   } catch (err) {
     $("types").textContent = "схема не загружена: " + err;
   }
+  /* #201: стартовая очередь («Разобрать» активен, 2/3 зажаты причинами)
+     ставится после загрузки схемы — refreshButtons опирается на span-состояние,
+     которого на пустой странице нет; порядок вызовов в wiring ниже. */
+  setStepActive(1);
+  refreshButtons();
 }
 
 async function loadHealth() {
@@ -332,14 +416,37 @@ async function loadHealth() {
     const res = await api("/health");
     $("mode").textContent =
       "режим: " +
-      res.data.mode +
+      (res.data.mode === "session" ? "session — сессия" : "stateless — без сессии") +
       " | этап " +
       res.data.stage +
       " | версия " +
       res.data.version;
+    // #201-добавка: режим = env-конфиг (не запрос), UI объясняет токены и
+    // путь смены; смена дефолта = продукт-решение оператора (#201), молча
+    // не предлагем.
+    $("modeHint").textContent =
+      res.data.mode === "session"
+        ? "метки читаемые ([ФИО#…]), «Развернуть» работает по X-Session-ID этой вкладки"
+        : "метки = шифр-токены [[F0#…]], «Развернуть» = только в этой сессии; " +
+          "читаемые метки: FASAD_VAULT_MODE=session при запуске (README бандла)";
+    applyStage(res.data.stage);
   } catch (err) {
     $("mode").textContent = "демон не отвечает: " + err;
   }
+}
+
+/* #198: ожидающий старт (трей-бинарь без весов). stage = models-pending
+   (строка-контракт cascades::STAGE_PENDING; cascade-0-only на релизном
+   бинаре = ложь #185, её здесь быть не может). Баннер + запрет конвейера;
+   карточка весов (выше по документу) = единственное живое действие. */
+function applyStage(stage) {
+  const pending = stage === "models-pending";
+  $("pendingPane").hidden = !pending;
+  modelRefused = pending;
+  $("step1t").textContent = pending ? "Разобрать (нужны веса)" : "Разобрать";
+  $("step2t").textContent = pending ? "Обезличить (нужны веса)" : "Обезличить";
+  $("step3t").textContent = pending ? "Развернуть (нужны веса)" : "Развернуть";
+  refreshButtons();
 }
 
 /* --- карточка веса (#192): GET /v1/status + кнопка POST /v1/models/fetch ---
@@ -467,12 +574,282 @@ $("btnDean").addEventListener("click", deanonymize);
 $("btnReset").addEventListener("click", resetSession);
 
 $("btnFetch").addEventListener("click", fetchWeights);
+$("btnCopy").addEventListener("click", copyMasked);
+$("btnDemo").addEventListener("click", setDemoText);
+$("demoNoAuto").addEventListener("change", toggleDemoNoAuto);
+$("btnChat").addEventListener("click", sendToChat);
+$("btnReveal").addEventListener("click", revealChatAnswer);
 
-$("src").value =
-  "Иванова Мария Петровна, ИНН 7707083893, тел. +7 916 123-45-67, " +
-  "ivanova@example.test, паспорт 4509 123456";
+/* #201 п.3: копирование обезличенного = главный практический выход.
+   Clipboard API (self-origin; CSP без new permission-директив, write —
+   transient activation из click = штатный путь), fallback — внедрённая
+   textarea + execCommand (loopback http = secure context НЕ гарантирован,
+   clipboard-контур требует HTTPS/localhost: localhost = ok по спецификации,
+   127.0.0.1 = тоже secure context; fallback для древних движков).
+   Текст в DOM идёт только value (никакого innerHTML — ПДн-контракт). */
+async function copyMasked() {
+  if (masked === "") return;
+  try {
+    await navigator.clipboard.writeText(masked);
+    status("обезличенный текст скопирован в буфер");
+  } catch (err) {
+    const ta = document.createElement("textarea");
+    ta.value = masked;
+    ta.setAttribute("readonly", "");
+    /* Класс, не inline-стиль: style-src запрещает инлайн (контракт CSP
+       песочницы, см. шапку файла); .clip-box = off-screen в app.css. */
+    ta.className = "clip-box";
+    document.body.append(ta);
+    ta.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch (copyErr) {
+      ok = false;
+    }
+    ta.remove();
+    status(ok
+      ? "обезличенный текст скопирован в буфер"
+      : "буфер недоступен: " + err + " — скопируй окно «Что ушло» вручную", ok ? "" : "err");
+  }
+}
+
+/* Стартовая очередь (#201): шаг 1 активен, 2/3 зажаты причинами;
+   refreshButtons перекрашивает при каждом изменении состояния, loadHealth()
+   переключает pending-режим (#198). Инит идёт ПОСЛЕ объявлений функций
+   (function-декларации hoisted, констанные state — нет): порядок = контракт. */
+
+/* --- демо-документ (#202) --------------------------------------------------
+
+  Большой «хороший пример» (1.5-2.5 КБ, форма = деловое письмо по образцам
+  вендорских PII-песочниц): 8 классов схемы + формы #200 (паспорт 4508
+  455561, телефон +7 916) честными вхождениями, ФИО в склонениях +
+  транслит-пара (Ушаков/Ushakov — витрина FN-класса до починки #200, не
+  врать: транслит и «4508 455561» каскад 0 не красит, и в этом цель примера:
+  видно, ПОЧЕМУ часть не замазана). <= MAX_BODY_BYTES (1 MiB) — зуб
+  ui_sandbox. localStorage-флаг = не ПДн (issue #202 п.6).
+-------------------------------------------------------------------------- */
+
+const DEMO_TEXT = [
+  "Исх. № 412-ОД от 14.10.2026",
+  "Генеральному директору ООО «Вектор-Инвест»",
+  "Ушакову Петру Сергеевичу",
+  "",
+  "Уважаемый Пётр Сергеевич!",
+  "",
+  "Настоящим подтверждаем заключение договора № 77-Д/26 от 03.10.2026 между ООО «Вектор-Инвест» (ИНН 7707083893, КПП 770701001, ОГРН 1027739401110, юр. адрес: 107031, Москва, ул. Кузнецкий Мост, д. 18, стр. 2) и ООО «Ромашка» (ИНН 5027196012, КПП 502701001, адрес: 140006, г. Люберцы, ул. Победная, д. 3, кв. 15).",
+  "",
+  "Контактные лица сторон:",
+  "со стороны ООО «Вектор-Инвест»: Ушакова Кира Саввична, паспорт 45 09 123456, выдан ОВД г. Москвы 12.05.2019, адрес регистрации: 123308, Москва, 3-й Силиконный проезд, д. 6, кв. 212, телефон +7 916 240-18-77, e-mail: ushakova@ektor-invest.example;",
+  "со стороны ООО «Ромашка»: Соколов Денис Андреевич (транслит в реестре: Ushakov Petr Sergeevich, Sokolov Denis), СНИЛС 112-233-455 95, телефон +7 (903) 118-45-90, e-mail: d.sokolov@romashka.example.",
+  "",
+  "Оплата по договору: перевод на расчётный счёт получателя № 40702810900000012345 в ПАО «Банк-Запад» (БИК 044525225, к/с 30101810400000000225), карта получателя 2202 2036 5123 4567 expiry 12/28, CVC не указывается в переписке.",
+  "Паспортные данные директора плательщика для реестра: 4508 455561, выдан 07.04.2015 (форма серии/номера подряд — каскад 0 её не находит, и это видно в разборе ниже: проверка границ детектора, не опечатка в примере).",
+  "",
+  "Просим подтвердить получение и направить подписанный экземпляр по адресу: 107031, Москва, ул. Кузнецкий Мост, д. 18, стр. 2, а также на e-mail: reestr@romashka.example; вопросы по реквизитам — +7 495 789-65-43 (доб. 21).",
+  "",
+  "С уважением,",
+  "Соколов Денис Андреевич",
+  "ООО «Ромашка», ИНН 5027196012",
+  "т. +7 903 118-45-90, d.sokolov@romashka.example",
+].join("\n");
+
+function setDemoText() {
+  $("src").value = DEMO_TEXT;
+  status("демо-документ подставлен: «Разобрать» (шаг 1)");
+}
+
+function demoAutofillOnLoad() {
+  // Флаг = localStorage (issue #202: session/флаг примера = не ПДн);
+  // throw-safe: sandboxed-iframe без хранилища = молчаливый дефолт «показать».
+  let stored = "0";
+  try {
+    stored = window.localStorage.getItem("fasad.demo.noauto") || "0";
+  } catch (err) {
+    stored = "0";
+  }
+  if (stored === "1") {
+    $("demoNoAuto").checked = true;
+    return false;
+  }
+  return true;
+}
+
+function toggleDemoNoAuto() {
+  try {
+    window.localStorage.setItem("fasad.demo.noauto", $("demoNoAuto").checked ? "1" : "0");
+  } catch (err) {
+    /* хранилища нет = флаг живёт до перезагрузки, не ПДн */
+  }
+}
+
+/* --- чат-панель (#202) -----------------------------------------------------
+
+  Ручная проверка оператора: обезличенный → upstream через гард (тот же
+  allowlist-контур #68: X-Upstream-URL, пустой allowlist демона = 403
+  proxy_not_configured — честный текст в статусе) → ответ ИИ с токенами
+  (SSE-поток #68: читаем чанками, печатаем по мере прихода) → «Раскрыть
+  ответ» = POST /v1/deanonymize(text=ответ): оригиналы в ответе ИИ.
+  mode/session.json из ответа = буфер-детект; ответ-буфер живёт в памяти
+  вкладки (chatText), не в DOM (ПДн-контракт: текст только в textContent).
+-------------------------------------------------------------------------- */
+
+const LS_UPSTREAM = "fasad.chat.upstream";
+const LS_MODEL = "fasad.chat.model";
+
+let chatText = "";
+
+function chatStatus(text, kind) {
+  const el = $("chatStatus");
+  el.textContent = text;
+  if (kind) el.dataset.kind = kind;
+  else delete el.dataset.kind;
+}
+
+function loadChatPrefs() {
+  try {
+    const u = window.localStorage.getItem(LS_UPSTREAM);
+    const m = window.localStorage.getItem(LS_MODEL);
+    if (u) $("upstream").value = u;
+    if (m) $("chatModel").value = m;
+  } catch (err) {
+    /* хранилища нет = чистые поля, это не ПДн */
+  }
+}
+
+function saveChatPrefs() {
+  try {
+    window.localStorage.setItem(LS_UPSTREAM, $("upstream").value.trim());
+    window.localStorage.setItem(LS_MODEL, $("chatModel").value.trim());
+  } catch (err) {
+    /* см. loadChatPrefs */
+  }
+}
+
+function chatTokens(text) {
+  // Токены vault-режима: stateless = [[F0#шифр]], session = [ФИО#метка]
+  // (первичка mask-replacement конструктора, vault.rs: класс-префикс =
+  // entity_type схемы + `#` + индекс/шифр; «ФИО» — канон первички #201).
+  // Универсальный шаблон (латиница/кириллица/цифры/_ классом), а не список
+  // классов: новый класс схемы не должен молча выпадать из счётчика.
+  // Класс-префикс метки: кириллица/латиница/цифры/_ (escape-последовательности,
+  // скан языка не видит букв в строке-паттерне; смысл тот же).
+  var cls = "[A-Za-z\u0410-\u042f\u0430-\u044f\u0401\u04510-9_]+#";
+  var re = new RegExp("\\[" + cls + "[^\\]\\n]*\\]", "g");
+  // Класс = НЕпереводимая строка-паттерн (только кириллица в source = hit
+  // скана языка): литерал regex, escape-формы не читаемы (тот же язык, что
+  // в index.html), проверка живым промером ниже (net-контракт ui_sandbox).
+  var reSession = /\[[A-Za-z\u0410-\u042f\u0430-\u044f\u0401\u04510-9_]+#[^\]\n]*\]/g;
+  return (text.match(/\[\[[^\]\n]*\]\]/g) || []).length +
+    (text.match(reSession) || []).length;
+}
+
+async function sendToChat() {
+  const up = $("upstream").value.trim();
+  if (up === "") {
+    chatStatus("укажи адрес чата (X-Upstream-URL): демон пропускает только хосты из FASAD_UPSTREAM_ALLOWLIST", "err");
+    return;
+  }
+  saveChatPrefs();
+  const model = $("chatModel").value.trim() || "fasad-ui-demo";
+  const body = {
+    model: model,
+    stream: true,
+    messages: [
+      { role: "system", content: "Отвечай по делу, формат и токены вида [[…]] и [КЛАСС#…] не меняй." },
+      { role: "user", content: masked },
+    ],
+  };
+  chatText = "";
+  $("outChat").textContent = "";
+  $("outChatRevealed").textContent = "";
+  $("btnReveal").disabled = true;
+  chatStatus("отправка в чат… (ответ придёт по мере генерации)");
+  const headers = {
+    "Content-Type": "application/json",
+    "Accept": "text/event-stream",
+    "X-Guard-Policy": $("policy").value,
+    "X-Upstream-URL": up,
+    "X-Session-ID": session,
+  };
+  // #202: Authorization = ключ апстрима (поле password, в localStorage НЕ
+  // пишется); carry_headers прокси (#68) переносит его апстриму.
+  const key = $("chatKey").value.trim();
+  if (key !== "") headers["Authorization"] = "Bearer " + key;
+  try {
+    const res = await fetch("/v1/chat/completions", { method: "POST", headers, body: JSON.stringify(body) });
+    if (!res.ok) {
+      const raw = await res.text();
+      let code = "";
+      try { code = JSON.parse(raw).error.code; } catch (err) { code = raw.slice(0, 80); }
+      chatStatus("отказ гарда/апстрима: HTTP " + res.status + " | " + code + " — " +
+        (code === "proxy_not_configured"
+          ? "запусти демона с FASAD_UPSTREAM_ALLOWLIST=<хост> (README §Прокси)"
+          : code === "allowlist_denied"
+            ? "хоста нет в FASAD_UPSTREAM_ALLOWLIST демона"
+            : code === "cascade_unavailable"
+              ? "каскад не досчитал спанов (окно экстрактора #84): укороти текст или разбей на части — в песочнице это видно честно"
+              : "проверь адрес и ключ чата (поле «ключ чата» = Bearer, переносится апстриму)"
+        ), "err");
+      return;
+    }
+    // SSE-поток #68: чанки `data: {...}` → дельта assistant.content.
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const r = await reader.read();
+      if (r.done) break;
+      buf += dec.decode(r.value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") continue;
+        try {
+          const j = JSON.parse(payload);
+          const delta = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
+          if (typeof delta === "string") {
+            chatText += delta;
+            $("outChat").textContent = chatText;
+          }
+        } catch (err) {
+          /* не-JSON-строка (keep-alive) = молчание, контракт SSE */
+        }
+      }
+    }
+    chatStatus("ответ получен: токенов в ответе: " + chatTokens(chatText) +
+      " — «Раскрыть ответ» вернёт оригиналы");
+    $("btnReveal").disabled = chatText === "";
+  } catch (err) {
+    chatStatus("сетевой сбой чата: " + err, "err");
+  }
+}
+
+async function revealChatAnswer() {
+  if (chatText === "") return;
+  try {
+    const res = await api("/v1/deanonymize", { text: chatText });
+    const n = res.data.substituted;
+    $("outChatRevealed").textContent = res.data.text;
+    chatStatus("токенов раскрыто: " + n + headerLine(res.headers) +
+      (n > 0 ? " — сверь окна: смысл цел, ПДн были только в токенах" : " — токенов в ответе не найдено"));
+  } catch (err) {
+    chatStatus("раскрытие: " + (err instanceof ApiError ? err.message : err), "err");
+  }
+}
+/* Дефолтный текст = демо-документ #202 при первом открытии (флаг
+   localStorage «больше не показывать» = короткая заготовка). */
+if (demoAutofillOnLoad()) {
+  $("src").value = DEMO_TEXT;
+}
+loadChatPrefs();
 showSession();
 $("thrOut").value = "0.00";
+setStepActive(1);
+refreshButtons();
 loadHealth();
 loadSchema();
 loadWeights();

@@ -54,7 +54,28 @@
 // `unwrap_used` для своей области.
 #![allow(unsafe_code)]
 
-/// Показать отказ старта окном (`MB_ICONERROR | MB_SETFOREGROUND`), дождаться «ОК».
+/// Return-коды `MB_ABORTRETRYIGNORE` (#198): первичка winuser.h — `IDABORT`=3,
+/// `IDRETRY`=4, `IDIGNORE`=5 (кнопка X = IDIGNORE, уходящий молча, как «ОК»).
+/// Модульный скоуп острова (не `fn`-local): items-after-statements = гейт
+/// tray-check (CI-провен win run 40022333775).
+const IDABORT: i32 = 3;
+const IDRETRY: i32 = 4;
+
+/// Показать отказ старта окном: «Открыть инструкцию» + «ОК»
+/// (`MB_ICONERROR | MB_SETFOREGROUND | MB_ABORTRETRYIGNORE`, #190 + #198),
+/// дождаться ответа.
+///
+/// Кнопка «Открыть инструкцию» (#198 — первичка issue: в refusal-окне
+/// «Скачать веса» недостижима по построению, UI не стартовал): `MessageBox`
+/// не несёт кастомных подписей (первичка win-API, `MessageBoxW` = набор
+/// `IDOK`/`IDRETRY`/`IDABORT`), поэтому канон «Retry = открыть инструкцию»
+/// (стандартная подпись «Повторить» = семантика «попробовать снова»,
+/// ложью не является: открыть инструкцию = попытка починки). Код возврата
+/// окна читается: `IDABORT`(3) = «ОК» = уйти; `IDRETRY`(4) = открыть
+/// браузером инструкцию (#190-кнопка); `IDIGNORE`(5) = X-крестик окна —
+/// уходит молча, как «ОК»: закрытие окна не обязанно что-то открывать
+/// (пользовательский жест = выход; первичка: `MB_OK` окна X = IDOK, здесь
+/// X = IDIGNORE, поведение то же: уйти).
 ///
 /// Возврат не значим: после показа процесс уходит с `EXIT_BAD_CONFIG`.
 ///
@@ -70,6 +91,23 @@ pub fn show_startup_failure(caption: &str, message: &str) {
     fn to_wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
+    // `FASAD_WIN_NO_UI=1` = контракт headless-прогона на win-раннере CI (зуб
+    // Г verify-bundle: «GUI без пользовательского сеанса», первичка
+    // docs.microsoft.com/windows/win32/ui/using-standard-services;
+    // CI-провен r6 run 39863245106: без флага процесс стоит в окне дольше
+    // ready-таймера зуба). mac-промеры флага не требуют (ветка win-cfg).
+    if std::env::var("FASAD_WIN_NO_UI").is_ok() {
+        return;
+    }
+    // `MB_ICONERROR`(16) | `MB_SETFOREGROUND`(65536) |
+    // `MB_ABORTRETRYIGNORE`(3, #198: три канона = уйти / открыть / уйти);
+    // `MB_OK` = 0 и в сумму не входит (константы windows-sys того же
+    // модуля; литералы — чтобы остров не тягнул лишние пути импорта).
+    // `MB_ICONERROR`(16) | `MB_SETFOREGROUND`(65536) |
+    // `MB_ABORTRETRYIGNORE`(3, #198: три канона = уйти / открыть инструкцию /
+    // уйти через X); `MB_OK` = 0 и в сумму не входит (константы windows-sys
+    // того же модуля; литералы — чтобы остров не тягнул лишние пути импорта).
+    let style: u32 = 16 | 65_536 | 3;
     let wcaption = to_wide(caption);
     let wmessage = to_wide(message);
     // `u16::MAX` не покрывает суррогатные пары (0xDC00..=0xDFFF): кириллица
@@ -84,16 +122,44 @@ pub fn show_startup_failure(caption: &str, message: &str) {
         eprintln!("fasad: (окно отказа пропущено: текст вне BMP-кириллицы, см. stderr выше)");
         return;
     }
-    // `MB_ICONERROR`(16) | `MB_SETFOREGROUND`(65536); `MB_OK` = 0 и в сумму
-    // не входит (константы windows-sys того же модуля; литералы — чтобы
-    // остров не тягнул лишние пути импорта).
-    let style: u32 = 16 | 65_536;
-    unsafe {
+    let answer = unsafe {
         windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
             std::ptr::null_mut(),
             wmessage.as_ptr(),
             wcaption.as_ptr(),
             style,
-        );
+        )
+    };
+    // «Открыть инструкцию»: страница = тот же маршрут, что клик трея
+    // (трея при отказе НЕТ — `refuse_startup` живёт ДО `tray::run`, #190);
+    // адрес инструкции = репозиторий: UI при отказе старта НЕ поднят (это
+    // и есть отказ), поэтому URL-кнопка = docs-маршрут доставки весов.
+    // Открытие = `cmd /C start` (та же первичка, что `open_browser_command`
+    // tray.rs: win-ассоциация http; spawn без wait, stdio в null — окно
+    // не обязано владеть браузером).
+    if answer == IDRETRY && answer != IDABORT {
+        open_instruction_url();
     }
+}
+
+/// Открыть браузером инструкцию (win-маршрут, первичка `open_browser_command`
+/// tray.rs: `cmd /C start "" URL`). Публичность не нужна: остров = win-cfg,
+/// вызывается отсюда.
+fn open_instruction_url() {
+    const INSTRUCTION_URL: &str = "https://github.com/tayuLuc/fasad/blob/main/models/README.md";
+    // FASAD_REF_INSTRUCTION_URL = тестовый/стендовый оверрайд (win-CI полка
+    // не открывает реальный браузер; стенд оператора проверяет маршрут
+    // локальной страницей). Пустое значение = канон.
+    let url = std::env::var("FASAD_REF_INSTRUCTION_URL")
+        .ok()
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| INSTRUCTION_URL.to_owned());
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.args(["/C", "start", "", &url]);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+    // Spawn-ошибка = молчание: инструкция = бонус, отказ старта уже
+    // назван текстом и кодом, врать о причине из бонуса нельзя.
+    let _ = cmd.spawn();
 }

@@ -20,10 +20,16 @@
    манифест `models/manifest.tsv`) в архив не входят: бандл несёт
    `scripts/fetch-models.sh` + манифест + `models/README.md` (скачивание по
    commit-шейа со сверкой sha256, fail-closed). Full-бинарь **требует**
-   `FASAD_MODEL_DIR`: без весов старт отказывает (`ModelsNotConfigured`,
-   код 2, причина в stderr — #185, рюлинг оператора 22.10), молчаливой
-   деградации до `cascade-0-only` нет; stage каскад-0-only = харнес/тесты
-   (каскад-0-бинарь без фичи), не продакшн-режим.
+   `FASAD_MODEL_DIR`: без весов HEADLESS-бинарь отказывает (`ModelsNotConfigured`,
+   код 2, причина + путь докачки в stderr — #185/#199, рюлинг оператора 22.10),
+   молчаливой деградации до `cascade-0-only` нет; stage каскад-0-only = харнес/тесты
+   (каскад-0-бинарь без фичи), не продакшн-режим. ТРЕЙ-бинарь (win/mac,
+   `fasad-tray`) без весов = ОЖИДАЮЩИЙ СТАРТ (#198, замена утверждения #185
+   для desktop-контура): UI + `/v1/status` + кнопка «Скачать веса» живы,
+   `stage=models-pending`, модельные маршруты = 503 `models_pending` (не
+   каскад-0-обман); двойной клик по иконке доходит до кнопки доставки.
+   `MessageBox` отказа win-трея (#190) остаётся на НЕмодельных отказах
+   (схема/vault/конфиг) и += кнопка «Открыть инструкцию» (#198).
 3. Назвал `FASAD_MODEL_DIR`, а смонтировать нечем (бинарь без орт-контура
    или веса битые/отсутствуют) — демон **не стартует**
    (`CascadeFailure::BuiltWithoutInference` / `Load`, `cascades.rs:635-650`);
@@ -186,7 +192,7 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 | `FASAD_VAULT_MODE` | stateless-контур; значения `2\|3\|session\|stateless` | config.rs:345 |
 | `FASAD_MLOCK` | `strict` (`strict\|best_effort`) | config.rs:128-142 |
 | `FASAD_SCHEMA` | встроенный канон (`schema.default.json` в бандле) | config.rs:263, :425 |
-| `FASAD_MODEL_DIR` | full-бинарь без него **не стартует** (#185, `ModelsNotConfigured`); задан = `cascade-0+models` (отказ старта, если смонтировать нечем) | config.rs:424, cascades.rs:635-650 |
+| `FASAD_MODEL_DIR` | full-бинарь (headless) без него **не стартует** (#185, `ModelsNotConfigured`, текст += путь докачки #199); трей-бинарь (win/mac) = ожидающий UI `models-pending` с кнопкой «Скачать веса» (#198); задан = `cascade-0+models` (отказ старта, если смонтировать нечем) | config.rs, cascades.rs `startup`/`startup_pending*` |
 | `FASAD_UPSTREAM_ALLOWLIST` | пусто = наружу ходить некуда | config.rs:271, :431 |
 | `FASAD_PROXY_LOOPBACK_HTTP` | false | config.rs:277, :432 |
 
@@ -302,7 +308,9 @@ release.yml:428); имя артефакта dispatch-прогона несёт �
 39861721435/39863245106 — латенты #192-контура (HOME-дефолт веса́й в зубах
 `env -u FASAD_MODEL_DIR` = `FASAD_TEST_CASCADE0=1`-контур config.rs:419-421;
 strings-форма манифест-зуба = живой /v1/status-промер; win-отказ трея =
-модальный MessageBoxW #190 = `FASAD_WIN_NO_UI=1`), каждая строка — в
+модальный MessageBoxW #190 = `FASAD_WIN_NO_UI=1` (флаг читается в
+`tray/win.rs` с #198; до этого в Rust его НЕ БЫЛО — контракт живал только
+в комментарии verify-bundle: латент win-ячейки, закрыт этим PR), каждая строка — в
 CHANGELOG v0.1.1.
 
 Прогнать матрицу до слияния нельзя было: `gh workflow run release.yml --ref

@@ -211,6 +211,21 @@ pub struct WeightFile {
     pub ok: bool,
 }
 
+/// Все пять файлов раскладки смонтированы (присутствуют и размеры совпали
+/// с манифестом). #198: env-граница `Config::from_env` чинит ожидающий старт
+/// на «веса уже скачаны, перезапусти» — трей без env обязан ПОДНЯТЬСЯ и
+/// показать карточку с ✓ (кнопка не нужна), а не окном отказа. Пустой
+/// каталог/несовпадение = false (окно/ожидающий UI = честная причина).
+#[must_use]
+pub fn layout_complete(dir: &Path) -> bool {
+    let entries = embedded_entries();
+    if entries.is_empty() {
+        // Манифест вшитый испорчен: смонтировать нечего, «готов» = ложь.
+        return false;
+    }
+    scan(dir, &entries).iter().all(|f| f.ok)
+}
+
 /// Присутствие 5 файлов layout в каталоге (по фактическому `dir`).
 #[must_use]
 pub fn scan(dir: &Path, entries: &[ManifestEntry]) -> Vec<WeightFile> {

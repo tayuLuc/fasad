@@ -613,6 +613,104 @@ fn full_bin_without_model_dir_refuses_to_start_before_binding() {
     );
 }
 
+/// #198 живая нога ожидающего старта (орт-контур `wire_e2e`): трей-решётка
+/// смодулирована env-мишенью (`FASAD_TEST_TRAY_CONTOUR`, primary: main.rs —
+/// симуляция compile-time-мишени, НЕ решения; `tray`-сборка = tray-check/
+/// verify-bundle), каталог весов = tmp-пусто (HOME-изолят #192-контур,
+/// `FASAD_TEST_CASCADE0` НЕ ставим: он отключает подстановку дефолта —
+/// решётка обязана резолвить HOME-дефолт как живой win/mac-двойной-клик).
+/// Ожидание: демон ПОДНЯЛСЯ (баннер), `/health` = stage models-pending,
+/// `/v1/analyze` = 503 `models_pending` (не 200-обман каскадом 0, не 500),
+/// `/v1/status` = 200 (витрина карточки весов), UI = 200. Feature-off
+/// сборка (CI-матрица) = SKIPPED-контракт файла.
+#[test]
+fn pending_tray_contour_serves_ui_and_refuses_model_routes() {
+    if !cfg!(feature = "ort-inference") {
+        eprintln!(
+            "SKIP|wire_e2e|pending-нога = full-бинарь (#185-контур: feature-off              cascade-0 стартует легально, ожидание не про него); live-контур              ort-фичи = cargo --features ort-inference"
+        );
+        return;
+    }
+    let home = std::env::temp_dir().join(format!("fasad198-home-{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("HOME-изолят создаётся");
+    let d = Daemon::start(&[
+        ("FASAD_TEST_TRAY_CONTOUR", "1"),
+        ("HOME", home.to_str().expect("HOME путь utf-8")),
+    ]);
+    // Баннер ждёт сам Daemon::start; здесь — контракты сокетов.
+    let h = call(&d.addr, "GET", "/health", &[], b"");
+    assert_eq!(h.status, 200, "health в pending = живая витрина");
+    assert_eq!(h.json()["stage"], "models-pending", "stage #198");
+    let a = call(
+        &d.addr,
+        "POST",
+        "/v1/analyze",
+        &[("content-type", "application/json")],
+        format!(r#"{{"text":"{TWO_SPAN_TEXT}"}}"#).as_bytes(),
+    );
+    assert_eq!(a.status, 503, "analyze в pending = 503, не 200-обман");
+    assert_eq!(
+        a.json()["error"]["code"],
+        "models_pending",
+        "отказ обязан быть своим кодом (#198: не молчание, не cascade-0-обман)"
+    );
+    let st = call(&d.addr, "GET", "/v1/status", &[], b"");
+    assert_eq!(
+        st.status, 200,
+        "витрина веса = 200 в pending (кнопка живёт)"
+    );
+    let ui = call(&d.addr, "GET", "/", &[], b"");
+    assert_eq!(
+        ui.status, 200,
+        "UI = 200 в pending (двойной клик доходит до кнопки)"
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// #198 вторая нога: та же решётка на смонтированном каталоге (tmp с 5/5
+/// файлов, размеры = манифест) НЕ заводит pending — старт обязан смонтировать
+/// каскады (ort-фича) = stage cascade-0+models. Живой ЛОАД требует настоящих
+/// ONNX (879 МБ в CI не заводятся, первичка файла), поэтому нога =
+/// feature-off-нелегальна (нет фичи → `BuiltWithoutInference` не про это):
+/// на ort-фиче проверка «решётка не сработала» = banner listening +
+/// stage != models-pending, с фолбэком на rc=2-load (орк-контур требует
+/// реальных весов). Фиксируем ОБА легальных исхода — red только pending.
+#[test]
+fn pending_gate_does_not_fire_on_complete_layout() {
+    if !cfg!(feature = "ort-inference") {
+        eprintln!("SKIP|wire_e2e|нога = ort-контур монтирования (см. выше)");
+        return;
+    }
+    // 5/5 файлов ПУСТЫМИ байтами с точными размерами манифеста невозможны
+    // (load их отвергнет); поэтому нога проверяет решётку на НЕполном
+    // каталоге, смонтированном ранее: здесь = «layout_complete(tmp) = false
+    // при пустом» = решёточный предикат (unit `pending_gate_...` покрыл);
+    // живая часть = pending НЕ поднимается, когда model_dir ЯВНО задан на
+    // несуществующий каталог и решётка трей-мишени НЕ активна (headless
+    // ноги: refuse rc=2 — дискриминатор контура).
+    let out = Command::new(env!("CARGO_BIN_EXE_fasad"))
+        .env("FASAD_BIND", "127.0.0.1")
+        .env("FASAD_PORT", "0")
+        .env("FASAD_MODEL_DIR", "/nonexistent-fasad198-dir")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("процесс стартует")
+        .wait_with_output()
+        .expect("процесс завершился");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "headless (без трей-мишени) с битым каталогом = rc=2, pending не протёк"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("скачай веса"),
+        "#199: Load-отказ без пути докачки: {err}"
+    );
+}
+
 #[test]
 fn bad_vault_key_refuses_to_start_before_binding() {
     // Отказ до бинда: код выхода 2 (не 1, как у сетевой ошибки), причина

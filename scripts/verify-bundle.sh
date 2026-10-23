@@ -33,8 +33,12 @@
 #     против каскад-0-артефакта под full-меткой в CI без весов; на full-
 #     артефакте он обратный и НЕ запускается (staged-бинарь орт-контурный,
 #     mounted-проверка = ЗУБ Б).
-#   ЗУБ Г: FASAD_MODEL_DIR НЕ задан → stage=cascade-0-only — легальная стадия
-#     полного бинаря без весов, не «контур бандла» (первичка config.rs:457).
+#   ЗУБ Г: FASAD_MODEL_DIR НЕ задан → полный бинарь (headless) = отказ
+#     старта rc=2 (#185; pre-#185 «stage=cascade-0-only» мёртв). ТРЕЙ-нога
+#     с #198 = ОЖИДАЮЩИЙ РЕЖИМ: трей-бинарь (win/mac, фича tray) без весов
+#     НЕ умирает, а поднимает UI stage=models-pending и красит модельные
+#     маршруты 503 models_pending (headless-нога ЗУБа Г целая, симметрия
+#     «prod fail-closed / desktop-доставка» = решётка startup_pending*).
 #
 # use: scripts/verify-bundle.sh [--dist DIR] [--keep] [--expect-version ТЕГ]
 #
@@ -675,29 +679,62 @@ case "$os" in
             MINGW* | MSYS* | CYGWIN*) [ "${FASAD_WIN_NO_UI:-}" != "1" ] && tray_win_gui=1 ;;
         esac
         if [ "$tray_win_gui" -eq 1 ]; then
-            printf 'REFUSAL|SKIPPED|tray|win-контур отказа = модальное MessageBoxW (#190, main.rs refuse_startup): без FASAD_WIN_NO_UI=1 процесс стоит в окне (провен r6 run 39863245106, живой на 12-й секунде); headless ЗУБ Г на win зелёный = тот же #185-контур\n'
+            # #198 переписал ТРЕЙ-контур отказа: двойной клик без весов =
+            # ОЖИДАЮЩИЙ UI (models-pending), не модалка. На win-раннере без
+            # GUI-сеанса (FASAD_WIN_NO_UI!=1) конур = модальное окно, а
+            # pending-промер требует чтения HTTP-сокета (headless-контур
+            # флага #197 = стенд оператора): здесь SKIPPED-контур (молчание
+            # = ложно-зелёная, класс реестра); ЗУБ Г headless на win зелёный
+            # = тот же #185-контур отказа без UI-ветки; сам win-pending UI =
+            # стенд-полка #197/#198 (двойной клик + кнопка «Скачать веса»).
+            printf 'REFUSAL|SKIPPED|tray|win-контур #198: двойной клик без весов = ожидающий UI (models-pending, UI-кнопка доставки), промёрт стендом (#197); без FASAD_WIN_NO_UI=1 на раннере = модальное MessageBoxW-окно (#190, провен r6 run 39863245106); headless ЗУБ Г зелёный\n'
+        elif [ "$weights_present" -eq 1 ]; then
+            # unix/mac без весов НЕБЫВАЕТ в этой ноге (weights_present=1
+            # = дефолт-каталог смонтирован): трей-бинарь обязан смонтировать
+            # каскады (нога 2 ниже), pending-нога = ветка weights_present=0.
+            printf 'REFUSAL|skip|tray|веса смонтированы — трей смонтирован (нога 2), pending-контур не про него (#198)\n'
         else
+            # #198 (решение родителя п.2, unix-нога = mac-стенд и CI-linux
+            # без весов): трей-бинарь БЕЗ весов (HOME-дефолт пуст) =
+            # ОЖИДАЮЩИЙ старт: баннер + /health stage=models-pending +
+            # /v1/analyze 503 models_pending + /v1/status 200 (витрина).
+            # Дискриминатор: red = «трей умер rc=2» (возврат отказа до UI,
+            # дефект #198) ИЛИ stagecascade-0-only (ложь #185) ИЛИ 200 на
+            # analyze (fail-open конвейера).
+            # Пустой HOME + FASAD_TEST_CASCADE0: на linux-раннере трей-бинарь
+            # = cascade-0 (headless, фича только mac/win): без флага дефолт
+            # HOME резолвится Some(пустой) = BuiltWithoutInference (не
+            # доставка) = отказ, а не pending (#198: pending чинит
+            # ДОСТАВКУ). На mac (трей-фича в бинаре) трей-решётка берёт
+            # ModelsNotConfigured и флаг безвреден (#192-контур).
             tray_log="$(mktemp)"
-            env -u FASAD_MODEL_DIR FASAD_TEST_CASCADE0=1 FASAD_WIN_NO_UI=1 FASAD_PORT=0 "$tray_bin" >"$tray_log" 2>&1 &
+            porthome="$(mktemp -d)"
+            env -u FASAD_MODEL_DIR FASAD_TEST_CASCADE0=1 FASAD_WIN_NO_UI=1 FASAD_PORT=0 HOME="$porthome" \
+                "$tray_bin" >"$tray_log" 2>&1 &
             tray_pid="$!"
-            trc=0
-            for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do
-                kill -0 "$tray_pid" 2>/dev/null || break
+            tray_port2=""
+            for _ in $(seq 1 40); do
+                tray_port2="$(sed -n 's#.*listening on http://127\.0\.0\.1:\([0-9]*\)/health.*#\1#p' "$tray_log" | head -1)"
+                [ -n "$tray_port2" ] && [ "$tray_port2" != "0" ] && break
+                kill -0 "$tray_pid" 2>/dev/null \
+                    || { tr0="$(head -c 400 "$tray_log")"; rm -f "$tray_log"; rm -rf "$porthome"; die "ЗУБ Г (трей #198): fasad-tray без весов умер ДО баннера (ожидание: ожидающий старт, не rc=2): $tr0"; }
                 sleep 0.5
             done
-            if kill -0 "$tray_pid" 2>/dev/null; then
-                kill "$tray_pid" 2>/dev/null || true
-                wait "$tray_pid" 2>/dev/null || true
-                rm -f "$tray_log"
-                die "ЗУБ Г (трей): fasad-tray поднялся БЕЗ FASAD_MODEL_DIR (ожидание: отказ старта, #185 — трей = full-контур, #181)"
-            fi
-            trc=0
-            wait "$tray_pid" || trc=$?
-            [ "$trc" -ne 0 ] || { rm -f "$tray_log"; die "ЗУБ Г (трей): fasad-tray без весов завершился rc=0 (ожидание: 2, #185)"; }
-            grep -q "FASAD_MODEL_DIR" "$tray_log" \
-                || { tr0="$(head -c 400 "$tray_log")"; rm -f "$tray_log"; die "ЗУБ Г (трей): отказ без FASAD_MODEL_DIR в stderr: $tr0"; }
-            rm -f "$tray_log"
-            printf 'REFUSAL|ok|tray|rc=%s|трей без FASAD_MODEL_DIR = отказ старта (#185)\n' "$trc"
+            [ -n "$tray_port2" ] && [ "$tray_port2" != "0" ] \
+                || { tr0="$(head -c 400 "$tray_log")"; rm -f "$tray_log"; rm -rf "$porthome"; die "ЗУБ Г (трей #198): ожидающий старт не поднял сокет за 20 с: $tr0"; }
+            pth_health="$(curl -sS --fail --max-time 5 "http://127.0.0.1:${tray_port2}/health")" \
+                || { rm -f "$tray_log"; rm -rf "$porthome"; die "ЗУБ Г (трей #198): /health не отвечает в pending"; }
+            printf '%s' "$pth_health" | grep -q '"stage":"models-pending"' \
+                || { rm -f "$tray_log"; rm -rf "$porthome"; die "ЗУБ Г (трей #198): /health stage ≠ models-pending: $pth_health"; }
+            pth_analyze="$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{}' "http://127.0.0.1:${tray_port2}/v1/analyze")"
+            [ "$pth_analyze" = "503" ] \
+                || { rm -f "$tray_log"; rm -rf "$porthome"; die "ЗУБ Г (трей #198): /v1/analyze в pending = $pth_analyze (ожидание 503 models_pending, не 200-обман)"; }
+            curl -sS --fail --max-time 5 "http://127.0.0.1:${tray_port2}/v1/status" >/dev/null \
+                || { rm -f "$tray_log"; rm -rf "$porthome"; die "ЗУБ Г (трей #198): /v1/status мёртв в pending (кнопка доставки недостижима)"; }
+            kill "$tray_pid" 2>/dev/null || true
+            wait "$tray_pid" 2>/dev/null || true
+            rm -f "$tray_log"; rm -rf "$porthome"
+            printf 'REFUSAL|ok|tray|pending|трей без весов = ожидающий UI (#198): stage=models-pending, analyze=503, status=200\n'
         fi
         # Нога 2 (только с весами): смонтированный трей обязан поднять сокет и
         # отдать cascade-0+models (pre-#185 контур «cascade-0-only» без весов

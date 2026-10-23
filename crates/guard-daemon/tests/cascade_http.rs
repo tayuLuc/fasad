@@ -105,6 +105,98 @@ fn name_span() -> ModelSpan {
     }
 }
 
+/// #198 интеграция pending-режима на ПОЛНОМ роутере: analyze=503 своим
+/// кодом, anonymize/deanonymize = те же 503 (конвейер без первого шага не
+/// существует), `/v1/status` = витрина веса (200, карточка «Скачать веса»),
+/// `/health` stage = `models-pending`. Дискриминатор: red = fail-open
+/// конвейера на pending (200-обман каскадом 0, #185) ИЛИ мёртвая витрина
+/// (UI-кнопка недостижима = ровно дефект #198, который чинится).
+#[tokio::test]
+async fn pending_mode_refuses_pipeline_and_keeps_the_weights_card() {
+    let cfg = Config::from_lookup(|_| None).expect("дефолты sane");
+    let health = guard_daemon::Health {
+        version: env!("CARGO_PKG_VERSION"),
+        stage: guard_daemon::cascades::STAGE_PENDING,
+        mode: cfg.vault_mode.as_str(),
+    };
+    let vault = guard_daemon::vault::Vault::startup(cfg.vault_mode, cfg.mlock)
+        .expect("хранилище поднимается");
+    let st = AppState::with_pending(
+        cfg,
+        guard_daemon::schema::Schema::embedded().expect("канон валиден"),
+        health,
+        vault,
+        true,
+    );
+    let app = router(st);
+
+    let r = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/analyze")
+                .header("content-type", "application/json")
+                .body(AxumBody::from(r#"{"text":"ИНН 2482014338"}"#.to_owned()))
+                .expect("запрос строится"),
+        )
+        .await
+        .expect("роутер отвечает");
+    let (status, _, json) = json_of(r).await;
+    assert_eq!(status, 503, "analyze в pending = 503");
+    assert_eq!(json["error"]["code"], "models_pending");
+
+    for (uri, body) in [
+        (
+            "/v1/anonymize",
+            r#"{"text":"ИНН 2482014338","spans":[]}"#.to_owned(),
+        ),
+        (
+            "/v1/deanonymize",
+            r#"{"text":"[Телефон:12345678901]"}"#.to_owned(),
+        ),
+    ] {
+        let r = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .header("x-session-id", "s198")
+                    .body(AxumBody::from(body))
+                    .expect("запрос строится"),
+            )
+            .await
+            .expect("роутер отвечает");
+        let (status, _, json) = json_of(r).await;
+        assert_eq!(
+            status, 503,
+            "{uri} в pending = 503 (конвейер без 1-го шага)"
+        );
+        assert_eq!(json["error"]["code"], "models_pending", "{uri}");
+    }
+
+    // Витрина живёт: UI-кнопка #198 обязана быть достижимой в pending.
+    let r = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/status")
+                .body(AxumBody::empty())
+                .expect("запрос строится"),
+        )
+        .await
+        .expect("роутер отвечает");
+    let (status, _, json) = json_of(r).await;
+    assert_eq!(status, 200, "витрина веса = 200 в pending");
+    assert_eq!(json["stage"], guard_daemon::cascades::STAGE_PENDING);
+    assert!(
+        json["weights"].is_object(),
+        "карточка весов пропала из витрины: {json}"
+    );
+}
+
 async fn analyze(body: &str) -> axum::http::Response<AxumBody> {
     router(state())
         .oneshot(

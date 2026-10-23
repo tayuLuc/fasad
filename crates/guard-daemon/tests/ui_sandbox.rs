@@ -839,6 +839,106 @@ fn fetch_endpoint_contract_offline() {
     }
 }
 
+/// #202: демо-документ + чат-панель — DOM/JS-контракты и покрытие классов.
+#[test]
+fn ui_demo_document_and_chat_panel() {
+    let d = Daemon::start(&[]);
+    let t = call(&d.addr, "GET", "/", &[], b"").text();
+    for id in [
+        "btnDemo",
+        "demoNoAuto",
+        "btnChat",
+        "btnReveal",
+        "outChat",
+        "outChatRevealed",
+        "upstream",
+        "chatModel",
+        "chatStatus",
+    ] {
+        assert!(t.contains(id), "в index.html нет #202-элемента: {id}");
+    }
+    let js = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"))
+        .expect("app.js читается");
+    // JS-пара: fetch-контур чата = маршруты демона (не выдуманные),
+    // заголовок #68, XSS-контракт (окна чата = textContent).
+    assert!(
+        js.contains("/v1/chat/completions"),
+        "app.js не зовёт прокси-маршрут"
+    );
+    assert!(
+        js.contains("X-Upstream-URL"),
+        "app.js не шлёт заголовок #68"
+    );
+    assert!(
+        js.contains(r#"outChat").textContent"#),
+        "окно чата не через textContent"
+    );
+    assert!(
+        js.contains(r#"outChatRevealed").textContent"#),
+        "окно раскрытия не через textContent"
+    );
+    assert!(
+        js.contains("/v1/deanonymize"),
+        "раскрытие ответа не через deanonymize"
+    );
+    assert!(
+        js.contains("demoAutofillOnLoad"),
+        "нет автозаполнения примера"
+    );
+    assert!(js.contains("localStorage"), "нет localStorage-флага #202");
+
+    // Демо-текст: извлекаем константу app.js и меряем покрытие + размер.
+    let start = js.find("const DEMO_TEXT = [").expect("DEMO_TEXT есть");
+    let end = js[start..]
+        .find("].join(")
+        .map(|o| start + o)
+        .expect("join есть");
+    let body = &js[start..end];
+    // Фикстура = все 8 классов схемы (первичка ids ниже).
+    let schema = call(&d.addr, "GET", "/assets/schema.json", &[], b"").json();
+    let ids: Vec<&str> = schema["classes"]
+        .as_array()
+        .expect("классы")
+        .iter()
+        .map(|c| c["id"].as_str().expect("id"))
+        .collect();
+    assert_eq!(ids.len(), 8, "схема = 8 классов, фикстура на это завязана");
+    // Эталонные вхождения классов (первичка schema.default.json: person_name,
+    // inn, snils, card_pan, phone, email, address, passport).
+    let probes = [
+        ("person_name", "Ушакову Петру Сергеевичу"),
+        ("inn", "7707083893"),
+        ("snils", "112-233-455 95"),
+        ("card_pan", "2202 2036 5123 4567"),
+        ("phone", "+7 916 240-18-77"),
+        ("email", "d.sokolov@romashka.example"),
+        ("address", "107031, Москва, ул. Кузнецкий Мост"),
+        ("passport", "45 09 123456"),
+    ];
+    assert_eq!(probes.len(), ids.len(), "число проб = число классов");
+    for (class, probe) in probes {
+        assert!(ids.contains(&class), "класс {class} выпал из схемы");
+        assert!(
+            body.contains(probe),
+            "в DEMO_TEXT нет вхождения {class}: {probe}"
+        );
+    }
+    // Формы #200 = витрина границ (в тексте, не в классе).
+    assert!(body.contains("4508 455561"), "форма #200 паспорта пропала");
+    assert!(
+        body.contains("Ushakov Petr Sergeevich"),
+        "транслит-пара пропала"
+    );
+    // Размер ≤ MAX_BODY_BYTES (1 MiB, config.rs DEFAULT_MAX_BODY_BYTES) и
+    // ≥ 1.5 КБ («большой» = контракт issue, не регресс в абзац).
+    let approx = body.len();
+    assert!(
+        approx <= 1_048_576,
+        "DEMO_TEXT больше лимита тела: {approx}"
+    );
+    assert!(approx >= 1500, "DEMO_TEXT ужался (<1.5 КБ): {approx}");
+}
+
 #[test]
 fn ui_html_carries_the_weights_card() {
     let d = Daemon::start(&[]);
@@ -848,4 +948,65 @@ fn ui_html_carries_the_weights_card() {
         assert!(t.contains(id), "в index.html нет карточки: {id}");
     }
     assert!(t.contains("Скачать веса"), "нет подписи кнопки");
+}
+
+/// #198 + #201: DOM-контракт страницы (id-сетка, подписи, disabled-очередь,
+/// pending-баннер). Статика: индекс отдаётся роутером, grep-контракт =
+/// тест-пара изменению разметки (класс `ui_header_readout_...`: переименование
+/// id молча ломает app.js, JS-скан `js_ids_exist_in_html` ниже краснеет
+/// ровно на этом).
+#[test]
+fn ui_html_carries_steps_windows_and_pending_pane() {
+    let d = Daemon::start(&[]);
+    let t = call(&d.addr, "GET", "/", &[], b"").text();
+    // #201 шаги 1-2-3 + disabled-очередь с причинами (title).
+    for id in [
+        "steps",
+        "step1",
+        "step2",
+        "step3",
+        "btnCopy",
+        "outMasked",
+        "outBack",
+        "roundtrip",
+    ] {
+        assert!(t.contains(id), "в index.html нет #201-элементов: {id}");
+    }
+    assert!(t.contains("Что ушло"), "нет окна обезличенного");
+    assert!(t.contains("Исходник вернулся"), "нет окна roundtrip");
+    assert!(
+        t.contains(r#"disabled title="сначала «Разобрать»""#),
+        "очередь #201 (disabled + причина) потеряна"
+    );
+    assert!(t.contains("Новая сессия"), "п.4: сброс переименован");
+    // #198: баннер ожидающего старта (скрыт до /health stage).
+    assert!(t.contains("pendingPane"), "нет pending-баннера #198");
+    // #201-добавка: строка режима человекочитая + путь смены (env-контур).
+    assert!(t.contains("modeHint"), "нет строки подсказки режима #201");
+    let js2 = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"))
+        .expect("app.js читается");
+    assert!(
+        js2.contains("FASAD_VAULT_MODE=session"),
+        "app.js не объясняет смену режима (env-контур #201)"
+    );
+    // JS-пара: все getElementById-иды живут в HTML.
+    let js = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"))
+        .expect("app.js читается");
+    for id in [
+        "step1t",
+        "step2t",
+        "step3t",
+        "pendingPane",
+        "btnCopy",
+        "outMasked",
+        "outBack",
+        "roundtrip",
+    ] {
+        // `step1..3` адресуются конкатенацией ($("step" + i)), литералов нет;
+        // проверка литералами = контракт для id, которые app.js зовёт напрямую.
+        assert!(
+            js.contains(&format!(r#""{id}""#)),
+            "app.js не знает про {id} (id-контракт разъехался)"
+        );
+    }
 }
