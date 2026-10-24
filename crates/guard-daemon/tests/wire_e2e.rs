@@ -2254,3 +2254,45 @@ fn harness_isolates_the_operators_config_file() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// #224 MAJOR-2 (живая нога, mock-контур toy-сервера (`toy_upstream`)): файловый
+/// `FASAD_HF_HOST` потребляется загрузчиком: `FetchConfig` = env > файл, и
+/// запрос идёт на ФАЙЛОВЫЙ хост (toy = loopback http +
+/// `FASAD_PROXY_LOOPBACK_HTTP=1` в том же файле), а не на дефолтный HF.
+#[test]
+fn fetch_consumes_file_host() {
+    let (toy, _rx) = toy_upstream();
+    let dir = std::env::temp_dir().join(format!("fasad-hfhost-224-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("каталог");
+    let file = dir.join("config");
+    std::fs::write(
+        &file,
+        format!(
+            "FASAD_HF_HOST=http://{}\nFASAD_PROXY_LOOPBACK_HTTP=1\n",
+            toy.replace("http://", "")
+        ),
+    )
+    .expect("файл");
+    let cfg = guard_daemon::config::Config::load_config_at(Some(
+        &guard_daemon::config::ConfigPath::explicit(file.clone()),
+    ))
+    .expect("читается")
+    .config;
+    // 1) файловый хост доезжает до FetchConfig (env чист: харнес-контракт).
+    // Продуктивная граница: env чист (харнес), хост = из файла.
+    let fc = guard_daemon::fetch::FetchConfig::from_config(&cfg)
+        .expect("файловый хост разбирается (loopback http + флаг из того же файла)");
+    assert_eq!(
+        fc.host_display(),
+        format!("http://{}", toy.replace("http://", ""))
+    );
+    // 2) env побеждает файл (тот же приоритет, что у всего слоя).
+    let fc = guard_daemon::fetch::FetchConfig::from_lookup(&cfg, &|k| {
+        (k == "FASAD_HF_HOST")
+            .then(|| "https://from-env.example.test".to_owned())
+            .or_else(|| cfg.file_value(k).map(str::to_owned))
+    })
+    .expect("env");
+    assert_eq!(fc.host_display(), "https://from-env.example.test");
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -1205,7 +1205,7 @@ fn ui_js_carries_tab_and_config_wiring() {
     }
     assert!(js.contains("/v1/config"), "app.js не зовёт /v1/config");
     assert!(
-        js.contains("min: 1, max: 65535"),
+        js.contains("min: 1024, max: 65535"),
         "порт без числавого диапазона валидатора (#221)"
     );
     assert!(
@@ -1339,7 +1339,12 @@ fn config_write_endpoint_validates_and_refuses_secrets() {
     for (body, why) in [
         (r#"{"key":"FASAD_THREADS","value":"abc"}"#, "не число"),
         (r#"{"key":"FASAD_PORT","value":"abc"}"#, "порт не число"),
-        (r#"{"key":"FASAD_PORT","value":"0"}"#, "нулевой порт"),
+        // 0 = «случайный порт»: легален в env/файле (харнес-контракт #224),
+        // вне контура записи (UI): 422 текстом границы.
+        (
+            r#"{"key":"FASAD_PORT","value":"0"}"#,
+            "нулевой порт = харнес-контур, не UI",
+        ),
         (r#"{"key":"FASAD_PORT","value":"-1"}"#, "отрицательный порт"),
         (r#"{"key":"FASAD_PORT","value":"65536"}"#, "за u16"),
         (r#"{"key":"FASAD_PORT","value":"99999"}"#, "за u16"),

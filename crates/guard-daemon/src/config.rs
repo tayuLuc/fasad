@@ -953,6 +953,63 @@ pub fn port_from_value(raw: Option<&str>) -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
+/// Строгий порт (контур ЗАПИСИ #224): `Ok(None)` = unset (дефолт), `Ok(p)` =
+/// валидный порт, `Err` = мусор/привилегированный.
+///
+/// Диапазон = `0` ∪ `1024..=65535`:
+/// - `0` легален и НУЖЕН: контракт «дай свободный порт» (README, баннер
+///   `local_addr`), на нём ездят харнеси `wire_e2e`/`ui_sandbox`,
+///   `verify-bundle.sh` и `measure-rss.sh` — отсечь его = валить харнеси;
+/// - `1..=1023` = привилегированные (bind под обычным пользователем =
+///   `PermissionDenied` rc=1 без внятного текста, #224 MINOR): отказ с
+///   диапазоном в тексте; root-сценарий = env (юнит systemd), не UI-запись;
+/// - мусор (`abc`, `8.5`, `65536`) = отказ (запись обязана отвергать ДО
+///   записи, тихий фолбэк `port_from_value` = эргономика env-запуска, к
+///   записи неприменима).
+///
+/// Единый валидатор env-файлового и POST-контуров (ревью #224: вызывается и
+/// здесь, и в `validate_value` — расхождение «валидатор записи vs валидатор
+/// чтения» порождает файл, на котором демон не стартует).
+pub(crate) fn port_strict(raw: &str) -> Result<u16, ConfigError> {
+    let port = raw
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| ConfigError::BadValue {
+            var: "FASAD_PORT",
+            reason: format!("{raw:?}: нужен порт 0 или 1024..=65535"),
+        })?;
+    if port > 0 && port < 1024 {
+        return Err(ConfigError::BadValue {
+            var: "FASAD_PORT",
+            reason: format!(
+                "порт {port} привилегированный (<1024): bind требует root; диапазон 0, 1024..=65535"
+            ),
+        });
+    }
+    Ok(port)
+}
+
+/// Порт контура ЗАПИСИ (#224 POST /v1/config, UI): `0` вне диапазона.
+///
+/// Почему границы различаются, а разбор — один ([`port_strict`]):
+/// `FASAD_PORT=0` = «дай свободный порт» — контракт харнесей
+/// (`wire_e2e`/`ui_sandbox` поднимают демон на нулевом порте и читают адрес
+/// из баннера) и скриптов (`verify-bundle.sh`, `measure-rss.sh`); человеку из
+/// формы «Настройки» нулевой порт не нужен (баннер «listening on :52143» =
+/// сюрприз), а «свой свободный» он получает пустым полем = дефолт 8765.
+pub(crate) fn port_strict_for_write(raw: &str) -> Result<u16, ConfigError> {
+    let port = port_strict(raw)?;
+    if port == 0 {
+        return Err(ConfigError::BadValue {
+            var: "FASAD_PORT",
+            reason:
+                "0 = «случайный порт» (контур харнесей/скриптов, env); из UI выберите 1024..=65535"
+                    .to_owned(),
+        });
+    }
+    Ok(port)
+}
+
 /// Env-граница с подстановками дефолта #192/#198 (вынесена из тела
 /// [`Config::from_env`] без изменений, чтобы файловый слой #219 надстраивал над
 /// ней цепочку env > файл > дефолт, не переписывая их).
@@ -1499,6 +1556,9 @@ impl Config {
                 .filter(|v| !v.is_empty())
                 .map(str::to_owned),
         }
+        // env читается ЖИВЬЁМ: `Config::proxy_loopback_http` = срез старта, и
+        // «харнес включил флаг env после сборки Config» — рабочий контур
+        // тестов; файловый флаг = срез (файл читается один раз на старте).
     }
 
     /// Разрешает ли конфигурация `http://` к upstream (только loopback-адреса).
@@ -1883,17 +1943,7 @@ pub fn validate_value(
     // портов (1..1023) = 422 текстом: bind дал бы `PermissionDenied` rc=1 без
     // внятного объяснения (#224 MINOR); root-сценарий = env, не UI-файл.
     if key == "FASAD_PORT" {
-        let port = raw
-            .parse::<u16>()
-            .ok()
-            .filter(|p| (1024..=65535).contains(p))
-            .ok_or_else(|| ConfigError::BadValue {
-                var: "FASAD_PORT",
-                reason:
-                    "нужен порт 1024..=65535 (ниже 1024 — привилегированные, bind требует root)"
-                        .to_owned(),
-            })?;
-        let _ = port;
+        let _ = port_strict_for_write(raw)?;
         return Ok(());
     }
     // HF_HOST = тот же парсер, что у живого fetch-контура (ревью #224
@@ -2605,7 +2655,7 @@ mod tests {
     #[test]
     fn validate_port_has_no_silent_fallback() {
         let sane = Thresholds::default_working();
-        for bad in ["abc", "0", "-1", "65536", "99999", "1", "1023", "8.5", ""] {
+        for bad in ["abc", "-1", "65536", "99999", "1", "1023", "8.5", ""] {
             // "" = снятие override (легально), проверяется отдельно ниже.
             if bad.is_empty() {
                 assert!(validate_value("FASAD_PORT", bad, &sane, false).is_ok());
@@ -2634,6 +2684,28 @@ mod tests {
             validate_value("FASAD_PORT", " 9311 ", &sane, false).is_ok(),
             "trim"
         );
+        // #224 передача (первичка харнесей): `FASAD_PORT=0` = «дай свободный
+        // порт» — контракт `wire_e2e`/`ui_sandbox` (стартуют на 0 и читают
+        // адрес из баннера), `verify-bundle.sh`, `measure-rss.sh`.
+        // env/файловый контур: 0 ЛЕГАЛЕН (иначе харнеси валит сам валидатор).
+        assert_eq!(port_strict("0").expect("0 легален в env/файле"), 0);
+        // Контур записи (POST/UI): 0 вне диапазона — случайный порт человеку
+        // не нужен («listening on :52143» = сюрприз), boundary названа в доке.
+        let err = validate_value("FASAD_PORT", "0", &sane, false)
+            .expect_err("POST 0 = отказ (случайный порт = харнес-контур)");
+        assert!(
+            matches!(
+                err,
+                ConfigError::BadValue {
+                    var: "FASAD_PORT",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        // Живой env-контур на 0: bindFrom = addr :0 (харнес-семантика).
+        let cfg = cfg_from(&[("FASAD_PORT", "0")]).expect("0 читается env-контуром");
+        assert_eq!(cfg.addr.port(), 0);
     }
 
     /// #224 MAJOR-2: `FASAD_HF_HOST` валидируется ПАРСЕРОМ fetch-контура (единая

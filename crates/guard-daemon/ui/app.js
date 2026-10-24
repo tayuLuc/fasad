@@ -620,7 +620,7 @@ function initTabs() {
  (hot-reload вне контура #219); отказ = текст 422/403 в статусной строке. */
 
 const CFG_NUMERIC = {
-  FASAD_PORT: { min: 1, max: 65535, step: 1 },
+  FASAD_PORT: { min: 1024, max: 65535, step: 1 }, // граница = port_strict_for_write (#224)
   FASAD_THREADS: { min: 1, max: 256, step: 1 },
   FASAD_TIMEOUT_MS: { min: 1, max: 3600000, step: 1 },
   FASAD_READ_TIMEOUT_MS: { min: 1, max: 3600000, step: 1 },

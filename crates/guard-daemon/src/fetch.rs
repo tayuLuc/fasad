@@ -132,13 +132,7 @@ impl FetchConfig {
     /// `scheme://host[:port]` (отказ на старте, не на клике: молча
     /// проигнорированный мусорный env = дырка, о которой оператор не знает).
     pub fn from_config(cfg: &Config) -> Result<Self, FetchError> {
-        // #224 MAJOR-2: env > файл (тот же приоритет, что у всего config-слоя).
-        // До этого слой читал ТОЛЬКО env, и файловый `FASAD_HF_HOST` был
-        // мёртвым ключом: GET врал source, fetch хост не видел.
-        Self::from_lookup(cfg, &|k| match std::env::var(k) {
-            Ok(v) if !v.trim().is_empty() => Some(v),
-            _ => cfg.file_value(k).map(str::to_owned),
-        })
+        Self::from_lookup(cfg, &|k| cfg.string_value(k))
     }
 
     /// Валидатор значения `FASAD_HF_HOST` = ТОТ ЖЕ парсер, что у живого
@@ -195,6 +189,11 @@ impl FetchConfig {
 
     /// Чистая часть (контракт `Config::from_lookup`): `FASAD_HF_HOST` из
     /// инжектируемого источника — тесты не трогают среду процесса.
+    ///
+    /// Продуктивная цепочка (#224 MAJOR-2) строится в [`Self::from_config`]
+    /// через `Config::string_value` = env (непустой) > файл > дефолт — та же
+    /// точка приоритета, что у всего config-слоя; сюда lookup приходит
+    /// готовым (харнеси инжектируют свою).
     ///
     /// # Errors
     ///
