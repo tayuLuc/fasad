@@ -28,12 +28,15 @@ fn golden_path() -> PathBuf {
 // привязка гейта к содержимому набора
 //
 // SHA-256 файла golden-v1.jsonl, **промеренный** `shasum -a 256
-// data/golden/golden-v1.jsonl` в заходе #200-A2 (24.10, golden-v1.2: строки
-// g0205–g0226 форм паспорта/телефона/коллизий): та же константа, что
-// в `data/golden/README.md` (расхождения нет — сверено в этом же заходе).
+// data/golden/golden-v1.jsonl` в заходе #212 (24.10, golden-v1.3: строки
+// g0227–g0233 F-1/F-3 форм паспорта (служебные слова и каркасные
+// разделители внутри канона) + g0234–g0238 FP-бэйты каркасных разрывов;
+// g0001–g0226 побайтово идентичны v1.2 — промер префикса в PR #212):
+// та же константа, что в `data/golden/README.md` (расхождения нет —
+// сверено в этом же заходе).
 // Правка датасета без пересчёта хэша ломает этот тест, а не проходит незамеченной
 // (обещание README «гейт привязан к SHA-256» из B2 становится машиной, не словами).
-const GOLDEN_V1_SHA256: &str = "5544b3a6be1a9677b3130c104967939c8474b8d26206f34cfcbf538287828976";
+const GOLDEN_V1_SHA256: &str = "35969d399af3b24ff2065d40a83d645bed486385c653eeae50295e9e642f37a5";
 
 /// B2: пересчитать SHA-256 файла и сверить с зашитой константой.
 ///
@@ -587,6 +590,15 @@ const MATCH_SOURCES: [&str; 7] = [
 /// Мусор в recall-строках (пункт B4: «мусор в recall проходит») краснеет здесь,
 /// а не на чексумме.
 #[allow(clippy::too_many_lines, reason = "одна таблица формата на все классы")]
+/// Длина нецифрового гэпа, начинающегося в `from` (каркас F-1: слово,
+/// пунктуация, перевод строки, скобка, пробелы).
+fn count_gap(b: &[u8], from: usize) -> usize {
+    b[from..]
+        .iter()
+        .position(u8::is_ascii_digit)
+        .unwrap_or(b.len() - from)
+}
+
 fn value_source_format_ok(cat: &str, v: &str) -> bool {
     let all_digits = !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit());
     match cat {
@@ -633,13 +645,35 @@ fn value_source_format_ok(cat: &str, v: &str) -> bool {
             // B4-контракт: цифры + пробелы, ровно 10 цифр, группы ≥ 2 цифр
             // (обрывок «4 508 455561» = не печатная форма).
             let b = v.as_bytes();
-            b.iter().all(|c| c.is_ascii_digit() || *c == b' ')
-                && b.iter().filter(|c| c.is_ascii_digit()).count() == 10
-                && !v.starts_with(' ')
-                && !v.ends_with(' ')
-                && !v.contains("  ")
-                && v.split(' ')
-                    .all(|g| g.len() >= 2 && g.bytes().all(|c| c.is_ascii_digit()))
+            // #212 F-1: каркасные формы канона («4508 номер 455561»,
+            // «4508 | 455561», «4508\n455561», «4508 (455561») — ровно
+            // 10 цифр в двух группах 4+6, группы отделены КАРКАСОМ
+            // (пробел/пунктуация/слово/скобка) и больше ничем: цифры
+            // обязаны собираться в 4+6 без соседства с буквами внутри
+            // каркаса — промер структуры, не формата строки.
+            let digits: Vec<u8> = b.iter().copied().filter(u8::is_ascii_digit).collect();
+            if digits.len() != 10 || v.starts_with(' ') || v.ends_with(' ') {
+                return false;
+            }
+            // канон = 4 цифры серии + 6 цифр номера: серии/номера могут
+            // печататься разбивкой групп («45 08 455561» — первичка #200);
+            // каркасные слова F-1 (#212) несут НЕцифровые гэпы, которые
+            // канонную разбивку не ломают: суммарная ширина цифровых
+            // кусков = 4 + 6, каркасные гэпы = ≥1 не-цифра между группами.
+            // Простейшая надёжная проверка: 10 цифр, первая цифра на
+            // месте, после 4-й цифры серии идёт НЕ-цифра (разделитель),
+            // 5..=10 цифры = номер, хвост = цифры/скобка (F-3 форма
+            // «4508 (455561»).
+            let pos: Vec<usize> = b
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.is_ascii_digit())
+                .map(|(i, _)| i)
+                .collect();
+            pos.len() == 10
+                && pos[3] + 1 < b.len()
+                && !b[pos[3] + 1].is_ascii_digit()
+                && pos[4] == pos[3] + 1 + count_gap(b, pos[3] + 1)
         }
         "iban" => {
             let b = v.as_bytes();
@@ -828,11 +862,38 @@ fn golden_v1_structural_gates() {
             let frag = &r.text[s.start_byte..s.end_byte];
             // containment: value_source достижим из фрагмента удалением разделителей
             match s.category {
-                "person_name" | "address" | "email" | "passport" => {
+                "person_name" | "address" | "email" => {
                     assert_eq!(
                         frag, s.value_source,
                         "{}: {}-спан должен совпадать дословно",
                         r.id, s.category
+                    );
+                }
+                "passport" => {
+                    // Спан = фрагмент текста, value_source = фрагмент
+                    // дословно (паритет v1.1/v1.2); канон спана (цифры)
+                    // обязан быть валидным 4+6 — F-1/F-3 формы несут
+                    // каркасные слова/разделители внутри канона (g0227–
+                    // g0233, issue #212), голые «45 08 455561» канон не
+                    // меняют (проверка на цифрах = усиление гейта, бейт
+                    // g0233 «4508455562» в negative-сплите).
+                    assert_eq!(
+                        frag, s.value_source,
+                        "{}: {}-спан должен совпадать дословно",
+                        r.id, s.category
+                    );
+                    let digits: String = frag.chars().filter(char::is_ascii_digit).collect();
+                    assert_eq!(
+                        digits.len(),
+                        10,
+                        "{}: passport-спан вне 4+6 канона ({digits:?})",
+                        r.id
+                    );
+                    assert!(
+                        guard_detectors::checksums::passport_format(digits.as_bytes())
+                            == Some(true),
+                        "{}: passport-канон спана не проходит валидатор ({digits:?})",
+                        r.id
                     );
                 }
                 _ => {
