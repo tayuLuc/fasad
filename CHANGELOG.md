@@ -4,7 +4,7 @@
 Формат: Added / Changed / Fixed / Removed (Keep a Changelog, секции = версии).
 Правила: заменяющие утверждения (ruling #182); даты = дата влития; числа = артефакт прогона.
 
-## Unreleased
+## v0.1.2 (2026-10-24)
 
 ### Added
 - Ожидающий старт трей-контура (#198): `fasad-tray` (win/mac) без весов НЕ отказывает rc=2 — поднимает UI (`stage=models-pending`, `/v1/status`+кнопка «Скачать веса» живы), модельные маршруты (`/v1/analyze`, `/v1/anonymize`, `/v1/deanonymize`, прокси) = 503 `models_pending` (не молчание, не каскад-0-обман #185); headless `fasad` = прежний rc=2 (prod fail-closed цел, решётка `cascades::startup_pending*` unit-контуром); `MessageBox` отказа (win, #190) += кнопка «Открыть инструкцию» (`MB_ABORTRETRYIGNORE`, canvas-кнопка недосягаема в `MessageBoxW` — Retry-канал, первичка win-API); UI-баннер ожидающего режима + шаги «(нужны веса)».
@@ -16,11 +16,9 @@
 - win.rs (#205, хвост ревью #203 §2.3): `IDIGNORE` объявлен константой (`const IDIGNORE: i32 = 5;`), `debug_assert`-решётка читает `IDABORT | IDRETRY | IDIGNORE` вместо литерала `5` (литерал мёртв для имени), doc-текст «Используется ОБА» приведён к факту решётки (читаются все три: IDRETRY = инструкция, IDABORT = debug_assert-контракт, IDIGNORE = X = уход молча). Прежняя строка CHANGELOG (#203) обещала эту правку, файла в диффе не было (класс «diff-unproven claim», кандидат 33).
 - `CascadeFailure::ModelsNotConfigured` Display (#206, хвост #199): unit-зубы содержания вне `ort-inference`-гейта — текст отказа называет ОБА канала докачки весов (UI `http://127.0.0.1:<порт>/` → «Скачать веса» + `scripts/fetch-models.sh`, win: `scripts\fetch-models.ps1`); Load-контур-зуб #203 не тронут.
 - Харнес-контур #203 §2.1 (блокер R4): харнесы wire_e2e/ui_sandbox снимают `FASAD_TEST_TRAY_CONTOUR` из унаследованной среды (`Daemon::start` + прямой спавн): на машине с смонтированным HOME-кешем унаследованный флаг + симметрия config.rs = Some(кеш) = харнес 28/4 красным (дискриминатор промерен: отравленный env = 32/0 после фикса); release.md-формулировка «на ЛЮБОЙ мишени» приведена к факту решётки (трей+флаг+смонт.кеш = ALIVE mounted). Ссылки config.rs на несуществующий `test_cascade0_flag_disables_every_default` → реальные зубы (рецидив §2.4).
-### Fixed
 - UI-чат #202 (ревью #203 §4): «Раскрыть вставленный» = ручной цикл полного документа (поле вставки ответа из своего чата; прокси-кнопка = короткие куски, бюджет = подмены в окне экстрактора #84: промер ≲3 stateless / ≲12 session), подсказка в панели + README §1 оба пути. Счётчик «токенов» чата теперь считает ОБЕ формы меток (паттерн с `#` не видел `[КЛАСС_н_nonce]` = «токенов раскрыто: 0» при N подмен в session-режиме, первичка vault.rs:12); JS-зуб `chat_token_counter_counts_both_forms` (node/JXA fixture-раннер); форма session-метки = ЗАГЛАВНЫЙ класс (`Grammar::LABEL` алфавит A-Z0-9_, vault.rs:240/914; живой промер: `[PERSON_NAME_1_SOHIKRAL]` ×48, паттерн по строчным schema-id = 0 = та же ложь нулём; regex `(?i)`).
 - `FASAD_TEST_CASCADE0=1` на трей-мишени = ALIVE `models-pending` (stage харнесу врал, ревью #203 §2.1) — флаг симметричен: каскад-0-семантика на любой мишени, Some(каталог) = смонтированный HOME-дефолт (зуб `layout_complete_counts_five_of_five_only`).
 - win.rs: дубль комментария style + тавтология `answer == IDRETRY && answer != IDABORT` (4≠3 всегда, §2.2). release.md: «HOME unset» = факт решётки (трей = pending, headless = rc=2, §2.3); config.rs-ссылка на несуществующий тест → реальные имена (§2.4).
-### Fixed
 - Транзитив `ctutils` 0.4.2 → 0.4.5 (`cargo update ctutils`): RUSTSEC-2026-0385 (non-constant-time mask, crypto-failure, первичка advisory-db: patched >=0.4.4) — красный `just deny` CI-провен run 40020710741; `ignore`-список deny.toml остался пустым (контур «дыра краснит, не заминается»).
 - ЗУБ Г (трей) verify-bundle: win-контур отказа = ожидающий UI (#198), unix/mac-нога = живой промер pending (stage/503/витрина); SKIPPED-контур win = стенд #197.
 - Баннер ожидающего старта печатает честный stage (`models-pending`), а не `cfg.stage()` (промер mac: `cascade-0+models` на несмонтированном = ложь витрины, поймано живым прогоном этой сессии).
