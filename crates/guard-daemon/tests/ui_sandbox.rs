@@ -53,6 +53,10 @@ impl Daemon {
             // `env_remove` уже не спасает. Флаг = «харнес cascade-0»: env-
             // граница `from_env` не подставляет дефолт (см. config.rs).
             .env("FASAD_TEST_CASCADE0", "1")
+            // #203 §2.1: харнес = каскад-0-контур; env-мишень #198 из
+            // оболочки не наследуется (на машине с весами она включала
+            // Some(кеш) = stage cascade-0+models = харнес красный).
+            .env_remove("FASAD_TEST_TRAY_CONTOUR")
             // Тестовый демон поднимается БЕЗ весов и без чужих ручек окружения.
             // Причина (ревью #87, воспроизведено на этом дереве): с
             // унаследованным `FASAD_MODEL_DIR` каждый прогон грузит веса в
@@ -65,6 +69,10 @@ impl Daemon {
             // дефолт.
             .env_remove("FASAD_MODEL_DIR")
             .env("FASAD_TEST_CASCADE0", "1")
+            // #203 §2.1: харнес = каскад-0-контур; env-мишень #198 из
+            // оболочки не наследуется (на машине с весами она включала
+            // Some(кеш) = stage cascade-0+models = харнес красный).
+            .env_remove("FASAD_TEST_TRAY_CONTOUR")
             .env_remove("FASAD_THREADS")
             .env_remove("FASAD_TIMEOUT_MS")
             .stdin(Stdio::null())

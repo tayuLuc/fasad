@@ -423,7 +423,13 @@ impl Config {
             // cascade-0-харнес); теперь флаг на любой мишени = каскад-0
             // семантика (feature-off легально, full-бинарь = честный
             // `BuiltWithoutInference` текстом «бинарь без орт-контура», не
-            // pending-ложью). Зуб: `test_cascade0_flag_disables_every_default`.
+            // pending-ложью). Зубы (env-граница читает процесс-среде, юнит
+            // = живой бинарь, первичка #192-контур): live-нога wire_e2e
+            // `pending_flag_on_tray_contour_keeps_the_cascade0_harness`
+            // (флаг+мишень+tmp-пустой HOME = cascade-0-only харнес, НЕ
+            // pending) и харнес-дискриминатор `Daemon::start`
+            // (`env_remove FASAD_TEST_TRAY_CONTOUR` = прогон с весами цел,
+            // ревью #203 §2.1-провен 28/4 → 32/0).
             match var {
                 "FASAD_MODEL_DIR" if std::env::var("FASAD_TEST_CASCADE0").is_ok() => {
                     // Харнес cascade-0 с ЯВНО названным каталогом обязан
@@ -471,7 +477,9 @@ impl Config {
                 // `weights::tests::layout_complete_*` (5/5 против пустого),
                 // `cascades::tests::pending_gate_is_tray_only_and_model_failures_only`
                 // (решётка main на Load/ModelsNotConfigured),
-                // `test_cascade0_flag_disables_every_default` (флаг-симметрия).
+                // `pending_flag_on_tray_contour_keeps_the_cascade0_harness`
+                // (wire_e2e, live-флаг) + харнес-`env_remove` (ревью #203
+                // §2.2: прежняя ссылка на несуществующий юнит).
                 "FASAD_MODEL_DIR"
                     if v.as_deref().is_none_or(|x| x.trim().is_empty())
                         && cfg!(all(

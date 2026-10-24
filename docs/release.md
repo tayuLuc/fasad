@@ -36,12 +36,19 @@
    берёт отказ доставки; промер ревью #203 §2.3: `env -i` без HOME на
    трей-бинаре = pending UI). Headless-бинарь при unset HOME = rc=2,
    строка #192 в таблице выше про него и остаётся.
-   `FASAD_TEST_CASCADE0=1` (харнес-флаг #185) на ЛЮБОЙ мишени = каскад-0
-   семантика (#203 §2.1, симметрия): на трей-мишени с флагом раньше
-   всходил ALIVE `models-pending` (stage харнесу врёт); теперь трей +
-   флаг = Some(каталог) только при смонтированном HOME-дефолте (зуб
+   `FASAD_TEST_CASCADE0=1` (харнес-флаг #185) на feature-off-мишени =
+   каскад-0-семантика (харнес легален, дефолт не подставлен). На
+   ТРЕЙ-мишени с флагом раньше всходил ALIVE `models-pending` (stage
+   харнесу врёт, #203 §2.1); теперь трей+флаг = Some(каталог) при
+   СМОНТИРОВАННОМ HOME-дефолте = живой mounted-контур (не pending, не
+   каскад-0: трей с весами монтируется, feature-off + трей env-мишень +
+   смонтированный кеш = ALIVE `cascade-0+models`), при пустом = каскад-0
+   (зуб `pending_flag_on_tray_contour_keeps_the_cascade0_harness` +
    `weights::tests::layout_complete_counts_five_of_five_only` +
    `cascades::tests::pending_gate_is_tray_only_and_model_failures_only`).
+   Харнес тестов (`Daemon::start` wire/ui_sandbox) снимает
+   `FASAD_TEST_TRAY_CONTOUR` из унаследованной среды (#203 §2.1-блокер:
+   прогон на машине с весами = 32/0, не 28/4).
 3. Назвал `FASAD_MODEL_DIR`, а смонтировать нечем (бинарь без орт-контура
    или веса битые/отсутствуют) — демон **не стартует**
    (`CascadeFailure::BuiltWithoutInference` / `Load`, `cascades.rs:635-650`);

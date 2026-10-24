@@ -73,6 +73,14 @@ impl Daemon {
             .env("FASAD_TEST_CASCADE0", "1")
             .env_remove("FASAD_THREADS")
             .env_remove("FASAD_TIMEOUT_MS")
+            // #203 §2.1 (блокер R4): env-мишень #198 из оболочки НЕ
+            // наследуется: симметрия config.rs (флаг + трей-мишень +
+            // смонтированный HOME-дефолт = Some(кеш оператора)) на машине
+            // с весами красила харнес (28/4: stage cascade-0+models +
+            // модельные спаны; промер ревью на HOME оператора). Зубы
+            // pending-контура ставят флаг ЯВНО (env-пары теста применяются
+            // после remove в `Daemon::start`).
+            .env_remove("FASAD_TEST_TRAY_CONTOUR")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -2015,6 +2023,8 @@ fn banner_carries_ui_line_with_the_actual_port() {
             .env("FASAD_PORT", "0")
             .env_remove("FASAD_MODEL_DIR")
             .env("FASAD_TEST_CASCADE0", "1")
+            // #203 §2.1: env-мишень #198 не наследуется (`Daemon::start`).
+            .env_remove("FASAD_TEST_TRAY_CONTOUR")
             .env_remove("FASAD_THREADS")
             .env_remove("FASAD_TIMEOUT_MS")
             .stdin(Stdio::null())
