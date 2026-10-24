@@ -168,20 +168,6 @@ impl Daemon {
     }
 }
 
-/// Путь-игла E-контура #219: СУЩЕСТВУЮЩИЙ пустой файл конфигурации в tmp.
-///
-/// Пустой, а не «несуществующий»: явный `FASAD_CONFIG` в несуществующий путь =
-/// отказ старта (#185-контур: опечатка в пути обязана быть названа), а харнесу
-/// нужен ровно «файла нет по существу» = пустые значения. Файл создаётся на
-/// вызове: CI-раннер обязан найти его, а не оператора tmp-содержимое.
-/// Собрать состояние убитого процесса (zombie-контракт clippy: у spawn
-/// обязан быть `wait`; `kill` + `wait` = ребёнок не живёт зомби до конца
-/// тестового раннера).
-fn reap(mut child: std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
 /// Уникальный tmp-путь теста. `std::process::id()` НЕ уникален: `cargo test`
 /// = ОДИН процесс, тесты живут в ПОТОКАХ — два теста с одним PID-суффиксом
 /// пишут в ОДИН каталог/файл (первичка CI ubuntu job 120977735379 @b68e853:
@@ -198,6 +184,12 @@ fn unique_tmp_path(prefix: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("{prefix}-{}-{seq}-{nanos}", std::process::id()))
 }
 
+/// Путь-игла E-контура #219: СУЩЕСТВУЮЩИЙ пустой файл конфигурации в tmp.
+///
+/// Пустой, а не «несуществующий»: явный `FASAD_CONFIG` в несуществующий путь =
+/// отказ старта (#185-контур: опечатка в пути обязана быть названа), а харнесу
+/// нужен ровно «файла нет по существу» = пустые значения. Файл создаётся на
+/// вызове: CI-раннер обязан найти его, а не оператора tmp-содержимое.
 fn fasad_empty_config() -> std::path::PathBuf {
     let path = unique_tmp_path("fasad-harness-empty.cfg");
     std::fs::write(&path, "# fasad harness (#219): empty = no values\n").expect("игла создаётся");
@@ -2139,6 +2131,17 @@ fn fresh_home_starts_and_explicit_missing_path_refuses_live() {
     let dir = unique_tmp_path("fasad-fresh-live-224");
     std::fs::create_dir_all(&dir).expect("HOME");
     let home = dir.to_string_lossy().to_string();
+    // Платформа-стенка: канон-резолв config-файла = unix/XDG-ветка
+    // (`$HOME/.config/fasad/config`); на windows тестовая HOME-игла НЕ
+    // канон (резолв = %APPDATA%, её не трогаем: CI-раннер чист = дефолты,
+    // но файл по `$HOME\.config` демон не увидит) —Skip на win, живая
+    // unix-нога = ubuntu-матрица (mac-локаль тоже покрывает).
+    if cfg!(windows) {
+        eprintln!(
+            "SKIP|wire_e2e|fresh-home-контур = unix-канон (XDG), win-резолв = APPDATA-ветка вне контура теста"
+        );
+        return;
+    }
     // 1a) свежая установка: HOME tempdir, файла НЕТ, `FASAD_CONFIG` снят
     //     (`env_remove`, а не игла-пустышка) = продуктовый путь из блокера
     //     #224: резолв канона → файла нет → дефолты, старт.
@@ -2154,11 +2157,11 @@ fn fresh_home_starts_and_explicit_missing_path_refuses_live() {
     //     HOME) читается продуктивным путём — баннер = порт из файла, а не
     //     `FASAD_PORT=0` харнеса. Прямой спавн: `Daemon::start` перебивает
     //     порт контрактом `FASAD_PORT=0`.
-    // Дискриминатор = ВТОРАЯ строка баннера (её не читает `Daemon::start`:
-    // тот ждёт первую с `listening on http://` и закрывает трубку; прямой
-    // спавн + свой ридер = гонка с буфером, CI-нестабильность). Контент
-    // строки = `FASAD_CONFIG=<путь>` из `FASAD_HF_HOST` файла (зуб #224
-    // MAJOR-2), порт = 0 (контракт харнес-нуля, порт-контент не мерим).
+    // Дискриминатор = живой GET /v1/config (витрина), НЕ строки баннера:
+    // прямой read_line трубки = CI-гонка с буфером (первичка #224: ubuntu
+    // 12-мин висяк на read_line второй строки, stdout пайпа не сбрасывается пока
+    // процесс жив). Порт = 0 (харнес-контра, случайный адрес берём из
+    // `Daemon::start`), файловый HF_HOST = контент-зуб.
     let cfg_dir = dir.join(".config").join("fasad");
     std::fs::create_dir_all(&cfg_dir).expect("каталог конфига");
     std::fs::write(
@@ -2166,39 +2169,23 @@ fn fresh_home_starts_and_explicit_missing_path_refuses_live() {
         "FASAD_PORT=0\nFASAD_HF_HOST=https://from-file.example.test\n",
     )
     .expect("файл");
-    let mut out = Command::new(env!("CARGO_BIN_EXE_fasad"))
-        .env_remove("FASAD_CONFIG")
-        .env("HOME", &home)
-        .env("FASAD_TEST_CASCADE0", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("процесс стартует");
-    let mut seen = String::new();
+    let d = Daemon::start(&[("HOME", home.as_str()), ("FASAD_CONFIG", "")]);
     {
-        use std::io::BufRead as _;
-        let mut reader = std::io::BufReader::new(out.stdout.take().expect("stdout"));
-        let mut line = String::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while std::time::Instant::now() < deadline {
-            line.clear();
-            if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                break;
-            }
-            seen.push_str(&line);
-            if seen.contains("конфиг-файл") {
-                break;
-            }
-        }
+        let r = call(&d.addr, "GET", "/v1/config", &[], b"");
+        let j = r.json();
+        let row = j["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .find(|e| e["key"] == "FASAD_HF_HOST")
+            .expect("HF_HOST в таблице");
+        assert_eq!(
+            row["value"], "https://from-file.example.test",
+            "файл по каноническому пути обязан читаться (product path): {j}"
+        );
+        assert_eq!(row["source"], "file", "{j}");
     }
-    reap(out);
-    assert!(
-        seen.contains("конфиг-файл")
-            && seen.contains(&format!("{}/.config/fasad/config", dir.display()))
-            && seen.contains("FASAD_CONFIG"),
-        "файл по каноническому пути обязан читаться (product path, строка 2): {seen:?}"
-    );
+    drop(d);
     // 2) FASAD_CONFIG в никуда (явный) = rc=2 + имя переменной в stderr.
     let out = Command::new(env!("CARGO_BIN_EXE_fasad"))
         .env(
@@ -2243,56 +2230,53 @@ fn harness_isolates_the_operators_config_file() {
     .expect("файл оператора");
     let home = dir.to_string_lossy().to_string();
 
-    // 1) HOME=операторский (с файлом), FASAD_CONFIG снят: файл читается.
-    //    Дискриминатор по баннеру: 9411, а не 0 (контракт `FASAD_PORT=0`).
-    // Дискриминатор = строка 2 баннера («конфиг-файл … FASAD_CONFIG=…») +
-    // GET /health на ДЕФОЛТНОМ порту (8765): файл даёт `FASAD_THREADS=2` —
-    // поток виден в `GET /v1/status`? threads не в статусе; берём маркер
-    // строки 2 (детерминирован), порт-контент не мерим (9411 убран: CI-раннер
-    // на shared-порту = гонка).
-    let mut out = Command::new(env!("CARGO_BIN_EXE_fasad"))
-        .env("FASAD_BIND", "127.0.0.1")
-        .env_remove("FASAD_CONFIG")
-        .env("HOME", &home)
-        .env("FASAD_TEST_CASCADE0", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("процесс стартует");
-    let mut seen = String::new();
-    {
-        use std::io::BufRead as _;
-        let mut reader = std::io::BufReader::new(out.stdout.take().expect("stdout"));
-        let mut line = String::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while std::time::Instant::now() < deadline {
-            line.clear();
-            if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                break;
-            }
-            seen.push_str(&line);
-            if seen.contains("конфиг-файл") {
-                break;
-            }
-        }
+    // Платформа-стенка: unix-канон-резолв (см. `fresh_home…`: на win HOME
+    // не канон, %APPDATA% — чужой контур).
+    if cfg!(windows) {
+        eprintln!("SKIP|wire_e2e|E-контур-дискриминатор = unix-канон (XDG)");
+        return;
     }
-    reap(out);
-    assert!(
-        seen.contains("конфиг-файл")
-            && seen.contains(&format!("{}/.config/fasad/config", dir.display()))
-            && seen.contains("FASAD_CONFIG"),
-        "файл оператора обязан читаться без FASAD_CONFIG (дискриминатор E-контура): {seen:?}"
-    );
+    // 1) HOME=операторский (с файлом), `FASAD_CONFIG` снят (`env_remove`
+    //    иглы харнеса): демон стартует и витрина ОТДАЁТ ФАЙЛОВЫЙ HF_HOST =
+    //    файл читается. Дискриминатор = НЕ баннер (прямые read_line =
+    //    CI-гонка с буфером, #224) и НЕ порт-контент (8765 на shared-раннере
+    //    = гонка): GET /v1/config = детерминированный ответ.
+    let d = Daemon::start(&[("HOME", home.as_str()), ("FASAD_CONFIG", "")]);
+    {
+        let r = call(&d.addr, "GET", "/v1/config", &[], b"");
+        let j = r.json();
+        let row = j["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .find(|e| e["key"] == "FASAD_HF_HOST")
+            .expect("HF_HOST в таблице");
+        assert_eq!(
+            row["value"], "https://operator.example.test",
+            "файл оператора обязан читаться без FASAD_CONFIG (дискриминатор              E-контура): {j}"
+        );
+        assert_eq!(row["source"], "file", "{j}");
+    }
+    drop(d);
 
-    // 2) Тот же HOME+файл, игла FASAD_CONFIG=пустой tmp-файл (контур харнеса):
-    //    файл не читается, порт = FASAD_PORT=0 (баннер = случайный, не 9411).
+    // 2) Тот же HOME+файл, ИГЛА харнеса (пустой tmp-файл): файловое значение
+    //    исчезает (дефолт HF), т.е. изоляция даёт именно FASAD_CONFIG.
     let d = Daemon::start(&[("HOME", home.as_str()), ("FASAD_PORT", "0")]);
-    assert!(
-        !d.addr.ends_with(":9411"),
-        "харнес-игла не изолировала файл оператора: {}",
-        d.addr
-    );
+    {
+        let r = call(&d.addr, "GET", "/v1/config", &[], b"");
+        let j = r.json();
+        let row = j["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .find(|e| e["key"] == "FASAD_HF_HOST")
+            .expect("HF_HOST в таблице");
+        assert_ne!(
+            row["value"].as_str().unwrap_or_default(),
+            "https://operator.example.test",
+            "харнес-игла не изолировала файл оператора: {j}"
+        );
+    }
     std::fs::remove_dir_all(&dir).ok();
 }
 
