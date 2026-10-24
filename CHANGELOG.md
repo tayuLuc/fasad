@@ -4,6 +4,11 @@
 Формат: Added / Changed / Fixed / Removed (Keep a Changelog, секции = версии).
 Правила: заменяющие утверждения (ruling #182); даты = дата влития; числа = артефакт прогона.
 
+## Unreleased
+
+### Added
+- Кросс-бенч границ на внешнем корпусе (#209, read-only мера, НЕ гейт recall): данные `redmadrobot-rnd/pii_benchmark` (MIT, 2841 строка, 21 тип BIO, snapshot f77ea83, sha256-пин test.csv 6bf544a3…) в git по рюлингу оператора 24.10 «внешние MIT-бенчи тащим в git» (`data/bench-external/redmadrobot-pii-benchmark/` + license-контур + `README.md`-владелец: пины, отображение 21→8, решения контура); конвертер `tools/bench/rrn_bench.py` (char→byte точная конверсия, DFS-выравнивание токенов с первичкой формата: `#`→`.` канон 193 строки, casefold-фолбэк 2, висячий whitespace 1, пустой токен 1 — 2841/2841, счётчики тип-в-тип с карточкой); меритель `tools/bench/rrn_score.py` (strict byte-exact + coverage overlap по 8 нашим классам, our-only/their-only/both, char/byte-расхождения, таймауты = красный счётчик); обёртка `scripts/rrn-bench.sh` (debug-демон, FASAD_THREADS=2, fail-closed; CI не монтируем — air-gap-контур, прогон ручной; конверт `crossref.jsonl` и артефакты `.local/bench/` gitignored).
+
 ## v0.1.2 (2026-10-24)
 
 ### Added

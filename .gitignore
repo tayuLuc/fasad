@@ -41,3 +41,9 @@ rust_out
 # Состояние харнесса агентов (не продукт)
 .agentplane/
 __pycache__/
+# Внешний кросс-бенч (#209): ДАННЫЕ (test.csv/карточка/license) — В GIT (рюлинг
+# 24.10, data/bench-external/redmadrobot-pii-benchmark/). СЮДА — производные:
+# конверт crossref.jsonl (генерится на лету scripts/rrn-bench.sh) и артефакты
+# прогонов .local/bench/ (путь владельца — data/bench-external/README.md).
+data/bench-external/crossref.jsonl
+.local/

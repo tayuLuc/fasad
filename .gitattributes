@@ -23,3 +23,8 @@ data/morph/** -text
 # LF→CRLF в рабочем дереве — здесь это ещё и меняло бы байты промптов Decide,
 # т.е. измеренный контракт порядка (#53). -text = побайтовая копия blob'а.
 config/schema.default.json -text
+# Внешний кросс-бенч (#209, рюлинг 24.10 «данные в git»): sha256-пин в
+# data/bench-external/README.md сверяется с байтами файла на ВСЕХ ОС CI-матрицы;
+# CRLF-конверсия windows-чек-аута красила бы пин ложно (тот же класс, что
+# data/golden/** выше). -text = ни нормализации, ни конверсии.
+data/bench-external/redmadrobot-pii-benchmark/** -text
