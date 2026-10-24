@@ -65,7 +65,7 @@
       "answers": ["yes", "no"],
       "model": true,
       "lockr_tags": ["PHONE"],
-      "validators": [],
+      "validators": ["phone_rf"],
       "validator_only": false
     },
     {
@@ -95,7 +95,7 @@
       "answers": ["yes", "no"],
       "model": true,
       "lockr_tags": ["PASSPORT"],
-      "validators": [],
+      "validators": ["passport_format"],
       "validator_only": false
     }
   ],

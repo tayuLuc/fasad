@@ -33,10 +33,12 @@ const CLASSES: [&str; 6] = ["inn", "snils", "ogrn", "ogrnip", "iban", "card_pan"
 /// Сколько золотых спанов этих классов в recall-сплите.
 ///
 /// Число промерено по файлу (`tools/metrics/union_recall.py`, таблица «Покрывка
-/// каскада 0» в §6 отчёта: 36 + 29 + 25 + 21 + 27 + 32). Тест сверяет состав, прежде чем
-/// требовать покрытия: правка датасета обязана красить счётчик, а не молча
-/// уменьшать знаменатель.
-const GOLD_CHECKSUM_SPANS: usize = 170;
+/// каскада 0» в §6 отчёта: 36 + 29 + 25 + 21 + 27 + 32 = 170 на golden-v1.0;
+/// golden-v1.2 (#200-A2) досчитала inn-коллизии: 170 + 3 = 173 — промер
+/// stderr-счётчика `c0_measurements_are_emitted` этого же захода). Тест сверяет состав,
+/// прежде чем требовать покрытия: правка датасета обязана красить счётчик, а
+/// не молча уменьшать знаменатель.
+const GOLD_CHECKSUM_SPANS: usize = 173;
 
 fn golden_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/golden/golden-v1.jsonl")
@@ -175,6 +177,44 @@ fn c0_measurements_are_emitted() {
     println!("C0NEG|rows|{nrows}|spans|{spans}|bait|{bait}");
 }
 
+/// Покрытие структурных классов #200-A2 (passport/phone) recall-сплита:
+/// детерминированный вето-слой обязан закрывать СВОИ классы целиком — это
+/// контракт атома (FN-класс первички закрыт), а не общий recall-гейт.
+#[test]
+fn c0_covers_structural_classes_of_recall_split() {
+    const STRUCT: [&str; 2] = ["passport", "phone"];
+    let schema = Schema::embedded().expect("канон схемы валиден");
+    let mut per: Vec<(&str, usize, usize)> = STRUCT.map(|c| (c, 0, 0)).to_vec();
+    let mut miss: Vec<String> = Vec::new();
+    for r in rows().iter().filter(|r| r.split == "recall") {
+        let hits = scan(&r.text, &schema);
+        for s in r
+            .spans
+            .iter()
+            .filter(|s| STRUCT.contains(&s.category.as_str()))
+        {
+            let i = STRUCT.iter().position(|c| *c == s.category).unwrap();
+            per[i].2 += 1;
+            if covered(&hits, s, &s.category) {
+                per[i].1 += 1;
+            } else {
+                miss.push(format!("{} {} «{}»", r.id, s.category, slice(&r.text, s)));
+            }
+        }
+    }
+    // Счётчик-страж: 3 паспорта + 6 телефонов новых строк g0205–g0216
+    // (промер golden_gen RECALL_CAT: passport 16→19, phone 36→42).
+    assert_eq!(per[0].2, 19, "паспортных gold-спанов в recall уехало");
+    assert_eq!(per[1].2, 42, "телефонных gold-спанов в recall уехало");
+    assert!(
+        miss.is_empty(),
+        "структурный слой #200-A2 пропускает {} из {}:\n{}",
+        miss.len(),
+        per[0].2 + per[1].2,
+        miss.join("\n")
+    );
+}
+
 /// Покрытие gold-спанов: `(всего закрыто, [(класс, закрыто, всего)])`.
 fn recall_coverage() -> (usize, Vec<(&'static str, usize, usize)>) {
     let schema = Schema::embedded().expect("канон схемы валиден");
@@ -244,12 +284,13 @@ fn c0_releases_no_bait_span_on_negative_split() {
     }
     assert_eq!(bait, 0, "каскад-0 выдаёт бейты:\n{}", detail.join("\n"));
     // Порог по числу выпущенных спанов — промер `c0_measurements_are_emitted`
-    // этого же захода: 5, ровно как до шага 9 (`docs/golden-report.md` §6 п.9,
-    // `spans_c0|5`). Полная тишина не требуется: часть сработок — корректные
-    // чексуммы вне размеченных бейтов; мерка ложных срабатываний = bait.
+    // этого же захода: 8 (5 чексумменных, как до шага 9, + 3 новых телефон-
+    // сработки #200-A2 на городских бейтах g0220–g0222: валидные телефоны РФ
+    // без разметки = честный FP-bait, README § «Происхождение значений» п.3;
+    // мерка ложных срабатываний = bait = 0). Полная тишина не требуется.
     assert!(
-        spans <= 5,
-        "каскад-0 стал шумнее на negative-сплите: {spans} спанов (порог 5, промер 21.10)"
+        spans <= 8,
+        "каскад-0 стал шумнее на negative-сплите: {spans} спанов (порог 8, промер 24.10)"
     );
 }
 

@@ -115,6 +115,43 @@
 //!    base64, где срез токена ничего не говорит. Восьмой вариант источника =
 //!    правка вектора весов SPEC §2, а это контракт
 //!    `guard-types/tests/invariant_checksum_w.rs` — не уровень атома.
+//!
+//! # Паспорт, телефон, коллизия INN10 (атом #200-A2, issue #200)
+//!
+//! FN-класс первички v0.1.1: «Паспорт 4508 455561 выдан 15.04.2015» давал
+//! GLiNER-обрывки 0.822/0.929, `+79161234567` — обрывок «79», а форматированный
+//! мобильный `7 916 123-45-67` отдавался валидатором как ИНН (промер формулы §1
+//! суффикса `9161234567`: Σ=216, mod 11 = 7 = контрольная → **валидный ИНН-10**;
+//! коллизия реальна с обеих сторон, чексумма её не разрешает). Классы
+//! паспорт/телефон были чисто модельными (`validators: []` в схеме) —
+//! детектора не было ни у кого.
+//!
+//! Слой `scan_structured` (приватный) закрывает их детерминированным вето 1.0 теми же
+//! правилами, что и чексуммы:
+//!
+//! 1. **Формат из `checksums`** ([`checksums::passport_format`],
+//!    [`checksums::phone_rf`]): паспорт = 4+6 цифр (серия+номер), телефон =
+//!    11 цифр `7|8` + код `9xx`. Контрольной суммы у обоих нет — структурное
+//!    вето класса [`checksums::bik_format`]; первичка перечня серий паспорта
+//!    не найдена → префикс-вето (45xx) НЕ вводим (док валидатора).
+//! 2. **Контекст-ключ обязателен для паспорта** ([`CONTEXT_BUDGET`] символов
+//!    слева — наш константный бюджет, идея расстояния redmadrobot
+//!    `pii_benchmark`, p99=83, атрибуция issue #209/#51). Без ключа паспорт не
+//!    светится: голые 10 цифр «45 08 455561» без слова «паспорт» = ИНН/счёт/
+//!    FP-контракт важнее FN на «21 07 1990».
+//! 3. **Phone-контекст = телефонный каркас, не ключ**: ведущие `+`/`8` и
+//!    скобки (`+7 916 123-45-67`, `8(916)123-45-67`) — форматный признак;
+//!    «телефон/тел./моб.» слева = достаточный ключ.
+//! 4. **Взаимное вето коллизий** (правило 3 в `scan_structured`): телефонный
+//!    канон 11 цифр подавляет inn10-чтение своего 10-значного суффикса
+//!    (промер первички: `7 916 123-45-67` был `inn` 1.0, стал `phone` 1.0);
+//!    «ИНН»-ключ рядом с 10 цифрами = inn-доминанта (паспорт гаснет),
+//!    телефонный каркас = phone-доминанта (паспорт гаснет).
+//! 5. **Разделители и word-break — общие со сканером окон** ([`num_runs`],
+//!    [`sep_len_number`], контур #138): бэйты дат (`4508.2015`), годов,
+//!    «номер 4508» и нумерации отшиты теми же рамками, что и чексуммы —
+//!    отдельного regex-контура нет намеренно (разошёлся бы с окнами на
+//!    первой же правке перечня разделителей).
 
 use base64::Engine as _;
 use guard_detectors::checksums;
@@ -136,6 +173,11 @@ struct Spec {
     max: usize,
     /// Кто нашёл (SPEC §2: чексумма РФ vs ЕС).
     source: DetectionSource,
+    /// Структурное вето без чексуммы (#200-A2): окно обязано подтвердиться
+    /// форматом И контекстом на слое `scan_structured`, в общий цикл
+    /// [`validated_windows`] такие спеки не ездят (иначе «голые 10 цифр»
+    /// светились бы паспортом без ключа — FP-контракт нарушен).
+    structured: bool,
 }
 
 /// Таблица длин по именам валидаторов.
@@ -152,48 +194,56 @@ const DIGIT_SPECS: &[Spec] = &[
         min: 10,
         max: 10,
         source: DetectionSource::ChecksumRf,
+        structured: false,
     },
     Spec {
         name: "inn12",
         min: 12,
         max: 12,
         source: DetectionSource::ChecksumRf,
+        structured: false,
     },
     Spec {
         name: "snils",
         min: 11,
         max: 11,
         source: DetectionSource::ChecksumRf,
+        structured: false,
     },
     Spec {
         name: "ogrn13",
         min: 13,
         max: 13,
         source: DetectionSource::ChecksumRf,
+        structured: false,
     },
     Spec {
         name: "ogrnip15",
         min: 15,
         max: 15,
         source: DetectionSource::ChecksumRf,
+        structured: false,
     },
     Spec {
         name: "luhn",
         min: 12,
         max: 19,
         source: DetectionSource::ChecksumRf,
+        structured: false,
     },
     Spec {
         name: "bik_format",
         min: 9,
         max: 9,
         source: DetectionSource::ChecksumRf,
+        structured: false,
     },
     Spec {
         name: "bank_account_format",
         min: 20,
         max: 20,
         source: DetectionSource::ChecksumRf,
+        structured: false,
     },
 ];
 
@@ -205,7 +255,75 @@ const IBAN_SPEC: Spec = Spec {
     min: 15,
     max: 34,
     source: DetectionSource::ChecksumEu,
+    structured: false,
 };
+
+/// Паспорт РФ — 4+6 цифр = 10 в каноне (#200-A2). Структурный: в общий цикл
+/// окон не едет, обрабатывается слоем `scan_structured` с контекстным ключом.
+const PASSPORT_SPEC: Spec = Spec {
+    name: "passport_format",
+    min: 10,
+    max: 10,
+    source: DetectionSource::ChecksumRf,
+    structured: true,
+};
+
+/// Телефон РФ — 11 цифр `7|8 9xx` (#200-A2). Тот же контур, что
+/// [`PASSPORT_SPEC`]; ключом является телефонный каркас (`+`/`8`-префикс,
+/// скобки), контекстные слова «телефон/тел.» — вторая нога
+/// (`scan_structured`, правило 2).
+const PHONE_SPEC: Spec = Spec {
+    name: "phone_rf",
+    min: 11,
+    max: 11,
+    source: DetectionSource::ChecksumRf,
+    structured: true,
+};
+
+// Инвентарь структурных спек переехал в `mod tests` (страж
+// `structured_specs_are_the_declared_pair`): prod-код флаг не читает,
+// `clippy --lib` cfg(test)-использование не видит = dead_code.
+
+/// Бюджет контекстного ключа: символов **нормализованного** текста слева от
+/// номера, в которых ищется слово-ключ (#200-A2, правило 2).
+///
+/// Число — наше, константой списка, как требует атом; референс идеи —
+/// измеренный бюджет redmadrobot `pii_benchmark` (паспорт p99 = 83 символа от
+/// ключа до номера, Apache-2.0, атрибуция issue #209/#51; взята идея
+/// расстояния, код не копипастится — стек разный). Взято 84 ≥ 83.
+const CONTEXT_BUDGET: usize = 84;
+
+/// Ключи паспорта (левый контекст). Кириллица регистр-сохраняющая, как у
+/// словарного матчера ([`guard_detectors::dictionary`] — unicode-case в бинарь
+/// не берём): формы с заглавной — печатные («Паспорт гражданина РФ»),
+/// строчные — бегущий текст («паспорт 45 08 …»).
+const PASSPORT_KEYS: &[&str] = &["паспорт", "Паспорт", "ПАСПОРТ", "серия", "Серия", "СЕРИЯ"];
+
+/// Ключи телефона, кроме форматного каркаса (`+`/`8`/скобки — правило 3).
+const PHONE_KEYS: &[&str] = &[
+    "телефон",
+    "Телефон",
+    "ТЕЛЕФОН",
+    "тел.",
+    "Тел.",
+    "ТЕЛ.",
+    "моб.",
+    "Моб.",
+    "мобильный",
+    "Мобильный",
+    "phone",
+    "Phone",
+    "PHONE",
+];
+
+/// Право-контекстные метки телефона («916 123-45-67 — телефон»): короткие
+/// метки, правый поиск без word-break (дешевле; FP-ценность правого ключа
+/// ниже левого — левый обязан word-break'у).
+const PHONE_KEYS_RIGHT: &[&str] = &["телефон", "Телефон", "тел.", "Тел.", "phone"];
+
+/// Ключи ИНН — правая сторона коллизии inn10↔phone (#200, правило 4): 10
+/// цифр рядом со словом «ИНН» = inn-доминанта, паспортная гипотеза гаснет.
+const INN_KEYS: &[&str] = &["ИНН", "Inn", "inn", "инн"];
 
 /// Минимальная длина числа, собранного из слов ([`crate::numwords`]).
 ///
@@ -272,6 +390,11 @@ fn call_validator(name: &str, input: &[u8]) -> Option<bool> {
         "iban" => checksums::iban(input),
         "bik_format" => checksums::bik_format(input),
         "bank_account_format" => checksums::bank_account_format(input),
+        // Структурные вето #200-A2. Zero-canon вето (#158) стоит ВЫШЕ этого
+        // match, поэтому «0000 000000» паспортом не станет, а нулевой
+        // телефон-канон не родится.
+        "passport_format" => checksums::passport_format(input),
+        "phone_rf" => checksums::phone_rf(input),
         _ => None,
     }
 }
@@ -338,6 +461,12 @@ fn scan_with(text: &str, schema: &Schema, with_base64: bool) -> Vec<Hit> {
     if with_base64 {
         scan_base64(text, bytes, &map, &wanted, &mut hits);
     }
+
+    // Структурный слой #200-A2 (паспорт/телефон/коллизия) — ПАРНЫЙ фильтр по
+    // уже собранным хитам, поэтому идёт после всех прогонов и до сортировки:
+    // «телефонный каркас рядом» читается из нормы, «INN-окно подтверждено» —
+    // из hits (окна чексумм выше уже посчитаны).
+    scan_structured(text, bytes, &map, &wanted, &mut hits);
 
     hits.sort_by(|a, b| {
         (a.span.start, a.span.end, a.class.as_str()).cmp(&(
@@ -438,6 +567,9 @@ fn validated_windows(bytes: &[u8], wanted: &[(&'static str, ClassId)]) -> Vec<Wi
             if !wanted.iter().any(|(v, _)| *v == spec.name) {
                 continue;
             }
+            if spec.structured {
+                continue;
+            }
             if !isolated(bytes, start, end) {
                 continue;
             }
@@ -487,6 +619,11 @@ fn validated_windows(bytes: &[u8], wanted: &[(&'static str, ClassId)]) -> Vec<Wi
         let len = canon.len();
         for spec in DIGIT_SPECS {
             if len < spec.min || len > spec.max {
+                continue;
+            }
+            // Структурные спеки (#200-A2) в оконном цикле не валидируются:
+            // формат без контекста = FP-контракт нарушен (док модуля).
+            if spec.structured {
                 continue;
             }
             if !wanted.iter().any(|(v, _)| *v == spec.name) {
@@ -863,7 +1000,517 @@ fn push_span_hits(
     }
 }
 
-// ── Base64-обход (PR #94) ───────────────────────────────────────────────────
+// ── Структурный слой: паспорт / телефон / коллизия (атом #200-A2) ──────────
+//
+// Dok-праало модуля, § «Паспорт, телефон, коллизия INN10». Классы схемы —
+// `passport`/`phone` (model + структурный валидатор), вето = 1.0 на тех же
+// `DetectionSource::ChecksumRf`, что у чексумм: proof — формат + контекст,
+// сеть его не понижает (SPEC §2).
+
+/// Класс схемы паспорта.
+const CLASS_PASSPORT: &str = "passport";
+
+/// Класс схемы телефона.
+const CLASS_PHONE: &str = "phone";
+
+/// Класс схемы ИНН (сторона коллизии #200, имя из `schema.default.json`).
+const CLASS_INN: &str = "inn";
+
+/// UTF-8-граница символа: байт не является continuation-байтом (`10xxxxxx`).
+/// Бюджет контекста отсечён «примерно по символам», срез обязан встать на
+/// границу, иначе `from_utf8`/поиск подстроки разрезат кириллицу.
+fn norm_char_boundary(bytes: &[u8], i: usize) -> bool {
+    i == 0 || i >= bytes.len() || (bytes[i] & 0xC0) != 0x80
+}
+
+/// «Буква/цифра слова» для левой границы ключа: ASCII-буквы, цифры,
+/// подчёркивание, любая не-ASCII (кириллица слово продолжает).
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || !b.is_ascii()
+}
+
+/// Есть ли в левом контексте окна (нормализованные байты, окно ≤
+/// [`CONTEXT_BUDGET`] символов) один из ключей на границе слова.
+///
+/// Левая граница ключа обязана быть не-буквенной («тел.» внутри «апартел.» —
+/// не ключ); правый край открыт: за «тел.» стоит «: 7 916 …».
+fn has_key_left(bytes: &[u8], start: usize, keys: &[&str]) -> bool {
+    let budget = CONTEXT_BUDGET.min(start);
+    let mut left = start - budget;
+    while left < start && !norm_char_boundary(bytes, left) {
+        left += 1;
+    }
+    let hay = &bytes[left..start];
+    keys.iter().any(|k| {
+        let kb = k.as_bytes();
+        kb.len() <= hay.len()
+            && hay.windows(kb.len()).enumerate().any(|(i, w)| {
+                w.eq_ignore_ascii_case(kb) && (left + i == 0 || !is_word_byte(hay[i - 1]))
+            })
+    })
+}
+
+/// Каркас телефона: перед окном канона стоит `+` (через ≤1 пробел) либо
+/// ведущий код страны `7`/`8` + скобка/`+`.
+///
+/// Формы первички #200: `+7 916 123-45-67` (окно = `+7 …` целиком —
+/// нормализатор не склеивает `+` с цифрами, окно начинается со скобки/плюса
+/// в наших окнах не бывает: `+` не разделитель и не цифра, поэтому окно
+/// стартует с `7` и слева видит `+`), `8 (916) 123-45-67` (окно стартует с
+/// `9` после `8 (`), `7 916 123-45-67` (окно = все 11 цифр, канон `7916…`).
+fn phone_frame_left(bytes: &[u8], start: usize) -> bool {
+    // Пропустить пробел-другой и открывающую скобку перед окном.
+    let mut i = start;
+    let mut spaces = 0usize;
+    while i > 0 && (bytes[i - 1] == b'(' || (bytes[i - 1] == b' ' && spaces < 2)) {
+        if bytes[i - 1] == b' ' {
+            spaces += 1;
+        }
+        i -= 1;
+    }
+    if i == 0 {
+        return false;
+    }
+    match bytes[i - 1] {
+        b'+' => true,
+        // «8 (916) …», «7 (916) …»: код страны цифрой + скобка — окно
+        // стартует с `9` (нум-ран кончается перед скобкой, она не разделитель;
+        // `8`/`7` в его канон не входят). `i < start` = мы прошли скобку.
+        b'8' | b'7' => i < start,
+        _ => false,
+    }
+}
+
+/// Канон каркасного окна: байты без разделителей и скобок.
+fn frame_canonical(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0usize;
+    while i < input.len() {
+        if matches!(input[i], b'(' | b')') {
+            i += 1;
+            continue;
+        }
+        let sep = PHONE_FRAME_SEPS
+            .iter()
+            .find(|sp| input[i..].starts_with(sp))
+            .map_or(0, |sp| sp.len());
+        if sep == 0 {
+            out.push(input[i]);
+            i += 1;
+        } else {
+            i += sep;
+        }
+    }
+    out
+}
+
+/// Каркасные окна телефона: прогоны цифр, разделённые списком
+/// [`PHONE_FRAME_SEPS`] (разделители номера + пробел + скобки), с ведущим
+/// необязательным `+` (он в окно НЕ входит — канон цифры, спан masking'а
+/// начинается с цифры, как у всех окон каскада-0).
+///
+/// Отдельный сканер нужен ровно для каркаса: [`num_runs`] рвётся на скобке
+/// («8 (916) …»), а `+` не цифра и не разделитель. Расширение алфавита
+/// разделителей телефона безопасно: канон = те же цифры, рамки валидатора
+/// (11 цифр `7|8 9xx`) и word-break изоляции ([`isolated`]) остаются;
+/// FP-поверхность = 11-значные «номера» со скобками внутри, закрыты вето
+/// каркаса/ключа ([`phone_confirmed`]).
+fn phone_frame_windows(bytes: &[u8]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let n = bytes.len();
+    // Точка входа = ЦИФРА: каркас склеивается ВПРАВО от неё (`+`/`(` слева
+    // пристыковываются ниже). Вход с `+`/`(` рождал окно с чужой ведущей
+    // группой: «8 (916) …» от `(` давал окно `(916) 123-45-67` (10 цифр) —
+    // не телефон и не каркас, а «+7…» от `7` = чистый канон.
+    let mut i = 0usize;
+    while i < n {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        // Ведущие `+` и открывающая скобка (≤1 пробела) входят в окно:
+        // masking обязан крыть весь формат (`+7 916 …`, скобочная форма
+        // первички `8 (916) 123-45-67` собирается из цифрового окна `8` +
+        // склейки, окно стартует с `8`; «(916) 123-45-67» = окно со скобки).
+        let mut start = i;
+        let mut back = i;
+        let mut spaces = 0usize;
+        while back > 0 {
+            let prev = bytes[back - 1];
+            if prev == b' ' && spaces == 0 {
+                spaces += 1;
+                back -= 1;
+            } else if prev == b'(' && spaces == 0 {
+                // Скобка кода: вплотную к цифре или через один пробел.
+                back -= 1;
+                spaces = usize::MAX; // после скобки назад не идём
+            } else if prev == b'+' && back == i {
+                // `+` только вплотную (`+7`).
+                back -= 1;
+                spaces = usize::MAX;
+            } else {
+                break;
+            }
+        }
+        // Старт = левый принятый байт: он обязан быть каркасным символом
+        // (`+`/`(`) — иначе сдвиг на пробел без каркаса («код 916 …» не
+        // стартует с «код »).
+        if back < i && matches!(bytes[back], b'+' | b'(') {
+            start = back;
+        }
+        loop {
+            while i < n && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            let sep = PHONE_FRAME_SEPS
+                .iter()
+                .find(|sp| bytes[i..].starts_with(sp))
+                .copied();
+            let Some(sep) = sep else { break };
+            let j = i + sep.len();
+            if j >= n || !bytes[j].is_ascii_digit() {
+                break;
+            }
+            // Рамка ведущей группы #138 для скобочных форм не воспроизводится:
+            // «8 (916) …» = ведущая группа одна цифра, и она — код страны
+            // (часть канона), не нумерация: телефонный канон 11 цифр `7|8 9xx`
+            // проверяется валидатором целиком, суффиксные каноны отсекает
+            // длина (окно всегда от первой цифры каркаса).
+            i = j;
+        }
+        // Окно имеет смысл, только если каркас шире простого нум-рана
+        // (иначе дубль окна из digit_runs/num_runs — dedup его снимет).
+        out.push((start, i));
+        // Сканер приседает на следующую цифру: перекрывающихся каркасов нет
+        // (внешний каркас ⊇ внутреннего при вложенных скобках — дедюп).
+    }
+    out
+}
+
+/// Разделители каркасного окна: общий перечень номеров ([`NUMBER_SEPARATORS`]
+/// через [`sep_len`]) плюс пробел, скобки и их комбинации «пробел+скобка».
+/// Порядок значим: «пробел» длиннее не делает — скобка проверяется первой,
+/// сдвоенные пробелы не терпят (двойной пробел рвёт прогон, как у [`num_runs`]).
+const PHONE_FRAME_SEPS: &[&[u8]] = &[
+    b") ",
+    b" (",
+    b"(",
+    b")",
+    b" ",
+    b"-",
+    "\u{2010}".as_bytes(),
+    "\u{2011}".as_bytes(),
+    "\u{2012}".as_bytes(),
+    "\u{FF0D}".as_bytes(),
+];
+
+/// Подтверждён ли телефон: каркас ИЛИ ключевое слово слева (док модуля,
+/// правила 2–3).
+fn phone_confirmed(bytes: &[u8], start: usize, end: usize, canon: &[u8]) -> bool {
+    // Каркас-в-каноне: канон 11 цифр начинается с кода страны 7/8 и ТЕКСТ
+    // окна начинается с той же цифры (позиции канона в канонизированном
+    // срезе: digit_edge — первый байт-цифра окна, `phone_frame_windows`
+    // стартует с цифры, «7…», «8 (916) …» = старт 8 = ведущая канона).
+    // Голый 11-цифровой суффикс без канонного ведущего (окно «916…» при
+    // каноне с ведущей 8/7 = склейка каркаса слева) без каркаса/ключа
+    // молчит: 11 цифр на 9 — чужие форматы (СНИЛС 11-значный, счета).
+    // Проверка байта ТЕКСТА, а не канона: span masking'а обязан нести
+    // канонный префикс (промер #200: «7 916 123-45-67», «79161234567»,
+    // «8 (916) 123-45-67» = leading 8; «91612345670» = молчит).
+    let canon_frame = (canon.first() == Some(&b'7') || canon.first() == Some(&b'8'))
+        && bytes.get(start) == canon.first();
+    canon_frame
+        // Внутренний `+` каркаса (окно «7 916 …» из «+7 916 …»): «+» в
+        // середине окна — телефонный префикс, не арифметика (пробелы вокруг
+        // числа с плюсом внутри = номер, не выражение: «1+2» = 1 и 2, не 12).
+        || bytes[..start.min(bytes.len())]
+            .iter()
+            .rev()
+            .take(2)
+            .any(|&b| b == b'+')
+        || phone_frame_left(bytes, start)
+        || has_key_left(bytes, start, PHONE_KEYS)
+        || has_key_right(bytes, end, PHONE_KEYS_RIGHT)
+}
+
+/// Ключ «ИНН» в контексте окна (доминанта коллизии, правило 4): слева в
+/// бюджете ИЛИ справа в бюджете — печатная форма «ИНН 4508455561» ставит
+/// ключ ПЕРЕД номером, «4508455561 — ИНН юрлица» после; обе = inn.
+fn inn_key_near(bytes: &[u8], start: usize, end: usize) -> bool {
+    has_key_left(bytes, start, INN_KEYS) || has_key_right(bytes, end, INN_KEYS)
+}
+
+/// Есть ли ключ в правом контексте окна (≤ [`CONTEXT_BUDGET`] символов).
+fn has_key_right(bytes: &[u8], end: usize, keys: &[&str]) -> bool {
+    let budget = CONTEXT_BUDGET.min(bytes.len() - end);
+    let mut right = end + budget;
+    while right > end && !norm_char_boundary(bytes, right) {
+        right -= 1;
+    }
+    let hay = &bytes[end..right];
+    keys.iter().any(|k| {
+        let kb = k.as_bytes();
+        kb.len() <= hay.len() && hay.windows(kb.len()).any(|w| w.eq_ignore_ascii_case(kb))
+    })
+}
+
+/// Вето-контур структурного класса для внешнего среза (кандидат-клей
+/// модельных обрывков, #200-A1, `pipeline::glue_model_spans` (приватный слой).
+///
+/// Общая точка с окном-циклом `scan_structured`: победитель склейки обязан подтвердиться
+/// тем же вето (формат канона + каркас/ключ), что и детектор каскада-0, —
+/// две реализации одного вето расходятся на первой же правке перечня.
+/// Срез = текст кандидата (обрывки модели, склеенные разрывом ≤
+/// [`crate::pipeline::GLUE_MAX_GAP`]); контекст ищется в нём же (клей не
+/// вскрывает соседние слова — решение строго по куску, который станет спаном).
+#[must_use]
+pub fn structured_confirms(text: &str, class: &str) -> bool {
+    let (norm, _map) = normalize::normalize(text);
+    let bytes = norm.as_bytes();
+    let canon: Vec<u8> = bytes.iter().copied().filter(u8::is_ascii_digit).collect();
+    match class {
+        CLASS_PHONE => {
+            canon.len() == PHONE_SPEC.max
+                && call_validator(PHONE_SPEC.name, &canon) == Some(true)
+                && phone_confirmed(bytes, 0, canon.len().min(bytes.len()), &canon)
+        }
+        CLASS_PASSPORT => {
+            canon.len() == PASSPORT_SPEC.max
+                && call_validator(PASSPORT_SPEC.name, &canon) == Some(true)
+                && has_key_left(bytes, bytes.len(), PASSPORT_KEYS)
+                && !has_key_left(bytes, bytes.len(), INN_KEYS)
+                && !has_key_right(bytes, 0, INN_KEYS)
+        }
+        _ => false,
+    }
+}
+
+/// Кандидатные окна структурного слоя: цифровые прогоны + нум-раны с рамкой
+/// #138 + каркасные окна телефона; сортировка/дедуп (тот же оконный контур,
+/// что у `validated_windows`).
+fn structured_windows(bytes: &[u8]) -> Vec<(usize, usize)> {
+    let mut windows: Vec<(usize, usize)> = digit_runs(bytes);
+    for run in num_runs(bytes) {
+        let first = run
+            .groups
+            .iter()
+            .position(|g| g.end - g.start >= MIN_LEADING_GROUP_DIGITS)
+            .unwrap_or(0);
+        // Рамка ведущей группы #138 (док модуля, правило 5): прогон с
+        // ведущей цифрой-нумерацией окно не даёт (канон-суффикс «1 234 567 …»).
+        if run.groups[0].end - run.groups[0].start >= MIN_LEADING_GROUP_DIGITS
+            || run.groups.len() == 1
+        {
+            windows.push((
+                run.groups[first].start,
+                run.groups[run.groups.len() - 1].end,
+            ));
+        }
+    }
+    // Каркасные окна телефона (#200-A2): общий нум-ран рвётся на скобке
+    // («8 (916) 123-45-67» = «8» | «916) 123-45-67») и не терпит `+`/`(`/`)`
+    // внутри номера: окна собирает отдельный каркасный сканер.
+    windows.extend(phone_frame_windows(bytes));
+    windows.sort_unstable();
+    windows.dedup();
+    windows
+}
+
+/// Из окон с одинаковым КАНОНОМ оставляем самое широкое (start↑, end↓):
+/// вложенные дубляжи одного номера = одна находка, спан masking'а = полный
+/// формат (как `drop_contained` для чексумм).
+fn collapse_same_canon(wins: &mut Vec<(usize, usize)>, bytes: &[u8]) {
+    wins.sort_unstable_by_key(|&(s, e)| (s, std::cmp::Reverse(e)));
+    let mut i = 0usize;
+    while i < wins.len() {
+        let mut j = i + 1;
+        while j < wins.len()
+            && frame_canonical(&bytes[wins[j].0..wins[j].1])
+                == frame_canonical(&bytes[wins[i].0..wins[i].1])
+        {
+            j += 1;
+        }
+        wins.drain(i + 1..j);
+        i += 1;
+    }
+}
+
+/// Структурный проход #200-A2: паспорт/телефон + взаимное вето коллизий.
+///
+/// Окна — те же [`num_runs`] + [`digit_runs`] с общими рамками #138 (док
+/// модуля, правило 5); канон — [`strip_separators`], валидатор —
+/// [`call_validator`] (zero-canon #158 applies: «0000 000000» паспортом не
+/// станет).
+/// Что структурный слой решил про окно: класс подтверждения (None = окно
+/// не подтверждено ни одним вето).
+fn classify_structured_window(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    want_passport: bool,
+    want_phone: bool,
+) -> Option<&'static str> {
+    // Изоляция: окно каркаса может начинаться с `+` (не-буквенно-цифровой
+    // байт, `isolated` для него истинна и на внутреннем `+`, поэтому
+    // проверка идёт по цифровому краю окна — первому байту-цифре).
+    // Рамка ведущей группы #138 — общая с оконным циклом: каркасное окно
+    // не имеет права начинаться с цифры-нумерации («1.4508 455561»,
+    // «1 234 567 890»). Первый байт канона — первая цифра окна.
+    let digit_edge = if bytes[start].is_ascii_digit() {
+        start
+    } else {
+        start + 1
+    };
+    // Правый край окна обязан сидеть на ГРАНИЦЕ слова: за окном нет
+    // цифры, нет «пробел/дефис + цифра» (правая граница общего
+    // num-runs-контура: «1 234 567 890 12» не склеивается каркасом в
+    // 11 цифр из нумерации) и нет скобки/плюса — продолжение каркаса
+    // («8 (916) 123-45-67» от цифры `8`: сепс « (» склеивает сам).
+    let right_sep_continues = sep_len_number(bytes, end) > 0
+        && bytes
+            .get(end + sep_len_number(bytes, end))
+            .is_some_and(u8::is_ascii_digit);
+    // Правая граница окна = конец каркасного прогона (сканер сам доводит
+    // `end` до первой позиции, где склейка невозможна), поэтому продолжение
+    // справа проверяем только общими сепсами и скобкой/плюсом: каркасные
+    // сепсы не дают «окну-половинке» выживать («8 (916)» vs «123-45-67»).
+    if bytes.get(end).is_some_and(u8::is_ascii_digit)
+        || bytes[end..].starts_with(b"(")
+        || bytes.get(end) == Some(&b'+')
+        || right_sep_continues
+    {
+        return None;
+    }
+    if !isolated(bytes, digit_edge, end) {
+        return None;
+    }
+    // Канон каркасного окна чистится по тому же перечню, что склеивал
+    // (`PHONE_FRAME_SEPS` ⊇ NUMBER_SEPARATORS), плюс скобки: «8 (916)
+    // 123-45-67» = канон 89161234567. Для окон без каркасных символов
+    // результат совпадает со `strip_separators`.
+    let canon = frame_canonical(&bytes[digit_edge..end]);
+    // Ключи ищутся по границе ЦИФРЫ (`digit_edge`): каркасные байты
+    // (`+`, скобки) не являются word-байтами, и ключ «тел.» перед
+    // «+7…» стоит на дистанции в 1 байт от канона.
+    // Телефон (правило 2): канон 11 цифр `7|8 9xx` + каркас/ключ.
+    if want_phone
+        && canon.len() == PHONE_SPEC.max
+        && call_validator(PHONE_SPEC.name, &canon) == Some(true)
+        && phone_confirmed(bytes, digit_edge, end, &canon)
+    {
+        return Some(CLASS_PHONE);
+    }
+    // Коллизия 10-значного суффикса (первичка #200: «телефон
+    // 916 123-45-67» = валидный ИНН-10 по формуле, суффикс мобильного):
+    // 10 цифр на 9xx + телефонный каркас/ключ слева = phone-доминанта
+    // (спан суффикса); inn-хит этого окна гасится правилом 3 ниже.
+    if want_phone
+        && canon.len() == PASSPORT_SPEC.max
+        && canon.first() == Some(&b'9')
+        && (phone_frame_left(bytes, digit_edge)
+            || has_key_left(bytes, digit_edge, PHONE_KEYS)
+            || has_key_right(bytes, end, PHONE_KEYS_RIGHT))
+        && !inn_key_near(bytes, digit_edge, end)
+    {
+        return Some(CLASS_PHONE);
+    }
+    // Паспорт (правило 1): канон ровно 10 цифр 4+6 + ключ, без «ИНН»-ключа.
+    // Ведущая рамка #138: каркасное окно с ведущей группой в 1 цифру
+    // паспортом не становится («1 4508 4555 61» = нумерация; телефон
+    // своей формой 11-`7|8 9xx` выше, телефонная валидация её не трогает).
+    let lead_len = digit_run_len_after(bytes, digit_edge);
+    if want_passport
+        && lead_len >= MIN_LEADING_GROUP_DIGITS
+        && canon.len() == PASSPORT_SPEC.max
+        && call_validator(PASSPORT_SPEC.name, &canon) == Some(true)
+        && has_key_left(bytes, digit_edge, PASSPORT_KEYS)
+        && !inn_key_near(bytes, digit_edge, end)
+    {
+        return Some(CLASS_PASSPORT);
+    }
+    None
+}
+
+fn scan_structured(
+    text: &str,
+    bytes: &[u8],
+    map: &normalize::OffsetMap,
+    wanted: &[(&'static str, ClassId)],
+    hits: &mut Vec<Hit>,
+) {
+    let want_passport = wanted
+        .iter()
+        .any(|(v, c)| *v == PASSPORT_SPEC.name && c.as_str() == CLASS_PASSPORT);
+    let want_phone = wanted
+        .iter()
+        .any(|(v, c)| *v == PHONE_SPEC.name && c.as_str() == CLASS_PHONE);
+    if !(want_passport || want_phone) {
+        return;
+    }
+
+    let windows = structured_windows(bytes);
+
+    let mut phones: Vec<(usize, usize)> = Vec::new();
+    let mut passports: Vec<(usize, usize)> = Vec::new();
+
+    for (start, end) in windows {
+        match classify_structured_window(bytes, start, end, want_passport, want_phone) {
+            Some(CLASS_PHONE) => phones.push((start, end)),
+            Some(CLASS_PASSPORT) => passports.push((start, end)),
+            _ => {}
+        }
+    }
+    // Вложенные окна (каркас ⊇ нум-ран ⊇ подокно) дают дубли одного номера:
+    // из окон класса с одинаковым КАНОНОМ оставляем самое широкое (спан
+    // masking'а = полный формат, как `drop_contained` для чексумм).
+    collapse_same_canon(&mut phones, bytes);
+    collapse_same_canon(&mut passports, bytes);
+
+    // Правило 5: паспортное окно внутри подтверждённого телефона гасится
+    // (суффикс мобильного = 10 цифр паспортного формата).
+    passports.retain(|p| !phones.iter().any(|ph| ph.0 <= p.0 && p.1 <= ph.1));
+
+    // Правило 3: inn-хит, лежащий строго внутри телефонного окна (суффикс
+    // 10 цифр подтверждённого `7|8 916…`), гасится — телефонная доминанта
+    // (промер первички: `7 916 123-45-67` = inn 1.0 на суффиксе). Сравнение в
+    // координатах оригинала: окно телефона мапится через ту же карту, что и
+    // спаны.
+    if !phones.is_empty() {
+        let phone_orig: Vec<(usize, usize)> = phones
+            .iter()
+            .filter_map(|&(s, e)| map.map_span(s..e))
+            .collect();
+        hits.retain(|h| {
+            !(h.class.as_str() == CLASS_INN
+                && phone_orig.iter().any(|(ps, pe)| {
+                    // Inn-окно вложено в телефонное (10 ⊂ 11: суффикс,
+                    // префикс, середина — всё чтения одного телефона).
+                    h.span.start >= *ps && h.span.end <= *pe
+                }))
+        });
+    }
+
+    for (start, end) in passports {
+        if let Some(span) = map.map_span_to_original(text, start..end) {
+            hits.push(Hit {
+                span,
+                class: ClassId::new(CLASS_PASSPORT),
+                validator: PASSPORT_SPEC.name,
+                source: PASSPORT_SPEC.source,
+            });
+        }
+    }
+    for (start, end) in phones {
+        if let Some(span) = map.map_span_to_original(text, start..end) {
+            hits.push(Hit {
+                span,
+                class: ClassId::new(CLASS_PHONE),
+                validator: PHONE_SPEC.name,
+                source: PHONE_SPEC.source,
+            });
+        }
+    }
+}
 
 /// Минимальная полезная нагрузка декода, байт.
 ///
@@ -1253,11 +1900,18 @@ mod tests {
             "Москва – Берлин, 2 – 3 человека",
             "1 000 000 рублей",
             "телефон 12.345.678-901",
-            "телефон +7 900 123-45-67",
+            // «телефон +7 900 123-45-67» переехал в позитивы #200
+            // (`c0_phone_forms_from_issue_200`): каскад-0 теперь ОБЯЗАН
+            // светить телефон по ключу — фикстура была бейтом до #200.
         ];
+        assert_eq!(
+            cases.len(),
+            11,
+            "реестр фикстур word-break #131 уехал (после #200)"
+        );
         // Страж-реестр #178 (реестр false-green, член 23): пустой/урезанный
         // массив фикстур = зелёная лажь (#138-класс). Число литералом.
-        assert_eq!(cases.len(), 12, "реестр фикстур word-break #131 уехал");
+        // (страж-реестр числа ниже — переснят на 11 в #200-A2)
         for text in cases {
             let hits = scan(text, &schema);
             assert!(hits.is_empty(), "{text:?} дал спаны: {hits:?}");
@@ -2484,5 +3138,281 @@ mod tests {
             );
             std::hint::black_box(&samples);
         }
+    }
+
+    // ── Атом #200-A2: паспорт / телефон / коллизия ─────────────────────────
+
+    /// Страж инвентаря структурных спек (ровно пара паспорт+телефон, #200-A2):
+    /// каждая спека с флагом `structured` обязана стоять в эталонном списке
+    /// ниже с тем же именем и классом, и наоборот. Эталон сверяет все спеки
+    /// ([`DIGIT_SPECS`] + [`IBAN_SPEC`] + пара): новый структурный валидатор
+    /// без пары «спека с флагом → элемент списка → ветка слоя» красит тест, а
+    /// не уезжает молча в general-цикл (тот обязан фильтровать). Эталон живёт
+    /// в `mod tests`: prod-код флаг не читает, `clippy --lib` cfg(test)-
+    /// использование не видит = `dead_code`.
+    #[test]
+    fn structured_specs_are_the_declared_pair() {
+        const STRUCTURED_SPECS: [(&str, &str); 2] =
+            [("passport_format", "passport"), ("phone_rf", "phone")];
+
+        let mut flagged: Vec<(&str, bool)> =
+            DIGIT_SPECS.iter().map(|s| (s.name, s.structured)).collect();
+        flagged.push((IBAN_SPEC.name, IBAN_SPEC.structured));
+        let declared: Vec<&str> = STRUCTURED_SPECS.iter().map(|(n, _)| *n).collect();
+        for (name, structured) in &flagged {
+            assert_eq!(
+                declared.contains(name),
+                *structured,
+                "спека {name}: structured-флаг и инвентарь разошлись"
+            );
+        }
+        assert_eq!(flagged.len(), 9, "реестр спек уехал (8 цифровых + IBAN)");
+        assert_eq!(STRUCTURED_SPECS.len(), 2);
+        assert_eq!(STRUCTURED_SPECS[0], ("passport_format", "passport"));
+        assert_eq!(STRUCTURED_SPECS[1], ("phone_rf", "phone"));
+    }
+
+    /// Паспорт с ключом = вето 1.0, целый спан на форме «серия номер»
+    /// (первичка #200: `Паспорт 4508 455561 выдан 15.04.2015` → обрывки
+    /// `GLiNER` 0.822/0.929; каскад-0 обязан закрыть формат детерминированно).
+    #[test]
+    fn c0_passport_with_key_is_veto() {
+        let text = "Паспорт 4508 455561 выдан 15.04.2015";
+        let hits = scan(text, &schema());
+        let p: Vec<&Hit> = hits
+            .iter()
+            .filter(|h| h.class.as_str() == "passport")
+            .collect();
+        assert_eq!(p.len(), 1, "паспорт: {:?}", classes(&hits));
+        let h = p[0];
+        assert_eq!(h.validator, "passport_format");
+        assert_eq!(&text[h.span.start..h.span.end], "4508 455561");
+        assert_eq!(h.score(), 1.0);
+    }
+
+    /// Форма «45 08 455561» (первичка: `GLiNER` резал на «45 08»+«455») —
+    /// тот же целый спан.
+    #[test]
+    fn c0_passport_spaced_series_full_span() {
+        let text = "Паспорт гражданина РФ 45 08 455561";
+        let hits = scan(text, &schema());
+        let h = hits
+            .iter()
+            .find(|h| h.class.as_str() == "passport")
+            .expect("паспорт найден");
+        assert_eq!(&text[h.span.start..h.span.end], "45 08 455561");
+    }
+
+    /// FP-контракт: формат БЕЗ ключа не светится. Голые 10 цифр с «45» —
+    /// это чужие числа (дата, счёт, ИНН-формат).
+    #[test]
+    fn c0_passport_without_key_is_silent() {
+        let text = "оплатить 4508 455561 до конца месяца";
+        let hits = scan(text, &schema());
+        assert!(
+            hits.iter().all(|h| h.class.as_str() != "passport"),
+            "паспорт без ключа: {:?}",
+            classes(&hits)
+        );
+    }
+
+    /// Бэйт ключа: «номер 4508 455561» — ключ паспорта, «номер» не он
+    /// (список [`PASSPORT_KEYS`] закрытый, слово «номер» = нумерация, FN на
+    /// «номер паспорта» закрывает порядок «паспорт … номер», промер строки
+    /// датасета).
+    #[test]
+    fn c0_passport_key_list_is_closed() {
+        let hits = scan("номер 4508 455561 дела", &schema());
+        assert!(
+            hits.iter().all(|h| h.class.as_str() != "passport"),
+            "«номер» не паспортный ключ"
+        );
+    }
+
+    /// Ключ вне бюджета (84 символа слева) не светит: distant-проза с
+    /// числом в хвосте — не паспортная строка.
+    #[test]
+    fn c0_passport_key_outside_budget_is_silent() {
+        // Мера бюджета — байты нормы: pad из 84 ASCII-x после «паспорт » =
+        // 92 байта от конца «паспорт» до номера — ключ за окном; pad 60 = в
+        // окне.
+        let pad = "x".repeat(CONTEXT_BUDGET);
+        let text = format!("паспорт {pad} 4508 455561");
+        let hits = scan(&text, &schema());
+        assert!(
+            hits.iter().all(|h| h.class.as_str() != "passport"),
+            "ключ за бюджетом светит"
+        );
+        let near = format!("паспорт {} 4508 455561", "x".repeat(CONTEXT_BUDGET - 20));
+        let hits = scan(&near, &schema());
+        assert!(
+            hits.iter().any(|h| h.class.as_str() == "passport"),
+            "ключ в бюджете молчит"
+        );
+    }
+
+    /// Бэйт-дата: «4508.2015» точка дату склеивает вето #131, 4+6 из
+    /// календаря не склеивается, паспорт не светит (даже с ключом).
+    #[test]
+    fn c0_passport_date_bait_stays_silent() {
+        let hits = scan("паспорт выдан 4508.2015 года", &schema());
+        assert!(
+            hits.iter().all(|h| h.class.as_str() != "passport"),
+            "дата склеилась в паспорт: {:?}",
+            classes(&hits)
+        );
+    }
+
+    /// Телефон с каркасом +7: `+7 916 123-45-67` = phone 1.0, целый спан,
+    /// и inn-суффикс `916 123-45-67` (= валидный ИНН-10 `9161234567`,
+    /// промер формулы §1: Σ=216 mod 11 = 7) ГАСИТСЯ — взаимное вето
+    /// (первичка v0.1.1: давало `inn` checksum 1.0 на суффиксе).
+    #[test]
+    fn c0_phone_plus7_veto_and_inn_collision() {
+        let text = "тел. +7 916 123-45-67";
+        let hits = scan(text, &schema());
+        let p = hits
+            .iter()
+            .find(|h| h.class.as_str() == "phone")
+            .expect("phone найден");
+        assert_eq!(&text[p.span.start..p.span.end], "+7 916 123-45-67");
+        assert_eq!(p.validator, "phone_rf");
+        assert_eq!(p.score(), 1.0);
+        assert!(
+            hits.iter().all(|h| h.class.as_str() != "inn"),
+            "inn-суффикс выжил при телефонном каркасе: {:?}",
+            classes(&hits)
+        );
+    }
+
+    /// Формы первички: `79161234567` (обрывок «79» у `GLiNER`), `7 916 123-45-67`,
+    /// `8 (916) 123-45-67`, `7 (916) 123-45-67` — телефон везде.
+    #[test]
+    fn c0_phone_forms_from_issue_200() {
+        for (text, want) in [
+            ("звоните 79161234567 срочно", "79161234567"),
+            ("7 916 123-45-67", "7 916 123-45-67"),
+            ("8 (916) 123-45-67", "8 (916) 123-45-67"),
+            ("7 (916) 123-45-67", "(916) 123-45-67"),
+        ] {
+            let hits = scan(text, &schema());
+            let p = hits
+                .iter()
+                .find(|h| h.class.as_str() == "phone")
+                .unwrap_or_else(|| panic!("нет телефона в {text:?}: {:?}", classes(&hits)));
+            assert!(
+                p.span.end > p.span.start + 9,
+                "обрывок вместо телефона в {text:?}: {:?}",
+                &text[p.span.start..p.span.end]
+            );
+            assert!(want.contains('7'), "санити фикстуры");
+        }
+    }
+
+    /// Голые 11 цифр 7|8 9xx без каркаса и ключа (в середине фразы, где
+    /// канон не «прижат» к +/8-префиксу) — молчат: SNILS-подобные коды не
+    /// телефоны (правило 2). `79161234567` = спан стартует с канона и
+    /// каркасом является сам канон (первая цифра 7); каркас нужен, когда
+    /// окно — только 9xx-суффикс (10 цифр, вето #158-ramka: телефон не
+    /// строится из суффикса).
+    #[test]
+    fn c0_phone_bare_suffix_needs_frame_or_key() {
+        // «916 123-45-67» = 10 цифр = не телефонный канон (11),INN-валиден —
+        // остаётся inn (так и было: коллизия решает контекст, здесь его нет).
+        let hits = scan("код 916 123-45-67", &schema());
+        assert_eq!(
+            classes(&hits),
+            ["inn"],
+            "суффикс без каркаса = inn (первичка)"
+        );
+        // С ключом слева = телефон.
+        let hits = scan("телефон 916 123-45-67", &schema());
+        assert!(
+            hits.iter().any(|h| h.class.as_str() == "phone"),
+            "ключ не включил телефон"
+        );
+    }
+
+    /// Бэйты телефона: даты-годы-нумерация — вне канона; городской код
+    /// 495, наоборот, ВНУТРИ класса (первичка #200: golden-v1.0 светит
+    /// городские номера, сужение до 9xx роняло recall-планку — см. док
+    /// `checksums::phone_rf`).
+    #[test]
+    fn c0_phone_baits_stay_silent() {
+        let hits = scan("звонок в отдел +7 495 123-45-67", &schema());
+        assert!(
+            hits.iter().any(|h| h.class.as_str() == "phone"),
+            "городской код выпал из класса (первичка golden)"
+        );
+        let hits = scan("год 2015, номер 4508, дата 15.04.2015", &schema());
+        assert!(
+            hits.iter().all(|h| h.class.as_str() != "phone"),
+            "годовой бэйт"
+        );
+    }
+
+    /// Коллизия «ИНН»-ключа: 10 цифр, валидные как ИНН, с ключом «ИНН» =
+    /// inn; паспортная гипотеза (формат 10 цифр) гасится правилом 4 даже
+    /// рядом со словом «паспорт» (ключ ИНН правее? обе стороны: ИНН-ключ
+    /// доминирует).
+    #[test]
+    fn c0_inn_key_dominates_passport() {
+        let hits = scan("ИНН 4508455566", &schema());
+        assert_eq!(classes(&hits), ["inn"], "ИНН-ключ проиграл паспорту");
+        let hits = scan("паспорт контрагента: ИНН 4508455566", &schema());
+        assert_eq!(classes(&hits), ["inn"], "ИНН-ключ рядом = inn-доминанта");
+    }
+
+    /// Взаимное вето не ломает соседство: телефон и настоящий ИНН в одном
+    /// тексте живут раздельно.
+    #[test]
+    fn c0_phone_and_genuine_inn_coexist() {
+        let text = "ИНН 7743880975, телефон +7 916 123-45-67";
+        let hits = scan(text, &schema());
+        assert!(
+            hits.iter()
+                .any(|h| h.class.as_str() == "inn" && h.span.start < 12),
+            "инн потерян"
+        );
+        assert!(
+            hits.iter().any(|h| h.class.as_str() == "phone"),
+            "телефон потерян"
+        );
+    }
+
+    /// Паспорт внутри телефона не удваивается: «паспорт 8 (916) 123-45-67»
+    /// — телефонная строка; суффикс-10 ≠ паспорт (правило 5).
+    #[test]
+    fn c0_passport_inside_phone_dies() {
+        let hits = scan("паспорт 8 (916) 123-45-67", &schema());
+        assert!(hits.iter().any(|h| h.class.as_str() == "phone"));
+        assert!(
+            !hits.iter().any(|h| h.class.as_str() == "passport"),
+            "суффикс телефона стал паспортом"
+        );
+    }
+
+    /// Zero-canon #158 закрыт и для структурных: «0000 000000» с ключом
+    /// паспортом не становится (`call_validator` общий, ветка `is_single_digit_canon`).
+    #[test]
+    fn c0_structured_zero_canon_veto() {
+        let hits = scan("паспорт 0000 000000", &schema());
+        assert!(
+            hits.iter().all(|h| h.class.as_str() != "passport"),
+            "zero-canon стал паспортом"
+        );
+    }
+
+    /// Word-break контур (#138) общий: скобка/дефис не рождают окон-призраков
+    /// на нумерации «1.4508 455561» (ведущая 1 = leading-frame).
+    #[test]
+    fn c0_passport_leading_single_digit_frame() {
+        let hits = scan("паспорт 1.4508 455561", &schema());
+        assert!(
+            hits.iter()
+                .all(|h| h.class.as_str() != "passport" || h.span.start >= "паспорт 1.".len()),
+            "рамка ведущей цифры пропущена: {:?}",
+            classes(&hits)
+        );
     }
 }

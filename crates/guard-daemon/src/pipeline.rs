@@ -43,6 +43,7 @@ use crate::cascade0;
 use crate::cascades::{self, Cascade12, CascadeFailure, Plan};
 use crate::config::Config;
 use crate::schema::Schema;
+use guard_detectors::checksums;
 
 /// Политика ответа на найденное (SPEC §8, заголовок `X-Guard-Policy`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +232,121 @@ pub struct Analysis {
     pub policy: Policy,
 }
 
+/// Интервал склейки модельных обрывков, байт (#200-A1).
+///
+/// Первичка соседства: `GLiNER` режет номера НА ТОКЕНАХ (issue #200:
+/// «4508 455561» = «450»+«455», «+79161234567» = «79»), разрыв между
+/// обрывками = разделитель(и) печатной формы. 8 байт = форма «4508  455561»
+/// с запасом; больший интервал = два разных числа (клей широкого окна =
+/// авто-слияние произвольных соседних `ПДн`, SPEC §2 это запрещает).
+pub const GLUE_MAX_GAP: usize = 8;
+
+/// Классы-кандидаты склейки: только числовые формы, чьё структурное вето
+/// есть у каскада-0. `person_name`/`address` склеивать нельзя: вето на них нет,
+/// а клей без вето = авто-слияние (issue #209 п.A(a) — «решение за
+/// валидатором», валидатора нет = решения нет).
+const GLUE_CLASSES: [&str; 2] = ["passport", "phone"];
+
+/// Байты, которыми допустимо разрывать склеиваемый номер: разделители
+/// печатной формы + каркас телефона (скобки, плюс).
+fn glue_gap_ok(gap: &[u8]) -> bool {
+    !gap.is_empty()
+        && gap.iter().all(|&x| {
+            matches!(x, b' ' | b'-' | b'(' | b')' | b'+' | b'.')
+                || checksums::NUMBER_SEPARATORS
+                    .iter()
+                    .any(|sp| gap.len() >= sp.len() && x == sp[0])
+        })
+}
+
+/// Кандидат-клей соседних одноимённых модельных спанов (#200-A1).
+///
+/// Слой стоит ДО [`cascades::merge_disjoint`] и инварианты SPEC §2 каскада 3
+/// не трогает: merger видит победителя вето (veto=true, 1.0) и обычных
+/// модельных; «1.0 не понижается» для склейки = закон для вето, склейка его
+/// подтвердила — вето-контуром каскада-0 ([`crate::cascade0::structured_confirms`]),
+/// тем же, что светит детерминированные хиты.
+///
+/// Алгоритм (детерминированный, один проход по парам отсортированных спанов):
+///
+/// 1. спаны класса из [`GLUE_CLASSES`] сортируются по `(start, end)`;
+/// 2. соседние пара/цепочка с разрывом `(0, GLUE_MAX_GAP]` из допустимых
+///    байт ([`glue_gap_ok`]) образуют кандидата `start..end`;
+/// 3. вето подтверждает — в выход идёт ОДИН `ModelSpan` с координатами
+///    склейки, `score = 1.0`, `source = ChecksumRf` (вето: в общий список
+///    он попадёт как детерминированный, `merge_disjoint` не понижает);
+///    не подтверждает — обрывки живут как жили, скоры модели сохранены.
+fn glue_model_spans(
+    text: &str,
+    spans: Vec<cascades::ModelSpan>,
+    schema: &Schema,
+) -> Vec<cascades::ModelSpan> {
+    let bytes = text.as_bytes();
+    let declared = |cls: &str| !schema.validators_for(cls).is_empty();
+    let mut out: Vec<cascades::ModelSpan> = Vec::with_capacity(spans.len());
+    // Сортировка по началу: склейка = склейка соседних; порядок выхода —
+    // порядок начала (merger входной порядок не читает, детерминизм).
+    let mut sorted = spans;
+    sorted.sort_by_key(|s| (s.byte_start, s.byte_end));
+    let mut i = 0usize;
+    while i < sorted.len() {
+        let s = sorted[i].clone();
+        if !GLUE_CLASSES.contains(&s.class.as_str()) || !declared(&s.class) {
+            out.push(s);
+            i += 1;
+            continue;
+        }
+        // Цепочка обрывков одного класса: j = конец цепочки.
+        let mut j = i;
+        let mut last_end = s.byte_end;
+        while j + 1 < sorted.len()
+            && sorted[j + 1].class == s.class
+            && sorted[j + 1].byte_start > last_end
+            && sorted[j + 1].byte_start - last_end <= GLUE_MAX_GAP
+            && glue_gap_ok(
+                bytes
+                    .get(last_end..sorted[j + 1].byte_start)
+                    .unwrap_or(b"\x00"),
+            )
+        {
+            last_end = sorted[j + 1].byte_end;
+            j += 1;
+        }
+        if j == i {
+            out.push(s);
+            i += 1;
+            continue;
+        }
+        let Some(slice) = text.get(s.byte_start..last_end) else {
+            out.extend(sorted[i..=j].iter().cloned());
+            i = j + 1;
+            continue;
+        };
+        if crate::cascade0::structured_confirms(slice, &s.class) {
+            // Победа вето: спан 1.0 с целыми границами (ветка детерминированного
+            // источника в `Cand::veto`/`merge_disjoint` уже есть — скор = вес).
+            let best = sorted[i..=j]
+                .iter()
+                .map(|x| x.score)
+                .fold(0.0_f64, f64::max);
+            out.push(cascades::ModelSpan {
+                byte_start: s.byte_start,
+                byte_end: last_end,
+                class: s.class.clone(),
+                score: DetectionSource::ChecksumRf
+                    .deterministic_weight()
+                    .unwrap_or(1.0),
+                p1: best,
+                source: DetectionSource::ChecksumRf,
+            });
+        } else {
+            out.extend(sorted[i..=j].iter().cloned());
+        }
+        i = j + 1;
+    }
+    out
+}
+
 /// Каскады 1–2 внутри конвейера: запрос в модельный путь, спаны — в общий
 /// список кандидатов, пересечения с каскадом 0 сняты (SPEC §2 каскад 3).
 ///
@@ -246,7 +362,12 @@ fn model_mount(
 ) -> Result<cascades::Cascade2, AnalyzeError> {
     let plan = Plan::from_config(cfg, threshold);
     let out = mount.model_spans(&req.text, schema, &plan)?;
-    for m in out.spans {
+    // Кандидат-клей #200-A1: соседние одноимённые числовые обрывки модели
+    // склеиваются в КАНДИДАТА, который уходит в вето-контур каскада-0;
+    // победивший валидатор = спан 1.0 с целыми границами, проигравший =
+    // исходные модельные спаны живут как жили (авто-слияния нет).
+    let model = glue_model_spans(&req.text, out.spans, schema);
+    for m in model {
         // Координата вне границы символа = сломанный декод модели: сдвигать её
         // «на глаз» нельзя (маскирование встанет не на то место), значит это
         // отказ конвейера, а не отфильтрованный кандидат.
@@ -1064,5 +1185,111 @@ mod mount_tests {
         assert_eq!(s.start, 0, "символьные координаты считает ByteSpan");
         assert_eq!(s.end, 6);
         let _ = ByteSpan::new(text, s.byte_start, s.byte_end).expect("границы валидны");
+    }
+
+    // ── #200-A1: кандидат-клей модельных обрывков ──────────────────────────
+
+    const PP_TEXT: &str = "Паспорт 4508 455561 выдан 15.04.2015";
+
+    /// Модель дала обрывки паспорта (первичка #200, промер v0.1.1:
+    /// «Паспорт 4508 455561» = обрывки «4508»+«455561», «45 08 455561» =
+    /// «45 08»+«455» — у токенизатора граница токена посередине группы, клей
+    /// склеивает ОКНА, целочисленность границ не зависит от реза): клей
+    /// строит кандидата, вето подтверждает → ОДИН спан 1.0 целыми границами.
+    #[test]
+    fn glue_pair_becomes_full_veto_span() {
+        let a = span_of(PP_TEXT, "4508", "passport", 0.82);
+        let b = span_of(PP_TEXT, "455561", "passport", 0.93);
+        let mount = FakeMount::ok(vec![a, b]);
+        let an = analyze_with(&req(PP_TEXT), &schema(), &cfg(), Policy::Mask, Some(&mount))
+            .expect("анализ");
+        let p: Vec<&AnalyzedSpan> = an
+            .spans
+            .iter()
+            .filter(|s| s.entity_type == "passport")
+            .collect();
+        assert_eq!(p.len(), 1, "склеенный паспорт не один");
+        let sp = &an.spans[0];
+        assert_eq!(&PP_TEXT[sp.byte_start..sp.byte_end], "4508 455561");
+        assert_eq!(p[0].score, 1.0, "победа вето = вес 1.0");
+    }
+
+    /// Клей без вето не авто-сливает: «4508.2015» (дата-бэйт) = формат
+    /// паспорта не подтверждён → обрывки живут как жили.
+    #[test]
+    fn glue_without_veto_keeps_pieces() {
+        let text = "Паспорт 4508.2015 выдан";
+        let a = span_of(text, "4508", "passport", 0.7);
+        let b = span_of(text, "2015", "passport", 0.6);
+        let mount = FakeMount::ok(vec![a, b]);
+        let an = analyze_with(&req(text), &schema(), &cfg(), Policy::Mask, Some(&mount))
+            .expect("анализ");
+        let p: Vec<&AnalyzedSpan> = an
+            .spans
+            .iter()
+            .filter(|s| s.entity_type == "passport")
+            .collect();
+        assert_eq!(p.len(), 2, "несклеенный бэйт обязан остаться двумя спанами");
+        assert!(p.iter().all(|s| s.score < 1.0), "вето без подтверждения");
+    }
+
+    /// Телефон: два phone-обрывка «79»+«161234567» с каркасом +7 = склейка
+    /// в целый спан 1.0 (первичка #200: обрывок «79» на +79161234567).
+    #[test]
+    fn glue_phone_frames_full_span() {
+        let text = "звоните +79161234567 срочно";
+        let a = span_of(text, "79", "phone", 0.99);
+        let b = span_of(text, "161234567", "phone", 0.8);
+        let mount = FakeMount::ok(vec![a, b]);
+        let an = analyze_with(&req(text), &schema(), &cfg(), Policy::Mask, Some(&mount))
+            .expect("анализ");
+        let p: Vec<&AnalyzedSpan> = an
+            .spans
+            .iter()
+            .filter(|s| s.entity_type == "phone")
+            .collect();
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].score, 1.0);
+    }
+
+    /// Чужие классы склейка не трогает: person_name-обрывки не сливаются
+    /// ([`GLUE_CLASSES`] закрыт, вето на имя нет).
+    #[test]
+    fn glue_leaves_other_classes() {
+        let a = span_of(NAME_TEXT, "Иванов", "person_name", 0.55);
+        let b = span_of(NAME_TEXT, "Пётр", "person_name", 0.51);
+        let mount = FakeMount::ok(vec![a, b]);
+        let an = analyze_with(
+            &req(NAME_TEXT),
+            &schema(),
+            &cfg(),
+            Policy::Mask,
+            Some(&mount),
+        )
+        .expect("анализ");
+        let p: Vec<&AnalyzedSpan> = an
+            .spans
+            .iter()
+            .filter(|s| s.entity_type == "person_name")
+            .collect();
+        assert_eq!(p.len(), 2, "имена не склеиваются");
+    }
+
+    /// Разрыв больше бюджета ([`GLUE_MAX_GAP`]) не склеивается, даже с вето-формой:
+    /// «4508 …… 455561» через длинный текст = два разных числа.
+    #[test]
+    fn glue_gap_budget() {
+        let text = format!("паспорт 4508 {} 455561", "x".repeat(20));
+        let a = span_of(text.as_str(), "4508", "passport", 0.7);
+        let b = span_of(text.as_str(), "455561", "passport", 0.7);
+        let mount = FakeMount::ok(vec![a, b]);
+        let an = analyze_with(&req(&text), &schema(), &cfg(), Policy::Mask, Some(&mount))
+            .expect("анализ");
+        let p: Vec<&AnalyzedSpan> = an
+            .spans
+            .iter()
+            .filter(|s| s.entity_type == "passport")
+            .collect();
+        assert_eq!(p.len(), 2, "разрыв за бюджетом склеился");
     }
 }

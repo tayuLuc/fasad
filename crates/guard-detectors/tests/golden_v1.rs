@@ -28,11 +28,12 @@ fn golden_path() -> PathBuf {
 // привязка гейта к содержимому набора
 //
 // SHA-256 файла golden-v1.jsonl, **промеренный** `shasum -a 256
-// data/golden/golden-v1.jsonl` в заходе issue #14 (19.10): та же константа, что
+// data/golden/golden-v1.jsonl` в заходе #200-A2 (24.10, golden-v1.2: строки
+// g0205–g0226 форм паспорта/телефона/коллизий): та же константа, что
 // в `data/golden/README.md` (расхождения нет — сверено в этом же заходе).
 // Правка датасета без пересчёта хэша ломает этот тест, а не проходит незамеченной
 // (обещание README «гейт привязан к SHA-256» из B2 становится машиной, не словами).
-const GOLDEN_V1_SHA256: &str = "546d8c3593d4e7df6b9fb51912d8a18440192293168940b60ff0ed99b7d187ae";
+const GOLDEN_V1_SHA256: &str = "5544b3a6be1a9677b3130c104967939c8474b8d26206f34cfcbf538287828976";
 
 /// B2: пересчитать SHA-256 файла и сверить с зашитой константой.
 ///
@@ -626,13 +627,19 @@ fn value_source_format_ok(cat: &str, v: &str) -> bool {
         // снять #[ignore] у b4_bik_baits_are_in_class — см. комментарий выше.
         "phone" => phone_e164_ok(v),
         "passport" => {
+            // Формат класса = 4 цифры серии + 6 цифр номера, разделённые
+            // одиночными пробелами в любой разбивке групп («4508 455561»,
+            // «45 08 455561», «58 53 808531» — все формы первички #200).
+            // B4-контракт: цифры + пробелы, ровно 10 цифр, группы ≥ 2 цифр
+            // (обрывок «4 508 455561» = не печатная форма).
             let b = v.as_bytes();
-            b.len() == 12
-                && b[..2].iter().all(u8::is_ascii_digit)
-                && b[2] == b' '
-                && b[3..5].iter().all(u8::is_ascii_digit)
-                && b[5] == b' '
-                && b[6..].iter().all(u8::is_ascii_digit)
+            b.iter().all(|c| c.is_ascii_digit() || *c == b' ')
+                && b.iter().filter(|c| c.is_ascii_digit()).count() == 10
+                && !v.starts_with(' ')
+                && !v.ends_with(' ')
+                && !v.contains("  ")
+                && v.split(' ')
+                    .all(|g| g.len() >= 2 && g.bytes().all(|c| c.is_ascii_digit()))
         }
         "iban" => {
             let b = v.as_bytes();

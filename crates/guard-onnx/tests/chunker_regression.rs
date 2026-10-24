@@ -6,7 +6,7 @@
 //! `email44_regression_single_chunk` (44 Б → 23 чанка на старой геометрии) и
 //! `golden_rows_single_chunk_identity` (golden-строка 358 Б → 89 чанков).
 //! Фикстуры — форма ревьюера (email44 / gray283 / tail2133) плюс весь golden
-//! (N=204, AGENTS §4). Интеграционный срез: только pub-API крейта
+//! (N=226, AGENTS §4). Интеграционный срез: только pub-API крейта
 //! ([`chunk`], [`ChunkCfg`]), как его видит `guard-daemon`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::err_expect)] // в тестах паника = канал ответа
@@ -89,7 +89,7 @@ fn fixture_tail2133() -> String {
     t
 }
 
-/// Поле `text` всех строк golden-v1.jsonl (N=204, AGENTS §4) через `serde_json`.
+/// Поле `text` всех строк golden-v1.jsonl (N=226, AGENTS §4) через `serde_json`.
 fn golden_rows() -> Vec<String> {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -109,7 +109,11 @@ fn golden_rows() -> Vec<String> {
                 .to_owned()
         })
         .collect();
-    assert_eq!(rows.len(), 204, "golden-v1 — 204 строки (N≥150, AGENTS §4)");
+    assert_eq!(
+        rows.len(),
+        226,
+        "golden-v1 — 226 строк (v1.2 #200-A2; N≥150, AGENTS §4)"
+    );
     assert!(rows.iter().all(|r| !r.is_empty()));
     rows
 }
@@ -199,7 +203,7 @@ fn golden_rows_single_chunk_identity() {
     }
 }
 
-/// Регресс 5 — Проперти golden-потока (204 строки через \n, ~37 KB — текст длиннее окна):
+/// Регресс 5 — Проперти golden-потока (226 строк через \n, ~37 KB — текст длиннее окна):
 /// побайтовое покрытие без дыр, строгая монотонность стартов, шаг ≥ stride,
 /// чанк ≤ окна, хвост до конца, n ≤ ceil(len/stride)+1 (инвариант 3 дока).
 #[test]

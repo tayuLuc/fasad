@@ -33,7 +33,7 @@ pub const MAX_SCHEMA_BYTES: usize = 65_536;
 /// (`pub fn` того же имени): опечатка в имени валидатора означала бы «класс
 /// объявлен, а проверять его нечем» — то есть тихий fail-open в детерминированном
 /// каскаде, поэтому имя вне списка = [`SchemaError::UnknownValidator`].
-pub const KNOWN_VALIDATORS: [&str; 10] = [
+pub const KNOWN_VALIDATORS: [&str; 12] = [
     "inn10",
     "inn12",
     "snils",
@@ -44,6 +44,8 @@ pub const KNOWN_VALIDATORS: [&str; 10] = [
     "bik_format",
     "bank_account_format",
     "bik_account_cross",
+    "passport_format",
+    "phone_rf",
 ];
 
 /// Один класс схемы.
