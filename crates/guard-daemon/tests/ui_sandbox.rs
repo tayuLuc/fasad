@@ -192,8 +192,13 @@ fn call(addr: &str, method: &str, path: &str, headers: &[(&str, &str)], body: &[
         .expect("таймаут ставится");
     sock.write_all(&bytes).expect("запрос уходит");
     sock.flush().expect("флуш");
+    // Windows-контра (CI #224): на `Connection: close` winsock иногда рвёт
+    // трубку после финального пакета (`10054 ConnectionReset`) — данные
+    // УЖЕ в буфере сокета, `read_to_end` их отдаёт вместе с ошибкой. На
+    // unix путь недостижим (reset = EOF). Ответ принят, если заголовок
+    // прочитан; честность тела = контент--length заголовка (ниже).
     let mut raw = Vec::new();
-    sock.read_to_end(&mut raw).expect("ответ читается до конца");
+    sock.read_to_end(&mut raw).unwrap_or_default();
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
