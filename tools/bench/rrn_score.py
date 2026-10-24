@@ -94,12 +94,33 @@ def score_row(gold: list[dict], pred: list[dict], thr: float,
 
 
 def analyze(url: str, text: str, thr: float, timeout: float) -> list[dict]:
+    spans, _ = analyze2(url, text, thr, timeout)
+    return spans
+
+
+def analyze2(url: str, text: str, thr: float,
+             timeout: float) -> tuple[list[dict], str]:
+    """POST /v1/analyze + стадия каскада из X-Guard-Stage (первичка daemon-scope).
+
+    Fail-Closed-отказ (502: окно экстрактора #84, бюджет латентности) = НЕ сетевой
+    сбой: спанов нет, стадия = отказ. FAKE не молчим: stage `502:code` считается
+    мерителем отдельно и краснит `--require-stage` (метрика с отказами неполная).
+    """
     body = json.dumps({"text": text, "score_threshold": thr}).encode()
     req = urllib.request.Request(
         url.rstrip("/") + "/v1/analyze", data=body,
         headers={"content-type": "application/json", "X-Guard-Policy": "audit_only"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — loopback
-        return json.load(resp)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — loopback
+            stage = resp.headers.get("x-guard-stage", "?")
+            return json.load(resp), stage
+    except urllib.error.HTTPError as e:
+        code = "cascade_unavailable"
+        try:
+            code = json.loads(e.read()).get("error", {}).get("code", code)
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        return [], f"502:{code}"
 
 
 def main() -> int:
@@ -110,6 +131,10 @@ def main() -> int:
                     help="порог запроса (= дефолт FASAD_TAU_LOW, README §analyze)")
     ap.add_argument("--timeout", type=float, default=60.0)
     ap.add_argument("--limit", type=int, default=0, help="первые N строк (smoke)")
+    ap.add_argument("--require-stage", default="",
+                    help="красным, если хоть один ответ НЕ c этой подстрокой в "
+                         "X-Guard-Stage (например cascade-0+models: отказ каскадов "
+                         "= stage без весов/деградация, молча в метрику не пускаем)")
     args = ap.parse_args()
 
     in_path = Path(args.input)
@@ -123,11 +148,13 @@ def main() -> int:
     totals = {o: {c: [0, 0, 0] for c in OUR_CLASSES} for o in ("strict", "coverage")}
     pred_spans = gold_spans = 0
     fail_requests = 0
+    stage_counts: dict[str, int] = {}
     byte_match = char_only = no_match = 0
     t0 = time.time()
     for r in rows:
         try:
-            spans = analyze(args.url, r["text"], args.thr, args.timeout)
+            spans, stage = analyze2(args.url, r["text"], args.thr, args.timeout)
+            stage_counts[stage] = stage_counts.get(stage, 0) + 1
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
             fail_requests += 1
             continue
@@ -178,6 +205,13 @@ def main() -> int:
                   f"|our_only|{t[1]}|their_only|{t[2]}|both|{t[0]}")
     print(f"BYTES|pred_total|{pred_spans}|byte_match|{byte_match}"
           f"|char_only|{char_only}|no_match|{no_match}")
+    for stage in sorted(stage_counts):
+        print(f"STAGE|{stage}|rows|{stage_counts[stage]}")
+    refused = sum(v for k, v in stage_counts.items() if k.startswith("502:"))
+    if args.require_stage and refused:
+        print(f"FAIL|stage_refusals|{refused}|ожидался stage={args.require_stage} "
+              f"(fail-closed: метрика неполная)")
+        return 1
     print(f"TIME|analyze|s|{dt:.2f}|rows|{len(rows) - fail_requests}")
     if fail_requests:
         print(f"FAIL|requests|{fail_requests}|метрика неполная (fail-closed, не молчим)")
