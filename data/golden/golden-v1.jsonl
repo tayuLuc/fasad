@@ -224,3 +224,15 @@
 {"id":"g0224","text":"Паспорт выдан 15.04.2015, срок действия до 15.04.2030.","spans":[],"split":"negative","source":"synthetic-no-pii"}
 {"id":"g0225","text":"Клиент 916 123 45 68 не дозвонился, оператор проверил номер.","spans":[{"start_byte":13,"end_byte":26,"category":"inn","value_source":"9161234568"}],"split":"negative","source":"primary-invalid-vector"}
 {"id":"g0226","text":"Оплата 4508455562 проведена по терминалу кассы №3.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0227","text":"Анкета заёмщика\n Серия 4508 номер 455561, выдан ОВД\nСтатус: в работе.","spans":[{"start_byte":42,"end_byte":64,"category":"passport","value_source":"4508 номер 455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0228","text":"Кадровый учёт\n Серия 4508, 455561, дата 12.04.2015\nПодготовил оператор.","spans":[{"start_byte":38,"end_byte":50,"category":"passport","value_source":"4508, 455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0229","text":"Заявление\n Серия 4508 | 455561 | ОВД района\nКомментарий: срочно.","spans":[{"start_byte":31,"end_byte":44,"category":"passport","value_source":"4508 | 455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0230","text":"Карточка сотрудника\n Серия 4508\n455561\nСтатус: в работе.","spans":[{"start_byte":50,"end_byte":61,"category":"passport","value_source":"4508\n455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0231","text":"Уведомление\n Серия 4508 и 455561 приняты в работу\nПодписал оператор.","spans":[{"start_byte":35,"end_byte":49,"category":"passport","value_source":"4508 и 455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0232","text":"Реестр\n СЕРИЯ 4508 НОМЕР 455561\nСмена Б.","spans":[{"start_byte":25,"end_byte":47,"category":"passport","value_source":"4508 НОМЕР 455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0233","text":"Форма приёма\n Серия 4508 (455561), принят 12.04.2015\nСтатус: закрыт.","spans":[{"start_byte":36,"end_byte":48,"category":"passport","value_source":"4508 (455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0234","text":"4508 серия 455561 указаны в двух полях формы.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0235","text":"ИНН 4508 номер 455561 не проходит проверку.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0236","text":"Серия 4508, 455561, 12.04.2015 — три поля формы.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0237","text":"Отчёт за квартал: 4508 | 455561 переслан в архив, дедлайн 2.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0238","text":"Платёж 4508 и 2015 прошёл эквайринг, чек отправлен на почту.","spans":[],"split":"negative","source":"synthetic-no-pii"}

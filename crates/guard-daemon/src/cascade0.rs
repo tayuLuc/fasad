@@ -1045,7 +1045,19 @@ fn has_key_left(bytes: &[u8], start: usize, keys: &[&str]) -> bool {
         let kb = k.as_bytes();
         kb.len() <= hay.len()
             && hay.windows(kb.len()).enumerate().any(|(i, w)| {
-                w.eq_ignore_ascii_case(kb) && (left + i == 0 || !is_word_byte(hay[i - 1]))
+                // Граница слова слева: `i` — ЛОКАЛЬНЫЙ индекс hay-окна.
+                // (#213, первичка row352: `hay[i - 1]` на i=0 при left>0 =
+                // subtract-with-overflow panic, 503 internal_panic в проде
+                // (debug-профиль — паника, release — wrap; в обоих случаях
+                // СЕМАНТИКА ЛОЖНАЯ: «ключ на локальном i=0 = ключ в начале
+                // hay, глобальная позиция left+i = не начало строки» —
+                // проверка границы пропускалась). Глобальная позиция ключа
+                // = left+i, локальный индекс — только для hay; на i=0
+                // граница слева = байт bytes[left-1] при left>0, else начало
+                // строки.)
+                w.eq_ignore_ascii_case(kb)
+                    && (i > 0 && !is_word_byte(hay[i - 1])
+                        || (i == 0 && (left == 0 || !is_word_byte(bytes[left - 1]))))
             })
     })
 }
@@ -1285,6 +1297,630 @@ pub fn structured_confirms(text: &str, class: &str) -> bool {
     }
 }
 
+/// Каркасные слова паспортной формы (#212 F-1): служебные слова, которые
+/// печатаются МЕЖДУ серией и номером и рвут цифровой прогон
+/// («серия 4508 номер 455561» — «номер» между группами).
+///
+/// Список — первичка golden-форм + ревью-векторы #211 (94f8f03c): «серия»,
+/// «номер», «№». Регистр складывается кириллическим фолдом
+/// ([`cyrillic_eq_ignore_case`]): «СЕРИЯ … НОМЕР» = тот же каркас (промер
+/// ревью F-4: кап-регистр ключей живёт). Каркасное слово — НЕ ключ: ключевое
+/// вето ([`PASSPORT_KEYS`], закрытый перечень) проверяется на левом краю
+/// объединённого окна (первичка #212: «`has_key_left` НА ОКНЕ»; «серия» на
+/// левом краю и есть ключ). Слово «номер» ключом не становится (бэйт
+/// `c0_passport_key_list_is_closed` жив).
+const PASSPORT_FRAME_WORDS: &[&[u8]] = &[
+    "серия".as_bytes(),
+    "номер".as_bytes(),
+    "\u{2116}".as_bytes(), // № U+2116 — печатная форма «серия 4508 № 455561»
+];
+
+/// Максимальная длина каркасного слова в байтах (рамка сканера: длинный
+/// кириллический токен — проза между числами, не каркас).
+const PASSPORT_FRAME_WORD_MAX: usize = 10;
+
+/// Сравнение UTF-8-байтов с игнорированием кириллического регистра:
+/// побайтовый ASCII-fold кириллицу НЕ складывает («СЕРИЯ» ≠ «серия»),
+/// поэтому складываем посимвольно через code point: 2-байтовый UTF-8
+/// кириллицы (D0/D1) декодируется, к заглавной (U+0401, U+0410–U+042F —
+/// ровно то, что встречается в словах «СЕРИЯ/НОМЕР») прибавляется 0x50
+/// (шаг заглавная → строчная), кодирование обратно. Таблица проверяется
+/// юнитом `cyrillic_case_fold_covers_frame_words` против `str::to_lowercase`.
+fn cyrillic_eq_ignore_case(hay: &[u8], word: &[u8]) -> bool {
+    fold_kbd_lower(hay) == fold_kbd_lower(word)
+}
+
+/// Копия строки в нижнем регистре (ASCII-штатно + кириллица через code
+/// point: заглавная U+0401/U+0410–U+042F → +0x50 = re-encode UTF-8).
+fn fold_kbd_lower(s: &[u8]) -> Vec<u8> {
+    // Побайтовый фолд кириллицы А..Я → а..я + Ё→ё. Таблица (первичка:
+    // UTF-8-коды U+0410..U+044F; зуб `cyrillic_case_fold_matches_rust_
+    // lowercase` сверяет с `char::to_lowercase` на всём диапазоне + Ё/ё):
+    //   А..Й = D0 90..9F → а..й = D0 B0..BF  (второй байт +0x20)
+    //   К..Я = D0 A0..AF → к..я = D1 80..8F  (ведущий D0→D1, второй −0x20)
+    //   Ё    = D0 81 → ё = D1 91             (пара, вне регулярной сетки)
+    let mut out = Vec::with_capacity(s.len());
+    let mut i = 0;
+    while i < s.len() {
+        if i + 1 < s.len() && s[i] == 0xD0 {
+            let b = s[i + 1];
+            if b == 0x81 {
+                out.extend_from_slice(&[0xD1, 0x91]);
+                i += 2;
+                continue;
+            }
+            if (0x90..=0x9F).contains(&b) {
+                out.push(0xD0);
+                out.push(b + 0x20);
+                i += 2;
+                continue;
+            }
+            if (0xA0..=0xAF).contains(&b) {
+                out.push(0xD1);
+                out.push(b - 0x20);
+                i += 2;
+                continue;
+            }
+        }
+        out.push(s[i].to_ascii_lowercase());
+        i += 1;
+    }
+    out
+}
+
+fn fold_kbd_upper(s: &[u8]) -> Vec<u8> {
+    // Зеркало [`fold_kbd_lower`]: а..й = D0 B0..BF → А..Й (второй −0x20),
+    // к..я = D1 80..8F → К..Я (ведущий D1→D0, второй +0x20), ё = D1 91 →
+    // Ё = D0 81.
+    let mut out = Vec::with_capacity(s.len());
+    let mut i = 0;
+    while i < s.len() {
+        if i + 1 < s.len() && s[i] == 0xD0 {
+            let b = s[i + 1];
+            if (0xB0..=0xBF).contains(&b) {
+                out.push(0xD0);
+                out.push(b - 0x20);
+                i += 2;
+                continue;
+            }
+        }
+        if i + 1 < s.len() && s[i] == 0xD1 {
+            let b = s[i + 1];
+            if b == 0x91 {
+                out.extend_from_slice(&[0xD0, 0x81]);
+                i += 2;
+                continue;
+            }
+            if (0x80..=0x8F).contains(&b) {
+                out.push(0xD0);
+                out.push(b + 0x20);
+                i += 2;
+                continue;
+            }
+            // (полнота: 0x90..0x9F = ѐ..џ вне русской сетки — не трогается)
+        }
+        out.push(s[i].to_ascii_uppercase());
+        i += 1;
+    }
+    out
+}
+
+/// Ключевое слово формы (любая форма [`PASSPORT_KEYS`] в верхнем регистре,
+/// word-break, кириллица складывается [`fold_kbd_upper`]) стоит ПЕРЕД
+/// позицией, через разрыв ≤ 3 байт («паспорт 4508 …», «Паспорт: серия 4508
+/// …», «Серия 4508, 455561»). Ключевое вето проверяет ключ по полному
+/// бюджету [`CONTEXT_BUDGET`]; здесь — каркасность F-1 (форма «ключ 4508
+/// ключ 455561», первичка issue) и легитимация голых разрывов моста.
+fn passport_key_before(bytes: &[u8], start: usize) -> bool {
+    for k in PASSPORT_KEYS {
+        let kb = fold_kbd_upper(k.as_bytes());
+        for gap in 1..=3usize {
+            if start < kb.len() + gap {
+                continue;
+            }
+            let p = start - gap - kb.len();
+            let between = &bytes[p + kb.len()..start];
+            if fold_kbd_upper(&bytes[p..p + kb.len()]) != kb {
+                continue;
+            }
+            if p > 0 && is_word_byte(bytes[p - 1]) {
+                continue;
+            }
+            if between.iter().all(|&b| {
+                b == b' '
+                    || b == b','
+                    || b == b';'
+                    || b == b':'
+                    || b == b'|'
+                    || b == b'\n'
+                    || b == b'\t'
+            }) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Есть ли слово `word` в срезе на границе слова (кириллический регистр через
+/// [`cyrillic_eq_ignore_case`], word-break как у [`has_key_left`]).
+fn has_word_in(hay: &[u8], word: &str) -> bool {
+    let wb = word.as_bytes();
+    wb.len() <= hay.len()
+        && hay.windows(wb.len()).enumerate().any(|(i, w)| {
+            cyrillic_eq_ignore_case(w, wb)
+                && (i == 0 || !is_word_byte(hay[i - 1]))
+                && (i + wb.len() == hay.len() || !is_word_byte(hay[i + wb.len()]))
+        })
+}
+
+/// Каркасное слово ровно на позиции `i` (слово из [`PASSPORT_FRAME_WORDS`]
+/// на word-break-границе): позиция за словом, если оно там стоит.
+fn passport_frame_word(bytes: &[u8], i: usize) -> Option<usize> {
+    for w in PASSPORT_FRAME_WORDS {
+        if w.len() > PASSPORT_FRAME_WORD_MAX {
+            continue;
+        }
+        if bytes.len() < i + w.len() {
+            continue;
+        }
+        // Кандидат побайтно (word len = exact byte length, список кириллицы
+        // фиксированной ширины); регистр складывается фолдом списка/текста.
+        let text = &bytes[i..i + w.len()];
+        if text != *w && fold_kbd_upper(text) != fold_kbd_upper(w) {
+            continue;
+        }
+        // Граница слева — не-буква («номер» внутри «номера» = не каркас).
+        if i > 0 && is_word_byte(bytes[i - 1]) {
+            continue;
+        }
+        let right = i + w.len();
+        // Граница справа — НЕ буква. Цифра правым краем не отбивается:
+        // слитная печатная форма «№455561» (word «№» + цифры) легитимна.
+        // Буква = ASCII-буква или ведущий байт кириллицы (0xD0/0xD1), НЕ
+        // любой non-ASCII: пробел (0x20), пунктуация и цифры отбивают.
+        if right < bytes.len()
+            && (bytes[right].is_ascii_alphabetic() || bytes[right] == 0xD0 || bytes[right] == 0xD1)
+        {
+            continue;
+        }
+        return Some(right);
+    }
+    None
+}
+
+/// Каркасные разрывы между группами (помимо служебного слова), которые рвут
+/// [`num_runs`] и которые терпит каркас паспорта:
+/// - перевод строки / табуляция (нормализатор их сохраняет — промер #212:
+///   «Серия 4508\n455561»);
+/// - пунктуация перечисления полей «, ; : |» + факультативный одиночный
+///   пробел («Серия 4508, 455561», «4508 | 455561»);
+/// - открывающая скобка « (» (форма «Серия 4508 (455561)», F-3).
+fn passport_break_sep(bytes: &[u8], i: usize) -> usize {
+    match bytes.get(i) {
+        Some(b'\n' | b'\t') => 1,
+        // Пунктуация перечисления полей. Разрыв ведётся от КОНЦА группы:
+        // «4508, 455561» = «, »; форма «4508 | 455561» (пробелы с двух
+        // сторон) входит через одиночный пробел (`b' '` ниже) + «|» +
+        // пробел (мост съедает один пробел после разрыва).
+        Some(b',' | b';' | b':' | b'|' | b'(') => {
+            // Скобка-разрыв « (» (форма «Серия 4508 (455561)», F-3) живёт
+            // в той же ветке: тот же однобайтовый знак + факультативный
+            // пробел.
+            if bytes.get(i + 1) == Some(&b' ') {
+                2
+            } else {
+                1
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Каркасный мост от конца группы `end` к началу следующей группы: позиция
+/// первой цифры следующей группы, если разрыв от `end` — каркас паспорта.
+///
+/// Ключевое слово формы стоит ПЕРЕД ПЕРВОЙ ГРУППОЙ окна: каркас формы
+/// «ключ 4508 [ключ] 455561» (первичка issue F-1: «серия 4508 НОМЕР
+/// 455561», «Серия 4508, 455561»). Ведущее ключевое слово легитимирует
+/// ГОЛЫЕ разрывы (пунктуация/перевод/два пробела/« и »/скобка):
+/// «Серия 4508\n455561» = «Серия» + перевод строки. Без ведущего слова
+/// голые разрывы = перечисление полей (FP-контракт g0223 «заполните поле
+/// 4508 и приложение 455561»), молчат. Служебное слово в самом разрыве
+/// («4508 номер …») легитимно всегда.
+fn passport_bridge(bytes: &[u8], end: usize, key_before: bool) -> Option<usize> {
+    // 1) Служебное слово в разрыве: одиночный пробел («4508 номер …»),
+    //    пунктуация + пробел («4508, номер …»), слитная форма «№455561»;
+    //    за словом — одиночный пробел, пунктуация + пробел, скобка +
+    //    пробел (форма «4508 | номер | 455561»), и цифра.
+    let mut bases = Vec::new();
+    if bytes.get(end) == Some(&b' ') {
+        bases.push(end + 1);
+    }
+    let s0 = passport_break_sep(bytes, end);
+    if s0 > 0 && bytes.get(end + s0) == Some(&b' ') {
+        bases.push(end + s0 + 1);
+    }
+    for base in bases {
+        if base >= bytes.len() {
+            continue;
+        }
+        let mut p = base;
+        for _ in 0..2 {
+            let Some(we) = passport_frame_word(bytes, p) else {
+                break;
+            };
+            if bytes.get(we).is_some_and(u8::is_ascii_digit) {
+                return Some(we);
+            }
+            // за словом: одиночный пробел | пунктуация + пробел | скобка
+            let ps = passport_break_sep(bytes, we);
+
+            let q = if ps > 0 && bytes.get(we + ps) == Some(&b' ') {
+                we + ps + 1
+            } else if bytes.get(we) == Some(&b' ') {
+                we + 1
+            } else if bytes.get(we) == Some(&b'(') && bytes.get(we + 1) == Some(&b' ') {
+                we + 2
+            } else {
+                break;
+            };
+            if bytes.get(q).is_some_and(u8::is_ascii_digit) {
+                return Some(q);
+            }
+            p = q;
+        }
+    }
+    // 2) Голые каркасные разрывы — только при ведущем слове формы
+    //    (legitimized на входе сканера): «4508\n455561», «4508, 455561»,
+    //    «4508 | 455561», «4508 (455561)», «4508  455561», «4508 и 455561».
+    //    Без ведущего слова голые разрывы = перечисление полей
+    //    (FP-контракт g0223 «заполните поле 4508 и приложение 455561»).
+    if !key_before {
+        return None;
+    }
+    if s0 > 0 {
+        let mut p = end + s0;
+        if bytes.get(p) == Some(&b' ') {
+            p += 1;
+        }
+        if bytes.get(p).is_some_and(u8::is_ascii_digit) {
+            return Some(p);
+        }
+    }
+    // Пробел + пунктуация (+ факультативный пробел): «4508 | 455561» —
+    // разделитель с пробелами с двух сторон (ревью-вектор).
+    if bytes.get(end) == Some(&b' ')
+        && matches!(bytes.get(end + 1), Some(b'|' | b',' | b';' | b':'))
+    {
+        let mut p = end + 2;
+        if bytes.get(p) == Some(&b' ') {
+            p += 1;
+        }
+        if bytes.get(p).is_some_and(u8::is_ascii_digit) {
+            return Some(p);
+        }
+    }
+    // « и » литеральный разделитель (одинарные пробелы с обеих сторон:
+    // «4508  и 2015» = перечисление; «4508 и  2015» = третий пробел).
+    if bytes.get(end) == Some(&b' ')
+        && bytes[end + 1..].starts_with("и ".as_bytes())
+        && bytes.get(end + 1 + "и ".len()) != Some(&b' ')
+    {
+        let p = end + 1 + "и ".len();
+        if bytes.get(p).is_some_and(u8::is_ascii_digit) {
+            return Some(p);
+        }
+    }
+    // Ровно два пробела (третий = перечисление).
+    if bytes.get(end) == Some(&b' ')
+        && bytes.get(end + 1) == Some(&b' ')
+        && bytes.get(end + 2) != Some(&b' ')
+    {
+        let p = end + 2;
+        if bytes.get(p).is_some_and(u8::is_ascii_digit) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Каркасные окна паспорта (#212 F-1): группы цифр, склеенные каркасными
+/// мостами ([`passport_bridge`]). Скользящее окно по группам:
+/// - старт = группа полной ширины ([`MIN_LEADING_GROUP_DIGITS`], leading-рамка
+///   #138: «1 4508 номер 455561» = нумерация);
+/// - шаг = каркасный мост к следующей группе полной ширины и не длиннее
+///   [`MAX_GROUP_DIGITS`] (общие рамки оконного слоя);
+/// - окно ≤ [`MAX_WINDOW_GROUPS`] групп, каркас окна ≤ [`CONTEXT_BUDGET`]
+///   байт (расстояние-бюджет #51-контура, новых констант нет);
+/// - правая рамка F-2 [`passport_tail_break`]: хвост 3..=6 цифр = чужое поле,
+///   окно обрывается ДО хвоста (паспорт «находится чисто»);
+/// - спан сужается до цифр окна (F-3, [`passport_span_trim`]).
+///
+/// Окна < 2 групп не строятся (10-канона без второй группы не бывает).
+fn passport_frame_windows(bytes: &[u8]) -> Vec<(usize, usize)> {
+    let n = bytes.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let gstart = i;
+        while i < n && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        let gend = i;
+        if gend - gstart < MIN_LEADING_GROUP_DIGITS {
+            continue;
+        }
+        let start = gstart;
+        let mut end = gend;
+        let mut groups = 1usize;
+        loop {
+            if groups >= MAX_WINDOW_GROUPS {
+                break;
+            }
+            // Ведущее ключевое слово формы считается от ПЕРВОЙ группы окна
+            // («серия 4508 …»): оно легитимирует голые разрывы на всём окне.
+            let key_before = passport_key_before(bytes, start);
+            // Мост ПЕРВЫМ порядком: каркасное слово в гэпе = форма паспорта,
+            // хвост за цифрами («… номер 455561 2015») не отменяет мост к
+            // номеру; F-2 (рамка хвоста) отсечёт окно ПОСЛЕ склейки групп.
+            let Some(j) = passport_bridge(bytes, end, key_before) else {
+                break;
+            };
+            if passport_tail_break(bytes, end).is_some() {
+                break;
+            }
+            let mut k = j;
+            while k < n && bytes[k].is_ascii_digit() {
+                k += 1;
+            }
+            let glen = k - j;
+            if !(MIN_LEADING_GROUP_DIGITS..=MAX_GROUP_DIGITS).contains(&glen) {
+                break;
+            }
+            if k - start > 10 * groups + CONTEXT_BUDGET {
+                break; // каркас за расстоянием-бюджетом #51-контура
+            }
+            end = k;
+            groups += 1;
+            i = k;
+        }
+        // Окно значимо при каркасной форме: слово в гэпе, союз « и »,
+        // скобка-разрыв (F-3) или ведущее ключевое слово формы
+        // (legitimized-мосты); голые перечислительные разрывы без
+        // ведущего слова мостом не склеиваются (FP-контракт g0223).
+        if groups >= 2 && passport_frame_shape_ok(bytes, start, end) {
+            let worded = gaps_of(bytes, start, end).into_iter().any(|gap| {
+                gap == " и ".as_bytes()
+                    || gap.contains(&b'(')
+                    || gap.contains(&b')')
+                    || has_word_in(gap, "серия")
+                    || has_word_in(gap, "номер")
+                    || has_word_in(gap, "\u{2116}")
+            });
+            if (worded || passport_key_before(bytes, start))
+                && let Some(span_end) = passport_span_trim(bytes, start, end)
+            {
+                out.push((start, span_end));
+            }
+        }
+    }
+    out
+}
+
+/// Правая рамка паспорта (#212 F-2): хвост 3..=6 цифр, прижатый к канону
+/// ASCII-пробелом/дефисом, окно ОБРЫВАЕТ; хвост ≥ 7 цифр — продолжение
+/// номера (окно отшивается общей правой границей, симметрия с
+/// `right_sep_continues` каркаса).
+///
+/// Первичка ревью-вектора (94f8f03c §F-2): «паспорт 4508 455561 123» на базе
+/// = no spans, FN-класс симметричен левой рамке #138 (цена anti-FP).
+/// РЕШЕНИЕ ПЕРВИЧКОЙ ревью-описания и golden-бейтов: цель ревью — «паспорт
+/// НЕ находится при right-рамка-дата ИЛИ находится чисто». 4+6-форма =
+/// СЕРИЯ (4) + НОМЕР (6); после номера печатаются ДАТА («… 455561
+/// 15.04.2015» — точка рвёт прогон вето #131, окно остаётся чистым:
+/// первичка g0205 «Паспорт 4508 455561 выдан 15.04.2015» покрыта), год
+/// («… 2015» = 4 цифры), чужое поле произвольной кратности; слитый канон
+/// 10+k цифр = НЕ паспортная форма (канон-суффикс, то же зло, что закрыто
+/// рамкой #138 слева). Хвост 1–2 цифры (12/123-хвосты, «… 12») остаются в
+/// каноне и отшиваются длиной валидатора (11–12 цифр — не паспорт), как на
+/// базе: форма «12/123» первичкой ревью НЕ заявлена ожидаемой (FN «123»
+/// закрывается, «12/123» остаётся вFP-safe молчании — промер таблицы PR).
+/// Отдельные валидаторы даты/года в список НЕ вынесены: оба решения живут
+/// одним правилом, второй реализации того же решения не заводим.
+fn passport_tail_break(bytes: &[u8], end: usize) -> Option<usize> {
+    if !matches!(bytes.get(end), Some(b' ' | b'-')) {
+        return None;
+    }
+    // Слово каркаса в гэпе — не хвост («4508 номер 455561»: хвост за 4508 =
+    // «номер», не цифры): F-2 режет ГОЛЫЕ числовые хвосты, слово узаконено
+    // мостом.
+    if bytes[end + 1..].starts_with("и ".as_bytes()) {
+        return None;
+    }
+    let mut j = end + 1;
+    let mut len = 0usize;
+    while bytes.get(j).is_some_and(u8::is_ascii_digit) {
+        j += 1;
+        len += 1;
+    }
+    if bytes.get(j).is_some_and(u8::is_ascii_digit) {
+        return None;
+    }
+    if (3..=6).contains(&len) {
+        return Some(j);
+    }
+    None
+}
+
+/// Сужение спана каркасного окна (F-3, ревью #211: «Серия 4508 (455561)»
+/// давала спан с внутренней открывающей скобкой). Спан = от ПЕРВОЙ цифры до
+/// ПОСЛЕДНЕЙ цифры окна (каркас outside — как `+` вне спана телефона);
+/// каркасные скобки внутри спана ВЫРЕЗАЮТСЯ (маскировать надо `ПДн`, не
+/// типографику): «4508 (455561)» → «4508 455561». Канон спана обязан
+/// равняться канону окна (цифры те же; между группами остаются пробелы) —
+/// иначе fail-closed: окно отшивается.
+fn passport_span_trim(bytes: &[u8], start: usize, end: usize) -> Option<usize> {
+    // Спан = от ПЕРВОЙ цифры до ПОСЛЕДНЕЙ цифры окна (F-3: каркасная
+    // скобка на КРАЮ окна из спана выпадает: «Серия (4508) …» → спан
+    // «4508 …»). Внутренняя скобка («4508 (455561)») между цифрами из
+    // непрерывного спана выпасть НЕ может (маскируется вместе с канон-
+    // разделителем — тот же смысл, что «, »/«\n» внутри спанов F-1:
+    // канон извлекается по цифрам, спан = непрерывный фрагмент текста).
+    let inner = &bytes[start..end];
+    let last = inner.iter().rposition(u8::is_ascii_digit)?;
+    let _ = inner.iter().position(u8::is_ascii_digit)?;
+    let out_end = start + last + 1;
+    Some(out_end)
+}
+
+/// Канон окна без каркасных байт: только цифры среза (каркасные слова,
+/// пунктуация и переводы строк в канон не входят — тот же смысл, что у
+/// `Run::canonical`: валидатор видит группы, склеенные в форму).
+fn canon_all_digits(bytes: &[u8], start: usize, end: usize) -> Vec<u8> {
+    bytes[start..end]
+        .iter()
+        .copied()
+        .filter(u8::is_ascii_digit)
+        .collect()
+}
+
+/// Вето паспорта для каркасного окна F-1 ([`passport_frame_windows`]):
+/// - word-break на цифровых краях окна (прижатие к букве/цифре = не форма);
+/// - канон = 10 цифр ([`PASSPORT_SPEC`]), zero-canon #158 в
+///   [`call_validator`];
+/// - каркас окна доказан: каждый гэп между группами — ЛИБО слово из
+///   [`PASSPORT_FRAME_WORDS`], ЛИБО разрыв без букв (список
+///   [`passport_break_sep`], « и », два пробела); гэп с чужим словом
+///   («4508 телефон 455561») окно отшивает (список закрытый);
+/// - СМЫСЛ F-1 — каркасное слово в окне или перед ним (первичка #212:
+///   «ключ 4508 ключ 455561»; формы без слова — «4508, 455561» с «Серия»
+///   слева — ведут себя как «Серия 4508 455561»: ключевое вето их берёт);
+/// - ключ [`PASSPORT_KEYS`] на левом краю ОБЪЕДИНЁННОГО окна
+///   ([`has_key_left`], бюджет [`CONTEXT_BUDGET`], word-break — первичка
+///   #212 bug-формулировки: «4508 серия 455561» с пустым левым контекстом
+///   молчит, FP-контракт g0223 «поле 4508 и приложение 455561» живёт);
+/// - «ИНН»-доминанта (правило 4) — общая.
+fn passport_window_verdict(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    canon: &[u8],
+) -> Option<&'static str> {
+    if !isolated(bytes, start, end) {
+        return None;
+    }
+    if canon.len() != PASSPORT_SPEC.max {
+        return None;
+    }
+    if call_validator(PASSPORT_SPEC.name, canon) != Some(true) {
+        return None;
+    }
+    if !passport_frame_shape_ok(bytes, start, end) {
+        return None;
+    }
+    if !has_key_left(bytes, start, PASSPORT_KEYS) {
+        return None;
+    }
+    if inn_key_near(bytes, start, end) {
+        return None;
+    }
+    Some(CLASS_PASSPORT)
+}
+
+/// Каркасность окна по гэпам: каждый гэп между группами цифр — слово списка
+/// (word-break) или разрыв без букв. Гэп с чужим словом = не каркас.
+fn passport_frame_shape_ok(bytes: &[u8], start: usize, end: usize) -> bool {
+    // Гэп окна легален, если это: каркасное слово списка (« серия »,
+    // « номер », « № »), союз « и » (печатная форма), либо разрыв БЕЗ букв
+    // (пробелы, пунктуация, перевод строки, скобки — всё, что построил
+    // мост). Гэп с чужим словом (« телефон », « счёт ») окно отшивает:
+    // список каркасных слов закрытый.
+    let letter = |b: u8| b.is_ascii_alphabetic() || b == 0xD0 || b == 0xD1;
+    gaps_of(bytes, start, end).into_iter().all(|gap| {
+        !gap.iter().any(|&b| letter(b))
+            || gap == " и ".as_bytes()
+            || has_word_in(gap, "серия")
+            || has_word_in(gap, "номер")
+            || has_word_in(gap, "\u{2116}")
+    })
+}
+
+fn gaps_of(bytes: &[u8], start: usize, end: usize) -> Vec<&[u8]> {
+    let inner = &bytes[start..end];
+    let n = inner.len();
+    // Собираем сразу (окна короткие): гэп = нецифровой кусок, за которым
+    // (внутри среза) идёт цифра, и перед которым шла цифра.
+    let mut gaps: Vec<&[u8]> = Vec::new();
+    let mut i = 0;
+    while i < n && !inner[i].is_ascii_digit() {
+        i += 1;
+    }
+    while i < n {
+        while i < n && inner[i].is_ascii_digit() {
+            i += 1;
+        }
+        let g = i;
+        while i < n && !inner[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i < n && i > g {
+            gaps.push(&inner[g..i]);
+        }
+    }
+    gaps
+}
+
+/// Есть ли в срезе каркасная не-цифра (не пробел/дефис, не цифра): кириллица
+/// слова, пунктуация, перевод строки, скобка. Голый пробельный/дефисный
+/// прогон = окно общего контура ([`num_runs`]), каркасный сканер такие окна
+/// не строит (и не должен: дубль FP-поверхности).
+fn passport_frame_has_break(bytes: &[u8], start: usize, end: usize) -> bool {
+    bytes[start..end]
+        .iter()
+        .any(|&b| !b.is_ascii_digit() && b != b' ' && b != b'-')
+}
+
+/// Каркасный проход паспорта (#212 F-1/F-2): окна [`passport_frame_windows`]
+/// + правая рамка F-2 для окон общего контура.
+fn scan_passport_frames(bytes: &[u8], passports: &mut Vec<(usize, usize)>) {
+    for (start, end) in passport_frame_windows(bytes) {
+        let canon = canon_all_digits(bytes, start, end);
+        if passport_window_verdict(bytes, start, end, &canon).is_some() {
+            passports.push((start, end));
+        }
+    }
+    // F-2 для окон общего контура: num-run «4508 455561 2015» (канон 13
+    // цифр) отшит общей правой границей; паспортная форма под ним
+    // («ключ 4508 455561 2015») существует, и хвост 3..=6 цифр = чужое
+    // поле: окно обрезается рамкой [`passport_tail_break`] и подтверждается
+    // полным вето [`classify_structured_window`] (формат, ключ, leading,
+    // zero-canon, inn-доминанта — ничего не ослаблено).
+    for run in num_runs(bytes) {
+        let first = run
+            .groups
+            .iter()
+            .position(|g| g.end - g.start >= MIN_LEADING_GROUP_DIGITS)
+            .unwrap_or(0);
+        let start = run.groups[first].start;
+        let Some(end) = passport_tail_break(bytes, run.groups[run.groups.len() - 1].end) else {
+            continue;
+        };
+        // Окно с каркасной не-цифрой между группами принадлежит каркасному
+        // сканеру выше; здесь только голые пробельные прогоны.
+        if passport_frame_has_break(bytes, start, end) {
+            continue;
+        }
+        if classify_structured_window(bytes, start, end, true, false) == Some(CLASS_PASSPORT) {
+            passports.push((start, end));
+        }
+    }
+}
+
 /// Кандидатные окна структурного слоя: цифровые прогоны + нум-раны с рамкой
 /// #138 + каркасные окна телефона; сортировка/дедуп (тот же оконный контур,
 /// что у `validated_windows`).
@@ -1311,6 +1947,10 @@ fn structured_windows(bytes: &[u8]) -> Vec<(usize, usize)> {
     // («8 (916) 123-45-67» = «8» | «916) 123-45-67») и не терпит `+`/`(`/`)`
     // внутри номера: окна собирает отдельный каркасный сканер.
     windows.extend(phone_frame_windows(bytes));
+    // Каркасные окна паспорта (#212 F-1): тот же принцип — общий нум-ран
+    // рвётся на служебном слове («серия 4508 номер 455561»), сдвоенном
+    // пробеле, переводе строки и пунктуации: окна собирает каркасный сканер
+    // паспорта (ведёт вето `passport_window_verdict`).
     windows.sort_unstable();
     windows.dedup();
     windows
@@ -1361,6 +2001,14 @@ fn classify_structured_window(
     } else {
         start + 1
     };
+    // Правая рамка паспорта #212 F-2 (окна ОБЩЕГО контура): хвост 3..=6 цифр
+    // = чужое поле, паспортное окно обрывается до него (окно = 10-канон
+    // серия+номер, «находится чисто»). Для окон каркасного паспорта F-1 рамка
+    // применена на сканере; здесь симметрия для «паспорт 4508 455561 123»
+    // (num-run-окно 4508..123 канон 13 цифр → ниже канон не 10 → паспортного
+    // хита нет; обрезанное окно даёт его). Телефонная ветка НЕ трогается:
+    // рамка паспортная, «+7 916 123-45-67 2015» = телефон + год (промер
+    // ревью: телефон живёт, хвост не его).
     // Правый край окна обязан сидеть на ГРАНИЦЕ слова: за окном нет
     // цифры, нет «пробел/дефис + цифра» (правая граница общего
     // num-runs-контура: «1 234 567 890 12» не склеивается каркасом в
@@ -1459,6 +2107,11 @@ fn scan_structured(
             Some(CLASS_PASSPORT) => passports.push((start, end)),
             _ => {}
         }
+    }
+    // Каркас окна паспорта (#212 F-1/F-2): собственная ветка (слово в окне
+    // ломает общий word-break/канон), окно получает вето по цифровому канону.
+    if want_passport {
+        scan_passport_frames(bytes, &mut passports);
     }
     // Вложенные окна (каркас ⊇ нум-ран ⊇ подокно) дают дубли одного номера:
     // из окон класса с одинаковым КАНОНОМ оставляем самое широкое (спан
@@ -1731,6 +2384,115 @@ mod tests {
 
     fn schema() -> Schema {
         Schema::embedded().expect("канон валиден")
+    }
+
+    /// Побайтовый фолд кириллицы (#212, каркасные слова в любом регистре):
+    /// `fold_kbd_lower`/`fold_kbd_upper` = строгие инволюции на всём
+    /// диапазоне U+0410–U+044F + пары Ё/ё; сверка с `char::to_lowercase`
+    /// (эталон Unicode) на всём диапазоне.
+    #[test]
+    fn cyrillic_case_fold_matches_rust_lowercase() {
+        // А..Я = U+0410..U+042F (диапазон ЗАГЛАВНЫХ; нижняя сетка
+        // U+0430..U+044F покрыта верхним плечем на тех же буквах).
+        for cp in 0x410u32..=0x42F {
+            let ch = char::from_u32(cp).unwrap();
+            let up = ch.to_string();
+            let lo = ch.to_lowercase().collect::<String>();
+            assert_eq!(
+                fold_kbd_lower(up.as_bytes()),
+                lo.as_bytes(),
+                "lower {ch} up={:?}",
+                up.as_bytes()
+            );
+            assert_eq!(
+                fold_kbd_upper(lo.as_bytes()),
+                up.as_bytes(),
+                "upper {ch} lo={:?}",
+                lo.as_bytes()
+            );
+        }
+        assert_eq!(fold_kbd_lower("Ё".as_bytes()), "ё".as_bytes());
+        assert_eq!(fold_kbd_upper("ё".as_bytes()), "Ё".as_bytes());
+        // Смешанные строки + регистронезависимое сравнение каркаса.
+        assert_eq!(
+            fold_kbd_upper("СЕРИЯ".as_bytes()),
+            fold_kbd_upper("серия".as_bytes())
+        );
+    }
+
+    #[test]
+    fn has_key_left_word_boundary_at_hay_edge_no_panic() {
+        // #213 (первичка row352): ключ ПЕРВЫМ байтом hay-окна (i=0 при
+        // left>0) — old `hay[i - 1]` = subtract-with-overflow (debug-паника
+        // = 503 internal_panic в проде). Синтетика row352-префикса:
+        // pad + ключ на границе 84-байтового бюджета + канон.
+        for key in ["ИНН", "inn", "паспорт", "серия", "СНИЛС", "snils", "тел."]
+        {
+            let kb = key.as_bytes();
+            for pad in 1..=3usize {
+                let mut b: Vec<u8> = vec![b'a'; pad];
+                b.extend_from_slice(kb);
+                b.resize(pad + CONTEXT_BUDGET, b'b');
+                b.extend_from_slice(b"7707083893");
+                let start = b.len() - 10;
+                // не паникует + ключ на i=0 при left>0 = НЕ ключ (граница
+                // слова: за байтом left-1 стоит буква 'a' / pad-байт)
+                assert!(
+                    !has_key_left(&b, start, &[key]),
+                    "ключ {key} pad={pad}: граница слова не выдержана"
+                );
+            }
+        }
+        // Позитив: тот же ключ после разделителя = ключ.
+        let t = "заказ ИНН 7707083893";
+        assert!(has_key_left(t.as_bytes(), t.len() - 10, &["ИНН"]));
+    }
+
+    #[test]
+    fn key_left_prefix_scan_never_panics() {
+        // Зуб «произвольный префикс + канон = no panic» (#213): детерминированный
+        // LFSR-перебор префиксов (ASCII + кириллические границы UTF-8) перед
+        // канонами всех каркасных классов; scan() обязан не паниковать.
+        let schema = schema();
+        let mut state: u32 = 0xACE1;
+        for _ in 0..2000usize {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let len = usize::try_from(state % 110).unwrap();
+            let mut pref = String::new();
+            let mut st2 = state ^ 0x1234;
+            for _ in 0..len {
+                st2 = st2.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                let c = u8::try_from((st2 >> 16) % 256).unwrap();
+                pref.push(match c {
+                    b'A'..=b'Z'
+                    | b'a'..=b'z'
+                    | b'0'..=b'9'
+                    | b' '
+                    | b','
+                    | b':'
+                    | b';'
+                    | b'.'
+                    | b'-' => c as char,
+                    0xD0 | 0xD1 => 'к',
+                    _ => ' ',
+                });
+            }
+            for tail in [
+                "ИНН 7707083893",
+                "серия 4508 номер 455561",
+                "паспорт 4508 455561",
+                "СНИЛС 123-456-789 01",
+                "тел +7 916 123-45-67",
+            ] {
+                let v = format!("{pref} {tail}");
+                let _ = scan(&v, &schema);
+            }
+            // точная граница бюджета: канон на 84+1.. от края префикса
+            let v = format!("{}ИНН {}", "a".repeat(76 + len % 8), "7707083893");
+            let _ = scan(&v, &schema);
+        }
     }
 
     fn classes(hits: &[Hit]) -> Vec<&str> {
@@ -3227,6 +3989,103 @@ mod tests {
             hits.iter().all(|h| h.class.as_str() != "passport"),
             "«номер» не паспортный ключ"
         );
+    }
+
+    /// #212 F-1: служебные слова и каркасные разделители ВНУТРИ канона.
+    /// Первичка ревью #211: «серия 4508 номер 455561» и печати формы
+    /// («, »/« | »/перевод строки/« и »/двойной пробел) — FN-класс;
+    /// детектор обязан находить канон 4+6 за каркасом. Спан = от первой
+    /// цифры до последней (F-3: каркасные скобки на краях из спана
+    /// выпадают, внутренняя скобка маскируется вместе с разделителем).
+    #[test]
+    fn c0_passport_frame_forms_fire() {
+        for (text, want) in [
+            ("серия 4508 номер 455561", "4508 номер 455561"),
+            ("Серия 4508, 455561", "4508, 455561"),
+            ("Серия 4508 | 455561", "4508 | 455561"),
+            ("Серия 4508\n455561", "4508\n455561"),
+            ("Серия 4508 и 455561", "4508 и 455561"),
+            ("Серия 4508  455561", "4508  455561"),
+            ("СЕРИЯ 4508 НОМЕР 455561", "4508 НОМЕР 455561"),
+            ("Серия 4508 № 455561", "4508 № 455561"),
+            ("серия 4508 №455561", "4508 №455561"),
+            ("Серия 4508 (455561)", "4508 (455561"),
+            ("Серия (4508) 455561", "(4508) 455561"),
+            ("паспорт серия 4508 номер 455561", "4508 номер 455561"),
+        ] {
+            let hits = scan(text, &schema());
+            let p: Vec<&Hit> = hits
+                .iter()
+                .filter(|h| h.class.as_str() == "passport")
+                .collect();
+            assert_eq!(p.len(), 1, "каркасная форма {text:?}: {:?}", classes(&hits));
+            assert_eq!(&text[p[0].span.start..p[0].span.end], want, "спан {text:?}");
+            assert_eq!(p[0].score(), 1.0);
+        }
+    }
+
+    /// #212 F-1 FP-контракт: каркасные разрывы вне паспортной формы молчат
+    /// (перечисление полей, союз «и» в прозе, ключ не паспортный).
+    #[test]
+    fn c0_passport_frame_baits_silent() {
+        for text in [
+            "4508 455561",
+            "оплатить 4508 455561 до конца месяца",
+            "4508 серия 455561 указаны в двух полях формы.",
+            "ИНН 4508 номер 455561 не проходит проверку.",
+            "Серия 4508, 455561, 12.04.2015 — три поля формы.",
+            "Отчёт за квартал: 4508 | 455561 переслан в архив, дедлайн 2.",
+            "Платёж 4508 и 2015 прошёл эквайринг, чек отправлен на почту.",
+            "Регламент: заполните поле 4508 и приложение 455561 до пятницы.",
+            "номер 4508 455561 дела",
+            "паспорт выдан 4508.2015 года",
+        ] {
+            let hits = scan(text, &schema());
+            assert!(
+                hits.iter().all(|h| h.class.as_str() != "passport"),
+                "бэйт светит паспортом {text:?}: {:?}",
+                classes(&hits)
+            );
+        }
+    }
+
+    /// #212 F-2 (решение по первичке): правая рамка = хвост 3..=6 цифр
+    /// («паспорт 4508 455561 12/123», год, короткий номер) — чужое поле,
+    /// окно обрывается ДО хвоста: паспорт находится ЧИСТО (форма с датой
+    /// «15.04.2015» — дата разрывает цифровой прогон точками, окно канона
+    /// не доходит до неё: паспорт с ключом находится, хвост не трогается).
+    /// Первичка issue: эталон «паспорт 4508 455561 12/123» = паспорт +
+    /// поле «12/123»; каскад-0 находит ЧИСТЫЙ паспорт (хвост отсечён
+    /// рамкой), а не молчит и не тащит хвост в канон.
+    #[test]
+    fn c0_passport_right_frame_tail_cut() {
+        // Голые прогнyтые num-run-хвосты («4508 455561 2015») без каркаса —
+        // молчание: правая рамка F-2 живёт ВНУТРИ каркасных/ключевых окон,
+        // golый прогон не легитимизирован (#138 leading-frame + ключ).
+        let hits = scan("4508 455561 2015", &schema());
+        assert!(
+            hits.iter().all(|h| h.class.as_str() != "passport"),
+            "голый прогон с хвостом: {:?}",
+            classes(&hits)
+        );
+        // Каркасное окно с числовым хвостом: паспорт чистый, хвост вне спана.
+        let text = "серия 4508 номер 455561 2015";
+        let hits = scan(text, &schema());
+        let p: Vec<&Hit> = hits
+            .iter()
+            .filter(|h| h.class.as_str() == "passport")
+            .collect();
+        assert!(!p.is_empty(), "окно с хвостом: {:?}", classes(&hits));
+        assert_eq!(&text[p[0].span.start..p[0].span.end], "4508 номер 455561");
+        // Дата в хвосте (точки рвут прогон, #131): паспорт чистый.
+        let text = "серия 4508 номер 455561 выдан 15.04.2015";
+        let hits = scan(text, &schema());
+        let p: Vec<&Hit> = hits
+            .iter()
+            .filter(|h| h.class.as_str() == "passport")
+            .collect();
+        assert_eq!(p.len(), 1, "дата в хвосте: {:?}", classes(&hits));
+        assert_eq!(&text[p[0].span.start..p[0].span.end], "4508 номер 455561");
     }
 
     /// Ключ вне бюджета (84 символа слева) не светит: distant-проза с
