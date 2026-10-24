@@ -228,7 +228,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Молчание «файла нет» = правда; печатать несуществующий путь = ложь,
     // по которой оператор пойдёт править несуществующий файл.
     if let Some(path) = config_path.as_deref().filter(|_| loaded_file_used) {
-        println!("fasad: конфиг-файл {} (значения из файла)", path.display());
+        // Формат строки = контракт баннера (зубы wire_e2e #224): путь +
+        // список КЛЮЧЕЙ, приехавших из файла (без значений: секреты в
+        // файле запрещены, а ключи — диагностика «почему демон не такой»).
+        let keys = cfg
+            .file_keys
+            .as_ref()
+            .map_or_else(String::new, |ks| ks.join(","));
+        println!(
+            "fasad: конфиг-файл {} (значения из файла): FASAD_CONFIG={}",
+            path.display(),
+            keys
+        );
     }
 
     // Трей (#128 фаза 2, win/mac). Первичка docs крейта: на macOS иконка и меню

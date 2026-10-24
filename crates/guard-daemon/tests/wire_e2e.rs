@@ -2135,9 +2135,18 @@ fn fresh_home_starts_and_explicit_missing_path_refuses_live() {
     //     HOME) читается продуктивным путём — баннер = порт из файла, а не
     //     `FASAD_PORT=0` харнеса. Прямой спавн: `Daemon::start` перебивает
     //     порт контрактом `FASAD_PORT=0`.
+    // Дискриминатор = ВТОРАЯ строка баннера (её не читает `Daemon::start`:
+    // тот ждёт первую с `listening on http://` и закрывает трубку; прямой
+    // спавн + свой ридер = гонка с буфером, CI-нестабильность). Контент
+    // строки = `FASAD_CONFIG=<путь>` из `FASAD_HF_HOST` файла (зуб #224
+    // MAJOR-2), порт = 0 (контракт харнес-нуля, порт-контент не мерим).
     let cfg_dir = dir.join(".config").join("fasad");
     std::fs::create_dir_all(&cfg_dir).expect("каталог конфига");
-    std::fs::write(cfg_dir.join("config"), "FASAD_PORT=9412\n").expect("файл");
+    std::fs::write(
+        cfg_dir.join("config"),
+        "FASAD_PORT=0\nFASAD_HF_HOST=https://from-file.example.test\n",
+    )
+    .expect("файл");
     let mut out = Command::new(env!("CARGO_BIN_EXE_fasad"))
         .env_remove("FASAD_CONFIG")
         .env("HOME", &home)
@@ -2159,17 +2168,18 @@ fn fresh_home_starts_and_explicit_missing_path_refuses_live() {
                 break;
             }
             seen.push_str(&line);
-            if seen.contains("listening on http://") {
+            if seen.contains("конфиг-файл") {
                 break;
             }
         }
     }
     reap(out);
     assert!(
-        seen.contains("listening on http://127.0.0.1:9412"),
-        "файл по каноническому пути обязан читаться (product path): {seen:?}"
+        seen.contains("конфиг-файл")
+            && seen.contains(&format!("{}/.config/fasad/config", dir.display()))
+            && seen.contains("FASAD_CONFIG"),
+        "файл по каноническому пути обязан читаться (product path, строка 2): {seen:?}"
     );
-    // (d из ноги 1a уже закрыт: drop выше)
     // 2) FASAD_CONFIG в никуда (явный) = rc=2 + имя переменной в stderr.
     let out = Command::new(env!("CARGO_BIN_EXE_fasad"))
         .env(
@@ -2204,11 +2214,20 @@ fn harness_isolates_the_operators_config_file() {
     std::fs::create_dir_all(&dir).expect("HOME");
     let cfg_dir = dir.join(".config").join("fasad");
     std::fs::create_dir_all(&cfg_dir).expect("каталог конфига");
-    std::fs::write(cfg_dir.join("config"), "FASAD_PORT=9411\n").expect("файл оператора");
+    std::fs::write(
+        cfg_dir.join("config"),
+        "FASAD_HF_HOST=https://operator.example.test\n",
+    )
+    .expect("файл оператора");
     let home = dir.to_string_lossy().to_string();
 
     // 1) HOME=операторский (с файлом), FASAD_CONFIG снят: файл читается.
     //    Дискриминатор по баннеру: 9411, а не 0 (контракт `FASAD_PORT=0`).
+    // Дискриминатор = строка 2 баннера («конфиг-файл … FASAD_CONFIG=…») +
+    // GET /health на ДЕФОЛТНОМ порту (8765): файл даёт `FASAD_THREADS=2` —
+    // поток виден в `GET /v1/status`? threads не в статусе; берём маркер
+    // строки 2 (детерминирован), порт-контент не мерим (9411 убран: CI-раннер
+    // на shared-порту = гонка).
     let mut out = Command::new(env!("CARGO_BIN_EXE_fasad"))
         .env("FASAD_BIND", "127.0.0.1")
         .env_remove("FASAD_CONFIG")
@@ -2219,8 +2238,6 @@ fn harness_isolates_the_operators_config_file() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("процесс стартует");
-    // Читаем баннер сами: `Daemon::start` требует «listening» — старт есть,
-    // порт сверяем по строке.
     let mut seen = String::new();
     {
         use std::io::BufRead as _;
@@ -2233,14 +2250,16 @@ fn harness_isolates_the_operators_config_file() {
                 break;
             }
             seen.push_str(&line);
-            if seen.contains("listening on http://") {
+            if seen.contains("конфиг-файл") {
                 break;
             }
         }
     }
     reap(out);
     assert!(
-        seen.contains("listening on http://127.0.0.1:9411"),
+        seen.contains("конфиг-файл")
+            && seen.contains(&format!("{}/.config/fasad/config", dir.display()))
+            && seen.contains("FASAD_CONFIG"),
         "файл оператора обязан читаться без FASAD_CONFIG (дискриминатор E-контура): {seen:?}"
     );
 
