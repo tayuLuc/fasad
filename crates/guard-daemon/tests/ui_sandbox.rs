@@ -187,18 +187,37 @@ fn call(addr: &str, method: &str, path: &str, headers: &[(&str, &str)], body: &[
     req.push_str("\r\n");
     let mut bytes = req.into_bytes();
     bytes.extend_from_slice(body);
-    let mut sock = TcpStream::connect(addr).expect("сокет поднимается");
-    sock.set_read_timeout(Some(Duration::from_secs(15)))
-        .expect("таймаут ставится");
-    sock.write_all(&bytes).expect("запрос уходит");
-    sock.flush().expect("флуш");
-    // Windows-контра (CI #224): на `Connection: close` winsock иногда рвёт
-    // трубку после финального пакета (`10054 ConnectionReset`) — данные
-    // УЖЕ в буфере сокета, `read_to_end` их отдаёт вместе с ошибкой. На
-    // unix путь недостижим (reset = EOF). Ответ принят, если заголовок
-    // прочитан; честность тела = контент--length заголовка (ниже).
+    // Win-контра CI #224 (первичка job-лога): `Connection: close` =
+    // однократная связь; серия POST подряд (в решётке 8 ног) — следующий
+    // запрос попадает в RST-окно закрытия: write_all = EPIPE/ECONNRESET
+    // (unix) или ответ = RST без байт, `raw` пуст (winsock 10054; данные
+    // могут лежать в буфере — read_to_end отдаёт их с ошибкой). Оборот =
+    // reconnect ≤3 попытки, пауза 200 мс; после трёх пустых — panic (тест
+    // обязан видеть красное, а не молча глотать). НЕ сужать решётку: 8 ног
+    // = покрытие.
     let mut raw = Vec::new();
-    sock.read_to_end(&mut raw).unwrap_or_default();
+    for attempt in 0..3 {
+        raw.clear();
+        let mut sock = TcpStream::connect(addr).expect("сокет поднимается");
+        sock.set_read_timeout(Some(Duration::from_secs(15)))
+            .expect("таймаут ставится");
+        let written = sock.write_all(&bytes).and_then(|()| sock.flush());
+        if written.is_err() && attempt < 2 {
+            std::thread::sleep(Duration::from_millis(200));
+            continue; // сокет умер в RST-окне: переподключение
+        }
+        // write-успех без ответа / пустой ответ = то же RST-окно.
+        let _ = sock.read_to_end(&mut raw);
+        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+        assert!(
+            attempt < 2,
+            "ответ без заголовков за 3 попытки: raw={} байт",
+            raw.len()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")

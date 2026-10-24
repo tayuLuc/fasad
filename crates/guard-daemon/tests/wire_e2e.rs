@@ -243,8 +243,11 @@ fn call_raw(addr: &str, bytes: &[u8]) -> Reply {
         .expect("таймаут ставится");
     sock.write_all(bytes).expect("запрос уходит");
     sock.flush().expect("флуш");
+    // Win-контра (CI #224): `Connection: close` + 10054 после финального
+    // пакета — данные УЖЕ в буфере, read_to_end отдаёт их с ошибкой; на
+    // unix reset = EOF. Заголовок прочитан = ответ принят.
     let mut raw = Vec::new();
-    sock.read_to_end(&mut raw).expect("ответ читается до конца");
+    sock.read_to_end(&mut raw).unwrap_or_default();
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
