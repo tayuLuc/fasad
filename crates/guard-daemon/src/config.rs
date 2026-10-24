@@ -283,14 +283,59 @@ pub fn config_dir_from_appdata(appdata: Option<&str>) -> Option<std::path::PathB
 /// парсер, которого в дереве нет (формат = KV, см. [`parse_config_file`]).
 pub const CONFIG_FILE_NAME: &str = "config";
 
+/// Откуда взят путь файла конфигурации — семантика отсутствия файла РАЗНАЯ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigPathOrigin {
+    /// Путь назван оператором в `FASAD_CONFIG`: файла нет = **отказ старта**
+    /// ([`ConfigError::MissingExplicitPath`]) — опечатка в пути обязана быть
+    /// названа (#185-контур), а не съедена молча.
+    Explicit,
+    /// Путь резолвнут из канона (`%APPDATA%`/`XDG_CONFIG_HOME`/`HOME`):
+    /// файла нет = **дефолты** (у свежепоставленного пользователя файла нет,
+    /// и отказывать ему — ломать README §Файл конфигурации: регресс
+    /// fresh-install, ревью #224 блокер).
+    Resolved,
+}
+
+/// Файл конфигурации: путь + происхождение (`None` = искать негде).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigPath {
+    /// Сам путь.
+    pub path: std::path::PathBuf,
+    /// Явный (`FASAD_CONFIG`) или резолвнутый из канона.
+    pub origin: ConfigPathOrigin,
+}
+
+impl ConfigPath {
+    /// Путь, названный оператором в `FASAD_CONFIG` (файла нет = отказ).
+    #[must_use]
+    pub fn explicit(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            origin: ConfigPathOrigin::Explicit,
+        }
+    }
+
+    /// Путь, резолвнутый из канона (файла нет = дефолты).
+    #[must_use]
+    pub fn resolved(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            origin: ConfigPathOrigin::Resolved,
+        }
+    }
+}
+
 /// Путь файла конфигурации, который будет прочитан.
 ///
-/// Порядок: `FASAD_CONFIG` (явный = выигрывает всё) → win: `%APPDATA%\fasad`
-/// → unix/mac: `$XDG_CONFIG_HOME/fasad`, если XDG задан, иначе
-/// `$HOME/.config/fasad`. `None` = искать негде (ни явного пути, ни
-/// `HOME`/`APPDATA`/`XDG_CONFIG_HOME`) = «файла нет» = env + дефолты.
+/// Порядок: `FASAD_CONFIG` (явный = выигрывает всё; **пустой = unset**,
+/// первичка env-контра: пустое env = «оператор ничего не сказал», а не
+/// «путь-в-никуда») → win: `%APPDATA%\fasad` → unix/mac:
+/// `$XDG_CONFIG_HOME/fasad`, если XDG задан, иначе `$HOME/.config/fasad`.
+/// `None` = искать негде (ни явного пути, ни `HOME`/`APPDATA`/
+/// `XDG_CONFIG_HOME`) = «файла нет» = env + дефолты.
 #[must_use]
-pub fn config_file_path<L>(mut lookup: L) -> Option<std::path::PathBuf>
+pub fn config_file_path<L>(mut lookup: L) -> Option<ConfigPath>
 where
     L: FnMut(&'static str) -> Option<String>,
 {
@@ -299,7 +344,7 @@ where
 
 /// [`config_file_path`] с `FnMut` (зовётся и из env-цепочки, и из тестов).
 #[must_use]
-pub fn config_file_path_from<L>(lookup: &mut L) -> Option<std::path::PathBuf>
+pub fn config_file_path_from<L>(lookup: &mut L) -> Option<ConfigPath>
 where
     L: FnMut(&'static str) -> Option<String>,
 {
@@ -307,7 +352,7 @@ where
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
     {
-        return Some(std::path::PathBuf::from(explicit));
+        return Some(ConfigPath::explicit(std::path::PathBuf::from(explicit)));
     }
     let dir = if cfg!(windows) {
         config_dir_from_appdata(lookup("APPDATA").as_deref())
@@ -315,7 +360,7 @@ where
     } else {
         config_dir_from_env(&mut *lookup)
     };
-    dir.map(|d| d.join(CONFIG_FILE_NAME))
+    dir.map(|d| ConfigPath::resolved(d.join(CONFIG_FILE_NAME)))
 }
 
 /// Одна строка файла конфигурации, уже разобранная.
@@ -713,6 +758,12 @@ pub struct Config {
     /// `GET /v1/config`. `None` = конфигурация собрана без файла (харнеси,
     /// env-граница) — тогда «файл» как источник не заявляется.
     pub file_keys: Option<Vec<&'static str>>,
+    /// Значения файла (ключ → значение) для потребителей ВНЕ полей `Config`
+    /// (ревью #224 MAJOR-2: `FASAD_HF_HOST` живёт в `FetchConfig`, и витрина
+    /// с fetch обязаны видеть файловое значение, иначе key в белом списке =
+    /// мёртвый груз: GET врёт source, fetch потребляет env). `None` = конфиг
+    /// собран без файла (харнеси/env-граница).
+    pub file_values: Option<std::collections::BTreeMap<&'static str, String>>,
     /// Разрешить `http://` к loopback-upstream (`FASAD_PROXY_LOOPBACK_HTTP`).
     /// Исключительно тестовая аффорданс: TLS-терминация на тестовом эхо-сервере означал бы либо самоподписанные сертификаты в тесте, либо отказ
     /// тестировать прокси вовсе. Даже включённый флаг не выпускает трафик за
@@ -780,6 +831,15 @@ pub enum ConfigError {
         /// Причина запрета (первичка инварианта, см. `forbidden_file_key_reason`).
         reason: &'static str,
     },
+    /// Значение ключа отвергнуто его собственным валидатором (`POST
+    /// /v1/config` #224: текст = первичка причины, а не шаблон «не число»:
+    /// `FASAD_PORT` называет диапазон, `FASAD_HF_HOST` — класс отказа fetch-парсера).
+    BadValue {
+        /// Имя переменной (env-канон).
+        var: &'static str,
+        /// Причина (готовый человекочитаемый текст).
+        reason: String,
+    },
     /// Явный `FASAD_CONFIG` указывает на несуществующий файл. Отказ, а не
     /// дефолты: опечатка в пути = «демон работает не так, как просили», и
     /// молчать об этом нельзя (#185-контур).
@@ -840,10 +900,16 @@ impl fmt::Display for ConfigError {
                 )
             }
             Self::MissingExplicitPath { path, reason } => {
+                // Одна строка без переносов: док-формат `\` склеивал текст с
+                // простынёю литеральных пробелов (ревью #224 MINOR), а
+                // оператор читает именно эту строку.
                 write!(
                     f,
-                    "FASAD_CONFIG указывает на {path:?}, а файла нет ({reason}):                      опечатка в пути, а не «конфига нет»"
+                    "FASAD_CONFIG указывает на {path:?}, а файла нет ({reason}): опечатка в пути, а не «конфига нет»"
                 )
+            }
+            Self::BadValue { var, reason } => {
+                write!(f, "{var}: {reason}")
             }
             Self::FileUnreadable { path, reason } => {
                 write!(f, "файл конфигурации {path:?} не читается: {reason}")
@@ -1004,41 +1070,51 @@ impl Config {
     /// Любой [`ConfigError`]: `FASAD_CONFIG` указывает в никуда, файл битый,
     /// в файле запрещённый ключ, либо то, чем отказывает env-контур.
     pub fn load_config() -> Result<LoadedConfig, ConfigError> {
-        let path = config_file_path(|k| std::env::var(k).ok());
-        Self::load_config_at(path.as_deref())
+        let found = config_file_path(|k| std::env::var(k).ok());
+        Self::load_config_at(found.as_ref())
     }
 
-    /// [`Self::load_config`] с уже названным путём (путь — аргумент, не поиск:
-    /// `main` и тесты зовут одну функцию).
+    /// [`Self::load_config`] с уже названным путём и его происхождением
+    /// (путь — аргумент, не поиск: `main` и тесты зовут одну функцию).
     ///
-    /// Файла нет по **дефолтному** пути = дефолты (у свежепоставленного
-    /// пользователя файла нет). Файла нет по **явному** `FASAD_CONFIG` = отказ
-    /// ([`ConfigError::MissingExplicitPath`]): опечатка в пути обязана быть
-    /// названа, а не съедена молча (fail-closed, AGENTS).
+    /// Семантика отсутствия файла РАЗНАЯ по происхождению пути (ревью #224
+    /// блокер: неразличение = «свежая установка не стартует»):
+    ///
+    /// - [`ConfigPathOrigin::Resolved`] (путь из `HOME`/`XDG`/`APPDATA`):
+    ///   файла нет = **дефолты** — у свежепоставленного пользователя файла
+    ///   нет, отказывать ему = ломать README §Файл конфигурации;
+    /// - [`ConfigPathOrigin::Explicit`] (путь из `FASAD_CONFIG`): файла нет =
+    ///   [`ConfigError::MissingExplicitPath`] — опечатка в пути обязана быть
+    ///   названа, а не съедена молча (fail-closed, #185-контур).
     ///
     /// # Errors
     ///
     /// См. [`Self::load_config`].
-    pub fn load_config_at(path: Option<&std::path::Path>) -> Result<LoadedConfig, ConfigError> {
-        let file = match path {
+    pub fn load_config_at(found: Option<&ConfigPath>) -> Result<LoadedConfig, ConfigError> {
+        let file = match found {
             None => FileConfig::default(),
-            Some(p) => match std::fs::read_to_string(p) {
+            Some(found) => match std::fs::read_to_string(&found.path) {
                 Ok(text) => parse_config_file(&text)?,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(ConfigError::MissingExplicitPath {
-                        path: p.display().to_string(),
-                        reason: e.to_string(),
-                    });
+                    if found.origin == ConfigPathOrigin::Resolved {
+                        // Канонический путь, файла нет = дефолты (fresh-install).
+                        FileConfig::default()
+                    } else {
+                        return Err(ConfigError::MissingExplicitPath {
+                            path: found.path.display().to_string(),
+                            reason: e.to_string(),
+                        });
+                    }
                 }
                 Err(e) => {
                     return Err(ConfigError::FileUnreadable {
-                        path: p.display().to_string(),
+                        path: found.path.display().to_string(),
                         reason: e.to_string(),
                     });
                 }
             },
         };
-        Self::from_file_aware(&file, path)
+        Self::from_file_aware(&file, found.map(|f| f.path.as_path()))
     }
 
     /// Цепочка env > файл > дефолт поверх уже разобранного файла.
@@ -1056,18 +1132,36 @@ impl Config {
         file: &FileConfig,
         path: Option<&std::path::Path>,
     ) -> Result<LoadedConfig, ConfigError> {
-        let cfg = Self::from_file_aware_with(|k| match std::env::var(k) {
-            Ok(v) if !v.trim().is_empty() => Some(v),
+        Self::from_file_aware_with_lookup(file, |k| std::env::var(k).ok(), path.map(PathBuf::from))
+    }
+
+    /// Тело [`Self::from_file_aware`] с инжектируемым env-слоем (зуб
+    /// `fresh_install_without_config_file_loads_defaults` прогоняет
+    /// продуктивную цепочку без среды процесса).
+    ///
+    /// # Errors
+    ///
+    /// См. [`Self::from_lookup`].
+    fn from_file_aware_with_lookup<L>(
+        file: &FileConfig,
+        mut env: L,
+        path: Option<PathBuf>,
+    ) -> Result<LoadedConfig, ConfigError>
+    where
+        L: FnMut(&'static str) -> Option<String>,
+    {
+        let cfg = Self::from_file_aware_with(|k| match env(k) {
+            Some(v) if !v.trim().is_empty() => Some(v),
             _ => file.value_of(k).map(str::to_owned),
         })?
-        .with_file_origin(file.keys());
+        .with_file_origin(file);
         Ok(LoadedConfig {
             config: cfg,
             // Путь возвращается ВСЕГДА, когда он назван (даже пустого файла):
             // POST /v1/config пишет в ТОТ ЖЕ файл, который искали на старте;
             // «файла нет» ≠ «пути нет» (свежепоставленный пользователь = путь
             // есть, файла ещё нет, и писать куда — известно).
-            path: path.map(PathBuf::from),
+            path,
             warnings: file.warnings.clone(),
             file_used: !file.is_empty(),
         })
@@ -1096,6 +1190,48 @@ impl Config {
                 // и молча простить им пустоту = ослабить существующий контракт.
                 .filter(|v| !v.is_empty())
         })
+    }
+
+    /// Продуктивная граница с инжектируемым env-lookup: ровно то, что зовёт
+    /// `main` ([`Self::load_config`]), но lookup = аргумент (среда процесса
+    /// не трогается: `set_var` в edition 2024 = unsafe + гонка тестов).
+    ///
+    /// Путь резолвится ВНУТРИ функции (из того же lookup), поэтому зуб
+    /// `fresh_install_without_config_file_loads_defaults` мерит именно
+    /// продуктовый код, а не модель границы.
+    ///
+    /// # Errors
+    ///
+    /// См. [`Self::load_config`].
+    pub fn load_config_from_env<L>(lookup: &mut L) -> Result<LoadedConfig, ConfigError>
+    where
+        L: FnMut(&'static str) -> Option<String>,
+    {
+        let found = config_file_path_from(lookup);
+        let file = match found.as_ref() {
+            None => FileConfig::default(),
+            Some(found) => match std::fs::read_to_string(&found.path) {
+                Ok(text) => parse_config_file(&text)?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    if found.origin == ConfigPathOrigin::Resolved {
+                        FileConfig::default()
+                    } else {
+                        return Err(ConfigError::MissingExplicitPath {
+                            path: found.path.display().to_string(),
+                            reason: e.to_string(),
+                        });
+                    }
+                }
+                Err(e) => {
+                    return Err(ConfigError::FileUnreadable {
+                        path: found.path.display().to_string(),
+                        reason: e.to_string(),
+                    });
+                }
+            },
+        };
+        let path = found.map(|f| f.path);
+        Self::from_file_aware_with_lookup(&file, lookup, path)
     }
 
     /// Чистая часть цепочки (контракт для тестов): источник значений
@@ -1194,13 +1330,21 @@ impl Config {
             // чистый lookup (харнеси) = None, «источник = файл» он заявлять не
             // обязан и не может.
             file_keys: None,
+            file_values: None,
         })
     }
 
-    /// Запомнить, какие ключи дал файл (нужно для [`Self::source_of`]).
+    /// Запомнить, какие ключи и значения дал файл (нужно для
+    /// [`Self::source_of`] и file-aware потребителей вне полей `Config`).
     #[must_use]
-    pub fn with_file_origin(mut self, keys: Vec<&'static str>) -> Self {
-        self.file_keys = Some(keys);
+    pub fn with_file_origin(mut self, file: &FileConfig) -> Self {
+        self.file_keys = Some(file.keys());
+        self.file_values = Some(
+            file.entries
+                .iter()
+                .map(|e| (e.key, e.value.clone()))
+                .collect(),
+        );
         self
     }
 
@@ -1269,10 +1413,12 @@ impl Config {
                 .schema_path
                 .as_ref()
                 .map_or_else(String::new, |p| p.display().to_string()),
-            // Ключей, не перечисленных выше, в реестре нет; `FASAD_HF_HOST`
-            // живёт вне `Config` (собирает его `fetch`, #192): здесь его
-            // значения нет, выдумывать = вторая правда. `http.rs` подменяет
-            // пустую строку значением из `FetchConfig::host_display`.
+            // `FASAD_HF_HOST` живёт вне полей `Config` (собирает его
+            // `FetchConfig`, #192; file-aware с #224 MAJOR-2): canonical
+            // значение = канонический дефолт, `http.rs` перекрывает его
+            // реальным `FetchConfig::host_display` — одной правдой.
+            "FASAD_HF_HOST" => crate::weights::DEFAULT_HF_HOST.to_owned(),
+            // Ключей, не перечисленных выше, в реестре нет.
             _ => String::new(),
         }
     }
@@ -1285,7 +1431,17 @@ impl Config {
     /// про то, чем демон крутится).
     #[must_use]
     pub fn source_of(&self, key: &'static str) -> ValueSource {
-        if std::env::var(key).is_ok_and(|v| !v.trim().is_empty()) {
+        self.source_of_with(key, &mut |k| std::env::var(k).ok())
+    }
+
+    /// [`Self::source_of`] с инжектируемым env (тесты приоритета не трогают
+    /// среду процесса).
+    #[must_use]
+    pub fn source_of_with<L>(&self, key: &'static str, env: &mut L) -> ValueSource
+    where
+        L: FnMut(&'static str) -> Option<String>,
+    {
+        if env(key).is_some_and(|v| !v.trim().is_empty()) {
             return ValueSource::Env;
         }
         if self
@@ -1296,6 +1452,53 @@ impl Config {
             return ValueSource::File;
         }
         ValueSource::Default
+    }
+
+    /// Значение ключа из файла конфигурации (`None` = файла нет / ключа нет).
+    /// Пустое значение = пустая строка: решение «пусто = не источник»
+    /// принимает вызывающий (тот же контракт, что у цепочки).
+    #[must_use]
+    pub fn file_value(&self, key: &'static str) -> Option<&str> {
+        self.file_values
+            .as_ref()
+            .and_then(|m| m.get(key))
+            .map(String::as_str)
+    }
+
+    /// Значение булева env-флага для потребителей ВНЕ цепочки `Config`
+    /// (ревью #224 MAJOR-2: валидатор `FASAD_HF_HOST` обязан знать про
+    /// loopback-аффорданс, а лезть в `std::env::var` из `fetch` = вторая
+    /// правда об источнике; источник один: env (непустой) > файл > дефолт,
+    /// та же нормализация, что у цепочки загрузки).
+    ///
+    /// Разбор грамматики = [`bool_or`] (тот же, что у env-контура).
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::BadBool`] — значение не разобрано (на этом пути оно
+    /// уже прошло полный `from_lookup` на старте, отказ здесь = сигнал о
+    /// расхождении контуров, не рабочий сценарий).
+    pub fn bool_flag(&self, key: &'static str, default: bool) -> Result<bool, ConfigError> {
+        let value = self.string_value(key).ok_or(ConfigError::BadBool {
+            var: key,
+            value: "<нет значения>".to_owned(),
+        })?;
+        bool_or(&mut move |_| Some(value.clone()), key, default)
+    }
+
+    /// Эффективное строковое значение ключа: env (непустой) > файл > `None`.
+    /// Для потребителей, чьё поле живёт вне `Config` (`FASAD_HF_HOST` →
+    /// `FetchConfig`, #224).
+    #[must_use]
+    pub fn string_value(&self, key: &'static str) -> Option<String> {
+        match std::env::var(key) {
+            Ok(v) if !v.trim().is_empty() => Some(v),
+            _ => self
+                .file_value(key)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned),
+        }
     }
 
     /// Разрешает ли конфигурация `http://` к upstream (только loopback-адреса).
@@ -1503,8 +1706,12 @@ where
 /// 4. **Каталог создаётся** (`create_dir_all`): UI-первый запуск не имеет
 ///    права требовать от оператора `mkdir`.
 ///
-/// Формат записи = канон: ключ env-канона, `KEY=значение`, CRLF нигде,
-/// комментарии существующих строк сохраняются (перезапись построчно).
+/// Формат записи = канон: ключ env-канона, `KEY=значение`, комментарии
+/// существующих строк сохраняются (перезапись построчно). CRLF: парсер
+/// читает оба (`trim_end` `\r`), запись пишет канонический LF (решение #224
+/// MINOR, названо намеренно: mixed EOL в одном файле = сюрприз для правки
+/// руками, а перевод всех строк в CRLF под win-редактор не стоит того:
+/// читатель = наш парсер, он не чувствителен).
 ///
 /// # Errors
 ///
@@ -1515,13 +1722,14 @@ pub fn write_config_value(
     path: &std::path::Path,
     key: &str,
     value: &str,
+    effective: &Config,
 ) -> Result<(), ConfigError> {
     let Some(canonical) = allowed_key(key) else {
         return Err(ConfigError::FileKeyForbidden {
             key: key.to_owned(),
             line: 0,
             reason: "ключа нет в белом списке конфигурации (он не читается \
-                     демонром из файла — записывать его бессмысленно; список — \
+                     демоном из файла — записывать его бессмысленно; список — \
                      README §Файл конфигурации)",
         });
     };
@@ -1536,7 +1744,13 @@ pub fn write_config_value(
     // разрыв контракта, а 422 с текстом валидатора = «исправь поле».
     // Инвариант порогов мерится против ЭФФЕКТИВНЫХ значений (вызывающий
     // знает их: он держит живой `Config`).
-    validate_value(canonical, value, &Thresholds::default_working())?;
+    let value = value.trim();
+    validate_value(
+        canonical,
+        value,
+        &effective.thresholds,
+        effective.proxy_loopback_http,
+    )?;
     let existing = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -1586,7 +1800,14 @@ fn write_atomic(path: &std::path::Path, text: &str) -> Result<(), ConfigError> {
             reason: format!("создать каталог: {e}"),
         })?;
     }
-    let tmp = path.with_extension("config.part");
+    // Имя = `config.part` (файл конфигурации без расширения: `with_extension`
+    // на нём молча переписал бы имя, зуб #224 MINOR мерит факт `.part`-имени
+    // через суффикс file-name, как `fetch.rs:369` мерит его на named-файлах).
+    let tmp = path.with_file_name(format!(
+        "{}.part",
+        path.file_name()
+            .map_or("config", |n| n.to_str().unwrap_or("config"))
+    ));
     std::fs::write(&tmp, text).map_err(|e| ConfigError::FileUnreadable {
         path: tmp.display().to_string(),
         reason: format!("записать .part: {e}"),
@@ -1624,6 +1845,7 @@ pub fn validate_value(
     key: &'static str,
     raw: &str,
     effective: &Thresholds,
+    proxy_loopback_http: bool,
 ) -> Result<(), ConfigError> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -1652,6 +1874,43 @@ pub fn validate_value(
     // такое «рассогласование», см. док `Thresholds::is_sane`).
     if is_threshold_key(key) {
         return Ok(());
+    }
+    // PORT = ЯВНЫЙ парсер, без тихого фолбэка `port_from_value` (ревью #224
+    // MAJOR-1): env-контур прощает `FASAD_PORT=abc` (эргономика запуска,
+    // задокументирована в заголовке модуля), а запись через UI прощать не
+    // вправе: 200 + фолбэк на 8765 = «UI принял, демон слушает не то» —
+    // двойная ложь (значение в GET и реальность). Диапазон привилегированных
+    // портов (1..1023) = 422 текстом: bind дал бы `PermissionDenied` rc=1 без
+    // внятного объяснения (#224 MINOR); root-сценарий = env, не UI-файл.
+    if key == "FASAD_PORT" {
+        let port = raw
+            .parse::<u16>()
+            .ok()
+            .filter(|p| (1024..=65535).contains(p))
+            .ok_or_else(|| ConfigError::BadValue {
+                var: "FASAD_PORT",
+                reason:
+                    "нужен порт 1024..=65535 (ниже 1024 — привилегированные, bind требует root)"
+                        .to_owned(),
+            })?;
+        let _ = port;
+        return Ok(());
+    }
+    // HF_HOST = тот же парсер, что у живого fetch-контура (ревью #224
+    // MAJOR-2): он НЕ поле `Config`, и прогонять его через `from_lookup`
+    // бессмысленно (ключ туда не входит).
+    if key == "FASAD_HF_HOST" {
+        // Аффорданс loopback-http = ЭФФЕКТИВНЫЙ флаг контура (env > файл):
+        // вызывающий (`POST /v1/config`) держит живой `Config` и передаёт его.
+        return crate::fetch::FetchConfig::validate_host(raw, proxy_loopback_http).map_err(|e| {
+            // Класс отказа fetch'а переносится текстом: POST отдаёт 422 с
+            // той же формулировкой, что дала бы загрузка (единая первичка
+            // причины).
+            ConfigError::BadValue {
+                var: "FASAD_HF_HOST",
+                reason: e.display_safe(),
+            }
+        });
     }
     Config::from_lookup(given).map(|_| ())
 }
@@ -2026,7 +2285,27 @@ mod tests {
             "HOME" => Some("/home/op".to_owned()),
             _ => None,
         });
-        assert_eq!(explicit.unwrap().to_string_lossy(), "/tmp/mine");
+        let explicit = explicit.expect("явный путь");
+        assert_eq!(explicit.path.to_string_lossy(), "/tmp/mine");
+        assert_eq!(explicit.origin, ConfigPathOrigin::Explicit);
+        // Пустой `FASAD_CONFIG` = UNSET (первичка env-контра: пустое env =
+        // «оператор ничего не сказал», не «путь-в-никуда»): резолвим канон.
+        let empty = config_file_path_from(&mut |k| match k {
+            "FASAD_CONFIG" => Some("   ".to_owned()),
+            "HOME" => Some("/home/op".to_owned()),
+            _ => None,
+        })
+        .expect("пустой FASAD_CONFIG = канон-резолв, не отказ");
+        assert_eq!(empty.origin, ConfigPathOrigin::Resolved);
+        assert_eq!(
+            empty.path,
+            config_dir_from_env(&mut |k| match k {
+                "HOME" => Some("/home/op".to_owned()),
+                _ => None,
+            })
+            .expect("дом есть")
+            .join(CONFIG_FILE_NAME)
+        );
 
         // XDG задан = сам XDG = каталог конфигурации (без .config).
         let p = config_file_path_from(&mut |k| match k {
@@ -2036,11 +2315,12 @@ mod tests {
         })
         .expect("XDG даёт путь");
         assert_eq!(
-            p,
+            p.path,
             std::path::Path::new("/xdg")
                 .join("fasad")
                 .join(CONFIG_FILE_NAME)
         );
+        assert_eq!(p.origin, ConfigPathOrigin::Resolved);
 
         // Дефолт = $HOME/.config/fasad/config (НЕ ~/Library/Preferences на mac).
         let p = config_file_path_from(&mut |k| match k {
@@ -2049,7 +2329,7 @@ mod tests {
         })
         .expect("HOME даёт путь");
         assert_eq!(
-            p,
+            p.path,
             std::path::Path::new("/home/op")
                 .join(".config")
                 .join("fasad")
@@ -2071,16 +2351,95 @@ mod tests {
     /// отсутствие файла не касается.
     #[test]
     fn explicit_missing_path_refuses_absent_default_does_not() {
-        let missing = std::path::Path::new("/nonexistent-fasad-config-219/config");
-        let err = Config::load_config_at(Some(missing)).expect_err("явный путь = отказ");
+        let missing = ConfigPath {
+            path: std::path::Path::new("/nonexistent-fasad-config-219/config").to_owned(),
+            origin: ConfigPathOrigin::Explicit,
+        };
+        let err = Config::load_config_at(Some(&missing)).expect_err("явный путь = отказ");
         assert!(
             matches!(err, ConfigError::MissingExplicitPath { .. }),
             "{err:?}"
         );
         assert!(err.to_string().contains("FASAD_CONFIG"), "{err}");
-        let loaded = Config::load_config_at(None).expect("без файла = дефолты");
+        // Тот ПУТЬ, помеченный Resolved (канон-резолв), = дефолты: ровно та
+        // ветка, на которой fresh-install краснел ревью-блокером #224.
+        let resolved = ConfigPath {
+            path: missing.path.clone(),
+            origin: ConfigPathOrigin::Resolved,
+        };
+        let loaded = Config::load_config_at(Some(&resolved)).expect("резолвнутый = дефолты");
         assert!(!loaded.file_used);
         assert_eq!(loaded.config.addr.port(), DEFAULT_PORT);
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        let loaded = Config::load_config_at(None).expect("без пути = дефолты");
+        assert!(!loaded.file_used);
+    }
+
+    /// ЗУБ БЛОКЕРА #224 (регресс fresh-install): продуктивная граница
+    /// `Config::load_config()` на машине БЕЗ файла конфигурации обязана
+    /// стартовать дефолтами, а не отказывать «`FASAD_CONFIG` указывает…».
+    ///
+    /// (Док-текст в бэктиках: `clippy::doc_markdown` красит голые ALL_CAPS-имена.)
+    ///
+    /// Моделируется процесс-окружение: игла `Config::load_config_from_env`
+    /// (= то, что вызывает `main`, только lookup инжектится). Ключевое:
+    /// путь резолвится ЗДЕСЬ, внутри функции, а не передаётся готовым — зуб
+    /// ловит именно путаницу `Some(resolved)` → `NotFound` → отказ, а не её
+    /// модель. env-контур при lookup="нет ничего" = дефолты (харнес-семантика
+    /// `from_lookup(|_| None)`, без HOME-подстановок).
+    #[test]
+    fn fresh_install_without_config_file_loads_defaults() {
+        // 1) ни FASAD_CONFIG, ни HOME/XDG: искать негде = дефолты.
+        let loaded = Config::load_config_from_env(&mut |_| None).expect("чистая среда = дефолты");
+        assert!(!loaded.file_used);
+        assert_eq!(loaded.config.addr.port(), DEFAULT_PORT);
+
+        // 2) HOME = tempdir БЕЗ файла (свежая установка): резолв даёт путь,
+        //    файла нет = дефолты, НЕ отказ. Это и был блокер.
+        let dir = std::env::temp_dir().join(format!("fasad-fresh-224-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("каталог HOME");
+        let home = dir.to_string_lossy().to_string();
+        let loaded = Config::load_config_from_env(&mut |k| match k {
+            "HOME" => Some(home.clone()),
+            _ => None,
+        })
+        .expect("свежая установка без файла стартует дефолтами");
+        assert!(!loaded.file_used, "файла нет — источника нет");
+        assert_eq!(loaded.config.addr.port(), DEFAULT_PORT);
+        // Путь в ответе есть (UI «куда писать» обязан его знать).
+        assert!(loaded.path.is_some(), "резолвнутый путь обязан вернуться");
+
+        // 3) HOME = tempdir С валидным файлом по каноническому пути: значения
+        //    применяются, source = file (продуктивный путь fresh-install
+        //    после «сохрани через UI, перезапусти»).
+        let cfgdir = dir.join(".config").join("fasad");
+        std::fs::create_dir_all(&cfgdir).expect("каталог конфига");
+        std::fs::write(cfgdir.join(CONFIG_FILE_NAME), "FASAD_PORT=9316\n").expect("файл");
+        let home = dir.to_string_lossy().to_string();
+        let loaded = Config::load_config_from_env(&mut |k| match k {
+            "HOME" => Some(home.clone()),
+            _ => None,
+        })
+        .expect("файл по каноническому пути читается");
+        assert!(loaded.file_used);
+        assert_eq!(loaded.config.addr.port(), 9316);
+        assert_eq!(loaded.config.source_of("FASAD_PORT"), ValueSource::File);
+
+        // 4) явный FASAD_CONFIG в никуда = ОТКАЗ (контраст с ногой 2:
+        //    различает происхождение пути, а не факт отсутствия файла).
+        let err = Config::load_config_from_env(&mut |k| match k {
+            "FASAD_CONFIG" => Some(format!(
+                "/nonexistent-fasad-224-{}/config",
+                std::process::id()
+            )),
+            _ => None,
+        })
+        .expect_err("явный путь в никуда = отказ");
+        assert!(
+            matches!(err, ConfigError::MissingExplicitPath { .. }),
+            "{err:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Живой файл через tempdir (игла HOME/APPDATA = tempdir, не каталог
@@ -2091,7 +2450,11 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("каталог");
         let path = dir.join(CONFIG_FILE_NAME);
         std::fs::write(&path, "FASAD_PORT=9311\nFASAD_CHEZ_BUDUSCHEE=x\n").expect("запись");
-        let loaded = Config::load_config_at(Some(&path)).expect("читается");
+        let found = ConfigPath {
+            path: path.clone(),
+            origin: ConfigPathOrigin::Explicit,
+        };
+        let loaded = Config::load_config_at(Some(&found)).expect("читается");
         assert!(loaded.file_used);
         assert_eq!(loaded.config.addr.port(), 9311);
         assert_eq!(loaded.warnings.len(), 1);
@@ -2114,7 +2477,13 @@ mod tests {
     /// и ни один секрет/бинд в реестре не сидит.
     #[test]
     fn registry_is_env_canon_and_carries_no_secrets() {
-        assert!(FILE_ALLOWED_KEYS.len() >= 15, "реестр не должен худеть");
+        // #224 MINOR: контракт = ТОЧНОЕ число (16), а не «>= 15»: реестр —
+        // публичный контракт UI/README, молчаливое расхождение = ложь таблицы.
+        assert_eq!(
+            FILE_ALLOWED_KEYS.len(),
+            16,
+            "реестр ключей изменился: синхронизируй README §Файл конфигурации, docs/release.md §Запуск и CFG_NUMERIC в ui/app.js"
+        );
         for k in FILE_ALLOWED_KEYS {
             assert!(k.key.starts_with("FASAD_"), "{}", k.key);
             assert!(
@@ -2152,12 +2521,15 @@ mod tests {
     /// комментариев, схлопывание дубликата, отказ секрету и мусорному значению.
     #[test]
     fn write_config_value_writes_atomically_and_validates() {
+        fn base_cfg() -> Config {
+            Config::from_lookup(|_| None).expect("дефолты")
+        }
         let dir = std::env::temp_dir().join(format!("fasad-cfg-write-219-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("каталог");
         let path = dir.join(CONFIG_FILE_NAME);
         std::fs::write(&path, "# мой конфиг\nFASAD_PORT=9311\n").expect("база");
-        write_config_value(&path, "FASAD_THREADS", "3").expect("запись");
-        write_config_value(&path, "FASAD_PORT", "9400").expect("перезапись");
+        write_config_value(&path, "FASAD_THREADS", "3", &base_cfg()).expect("запись");
+        write_config_value(&path, "FASAD_PORT", "9400", &base_cfg()).expect("перезапись");
         let text = std::fs::read_to_string(&path).expect("файл");
         assert!(
             text.contains("# мой конфиг"),
@@ -2175,12 +2547,12 @@ mod tests {
             ".part обязан исчезнуть после rename"
         );
         // Мусорное значение = отказ ДО записи (файл не испорчен).
-        assert!(write_config_value(&path, "FASAD_THREADS", "abc").is_err());
+        assert!(write_config_value(&path, "FASAD_THREADS", "abc", &base_cfg()).is_err());
         let after = std::fs::read_to_string(&path).expect("файл жив");
         assert_eq!(after, text, "отказ не трогает файл");
         // Секрет = отказ; ключ вне списка = отказ.
-        assert!(write_config_value(&path, "FASAD_VAULT_KEY", "aa").is_err());
-        assert!(write_config_value(&path, "FASAD_BUDUSCHEE", "1").is_err());
+        assert!(write_config_value(&path, "FASAD_VAULT_KEY", "aa", &base_cfg()).is_err());
+        assert!(write_config_value(&path, "FASAD_BUDUSCHEE", "1", &base_cfg()).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2193,11 +2565,11 @@ mod tests {
         // поэтому gray_hi = 0.9 ЛОМАЕТ инвариант `gray_hi ≤ tau_high` —
         // отказ здесь и есть правильный (зуб «инвариант красен» ниже).
         assert!(matches!(
-            validate_value("FASAD_GRAY_HI", "0.9", &sane).expect_err("gray_hi > tau_high"),
+            validate_value("FASAD_GRAY_HI", "0.9", &sane, false).expect_err("gray_hi > tau_high"),
             ConfigError::ThresholdsInsane(_)
         ));
         // Согласованная пара (gray_hi 0.75 ≤ tau_high 0.80) проходит.
-        assert!(validate_value("FASAD_GRAY_HI", "0.75", &sane).is_ok());
+        assert!(validate_value("FASAD_GRAY_HI", "0.75", &sane, false).is_ok());
         // gray_lo поднят выше будущего gray_hi: инвариант `lo < hi` краснеет.
         // Пороги подняты ПАРОЙ согласованно (τ_high = 0.95), иначе красным
         // окажется уже инвариант `gray_hi ≤ tau_high`, а не проверяемый.
@@ -2206,23 +2578,118 @@ mod tests {
             tau_high: 0.95,
             ..Thresholds::default_working()
         };
-        let err = validate_value("FASAD_GRAY_HI", "0.5", &raised).expect_err("инвариант красен");
+        let err =
+            validate_value("FASAD_GRAY_HI", "0.5", &raised, false).expect_err("инвариант красен");
         assert!(matches!(err, ConfigError::ThresholdsInsane(_)), "{err:?}");
         // syntax = тот же валидатор, что env.
         assert!(matches!(
-            validate_value("FASAD_TIMEOUT_MS", "abc", &sane).expect_err("не число"),
+            validate_value("FASAD_TIMEOUT_MS", "abc", &sane, false).expect_err("не число"),
             ConfigError::BadNumber { .. }
         ));
         assert!(matches!(
-            validate_value("FASAD_VAULT_MODE", "17", &sane).expect_err("режима нет"),
+            validate_value("FASAD_VAULT_MODE", "17", &sane, false).expect_err("режима нет"),
             ConfigError::VaultModeUnknown(_)
         ));
         assert!(matches!(
-            validate_value("FASAD_UPSTREAM_ALLOWLIST", "http://evil/", &sane)
+            validate_value("FASAD_UPSTREAM_ALLOWLIST", "http://evil/", &sane, false)
                 .expect_err("URL не авторити"),
             ConfigError::BadAllowlist { .. }
         ));
         // Снятие override = легально для любого ключа.
-        assert!(validate_value("FASAD_PORT", "", &sane).is_ok());
+        assert!(validate_value("FASAD_PORT", "", &sane, false).is_ok());
+    }
+
+    /// #224 MAJOR-1: POST-валидатор PORT = явный парсер, тихого фолбэка
+    /// `port_from_value` (эргономика env-запуска) в контуре записи НЕТ:
+    /// 200 + фолбэк = «UI принял, демон слушает не то».
+    #[test]
+    fn validate_port_has_no_silent_fallback() {
+        let sane = Thresholds::default_working();
+        for bad in ["abc", "0", "-1", "65536", "99999", "1", "1023", "8.5", ""] {
+            // "" = снятие override (легально), проверяется отдельно ниже.
+            if bad.is_empty() {
+                assert!(validate_value("FASAD_PORT", bad, &sane, false).is_ok());
+                continue;
+            }
+            let err = validate_value("FASAD_PORT", bad, &sane, false)
+                .expect_err("мусорный/привилегированный порт = отказ ДО записи");
+            assert!(
+                matches!(
+                    err,
+                    ConfigError::BadValue {
+                        var: "FASAD_PORT",
+                        ..
+                    }
+                ),
+                "{bad}: {err:?}"
+            );
+            assert!(
+                err.to_string().contains("1024"),
+                "текст обязан назвать диапазон: {err}"
+            );
+        }
+        assert!(validate_value("FASAD_PORT", "1024", &sane, false).is_ok());
+        assert!(validate_value("FASAD_PORT", "65535", &sane, false).is_ok());
+        assert!(
+            validate_value("FASAD_PORT", " 9311 ", &sane, false).is_ok(),
+            "trim"
+        );
+    }
+
+    /// #224 MAJOR-2: `FASAD_HF_HOST` валидируется ПАРСЕРОМ fetch-контура (единая
+    /// точка), а файловое значение потребляется `FetchConfig::from_config`
+    /// (env > файл) — ключ не мертвый груз.
+    #[test]
+    fn validate_hf_host_uses_fetch_parser_and_file_is_consumed() {
+        let sane = Thresholds::default_working();
+        assert!(
+            validate_value(
+                "FASAD_HF_HOST",
+                "https://my-mirror.example.test",
+                &sane,
+                false
+            )
+            .is_ok()
+        );
+        for bad in [
+            "garbage-not-a-url",
+            "ftp://files.example.test",
+            "not a url at all",
+            "https://user@evil.example",
+        ] {
+            let err = validate_value("FASAD_HF_HOST", bad, &sane, false)
+                .expect_err("парсер fetch красен");
+            assert!(
+                matches!(
+                    err,
+                    ConfigError::BadValue {
+                        var: "FASAD_HF_HOST",
+                        ..
+                    }
+                ),
+                "{bad}: {err:?}"
+            );
+        }
+        // Файловое значение читается fetch-контуром (env > файл > дефолт):
+        let f = parse_config_file("FASAD_HF_HOST=https://from-file.example.test\n").expect("парс");
+        let cfg = Config::from_file_aware_with(|_| None).expect("без env");
+        let cfg = cfg.with_file_origin(&f);
+        let fc =
+            crate::fetch::FetchConfig::from_lookup(&cfg, &|k| cfg.file_value(k).map(str::to_owned))
+                .expect("файловый хост разбирается");
+        assert_eq!(fc.host_display(), "https://from-file.example.test");
+        // env побеждает файл.
+        let fc = crate::fetch::FetchConfig::from_lookup(&cfg, &|k| {
+            (k == "FASAD_HF_HOST")
+                .then(|| "https://from-env.example.test".to_owned())
+                .or_else(|| cfg.file_value(k).map(str::to_owned))
+        })
+        .expect("env-хост");
+        assert_eq!(fc.host_display(), "https://from-env.example.test");
+        // `source_of` честен на файловом значении (витрина не врет парой).
+        assert_eq!(
+            cfg.source_of_with("FASAD_HF_HOST", &mut |_| None),
+            ValueSource::File
+        );
     }
 }

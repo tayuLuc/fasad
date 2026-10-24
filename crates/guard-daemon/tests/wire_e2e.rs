@@ -174,6 +174,14 @@ impl Daemon {
 /// отказ старта (#185-контур: опечатка в пути обязана быть названа), а харнесу
 /// нужен ровно «файла нет по существу» = пустые значения. Файл создаётся на
 /// вызове: CI-раннер обязан найти его, а не оператора tmp-содержимое.
+/// Собрать состояние убитого процесса (zombie-контракт clippy: у spawn
+/// обязан быть `wait`; `kill` + `wait` = ребёнок не живёт зомби до конца
+/// тестового раннера).
+fn reap(mut child: std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 fn fasad_empty_config() -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("fasad-harness-empty-{}.cfg", std::process::id()));
     std::fs::write(&path, "# fasad harness (#219): empty = no values\n").expect("игла создаётся");
@@ -2101,4 +2109,148 @@ fn banner_carries_ui_line_with_the_actual_port() {
         seen.contains("UI браузера — http://"),
         "UI-строка не найдена: {seen:?}"
     );
+}
+// ── #224: харнес-дискриминатор E-контура (продуктовый путь fresh-install) ──
+
+/// Живая нога #224 (product path, не unit): `FASAD_CONFIG=<битый путь>` =
+/// rc=2 с именем переменной; свежий HOME без файла = старт дефолтами
+/// (прежний блокер: rc=2 «`FASAD_CONFIG` указывает…» на чистой машине).
+#[test]
+fn fresh_home_starts_and_explicit_missing_path_refuses_live() {
+    let dir = std::env::temp_dir().join(format!("fasad-fresh-live-224-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("HOME");
+    let home = dir.to_string_lossy().to_string();
+    // 1a) свежая установка: HOME tempdir, файла НЕТ, `FASAD_CONFIG` снят
+    //     (`env_remove`, а не игла-пустышка) = продуктовый путь из блокера
+    //     #224: резолв канона → файла нет → дефолты, старт.
+    let d = Daemon::start(&[("HOME", home.as_str()), ("FASAD_CONFIG", "")]);
+    let r = call(&d.addr, "GET", "/health", &[], b"");
+    assert_eq!(
+        r.status, 200,
+        "fresh-install обязан стартовать: {}",
+        r.status
+    );
+    drop(d);
+    // 1b) дискриминатор: живой файл по каноническому пути (тот же свежий
+    //     HOME) читается продуктивным путём — баннер = порт из файла, а не
+    //     `FASAD_PORT=0` харнеса. Прямой спавн: `Daemon::start` перебивает
+    //     порт контрактом `FASAD_PORT=0`.
+    let cfg_dir = dir.join(".config").join("fasad");
+    std::fs::create_dir_all(&cfg_dir).expect("каталог конфига");
+    std::fs::write(cfg_dir.join("config"), "FASAD_PORT=9412\n").expect("файл");
+    let mut out = Command::new(env!("CARGO_BIN_EXE_fasad"))
+        .env_remove("FASAD_CONFIG")
+        .env("HOME", &home)
+        .env("FASAD_TEST_CASCADE0", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("процесс стартует");
+    let mut seen = String::new();
+    {
+        use std::io::BufRead as _;
+        let mut reader = std::io::BufReader::new(out.stdout.take().expect("stdout"));
+        let mut line = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            line.clear();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            seen.push_str(&line);
+            if seen.contains("listening on http://") {
+                break;
+            }
+        }
+    }
+    reap(out);
+    assert!(
+        seen.contains("listening on http://127.0.0.1:9412"),
+        "файл по каноническому пути обязан читаться (product path): {seen:?}"
+    );
+    // (d из ноги 1a уже закрыт: drop выше)
+    // 2) FASAD_CONFIG в никуда (явный) = rc=2 + имя переменной в stderr.
+    let out = Command::new(env!("CARGO_BIN_EXE_fasad"))
+        .env(
+            "FASAD_CONFIG",
+            format!("/nonexistent-fasad-224-{}/config", std::process::id()),
+        )
+        .env("FASAD_TEST_CASCADE0", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("процесс стартует")
+        .wait_with_output()
+        .expect("процесс завершился");
+    assert_eq!(out.status.code(), Some(2), "явный путь в никуда = rc=2");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("FASAD_CONFIG"), "причина не названа: {err}");
+    assert!(
+        !err.contains("  опечатка"),
+        "простыня пробелов в тексте: {err}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Дискриминатор блокера #224 на живом бинаре: харнес обязан оставаться
+/// зелёным на машине оператора (живой `~/.config/fasad/config`), где
+/// `FASAD_CONFIG` НЕ задан. Игла-пустышка (существующий пустой файл)
+/// доказывает, что изоляцию даёт именно `FASAD_CONFIG`, а не везение tmp.
+#[test]
+fn harness_isolates_the_operators_config_file() {
+    let dir = std::env::temp_dir().join(format!("fasad-opcfg-224-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("HOME");
+    let cfg_dir = dir.join(".config").join("fasad");
+    std::fs::create_dir_all(&cfg_dir).expect("каталог конфига");
+    std::fs::write(cfg_dir.join("config"), "FASAD_PORT=9411\n").expect("файл оператора");
+    let home = dir.to_string_lossy().to_string();
+
+    // 1) HOME=операторский (с файлом), FASAD_CONFIG снят: файл читается.
+    //    Дискриминатор по баннеру: 9411, а не 0 (контракт `FASAD_PORT=0`).
+    let mut out = Command::new(env!("CARGO_BIN_EXE_fasad"))
+        .env("FASAD_BIND", "127.0.0.1")
+        .env_remove("FASAD_CONFIG")
+        .env("HOME", &home)
+        .env("FASAD_TEST_CASCADE0", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("процесс стартует");
+    // Читаем баннер сами: `Daemon::start` требует «listening» — старт есть,
+    // порт сверяем по строке.
+    let mut seen = String::new();
+    {
+        use std::io::BufRead as _;
+        let mut reader = std::io::BufReader::new(out.stdout.take().expect("stdout"));
+        let mut line = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            line.clear();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            seen.push_str(&line);
+            if seen.contains("listening on http://") {
+                break;
+            }
+        }
+    }
+    reap(out);
+    assert!(
+        seen.contains("listening on http://127.0.0.1:9411"),
+        "файл оператора обязан читаться без FASAD_CONFIG (дискриминатор E-контура): {seen:?}"
+    );
+
+    // 2) Тот же HOME+файл, игла FASAD_CONFIG=пустой tmp-файл (контур харнеса):
+    //    файл не читается, порт = FASAD_PORT=0 (баннер = случайный, не 9411).
+    let d = Daemon::start(&[("HOME", home.as_str()), ("FASAD_PORT", "0")]);
+    assert!(
+        !d.addr.ends_with(":9411"),
+        "харнес-игла не изолировала файл оператора: {}",
+        d.addr
+    );
+    std::fs::remove_dir_all(&dir).ok();
 }

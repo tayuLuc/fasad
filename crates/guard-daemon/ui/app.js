@@ -658,9 +658,15 @@ async function loadSettings() {
     " · бинд " + (d.bind || "—") + " (оба — только переменные окружения)";
   const host = $("configRows");
   host.replaceChildren();
+  let pendingRestart = false;
   for (const row of d.entries || []) {
     host.append(configRow(row));
+    // #224 MINOR: `restart_required` из GET читается (не только из ответа
+    // POST): баннер обязан выживать на reload, «сохранено — не применилось»
+    // не должно становиться невидимым после F5.
+    if (row.source === "file" && row.restart_required) pendingRestart = true;
   }
+  $("restartBanner").hidden = !pendingRestart && $("restartBanner").hidden;
 }
 
 function configRow(row) {

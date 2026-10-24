@@ -1275,17 +1275,40 @@ fn config_endpoint_lists_keys_and_hides_the_secret() {
 /// 403; мусорное значение = 422 текстом валидатора (не браузером); запись
 /// в `FASAD_CONFIG` (tmp-файл харнеса) = 200 + «требуется перезапуск».
 #[test]
+#[allow(clippy::too_many_lines)] // решётка POST-отказов = один тест-контракт (решётка ног #224)
 fn config_write_endpoint_validates_and_refuses_secrets() {
     // Харнес уже указывает FASAD_CONFIG в tmp (изоляция E-контура); для
     // записи нужен сушествующий каталог — свой файл на свой порт.
     let dir = std::env::temp_dir().join(format!("fasad-cfg-ui-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("каталог");
     let file = dir.join("config");
-    std::fs::write(&file, "# харнес #220\n").expect("база");
+    // Файл с валидным FASAD_HF_HOST: он же живая нога #224 MAJOR-2 (GET
+    // обязан показать файловый хост и source=file, а не «дефолт + file»),
+    // и же база для всех POST-ног ниже.
+    std::fs::write(
+        &file,
+        "# харнес #220\nFASAD_HF_HOST=https://from-file.example.test\n",
+    )
+    .expect("база");
     let d = Daemon::start(&[
         ("FASAD_CONFIG", file.to_str().expect("utf-8 путь")),
         ("FASAD_PORT", "0"),
     ]);
+    {
+        let r = call(&d.addr, "GET", "/v1/config", &[], b"");
+        let j = r.json();
+        let row = j["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .find(|e| e["key"] == "FASAD_HF_HOST")
+            .expect("HF_HOST в таблице");
+        assert_eq!(
+            row["value"], "https://from-file.example.test",
+            "файловый HF_HOST обязан доходить до витрины: {j}"
+        );
+        assert_eq!(row["source"], "file", "источник = файл: {j}");
+    }
     let post = |body: String| {
         call(
             &d.addr,
@@ -1309,16 +1332,59 @@ fn config_write_endpoint_validates_and_refuses_secrets() {
         post(r#"{"key":"FASAD_BIND","value":"8.8.8.8"}"#.to_owned()).status,
         403
     );
-    // Мусорное число = 422 ТЕКСТОМ валидатора (#221: серверная стенока, не браузер).
-    let r = post(r#"{"key":"FASAD_THREADS","value":"abc"}"#.to_owned());
-    assert_eq!(r.status, 422, "не число = 422, ответ: {}", r.text());
-    assert!(r.text().contains("FASAD_THREADS"), "{}", r.text());
+    // Мусорные значения = 422 ТЕКСТОМ валидатора (#221: серверная стена, не
+    // браузер; #224 MAJOR-1: тихого фолбэка `port_from_value` в контуре
+    // записи нет ни на одной ноге; #224 MAJOR-2: HF_HOST бьётся парсером
+    // fetch-контура).
+    for (body, why) in [
+        (r#"{"key":"FASAD_THREADS","value":"abc"}"#, "не число"),
+        (r#"{"key":"FASAD_PORT","value":"abc"}"#, "порт не число"),
+        (r#"{"key":"FASAD_PORT","value":"0"}"#, "нулевой порт"),
+        (r#"{"key":"FASAD_PORT","value":"-1"}"#, "отрицательный порт"),
+        (r#"{"key":"FASAD_PORT","value":"65536"}"#, "за u16"),
+        (r#"{"key":"FASAD_PORT","value":"99999"}"#, "за u16"),
+        // #224 MINOR: привилегированный порт = 422 текстом диапазона, а не
+        // rc=1 PermissionDenied после рестарта.
+        (
+            r#"{"key":"FASAD_PORT","value":"1"}"#,
+            "1 < 1024 привилегированный",
+        ),
+        (
+            r#"{"key":"FASAD_PORT","value":"1023"}"#,
+            "1023 привилегированный",
+        ),
+        (
+            r#"{"key":"FASAD_HF_HOST","value":"garbage-not-a-url"}"#,
+            "не URL",
+        ),
+        (
+            r#"{"key":"FASAD_HF_HOST","value":"ftp://files.example.test"}"#,
+            "не https",
+        ),
+        (
+            r#"{"key":"FASAD_HF_HOST","value":"https://user@evil.example"}"#,
+            "учётки в авторити",
+        ),
+    ] {
+        let r = post(body.to_owned());
+        assert_eq!(r.status, 422, "{why}: ожидаем 422, ответ: {}", r.text());
+    }
+    assert!(
+        post(r#"{"key":"FASAD_PORT","value":"1"}"#.to_owned())
+            .text()
+            .contains("1024..=65535"),
+        "текст отказа обязан называть диапазон"
+    );
+    // Грань диапазона легальна (PORT=1024) — зуб не мёртвый.
+    let r = post(r#"{"key":"FASAD_PORT","value":"1024"}"#.to_owned());
+    assert_eq!(r.status, 200, "1024 = нижняя грань: {}", r.text());
     // Инвариант порогов = 422 текстом (gray_hi 0.9 > дефолтный tau_high 0.8).
     let r = post(r#"{"key":"FASAD_GRAY_HI","value":"0.9"}"#.to_owned());
     assert_eq!(r.status, 422, "инвариант красен: {}", r.text());
     assert!(r.text().contains("пороги"), "текст инварианта потерян");
-    // Легальная запись = 200 + restart_required + файл обновлён.
-    let r = post(r#"{"key":"FASAD_THREADS","value":"2"}"#.to_owned());
+    // Легальная запись = 200 + restart_required + файл обновлён; значение
+    // пишется trimmed (#224 MINOR): « 2 » → «FASAD_THREADS=2».
+    let r = post(r#"{"key":"FASAD_THREADS","value":" 2 "}"#.to_owned());
     assert_eq!(r.status, 200, "запись прошла: {}", r.text());
     assert_eq!(
         r.json()["restart_required"],
@@ -1327,11 +1393,18 @@ fn config_write_endpoint_validates_and_refuses_secrets() {
     );
     let text = std::fs::read_to_string(&file).expect("файл");
     assert!(text.contains("FASAD_THREADS=2"), "{text}");
+    assert!(!text.contains("= 2 "), "значение пишется trimmed: {text}");
+    assert!(
+        text.contains("FASAD_HF_HOST=https://from-file.example.test"),
+        "HF_HOST обязан пережить перезапись (ключевая нога #224): {text}"
+    );
     assert!(
         text.contains("# харнес"),
         "комментарий не пережил запись: {text}"
     );
     assert!(
+        // Имя-первичка #224 MINOR: `.part` = file_name + ".part" = `config.part`;
+        // после rename обязана исчезнуть (атомарность).
         !dir.join("config.part").exists(),
         ".part обязан исчезнуть после rename (атомарность)"
     );

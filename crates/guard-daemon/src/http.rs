@@ -388,7 +388,11 @@ fn config_reply_of(st: &AppState) -> axum::Json<ConfigReply> {
             } else {
                 v.value
             },
-            source: v.source.as_str(),
+            // Источник = тот же контур, что и значение: env (живьём, с
+            // нормализацией trim) > файл (`file_keys`) > дефолт. Ревью #224
+            // MAJOR-2: GET не имеет права врать парой «значение из env,
+            // source=file».
+            source: effective_source(v.key, v.source),
             ui_editable: v.ui_editable,
             restart_required: v.restart_required,
         })
@@ -406,6 +410,18 @@ fn config_reply_of(st: &AppState) -> axum::Json<ConfigReply> {
 
 async fn config_handler(State(st): State<AppState>) -> axum::Json<ConfigReply> {
     config_reply_of(&st)
+}
+
+/// Источник значения для витрины: env с НЕПУСТЫМ значением побеждает всё
+/// (та же нормализация, что у цепочки загрузки), иначе — сохранённый источник
+/// сборки (`Config::source_of` уже честно развёл file/default по срезу файла).
+fn effective_source(key: &'static str, stored: crate::config::ValueSource) -> &'static str {
+    use crate::config::ValueSource;
+    let src = match std::env::var(key) {
+        Ok(v) if !v.trim().is_empty() => ValueSource::Env,
+        _ => stored,
+    };
+    src.as_str()
 }
 
 /// Тело `POST /v1/config`: `{ключ, значение}` (#220).
@@ -476,7 +492,14 @@ async fn config_write_handler(
     // на котором демон не стартует (#219 §D).
     let canonical = crate::config::allowed_key(&req.key)
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "key_unknown", "ключ не разобран"))?;
-    crate::config::validate_value(canonical, &req.value, &st.config().thresholds).map_err(|e| {
+    let cfg = st.config();
+    crate::config::validate_value(
+        canonical,
+        &req.value,
+        &cfg.thresholds,
+        cfg.proxy_loopback_http,
+    )
+    .map_err(|e| {
         ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "bad_value",
@@ -491,7 +514,7 @@ async fn config_write_handler(
              запиши FASAD_CONFIG=<путь> при запуске",
         )
     })?;
-    crate::config::write_config_value(&path, canonical, &req.value).map_err(|e| match e {
+    crate::config::write_config_value(&path, canonical, &req.value, cfg).map_err(|e| match e {
         crate::config::ConfigError::FileKeyForbidden { .. } => {
             ApiError::new(StatusCode::FORBIDDEN, "key_forbidden", &e.to_string())
         }

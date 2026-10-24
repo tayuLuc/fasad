@@ -81,6 +81,15 @@ pub struct FetchError {
 }
 
 impl FetchError {
+    /// Конструктор (нужен валидатору витрины, #224: тот же класс отказа, что
+    /// у env-контура, собирается в одном месте).
+    pub(crate) fn new(code: &'static str, detail: &str) -> Self {
+        Self {
+            code,
+            detail: detail.to_owned(),
+        }
+    }
+
     /// Машинный класс отказа (идёт в `fetch.error`).
     #[must_use]
     pub fn code(&self) -> &'static str {
@@ -123,7 +132,65 @@ impl FetchConfig {
     /// `scheme://host[:port]` (отказ на старте, не на клике: молча
     /// проигнорированный мусорный env = дырка, о которой оператор не знает).
     pub fn from_config(cfg: &Config) -> Result<Self, FetchError> {
-        Self::from_lookup(cfg, &|k| std::env::var(k).ok())
+        // #224 MAJOR-2: env > файл (тот же приоритет, что у всего config-слоя).
+        // До этого слой читал ТОЛЬКО env, и файловый `FASAD_HF_HOST` был
+        // мёртвым ключом: GET врал source, fetch хост не видел.
+        Self::from_lookup(cfg, &|k| match std::env::var(k) {
+            Ok(v) if !v.trim().is_empty() => Some(v),
+            _ => cfg.file_value(k).map(str::to_owned),
+        })
+    }
+
+    /// Валидатор значения `FASAD_HF_HOST` = ТОТ ЖЕ парсер, что у живого
+    /// контура (`split_host` + `valid_authority` + https-стенка), вызванный
+    /// изолированно для `POST /v1/config` (#224 MAJOR-1/2: единая точка,
+    /// второй грамматики нет).
+    ///
+    /// Стенка http: `http://` разрешён только петлевому upstream-хосту с
+    /// `FASAD_PROXY_LOOPBACK_HTTP=1` (env, #219: флаг читается на старте) —
+    /// здесь проверка консервативна: http в файле отвергается, env-контур
+    /// живёт как жил (он знает про включённый флаг).
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError::E_HOST`] с тем же классом, что у env-контура.
+    pub fn validate_host(raw: &str, proxy_loopback_http: bool) -> Result<(), FetchError> {
+        let (scheme, authority) = split_host(raw)
+            .ok_or_else(|| FetchError::new(E_HOST, "не формата scheme://host[:port]"))?;
+        let host = authority.to_ascii_lowercase();
+        if !valid_authority(&host) {
+            return Err(FetchError::new(E_HOST, "авторити с запрещёнными символами"));
+        }
+        // Схема: https = всегда; http = петлевой тест с env-флагом (тот же
+        // аффорданс, что у прокси, `FASAD_PROXY_LOOPBACK_HTTP` читается из
+        // окружения процесса = «петлевой тест», env-контур живёт как жил).
+        // Прочие схемы = отказ (ревью #224: `ftp://…` проходил старый
+        // валидатор, `https`-стенка fetch ловила это только на загрузке).
+        match scheme {
+            "https" => Ok(()),
+            "http" => {
+                let loopback = host == "localhost"
+                    || host.split(':').next().is_some_and(|h| {
+                        h.parse::<std::net::IpAddr>()
+                            .is_ok_and(|ip| ip.is_loopback())
+                    });
+                // Флаг = ЭФФЕКТИВНОЕ значение контура конфига (env > файл),
+                // которое передаёт вызывающий: второй правды о источнике нет
+                // (#224 MAJOR-2: валидатор и рантайм обязаны сходиться).
+                if loopback && proxy_loopback_http {
+                    Ok(())
+                } else {
+                    Err(FetchError::new(
+                        E_HOST,
+                        "http:// к HF запрещён (только https; петлевой тест = FASAD_PROXY_LOOPBACK_HTTP + loopback)",
+                    ))
+                }
+            }
+            other => Err(FetchError::new(
+                E_HOST,
+                &format!("схема {other:?} не поддержана (нужен https)"),
+            )),
+        }
     }
 
     /// Чистая часть (контракт `Config::from_lookup`): `FASAD_HF_HOST` из
