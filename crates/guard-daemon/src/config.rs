@@ -2437,6 +2437,20 @@ mod tests {
     /// ловит именно путаницу `Some(resolved)` → `NotFound` → отказ, а не её
     /// модель. env-контур при lookup="нет ничего" = дефолты (харнес-семантика
     /// `from_lookup(|_| None)`, без HOME-подстановок).
+    /// Уникальный tmp-путь юнита: `cargo test --lib` = ОДИН процесс, тесты в
+    /// потоках, `std::process::id()` НЕ уникален на поток → два юнита с одним
+    /// PID-суффиксом пишут в один каталог (win-контра #224: имя-гонка tmp =
+    /// ECONNREFUSED/RST-окна на CI). Суффикс = PID + счётчик + наносекунды.
+    fn unique_tmp_dir(prefix: &str) -> std::path::PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or_default();
+        std::env::temp_dir().join(format!("{prefix}-{}-{seq}-{nanos}", std::process::id()))
+    }
+
     #[test]
     fn fresh_install_without_config_file_loads_defaults() {
         // 1) ни FASAD_CONFIG, ни HOME/XDG: искать негде = дефолты.
@@ -2446,7 +2460,7 @@ mod tests {
 
         // 2) HOME = tempdir БЕЗ файла (свежая установка): резолв даёт путь,
         //    файла нет = дефолты, НЕ отказ. Это и был блокер.
-        let dir = std::env::temp_dir().join(format!("fasad-fresh-224-{}", std::process::id()));
+        let dir = unique_tmp_dir("fasad-fresh-224");
         std::fs::create_dir_all(&dir).expect("каталог HOME");
         let home = dir.to_string_lossy().to_string();
         let loaded = Config::load_config_from_env(&mut |k| match k {
@@ -2496,7 +2510,7 @@ mod tests {
     /// оператора): чтение + приоритет + предупреждения.
     #[test]
     fn load_config_at_reads_tempdir_file() {
-        let dir = std::env::temp_dir().join(format!("fasad-cfg-219-{}", std::process::id()));
+        let dir = unique_tmp_dir("fasad-cfg-219");
         std::fs::create_dir_all(&dir).expect("каталог");
         let path = dir.join(CONFIG_FILE_NAME);
         std::fs::write(&path, "FASAD_PORT=9311\nFASAD_CHEZ_BUDUSCHEE=x\n").expect("запись");
@@ -2574,7 +2588,7 @@ mod tests {
         fn base_cfg() -> Config {
             Config::from_lookup(|_| None).expect("дефолты")
         }
-        let dir = std::env::temp_dir().join(format!("fasad-cfg-write-219-{}", std::process::id()));
+        let dir = unique_tmp_dir("fasad-cfg-write-219");
         std::fs::create_dir_all(&dir).expect("каталог");
         let path = dir.join(CONFIG_FILE_NAME);
         std::fs::write(&path, "# мой конфиг\nFASAD_PORT=9311\n").expect("база");

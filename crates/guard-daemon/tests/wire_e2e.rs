@@ -182,8 +182,24 @@ fn reap(mut child: std::process::Child) {
     let _ = child.wait();
 }
 
+/// Уникальный tmp-путь теста. `std::process::id()` НЕ уникален: `cargo test`
+/// = ОДИН процесс, тесты живут в ПОТОКАХ — два теста с одним PID-суффиксом
+/// пишут в ОДИН каталог/файл (первичка CI ubuntu job 120977735379 @b68e853:
+/// `config_write…` получил ECONNREFUSED — демон стартовал на чужом
+/// перезаписанном `config` и отказался (rc=2), порт не занят). Суффикс =
+/// PID + атомарный счётчик + наносекунды (std-only, dev-deps не заводим).
+fn unique_tmp_path(prefix: &str) -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or_default();
+    std::env::temp_dir().join(format!("{prefix}-{}-{seq}-{nanos}", std::process::id()))
+}
+
 fn fasad_empty_config() -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("fasad-harness-empty-{}.cfg", std::process::id()));
+    let path = unique_tmp_path("fasad-harness-empty.cfg");
     std::fs::write(&path, "# fasad harness (#219): empty = no values\n").expect("игла создаётся");
     path
 }
@@ -669,7 +685,7 @@ fn full_bin_without_model_dir_refuses_to_start_before_binding() {
 /// X-Stage + /v1/analyze = 200 (каскад-0 жив, не 503 pending).
 #[test]
 fn pending_flag_on_tray_contour_keeps_the_cascade0_harness() {
-    let home = std::env::temp_dir().join(format!("fasad198-hw-{}", std::process::id()));
+    let home = unique_tmp_path("fasad198-hw");
     std::fs::create_dir_all(&home).expect("HOME-изолят создаётся");
     let d = Daemon::start(&[
         ("FASAD_TEST_TRAY_CONTOUR", "1"),
@@ -712,7 +728,7 @@ fn pending_tray_contour_serves_ui_and_refuses_model_routes() {
         );
         return;
     }
-    let home = std::env::temp_dir().join(format!("fasad198-home-{}", std::process::id()));
+    let home = unique_tmp_path("fasad198-home");
     std::fs::create_dir_all(&home).expect("HOME-изолят создаётся");
     let d = Daemon::start(&[
         ("FASAD_TEST_TRAY_CONTOUR", "1"),
@@ -2120,7 +2136,7 @@ fn banner_carries_ui_line_with_the_actual_port() {
 /// (прежний блокер: rc=2 «`FASAD_CONFIG` указывает…» на чистой машине).
 #[test]
 fn fresh_home_starts_and_explicit_missing_path_refuses_live() {
-    let dir = std::env::temp_dir().join(format!("fasad-fresh-live-224-{}", std::process::id()));
+    let dir = unique_tmp_path("fasad-fresh-live-224");
     std::fs::create_dir_all(&dir).expect("HOME");
     let home = dir.to_string_lossy().to_string();
     // 1a) свежая установка: HOME tempdir, файла НЕТ, `FASAD_CONFIG` снят
@@ -2187,7 +2203,10 @@ fn fresh_home_starts_and_explicit_missing_path_refuses_live() {
     let out = Command::new(env!("CARGO_BIN_EXE_fasad"))
         .env(
             "FASAD_CONFIG",
-            format!("/nonexistent-fasad-224-{}/config", std::process::id()),
+            unique_tmp_path("nonexistent-fasad-224")
+                .join("config")
+                .to_str()
+                .expect("utf-8"),
         )
         .env("FASAD_TEST_CASCADE0", "1")
         .stdin(Stdio::null())
@@ -2213,7 +2232,7 @@ fn fresh_home_starts_and_explicit_missing_path_refuses_live() {
 /// доказывает, что изоляцию даёт именно `FASAD_CONFIG`, а не везение tmp.
 #[test]
 fn harness_isolates_the_operators_config_file() {
-    let dir = std::env::temp_dir().join(format!("fasad-opcfg-224-{}", std::process::id()));
+    let dir = unique_tmp_path("fasad-opcfg-224");
     std::fs::create_dir_all(&dir).expect("HOME");
     let cfg_dir = dir.join(".config").join("fasad");
     std::fs::create_dir_all(&cfg_dir).expect("каталог конфига");
@@ -2284,7 +2303,7 @@ fn harness_isolates_the_operators_config_file() {
 #[test]
 fn fetch_consumes_file_host() {
     let (toy, _rx) = toy_upstream();
-    let dir = std::env::temp_dir().join(format!("fasad-hfhost-224-{}", std::process::id()));
+    let dir = unique_tmp_path("fasad-hfhost-224");
     std::fs::create_dir_all(&dir).expect("каталог");
     let file = dir.join("config");
     std::fs::write(

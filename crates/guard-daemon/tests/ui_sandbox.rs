@@ -140,8 +140,24 @@ impl Daemon {
 /// отказ старта (#185-контур: опечатка в пути обязана быть названа), а харнесу
 /// нужен ровно «файла нет по существу» = пустые значения. Файл создаётся на
 /// вызове: CI-раннер обязан найти его, а не оператора tmp-содержимое.
+/// Уникальный tmp-путь теста. `std::process::id()` НЕ уникален: `cargo test`
+/// = ОДИН процесс, тесты живут в ПОТОКАХ — два теста с одним PID-суффиксом
+/// пишут в ОДИН каталог/файл (первичка CI ubuntu job 120977735379 @b68e853:
+/// `config_write…` получил ECONNREFUSED — демон стартовал на чужом
+/// перезаписанном `config` и отказался (rc=2), порт не занят). Суффикс =
+/// PID + атомарный счётчик + наносекунды (std-only, dev-deps не заводим).
+fn unique_tmp_path(prefix: &str) -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or_default();
+    std::env::temp_dir().join(format!("{prefix}-{}-{seq}-{nanos}", std::process::id()))
+}
+
 fn fasad_empty_config() -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("fasad-harness-empty-{}.cfg", std::process::id()));
+    let path = unique_tmp_path("fasad-harness-empty.cfg");
     std::fs::write(&path, "# fasad harness (#219): empty = no values\n").expect("игла создаётся");
     path
 }
@@ -769,7 +785,7 @@ fn weights_card_shows_files_and_fetch_lands_the_layout() {
         );
         return;
     }
-    let dir = std::env::temp_dir().join(format!("fasad-fetch-{}", std::process::id()));
+    let dir = unique_tmp_path("fasad-fetch");
     let _ = std::fs::remove_dir_all(&dir);
     let d = Daemon::start(&[
         ("FASAD_MODEL_DIR", dir.to_str().expect("tmp путь")),
@@ -931,7 +947,7 @@ fn chat_token_counter_counts_both_forms() {
 /// тест подставляет в tmp-копию скрипта). Ошибка движка = panic (не тихий
 /// SKIP); отсутствие ОБОИХ = пустая строка (зуб печатает SKIP сам).
 fn run_js_fixture(fixture: &str, app: &std::path::Path) -> String {
-    let dir = std::env::temp_dir().join(format!("fasad203-ct-{}", std::process::id()));
+    let dir = unique_tmp_path("fasad203-ct");
     std::fs::create_dir_all(&dir).expect("tmp создаётся");
     let script = dir.join("runner.js");
     std::fs::write(
@@ -1303,7 +1319,7 @@ fn config_endpoint_lists_keys_and_hides_the_secret() {
 fn config_write_endpoint_validates_and_refuses_secrets() {
     // Харнес уже указывает FASAD_CONFIG в tmp (изоляция E-контура); для
     // записи нужен сушествующий каталог — свой файл на свой порт.
-    let dir = std::env::temp_dir().join(format!("fasad-cfg-ui-{}", std::process::id()));
+    let dir = unique_tmp_path("fasad-cfg-ui");
     std::fs::create_dir_all(&dir).expect("каталог");
     let file = dir.join("config");
     // Файл с валидным FASAD_HF_HOST: он же живая нога #224 MAJOR-2 (GET
