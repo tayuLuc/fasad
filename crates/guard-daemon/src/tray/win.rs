@@ -56,15 +56,16 @@
 
 /// Return-код `MB_ABORTRETRYIGNORE` «Отмена» (#198): первичка winuser.h —
 /// `IDABORT`=3, `IDRETRY`=4, `IDIGNORE`=5 (кнопка X = IDIGNORE, уходящий
-/// молча, как «ОК»). Используется ОБА: `IDRETRY` = ветка «открыть
-/// инструкцию», `IDABORT` = явная проверка «ухода по кнопке ОК» (ниже,
-/// `debug_assert` ветки = контракт против смены стиля окна; CI-провен win run
-/// 40035548437: `IDABORT` никогда не читался = `dead_code`, «тавтология
-/// !=IDABORT» ревью §2.2 убрана вместе с использованием).
+/// молча, как «ОК»). Читаются ВСЕ ТРИ (#205, факт решётки ниже):
+/// `IDRETRY` = ветка «открыть инструкцию», `IDABORT` и `IDIGNORE` = уход
+/// молча, оба перечислены в `debug_assert`-контракте стиля окна (ниже;
+/// CI-провен win run 40035548437: `IDABORT` никогда не читался = `dead_code`,
+/// «тавтология !=IDABORT» ревью §2.2 убрана вместе с использованием).
 /// Модульный скоуп острова (не `fn`-local): items-after-statements = гейт
 /// tray-check (CI-провен win run 40022333775).
 const IDABORT: i32 = 3;
 const IDRETRY: i32 = 4;
+const IDIGNORE: i32 = 5;
 
 /// Показать отказ старта окном: «Открыть инструкцию» + «ОК»
 /// (`MB_ICONERROR | MB_SETFOREGROUND | MB_ABORTRETRYIGNORE`, #190 + #198),
@@ -144,7 +145,7 @@ pub fn show_startup_failure(caption: &str, message: &str) {
     // ветки = контракт стиля окна (кнопки ABORT/RETRY/IGNORE гарантируют
     // {3,4,5}: любое иное = сборка сломана, не пользовательский исход).
     debug_assert!(
-        matches!(answer, IDABORT | IDRETRY | 5),
+        matches!(answer, IDABORT | IDRETRY | IDIGNORE),
         "MB_ABORTRETRYIGNORE вернул {answer}: контракт кнопок сломан"
     );
     if answer == IDRETRY {

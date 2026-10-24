@@ -1835,6 +1835,37 @@ mod tests {
     }
 
     #[test]
+    fn models_not_configured_display_names_the_download_path() {
+        // #206: путь докачки в тексте отказа = часть контракта. #199-зуб
+        // живёт в `startup()`-контуре под `ort-inference` (в default-контуре
+        // CI `ModelsNotConfigured` не конструируется); этот зуб = чистый
+        // Display без фичевых гейтов. Дискриминатор: текст = только причина
+        // (нет ни UI-кнопки, ни адреса UI).
+        let text = CascadeFailure::ModelsNotConfigured.to_string();
+        assert!(
+            text.contains("Скачать веса"),
+            "нет UI-канала докачки: {text}"
+        );
+        assert!(text.contains("http://127.0.0.1:"), "нет адреса UI: {text}");
+    }
+
+    #[test]
+    fn models_not_configured_display_names_both_fetch_model_scripts() {
+        // #206: оба имени скрипта (первичка `ls scripts/`: `.sh` и `.ps1`
+        // живут в дереве), win-форма = обратно-слэшевый путь.
+        // Дискриминатор: текст называет только `.sh` (win-канала нет).
+        let text = CascadeFailure::ModelsNotConfigured.to_string();
+        assert!(
+            text.contains("scripts/fetch-models.sh"),
+            "нет unix-скрипта: {text}"
+        );
+        assert!(
+            text.contains(r"scripts\fetch-models.ps1"),
+            "нет win-скрипта: {text}"
+        );
+    }
+
+    #[test]
     fn pending_gate_is_tray_only_and_model_failures_only() {
         // (a) headless/иная мишень (contour=false): НИКОГДА pending, ни при
         // каком отказе (дискриминатор «prod fail-closed #185 цел»).
