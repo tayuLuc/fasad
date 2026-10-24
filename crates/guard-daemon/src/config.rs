@@ -2443,12 +2443,21 @@ mod tests {
     /// ECONNREFUSED/RST-окна на CI). Суффикс = PID + счётчик + наносекунды.
     fn unique_tmp_dir(prefix: &str) -> std::path::PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or_default();
-        std::env::temp_dir().join(format!("{prefix}-{}-{seq}-{nanos}", std::process::id()))
+        let root = std::env::temp_dir();
+        for _ in 0..128 {
+            let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or_default();
+            let dir = root.join(format!("{prefix}-{}-{seq}-{nanos}", std::process::id()));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return dir,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => panic!("unique_tmp_dir({prefix}): {e}"),
+            }
+        }
+        panic!("unique_tmp_dir: 128 коллизий имени {prefix}");
     }
 
     #[test]

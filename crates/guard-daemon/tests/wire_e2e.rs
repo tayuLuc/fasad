@@ -27,161 +27,244 @@ use std::time::{Duration, Instant};
 struct Daemon {
     child: Child,
     addr: String,
+    /// Общий лог stderr демона (#224 R4): живое окно диагностики — тест
+    /// печатает его при панике («демон умер после баннера» = текст демона).
+    log: std::sync::Arc<std::sync::Mutex<String>>,
+    /// Держим канал строк stdout: читатель `stdout_reader` шлёт в `tx`,
+    /// паникующий тест роняет `rx` = канал мёртв = читатель выходит из
+    /// цикла = трубка закрывается = EPIPE-паника print'а ЖИВОГО демона
+    /// (первичка stdio.rs:1168 в stderr-реестре #224 R4).
+    _stdout_lines: std::sync::mpsc::Receiver<String>,
 }
 
 impl Daemon {
-    fn start(env: &[(&str, &str)]) -> Self {
-        // #185: full-бинарь (feature `ort-inference`) без весов не стартует —
-        // молчаливый cascade-0-only убит стартовым отказом. Файл про проводной
-        // протокол каскада 0 (тесты проверяют ответы каскада-0: ФИО-спан
-        // модели ломали бы их ожидания ещё до #185, ревью #87), поэтому
-        // live-нога = feature-off бинарь; на ort-контуре файл печатает
-        // явную SKIPPED-строку и выходит rc=0 (молчание = ложно-зелёная
-        // проверка, класс реестра; контракт SKIP-строки — cascade_failclosed).
-        // Тот же контур CI-реальности: ort-фича в cargo-матрице CI не
-        // линкуется (ci.yml:31-34), live-контур = feature-off.
-        if cfg!(feature = "ort-inference") {
-            eprintln!(
-                "SKIP|wire_e2e|full-бинарь (#185) без весов не стартует, а live-контур \
+    /// Готовность = ОТВЕТИВШИЙ сокет, не баннер (#224 R4): первичка
+    /// main.rs — bind → баннер → accept-цикл в `serve()`; баннер ≠
+    /// готовность = refused-окно между баннером и первым accept. Мёртвый
+    /// процесс = exit-код в панике (первичка CI: «живой демон, refused»).
+    fn wait_ready(
+        child: &mut Child,
+        addr: &str,
+        seen: &str,
+        log: &std::sync::Arc<std::sync::Mutex<String>>,
+    ) {
+        let ready = Instant::now();
+        loop {
+            if let Some(status) = child.try_wait().expect("статус читается") {
+                let buf = log.lock().expect("лог не отравлен").clone();
+                panic!(
+                    "демон умер в окне готовности (rc={:?}, {addr}); stdout: {seen:?} stderr: {buf:?}",
+                    status.code()
+                );
+            }
+            if TcpStream::connect(addr).is_ok() {
+                return;
+            }
+            assert!(
+                ready.elapsed() < Duration::from_secs(10),
+                "порт {addr} не открылся за 10 с; stdout: {seen:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn start<A: AsRef<std::ffi::OsStr> + Clone>(env: &[(&str, A)]) -> Self {
+        self::start_impl(env)
+    }
+}
+
+fn start_impl<A: AsRef<std::ffi::OsStr> + Clone>(env: &[(&str, A)]) -> Daemon {
+    // #185: full-бинарь (feature `ort-inference`) без весов не стартует —
+    // молчаливый cascade-0-only убит стартовым отказом. Файл про проводной
+    // протокол каскада 0 (тесты проверяют ответы каскада-0: ФИО-спан
+    // модели ломали бы их ожидания ещё до #185, ревью #87), поэтому
+    // live-нога = feature-off бинарь; на ort-контуре файл печатает
+    // явную SKIPPED-строку и выходит rc=0 (молчание = ложно-зелёная
+    // проверка, класс реестра; контракт SKIP-строки — cascade_failclosed).
+    // Тот же контур CI-реальности: ort-фича в cargo-матрице CI не
+    // линкуется (ci.yml:31-34), live-контур = feature-off.
+    if cfg!(feature = "ort-inference") {
+        eprintln!(
+            "SKIP|wire_e2e|full-бинарь (#185) без весов не стартует, а live-контур \
                  файла = каскад-0-ожидания (ревью #87): ort-контур покрыт unit \
                  cascades::tests + e2e-отказом full_bin_without_model_dir_*"
-            );
-            std::process::exit(0);
-        }
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_fasad"));
-        cmd.env("FASAD_BIND", "127.0.0.1")
-            .env("FASAD_PORT", "0")
-            // #192: на машине оператора дефолт `FASAD_MODEL_DIR`
-            // (`~/.cache/fasad-models`) резолвится из HOME — каскад-0-бинарь
-            // с названным каталогом краснеет `BuiltWithoutInference`, а
-            // `env_remove` уже не спасает. Флаг = «харнес cascade-0»: env-
-            // граница `from_env` не подставляет дефолт (см. config.rs).
-            .env("FASAD_TEST_CASCADE0", "1")
-            // Тестовый демон поднимается БЕЗ весов и без чужих ручек окружения.
-            // Причина (ревью #87, воспроизведено на этом дереве): в
-            // feature-сборке унаследованный `FASAD_MODEL_DIR` монтирует каскады
-            // 1-2 в каждый e2e-прогон — `wire_e2e` даёт 22 passed / 3 failed
-            // (`stateless_roundtrip_survives_a_real_socket`,
-            // `session_mode_roundtrips_survives_a_real_socket`,
-            // `proxy_mask_matches_the_analyze_api_span_for_span`: модельные
-            // спаны `person_name` ломают ожидания каскада 0) и 103.72 с
-            // против 3.37 с на тот же файл без env. У ревьюера на этом же
-            // месте `ui_sandbox` даёт ещё и 8/1.
-            // «В CI же чисто» гейт не чинит: он обязан быть воспроизводимым на
-            // машине с весами, поэтому remove явный, а не молчаливый дефолт.
-            .env_remove("FASAD_MODEL_DIR")
-            .env("FASAD_TEST_CASCADE0", "1")
-            .env_remove("FASAD_THREADS")
-            .env_remove("FASAD_TIMEOUT_MS")
-            // #219 (E-контур): харнес обязан быть изолирован от файла
-            // конфигурации. Файл оператора (`~/.config/fasad/config`) на
-            // локальной машине дал бы харнесу его значения (порт, пороги,
-            // режим) — CI-раннер «чисто» не чинит этого, и тот же аргумент,
-            // что у env_remove выше: воспроизводимость на машине оператора.
-            // Игла = СУЩЕСТВУЮЩИЙ пустой файл в tmp (см. `fasad_empty_config`):
-            // env-граница обязана получить «значений нет», а не «HOME
-            // оператора»; несуществующий путь дал бы отказ старта (#185).
-            .env("FASAD_CONFIG", fasad_empty_config())
-            // #203 §2.1 (блокер R4): env-мишень #198 из оболочки НЕ
-            // наследуется: симметрия config.rs (флаг + трей-мишень +
-            // смонтированный HOME-дефолт = Some(кеш оператора)) на машине
-            // с весами красила харнес (28/4: stage cascade-0+models +
-            // модельные спаны; промер ревью на HOME оператора). Зубы
-            // pending-контура ставят флаг ЯВНО (env-пары теста применяются
-            // после remove в `Daemon::start`).
-            .env_remove("FASAD_TEST_TRAY_CONTOUR")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        for (k, v) in env {
-            cmd.env(k, v);
-        }
-        let mut child = cmd.spawn().expect("бинарь фасада запускается");
-        let stdout = child.stdout.take().expect("stdout перехвачен");
-        // Читатель в отдельном потоке и с `recv_timeout`: блокирующий `read_line`
-        // на трубке CHILD'а, который умер до баннера, вешает тест на неопределённо
-        // (проверено: три параллельных e2e-теста стояли 10 минут), а тайм-аут
-        // обязан быть у ожидания, а не у всего теста.
-        let (tx, rx) = std::sync::mpsc::channel();
+        );
+        std::process::exit(0);
+    }
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_fasad"));
+    cmd.env("FASAD_BIND", "127.0.0.1")
+        .env("FASAD_PORT", "0")
+        // #192: на машине оператора дефолт `FASAD_MODEL_DIR`
+        // (`~/.cache/fasad-models`) резолвится из HOME — каскад-0-бинарь
+        // с названным каталогом краснеет `BuiltWithoutInference`, а
+        // `env_remove` уже не спасает. Флаг = «харнес cascade-0»: env-
+        // граница `from_env` не подставляет дефолт (см. config.rs).
+        .env("FASAD_TEST_CASCADE0", "1")
+        // Тестовый демон поднимается БЕЗ весов и без чужих ручек окружения.
+        // Причина (ревью #87, воспроизведено на этом дереве): в
+        // feature-сборке унаследованный `FASAD_MODEL_DIR` монтирует каскады
+        // 1-2 в каждый e2e-прогон — `wire_e2e` даёт 22 passed / 3 failed
+        // (`stateless_roundtrip_survives_a_real_socket`,
+        // `session_mode_roundtrips_survives_a_real_socket`,
+        // `proxy_mask_matches_the_analyze_api_span_for_span`: модельные
+        // спаны `person_name` ломают ожидания каскада 0) и 103.72 с
+        // против 3.37 с на тот же файл без env. У ревьюера на этом же
+        // месте `ui_sandbox` даёт ещё и 8/1.
+        // «В CI же чисто» гейт не чинит: он обязан быть воспроизводимым на
+        // машине с весами, поэтому remove явный, а не молчаливый дефолт.
+        .env_remove("FASAD_MODEL_DIR")
+        .env("FASAD_TEST_CASCADE0", "1")
+        .env_remove("FASAD_THREADS")
+        // #224 R4 (первичка CI ubuntu: витрина вернула
+        // `file.path=/home/runner/.config/…` при HOME-игле = tempdir):
+        // канон-резолв config-файла = `XDG_CONFIG_HOME` > HOME, и
+        // XDG-переменные раннера/машины пробивают HOME-иглу (на
+        // ubuntu-раннере задан XDG_DATA_HOME — наследие среды =
+        // невоспроизводимый флейк). Иглы изоляции = ВСЕ канон-переменные.
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("FASAD_TIMEOUT_MS")
+        // #219 (E-контур): харнес обязан быть изолирован от файла
+        // конфигурации. Файл оператора (`~/.config/fasad/config`) на
+        // локальной машине дал бы харнесу его значения (порт, пороги,
+        // режим) — CI-раннер «чисто» не чинит этого, и тот же аргумент,
+        // что у env_remove выше: воспроизводимость на машине оператора.
+        // Игла = СУЩЕСТВУЮЩИЙ пустой файл в tmp (см. `fasad_empty_config`):
+        // env-граница обязана получить «значений нет», а не «HOME
+        // оператора»; несуществующий путь дал бы отказ старта (#185).
+        .env("FASAD_CONFIG", fasad_empty_config())
+        // #203 §2.1 (блокер R4): env-мишень #198 из оболочки НЕ
+        // наследуется: симметрия config.rs (флаг + трей-мишень +
+        // смонтированный HOME-дефолт = Some(кеш оператора)) на машине
+        // с весами красила харнес (28/4: stage cascade-0+models +
+        // модельные спаны; промер ревью на HOME оператора). Зубы
+        // pending-контура ставят флаг ЯВНО (env-пары теста применяются
+        // после remove в `Daemon::start`).
+        .env_remove("FASAD_TEST_TRAY_CONTOUR")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().expect("бинарь фасада запускается");
+    let stdout = child.stdout.take().expect("stdout перехвачен");
+    // #224 R4 диагностика: stderr читается С РАНОГО СТАРТА в общий лог
+    // (Arc<Mutex<String>>): отказ демона после баннера (демон умер между
+    // ногами теста) обязан быть назван текстом демона, а не «сокет
+    // недоступен 30 с» — убитый раннером класс «не видно почему».
+    let log: std::sync::Arc<std::sync::Mutex<String>> =
+        std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    {
+        let log = std::sync::Arc::clone(&log);
+        let mut stderr = child.stderr.take().expect("stderr перехвачен");
         std::thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
+            use std::io::Read as _;
+            let mut chunk = [0u8; 1024];
             loop {
-                line.clear();
-                match reader.read_line(&mut line) {
+                match stderr.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
-                    Ok(_) => {
-                        if tx.send(line.clone()).is_err() {
-                            break;
-                        }
+                    Ok(n) => {
+                        log.lock()
+                            .expect("лог не отравлен")
+                            .push_str(&String::from_utf8_lossy(&chunk[..n]));
                     }
                 }
             }
         });
-        let started = Instant::now();
-        let mut seen = String::new();
-        let mut exited = None;
-        while started.elapsed() < Duration::from_secs(15) {
-            let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) else {
-                if let Some(status) = child.try_wait().expect("статус читается") {
-                    exited = Some(status);
-                    break;
-                }
-                continue;
-            };
-            seen.push_str(&line);
-            if let Some(rest) = seen
-                .split_once("listening on http://")
-                .map(|(_, r)| r.to_owned())
-            {
-                let addr = rest
-                    .split('/')
-                    .next()
-                    .expect("адрес заканчивается путём")
-                    .to_owned();
-                return Self { child, addr };
-            }
-        }
-        // Убить и дождаться до паники: паникующий тест не обязан оставлять
-        // процесс-зомби (клинч `zombie_processes` это и ловит).
-        let _ = child.kill();
-        let _ = child.wait();
-        // Причина отказа из stderr читается ТОЛЬКО если процесс сам завершился:
-        // на живом демоне трубке конца нет, и чтение вернуло бы нас к той же
-        // вешалке, из которой мы только что вышли. Это не косметика — на
-        // windows-раннере именно эта строка отличит «mlock отказал» от «тест
-        // не дождался баннера».
-        let reason = match exited {
-            Some(_) => {
-                let mut buf = String::new();
-                if let Some(mut e) = child.stderr.take() {
-                    let _ = std::io::Read::read_to_string(&mut e, &mut buf);
-                }
-                buf
-            }
-            None => String::new(),
-        };
-        panic!(
-            "демон не напечатал баннер за {:?}; stdout: {seen:?} stderr: {reason:?}",
-            started.elapsed()
-        );
     }
+    let rx = stdout_reader(stdout);
+    let started = Instant::now();
+    let mut seen = String::new();
+    while started.elapsed() < Duration::from_secs(15) {
+        let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) else {
+            continue;
+        };
+        seen.push_str(&line);
+        // #224 R4 порядок проверок: сначала EXIT, потом баннер. Демон,
+        // умерший на бинде (bind-гонка SO_REUSEADDR-окно: listen()
+        // падает ПОСЛЕ печати баннера в stdout), печатает «listening» и
+        // дохнет — харнес вернул бы адрес мёртвого порта (первичка
+        // флейка: refused=true на свежем Daemon::start, «демон не
+        // умирал» = ложь: exit-код читается только у нас).
+        if let Some(status) = child.try_wait().expect("статус читается") {
+            let _ = child.kill();
+            let _ = child.wait();
+            let buf = log.lock().expect("лог не отравлен").clone();
+            panic!(
+                "демон завершился (rc={:?}) до готовности; stdout: {seen:?} stderr: {buf:?}",
+                status.code()
+            );
+        }
+        if let Some(rest) = seen
+            .split_once("listening on http://")
+            .map(|(_, r)| r.to_owned())
+        {
+            let addr = rest
+                .split('/')
+                .next()
+                .expect("адрес заканчивается путём")
+                .to_owned();
+            // Первичка main.rs: bind (202) → banner (209) — адрес
+            // баннера = занятый сокет, bind НЕ может упасть после
+            // печати. Значит refused на свежем адресе = демон УМЕР
+            // после баннера (в рантайме): exit-проверка выше ловит это
+            // на витках чтения; зомби-окно (канал пуст, процесс мёртв)
+            // = connect-оборот call_raw (окно зафиксировано 30 с).
+            Daemon::wait_ready(&mut child, &addr, &seen, &log);
+            DAEMONS.lock().expect("реестр не отравлен").push((
+                addr.clone(),
+                child.id(),
+                true,
+                std::sync::Arc::clone(&log),
+            ));
+            return Daemon {
+                child,
+                addr,
+                log,
+                _stdout_lines: rx,
+            };
+        }
+    }
+    // Убить и дождаться до паники: паникующий тест не обязан оставлять
+    // процесс-зомби (клинч `zombie_processes` это и ловит).
+    let _ = child.kill();
+    let exit = child.wait().ok();
+    let _ = exit;
+    // Причина отказа из stderr читается ТОЛЬКО если процесс сам завершился:
+    // на живом демоне трубке конца нет, и чтение вернуло бы нас к той же
+    // вешалке, из которой мы только что вышли. Это не косметика — на
+    // windows-раннере именно эта строка отличит «mlock отказал» от «тест
+    // не дождался баннера».
+    let reason = log.lock().expect("лог не отравлен").clone();
+    panic!(
+        "демон не напечатал баннер за {:?}; stdout: {seen:?} stderr: {reason:?}",
+        started.elapsed()
+    );
 }
 
-/// Уникальный tmp-путь теста. `std::process::id()` НЕ уникален: `cargo test`
-/// = ОДИН процесс, тесты живут в ПОТОКАХ — два теста с одним PID-суффиксом
-/// пишут в ОДИН каталог/файл (первичка CI ubuntu job 120977735379 @b68e853:
-/// `config_write…` получил ECONNREFUSED — демон стартовал на чужом
-/// перезаписанном `config` и отказался (rc=2), порт не занят). Суффикс =
-/// PID + атомарный счётчик + наносекунды (std-only, dev-deps не заводим).
+/// Уникальный tmp-путь теста. `cargo test` = ОДИН процесс, тесты в ПОТОКАХ —
+/// два теста с одним PID-суффиксом пишут в ОДИН каталог (первичка #224).
+/// Уникальность = гонка-создание КАТАЛОГА (`create_dir` краснеет на
+/// коллизии); возврат = ПУТЬ ВНУТРИ каталога (parent существует = инвариант
+/// потребителей; каталог удаляется `remove_dir_all`-ем теста).
 fn unique_tmp_path(prefix: &str) -> std::path::PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or_default();
-    std::env::temp_dir().join(format!("{prefix}-{}-{seq}-{nanos}", std::process::id()))
+    let root = std::env::temp_dir();
+    for _ in 0..128 {
+        let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or_default();
+        let dir = root.join(format!("{prefix}-{}-{seq}-{nanos}", std::process::id()));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return dir.join("p"),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => panic!("unique_tmp_path({prefix}): {e}"),
+        }
+    }
+    panic!("unique_tmp_path: 128 коллизий имени {prefix}");
 }
 
 /// Путь-игла E-контура #219: СУЩЕСТВУЮЩИЙ пустой файл конфигурации в tmp.
@@ -190,16 +273,64 @@ fn unique_tmp_path(prefix: &str) -> std::path::PathBuf {
 /// отказ старта (#185-контур: опечатка в пути обязана быть названа), а харнесу
 /// нужен ровно «файла нет по существу» = пустые значения. Файл создаётся на
 /// вызове: CI-раннер обязан найти его, а не оператора tmp-содержимое.
+/// Игла E-контура = ОДИН путь на весь тест-процесс (PID-имя): пересоздание
+/// на каждый вызов роняло предыдущий демон на `MissingExplicitPath` (файл
+/// исчез) = rc=2 = порт не занят = «сокет/ответ недоступны 30 с» (первичка
+/// #224 R4: харнесевы ноги гоняют демонов параллельно).
+static HARNESS_EMPTY_CONFIG: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
 fn fasad_empty_config() -> std::path::PathBuf {
-    let path = unique_tmp_path("fasad-harness-empty.cfg");
-    std::fs::write(&path, "# fasad harness (#219): empty = no values\n").expect("игла создаётся");
-    path
+    HARNESS_EMPTY_CONFIG
+        .get_or_init(|| {
+            let path = unique_tmp_path("fasad-harness-empty.cfg");
+            std::fs::write(&path, "# fasad harness (#219): empty = no values\n")
+                .expect("игла создаётся");
+            path
+        })
+        .clone()
+}
+
+impl Daemon {
+    /// Снимок stderr-лога (#224 R4): вшивать в assert-сообщения live-ног.
+    fn log_tail(&self) -> String {
+        self.log.lock().expect("лог не отравлен").clone()
+    }
+}
+
+impl Daemon {
+    /// Порт отвечает? (первичка #224 R4: refused при «живом» Daemon =
+    /// демон умер/убит соседом; тест печатает это поле в панике).
+    #[allow(dead_code)]
+    fn port_open(&self) -> bool {
+        TcpStream::connect(&self.addr).is_ok()
+    }
+
+    #[allow(dead_code)]
+    fn pid(&self) -> u32 {
+        self.child.id()
+    }
 }
 
 impl Drop for Daemon {
     fn drop(&mut self) {
+        // #224 R4: SIGTERM = axum graceful: ACCEPT-ЦИКЛ закрывается МГНОВЕННО,
+        // «остальные запросы дозавершаются» (первичка docs/axum/src/serve.rs:
+        // `Listener::poll_accept` → `loop { ... self.accepting.get() ... }`
+        // stop, а graceful = только активные соединения). Сосед по тесту,
+        // стартующий в окне kill→reap, ловит ECONNREFUSED 30 с = весь
+        // призрак-класс. Graceful-дрейна у харнеса нет: shutdown-контур
+        // демона (SIGTERM-флаг) = отдельный продукт-контур, не тестовый.
+        // Харнес = SIGKILL: ядро закрывает listening-сокет сразу, освободив
+        // порт для следующего демона без окна refuse.
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Ok(mut reg) = DAEMONS.lock() {
+            for e in reg.iter_mut() {
+                if e.0 == self.addr {
+                    e.2 = false;
+                }
+            }
+        }
     }
 }
 
@@ -228,6 +359,38 @@ impl Reply {
 
 /// Один запрос на один сокет: `Connection: close` даёт конец тела без разбора
 /// чанков и keep-alive, т.е. клиент остаётся ~30 строк.
+/// Поток-читатель строк stdout: ПОЖИЗНЕННЫЙ, не до баннера (#224 R4):
+/// раннее закрытие читающей стороны трубки = EPIPE в `print!` демона =
+/// паника stdio-локера (первичка: «паника std/src/io/stdio.rs:1168» в
+/// stderr-реестре, ранний exit, порт пуст = «30 с refused на живом
+/// демоне»). Чанк-читатель гоняет строки в канал, байты — в sink.
+fn stdout_reader(stdout: std::process::ChildStdout) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read as _;
+        let mut reader = stdout;
+        let mut carry = String::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let text = String::from_utf8_lossy(&chunk[..n]).into_owned();
+                    carry.push_str(&text);
+                    while let Some(pos) = carry.find('\n') {
+                        let line = carry[..=pos].to_owned();
+                        carry.drain(..=pos);
+                        if tx.send(line).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    });
+    rx
+}
+
 fn call(addr: &str, method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]) -> Reply {
     let mut req = format!(
         "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\nConnection: close\r\n",
@@ -243,29 +406,74 @@ fn call(addr: &str, method: &str, path: &str, headers: &[(&str, &str)], body: &[
     call_raw(addr, &bytes)
 }
 
+/// Реестр демонов процесса (#224 R4): addr → (pid, жив, хвост stderr).
+/// Первичка 30-с refused при «живом» демоне: реестр отвечает «жив ли, pid,
+/// что говорил» — диагностика без гадания.
+type DaemonReg = Vec<(String, u32, bool, std::sync::Arc<std::sync::Mutex<String>>)>;
+
+static DAEMONS: std::sync::Mutex<DaemonReg> = std::sync::Mutex::new(Vec::new());
+
+fn daemon_diag(addr: &str) -> String {
+    let reg = DAEMONS.lock().expect("реестр не отравлен");
+    let entry = reg.iter().find(|(a, _, _, _)| a == addr);
+    match entry {
+        Some((_, pid, alive, log)) => {
+            let v = log.lock().expect("лог не отравлен").clone();
+            let n = v.chars().count();
+            let tail: String = v.chars().skip(n.saturating_sub(600)).collect();
+            format!("pid={pid} жив={alive} stderr={tail:?}")
+        }
+        None => "в реестре (этот процесс) не значится".to_string(),
+    }
+}
+
 /// То же, но сырыми байтами: нужно там, где `&str`-заголовок не выражает
 /// намерение (битый chunked, значение заголовка вне UTF-8).
 fn call_raw(addr: &str, bytes: &[u8]) -> Reply {
-    let mut sock = TcpStream::connect(addr).expect("сокет поднимается");
-    sock.set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("таймаут ставится");
-    sock.write_all(bytes).expect("запрос уходит");
-    sock.flush().expect("флуш");
-    // Win-контра (CI #224): `Connection: close` + 10054 после финального
-    // пакета — данные УЖЕ в буфере, read_to_end отдаёт их с ошибкой; на
-    // unix reset = EOF. Заголовок прочитан = ответ принят.
+    // #224 R4, первичка: stdout пайпа = FULLY-BUFFERED: баннер демона
+    // сидел в 8-КиБ буфере, харнес ждал «listening» 15 с (таймаут =
+    // «stdout: ""»), убивал ЖИВОЙ демон и тест получал «30 с refused на
+    // мёртвом порту» — весь призрак-класс. Продукт = flush после баннера
+    // (main.rs), харнес = своя оборона: connect к порту = готовность
+    // (addr из env-контракта FASAD_PORT=0 берётся из LOCAL_ADDR-файла
+    // ниже), мёртвый процесс = exit-код в панике.
     let mut raw = Vec::new();
-    sock.read_to_end(&mut raw).unwrap_or_default();
+    let started = Instant::now();
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        raw.clear();
+        if let Ok(mut sock) = TcpStream::connect(addr) {
+            // Таймауты ДО операций: SYN-дроп на перегруженном раннере
+            // вешает connect, read-таймаут = ответ до EOF («Connection:
+            // close»).
+            sock.set_write_timeout(Some(Duration::from_secs(5)))
+                .expect("write-таймаут ставится");
+            sock.set_read_timeout(Some(Duration::from_secs(10)))
+                .expect("read-таймаут ставится");
+            let written = sock.write_all(bytes).and_then(|()| sock.flush());
+            if written.is_ok() {
+                let _ = sock.read_to_end(&mut raw);
+                if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                    return parse_reply(&raw);
+                }
+            }
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "сокет/ответ недоступны 30 с ({attempt} попыток): addr {addr}, байты {}. Демон: {}",
+            raw.len(),
+            daemon_diag(addr)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn parse_reply(raw: &[u8]) -> Reply {
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
-        .unwrap_or_else(|| {
-            panic!(
-                "ответ без заголовков: {} байт, начало {:?}",
-                raw.len(),
-                &raw[..raw.len().min(120)]
-            )
-        });
+        .expect("заголовок есть (зуб в call_raw)");
     let head = String::from_utf8_lossy(&raw[..split]).into_owned();
     let chunked = head.to_lowercase().contains("transfer-encoding: chunked");
     let mut lines = head.split("\r\n");
@@ -363,7 +571,7 @@ fn anonymize_body(text: &str, spans: &[(String, usize, usize)]) -> Vec<u8> {
 
 #[test]
 fn stateless_roundtrip_survives_a_real_socket() {
-    let d = Daemon::start(&[]);
+    let d = Daemon::start::<&str>(&[]);
     let spans = analyzed_spans(&d.addr, TWO_SPAN_TEXT);
     assert_eq!(spans.len(), 2, "ИНН + СНИЛС: {spans:?}");
 
@@ -496,7 +704,7 @@ fn session_mode_roundtrips_surrogates_and_teardown() {
 #[test]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // в тестах паника = красный CI, это канал ответа
 fn health_exposes_degradation_counters_on_the_wire() {
-    let d = Daemon::start(&[]);
+    let d = Daemon::start::<&str>(&[]);
     let reply = call(&d.addr, "GET", "/health", &[], b"");
     assert_eq!(reply.status, 200, "health: {}", reply.text());
     let v = reply.json();
@@ -859,7 +1067,7 @@ fn non_loopback_bind_panics_the_test_instead_of_hanging_it() {
 /// лимита, то есть демон врал о причине отказа.
 #[test]
 fn broken_chunked_body_is_400_bad_body_not_413() {
-    let d = Daemon::start(&[]);
+    let d = Daemon::start::<&str>(&[]);
     let req = b"POST /v1/analyze HTTP/1.1\r\n\
                 Host: x\r\n\
                 Content-Type: application/json\r\n\
@@ -1899,7 +2107,7 @@ fn dropped_stream_reports_abort_in_error_frame() {
 /// собственном маршруте — `400 policy_not_applicable`.
 #[test]
 fn proxy_refusals_do_not_open_a_socket() {
-    let d = Daemon::start(&[]);
+    let d = Daemon::start::<&str>(&[]);
     let reply = call(
         &d.addr,
         "POST",
@@ -2037,7 +2245,7 @@ fn banner_carries_ui_line_with_the_actual_port() {
     // соответствовать (тот же смысл, что у `local_addr` в основном баннере).
     // `Daemon::start` забирает stdout в читатель-поток (баннерный контракт
     // `Self.addr`), поэтому строки теста приходят каналом — тот же механизм.
-    let mut d = Daemon::start(&[]);
+    let mut d = Daemon::start::<&str>(&[]);
     let out = d.child.stdout.take();
     let mut seen = String::new();
     match out {
@@ -2145,14 +2353,21 @@ fn fresh_home_starts_and_explicit_missing_path_refuses_live() {
     // 1a) свежая установка: HOME tempdir, файла НЕТ, `FASAD_CONFIG` снят
     //     (`env_remove`, а не игла-пустышка) = продуктовый путь из блокера
     //     #224: резолв канона → файла нет → дефолты, старт.
-    let d = Daemon::start(&[("HOME", home.as_str()), ("FASAD_CONFIG", "")]);
-    let r = call(&d.addr, "GET", "/health", &[], b"");
+    let xdg_home = format!("{home}/.config");
+    let d1 = Daemon::start(&[
+        ("HOME", home.as_str()),
+        ("XDG_CONFIG_HOME", xdg_home.as_str()),
+        ("FASAD_CONFIG", ""),
+    ]);
+    let r = call(&d1.addr, "GET", "/health", &[], b"");
     assert_eq!(
-        r.status, 200,
-        "fresh-install обязан стартовать: {}",
-        r.status
+        r.status,
+        200,
+        "fresh-install обязан стартовать: {} (stderr демона: {})",
+        r.status,
+        d1.log_tail()
     );
-    drop(d);
+    drop(d1);
     // 1b) дискриминатор: живой файл по каноническому пути (тот же свежий
     //     HOME) читается продуктивным путём — баннер = порт из файла, а не
     //     `FASAD_PORT=0` харнеса. Прямой спавн: `Daemon::start` перебивает
@@ -2169,9 +2384,14 @@ fn fresh_home_starts_and_explicit_missing_path_refuses_live() {
         "FASAD_PORT=0\nFASAD_HF_HOST=https://from-file.example.test\n",
     )
     .expect("файл");
-    let d = Daemon::start(&[("HOME", home.as_str()), ("FASAD_CONFIG", "")]);
+    let xdg_home = format!("{home}/.config");
+    let d2 = Daemon::start(&[
+        ("HOME", home.as_str()),
+        ("XDG_CONFIG_HOME", xdg_home.as_str()),
+        ("FASAD_CONFIG", ""),
+    ]);
     {
-        let r = call(&d.addr, "GET", "/v1/config", &[], b"");
+        let r = call(&d2.addr, "GET", "/v1/config", &[], b"");
         let j = r.json();
         let row = j["entries"]
             .as_array()
@@ -2181,11 +2401,16 @@ fn fresh_home_starts_and_explicit_missing_path_refuses_live() {
             .expect("HF_HOST в таблице");
         assert_eq!(
             row["value"], "https://from-file.example.test",
-            "файл по каноническому пути обязан читаться (product path): {j}"
+            "файл по каноническому пути обязан читаться (product path;              file-объект ниже = где демон искал): {j}"
         );
         assert_eq!(row["source"], "file", "{j}");
+        assert_eq!(
+            j["file"]["exists"].as_bool(),
+            Some(true),
+            "витрина обязана видеть файл ноги 1b (иначе = путь-игла мимо): {j}"
+        );
     }
-    drop(d);
+    drop(d2);
     // 2) FASAD_CONFIG в никуда (явный) = rc=2 + имя переменной в stderr.
     let out = Command::new(env!("CARGO_BIN_EXE_fasad"))
         .env(
@@ -2241,9 +2466,14 @@ fn harness_isolates_the_operators_config_file() {
     //    файл читается. Дискриминатор = НЕ баннер (прямые read_line =
     //    CI-гонка с буфером, #224) и НЕ порт-контент (8765 на shared-раннере
     //    = гонка): GET /v1/config = детерминированный ответ.
-    let d = Daemon::start(&[("HOME", home.as_str()), ("FASAD_CONFIG", "")]);
+    let xdg_home = format!("{home}/.config");
+    let d2 = Daemon::start(&[
+        ("HOME", home.as_str()),
+        ("XDG_CONFIG_HOME", xdg_home.as_str()),
+        ("FASAD_CONFIG", ""),
+    ]);
     {
-        let r = call(&d.addr, "GET", "/v1/config", &[], b"");
+        let r = call(&d2.addr, "GET", "/v1/config", &[], b"");
         let j = r.json();
         let row = j["entries"]
             .as_array()
@@ -2257,11 +2487,19 @@ fn harness_isolates_the_operators_config_file() {
         );
         assert_eq!(row["source"], "file", "{j}");
     }
-    drop(d);
+    drop(d2);
 
-    // 2) Тот же HOME+файл, ИГЛА харнеса (пустой tmp-файл): файловое значение
-    //    исчезает (дефолт HF), т.е. изоляция даёт именно FASAD_CONFIG.
-    let d = Daemon::start(&[("HOME", home.as_str()), ("FASAD_PORT", "0")]);
+    // 2) Тот же HOME+файл, ИГЛА харнеса: файловое значение исчезает. Игла
+    //    = ЯВНЫЙ путь в tmp-файл с другим HF_HOST (`from-file2`): «исчез»
+    //    = значение взялось НЕ из канона (витрина различает иглу/канон),
+    //    зуб стал сильнее прежнего «не канон = дефолт».
+    let needle = dir.join("isolation-needle.cfg");
+    std::fs::write(&needle, "FASAD_HF_HOST=https://needle.example.test\n").expect("игла");
+    let d = Daemon::start(&[
+        ("HOME", home.as_str()),
+        ("FASAD_PORT", "0"),
+        ("FASAD_CONFIG", needle.to_str().expect("utf-8 путь иглы")),
+    ]);
     {
         let r = call(&d.addr, "GET", "/v1/config", &[], b"");
         let j = r.json();
@@ -2271,11 +2509,12 @@ fn harness_isolates_the_operators_config_file() {
             .iter()
             .find(|e| e["key"] == "FASAD_HF_HOST")
             .expect("HF_HOST в таблице");
-        assert_ne!(
+        assert_eq!(
             row["value"].as_str().unwrap_or_default(),
-            "https://operator.example.test",
-            "харнес-игла не изолировала файл оператора: {j}"
+            "https://needle.example.test",
+            "игла обязана вытеснить канон-файл оператора: {j}"
         );
+        assert_eq!(row["source"], "file", "{j}");
     }
     std::fs::remove_dir_all(&dir).ok();
 }

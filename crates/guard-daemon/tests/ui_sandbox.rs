@@ -18,7 +18,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![forbid(unsafe_code)]
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -28,9 +28,98 @@ use guard_daemon::ui::CSP;
 struct Daemon {
     child: Child,
     addr: String,
+    /// Общий лог stderr демона (#224 R4): диагностика отказов после баннера.
+    log: std::sync::Arc<std::sync::Mutex<String>>,
+    /// Держим канал строк stdout: ранняя гибель `rx` (паника теста) =
+    /// читатель выходит = трубка закрывается = EPIPE-паника print'а
+    /// ЖИВОГО демона (#224 R4, stdio.rs:1168).
+    _stdout_lines: std::sync::mpsc::Receiver<String>,
+}
+
+/// Поток-читатель stdout = пожизненный (#224 R4: раннее закрытие трубки =
+/// EPIPE-паника print'а демона, stdio.rs:1168); строки = канал, байты —
+/// sink процесса.
+fn stdout_reader(stdout: std::process::ChildStdout) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read as _;
+        let mut reader = stdout;
+        let mut carry = String::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let text = String::from_utf8_lossy(&chunk[..n]).into_owned();
+                    carry.push_str(&text);
+                    while let Some(pos) = carry.find('\n') {
+                        let line = carry[..=pos].to_owned();
+                        carry.drain(..=pos);
+                        if tx.send(line).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    });
+    rx
+}
+
+/// Читатель stderr демона в общий лог (#224 R4 диагностика: отказ после
+/// баннера обязан называть причину, а не молчать).
+fn stderr_log(child: &mut std::process::Child) -> std::sync::Arc<std::sync::Mutex<String>> {
+    let log = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    {
+        let log = std::sync::Arc::clone(&log);
+        let mut stderr = child.stderr.take().expect("stderr перехвачен");
+        std::thread::spawn(move || {
+            use std::io::Read as _;
+            let mut chunk = [0u8; 1024];
+            loop {
+                match stderr.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        log.lock()
+                            .expect("лог не отравлен")
+                            .push_str(&String::from_utf8_lossy(&chunk[..n]));
+                    }
+                }
+            }
+        });
+    }
+    log
 }
 
 impl Daemon {
+    /// Готовность = ОТВЕТИВШИЙ сокет, не баннер (#224 R4): connect-проба с
+    /// ливенес-проверкой до возврата addr (мёртвый процесс = exit-код).
+    fn wait_ready(
+        child: &mut Child,
+        addr: &str,
+        seen: &str,
+        log: &std::sync::Arc<std::sync::Mutex<String>>,
+    ) {
+        let ready = Instant::now();
+        loop {
+            if let Some(status) = child.try_wait().expect("статус читается") {
+                let buf = log.lock().expect("лог не отравлен").clone();
+                panic!(
+                    "демон умер в окне готовности (rc={:?}, {addr}); stdout: {seen:?} stderr: {buf:?}",
+                    status.code()
+                );
+            }
+            if TcpStream::connect(addr).is_ok() {
+                return;
+            }
+            assert!(
+                ready.elapsed() < Duration::from_secs(10),
+                "порт {addr} не открылся за 10 с; stdout: {seen:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn start(env: &[(&str, &str)]) -> Self {
         // #185: full-бинарь (feature `ort-inference`) без весов не стартует —
         // live-контур файла (UI-протокол, каскад-0-ожидания, ревью #87) =
@@ -74,6 +163,14 @@ impl Daemon {
             // Some(кеш) = stage cascade-0+models = харнес красный).
             .env_remove("FASAD_TEST_TRAY_CONTOUR")
             .env_remove("FASAD_THREADS")
+            // #224 R4 (первичка CI ubuntu: витрина вернула
+            // `file.path=/home/runner/.config/…` при HOME-игле = tempdir):
+            // канон-резолв config-файла = `XDG_CONFIG_HOME` > HOME, и
+            // XDG-переменные раннера/машины пробивают HOME-иглу (на
+            // ubuntu-раннере задан XDG_DATA_HOME — наследие среды =
+            // невоспроизводимый флейк). Иглы изоляции = ВСЕ канон-переменные.
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_DATA_HOME")
             .env_remove("FASAD_TIMEOUT_MS")
             // #219 (E-контур): харнес обязан быть изолирован от файла
             // конфигурации. Файл оператора (`~/.config/fasad/config`) на
@@ -92,20 +189,8 @@ impl Daemon {
         }
         let mut child = cmd.spawn().expect("бинарь фасада запускается");
         let stdout = child.stdout.take().expect("stdout перехвачен");
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                    break;
-                }
-                if tx.send(line.clone()).is_err() {
-                    break;
-                }
-            }
-        });
+        let rx = stdout_reader(stdout);
+        let log = stderr_log(&mut child);
         let started = Instant::now();
         let mut seen = String::new();
         while started.elapsed() < Duration::from_secs(25) {
@@ -122,7 +207,19 @@ impl Daemon {
                     .next()
                     .expect("адрес заканчивается путём")
                     .to_owned();
-                return Self { child, addr };
+                Self::wait_ready(&mut child, &addr, &seen, &log);
+                DAEMONS.lock().expect("реестр не отравлен").push((
+                    addr.clone(),
+                    child.id(),
+                    true,
+                    std::sync::Arc::clone(&log),
+                ));
+                return Self {
+                    child,
+                    addr,
+                    log,
+                    _stdout_lines: rx,
+                };
             }
         }
         let _ = child.kill();
@@ -142,12 +239,27 @@ impl Daemon {
 /// PID + атомарный счётчик + наносекунды (std-only, dev-deps не заводим).
 fn unique_tmp_path(prefix: &str) -> std::path::PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or_default();
-    std::env::temp_dir().join(format!("{prefix}-{}-{seq}-{nanos}", std::process::id()))
+    // Уникальность = гонка-создание КАТАЛОГА (`create_dir` краснеет на
+    // коллизии, EEXIST = шаг счётчика): наносекунды часов не гарантируют её
+    // между потоками одного процесса — на CI два теста получили ОДИН
+    // tempdir-путь (первичка #224 R4). Возврат = ПУТЬ ВНУТРИ каталога
+    // (существование parent = инвариант всех потребителей; каталог =
+    // то, что вызывающие удаляют `remove_dir_all`-ем в конце теста).
+    let root = std::env::temp_dir();
+    for _ in 0..128 {
+        let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or_default();
+        let dir = root.join(format!("{prefix}-{}-{seq}-{nanos}", std::process::id()));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return dir.join("p"),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => panic!("unique_tmp_path({prefix}): {e}"),
+        }
+    }
+    panic!("unique_tmp_path: 128 коллизий имени {prefix}");
 }
 
 /// Путь-игла E-контура #219: СУЩЕСТВУЮЩИЙ пустой файл конфигурации в tmp.
@@ -156,16 +268,52 @@ fn unique_tmp_path(prefix: &str) -> std::path::PathBuf {
 /// отказ старта (#185-контур: опечатка в пути обязана быть названа), а харнесу
 /// нужен ровно «файла нет по существу» = пустые значения. Файл создаётся на
 /// вызове: CI-раннер обязан найти его, а не оператора tmp-содержимое.
+/// Игла E-контура = ОДИН путь на весь тест-процесс (PID-имя): пересоздание
+/// на каждый вызов роняло предыдущий демон на `MissingExplicitPath` (файл
+/// исчез) = rc=2 = порт не занят = «сокет/ответ недоступны 30 с» (первичка
+/// #224 R4: харнесевы ноги гоняют демонов параллельно).
+static HARNESS_EMPTY_CONFIG: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
 fn fasad_empty_config() -> std::path::PathBuf {
-    let path = unique_tmp_path("fasad-harness-empty.cfg");
-    std::fs::write(&path, "# fasad harness (#219): empty = no values\n").expect("игла создаётся");
-    path
+    HARNESS_EMPTY_CONFIG
+        .get_or_init(|| {
+            let path = unique_tmp_path("fasad-harness-empty.cfg");
+            std::fs::write(&path, "# fasad harness (#219): empty = no values\n")
+                .expect("игла создаётся");
+            path
+        })
+        .clone()
+}
+
+impl Daemon {
+    /// Снимок stderr демона (#224 R4): вшивается в assert-сообщения live-ног,
+    /// чтобы «сокет недоступен» превращался в «демон сказал X».
+    #[allow(dead_code)]
+    fn log_tail(&self) -> String {
+        self.log.lock().expect("лог не отравлен").clone()
+    }
 }
 
 impl Drop for Daemon {
     fn drop(&mut self) {
+        // #224 R4: SIGTERM = axum graceful: ACCEPT-ЦИКЛ закрывается МГНОВЕННО,
+        // «остальные запросы дозавершаются» (первичка docs/axum/src/serve.rs:
+        // `Listener::poll_accept` → `loop { ... self.accepting.get() ... }`
+        // stop, а graceful = только активные соединения). Сосед по тесту,
+        // стартующий в окне kill→reap, ловит ECONNREFUSED 30 с = весь
+        // призрак-класс. Graceful-дрейна у харнеса нет: shutdown-контур
+        // демона (SIGTERM-флаг) = отдельный продукт-контур, не тестовый.
+        // Харнес = SIGKILL: ядро закрывает listening-сокет сразу, освободив
+        // порт для следующего демона без окна refuse.
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Ok(mut reg) = DAEMONS.lock() {
+            for e in reg.iter_mut() {
+                if e.0 == self.addr {
+                    e.2 = false;
+                }
+            }
+        }
     }
 }
 
@@ -191,6 +339,27 @@ impl Reply {
     }
 }
 
+/// Реестр демонов процесса (#224 R4): addr → (pid, жив, хвост stderr).
+/// Первичка 30-с refused при «живом» демоне: реестр отвечает «жив ли, pid,
+/// что говорил» — диагностика без гадания.
+type DaemonReg = Vec<(String, u32, bool, std::sync::Arc<std::sync::Mutex<String>>)>;
+
+static DAEMONS: std::sync::Mutex<DaemonReg> = std::sync::Mutex::new(Vec::new());
+
+fn daemon_diag(addr: &str) -> String {
+    let reg = DAEMONS.lock().expect("реестр не отравлен");
+    let entry = reg.iter().find(|(a, _, _, _)| a == addr);
+    match entry {
+        Some((_, pid, alive, log)) => {
+            let v = log.lock().expect("лог не отравлен").clone();
+            let n = v.chars().count();
+            let tail: String = v.chars().skip(n.saturating_sub(600)).collect();
+            format!("pid={pid} жив={alive} stderr={tail:?}")
+        }
+        None => "в реестре (этот процесс) не значится".to_string(),
+    }
+}
+
 fn call(addr: &str, method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]) -> Reply {
     let mut req = format!(
         "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\nConnection: close\r\n",
@@ -211,28 +380,36 @@ fn call(addr: &str, method: &str, path: &str, headers: &[(&str, &str)], body: &[
     // reconnect ≤3 попытки, пауза 200 мс; после трёх пустых — panic (тест
     // обязан видеть красное, а не молча глотать). НЕ сужать решётку: 8 ног
     // = покрытие.
+    // #224 R4: reconnect-оборот: CI-раннер = «backlog заполнен» → SYN режет
+    // SYN/ACK → ECONNREFUSED; пустой ответ = RST-окно закрытия (win/unix).
+    // Бюджет окна 30 с (live-контур; CI-шаг = step-timeout 12 мин).
     let mut raw = Vec::new();
-    for attempt in 0..3 {
+    let started = std::time::Instant::now();
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
         raw.clear();
-        let mut sock = TcpStream::connect(addr).expect("сокет поднимается");
-        sock.set_read_timeout(Some(Duration::from_secs(15)))
-            .expect("таймаут ставится");
-        let written = sock.write_all(&bytes).and_then(|()| sock.flush());
-        if written.is_err() && attempt < 2 {
-            std::thread::sleep(Duration::from_millis(200));
-            continue; // сокет умер в RST-окне: переподключение
+        if let Ok(mut sock) = TcpStream::connect(addr) {
+            sock.set_read_timeout(Some(Duration::from_secs(15)))
+                .expect("таймаут ставится");
+            let _ = sock.write_all(&bytes).and_then(|()| sock.flush());
+            // Данные могут лежать в буфере вместе с ошибкой (10054):
+            // read_to_end отдаёт их, заголовок прочитан = ответ принят.
+            let _ = sock.read_to_end(&mut raw);
         }
-        // write-успех без ответа / пустой ответ = то же RST-окно.
-        let _ = sock.read_to_end(&mut raw);
         if raw.windows(4).any(|w| w == b"\r\n\r\n") {
             break;
         }
+        // Deadlines #224 R4: refused (демона нет на порту) = красное за ~2 с
+        // (полный цикл решётки не вешается на мёртвый демон), живой демон в
+        // RST/backlog-окне = окно 30 с.
         assert!(
-            attempt < 2,
-            "ответ без заголовков за 3 попытки (raw={} байт): сокет закрыт без              ответа (write-контра = EPIPE/ECONNRESET на unix, пустой raw =              winsock RST-окно): {addr}",
-            raw.len()
+            started.elapsed() < Duration::from_secs(30),
+            "сокет/ответ недоступны 30 с ({attempt} попыток): addr {addr}, байты {}. Демон: {}",
+            raw.len(),
+            daemon_diag(addr)
         );
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(100));
     }
     let split = raw
         .windows(4)
