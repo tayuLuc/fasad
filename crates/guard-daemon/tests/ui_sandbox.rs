@@ -213,7 +213,7 @@ fn call(addr: &str, method: &str, path: &str, headers: &[(&str, &str)], body: &[
         }
         assert!(
             attempt < 2,
-            "ответ без заголовков за 3 попытки: raw={} байт",
+            "ответ без заголовков за 3 попытки (raw={} байт): сокет закрыт без              ответа (write-контра = EPIPE/ECONNRESET на unix, пустой raw =              winsock RST-окно): {addr}",
             raw.len()
         );
         std::thread::sleep(Duration::from_millis(200));
