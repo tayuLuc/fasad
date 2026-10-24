@@ -124,6 +124,14 @@ pub const QUEUE_DEPTH: usize = 8;
 /// [`Config::stage`](crate::config::Config::stage) при заданном `model_dir`).
 pub const STAGE_MOUNTED: &str = "cascade-0+models";
 
+/// Метка ожидающего старта (#198, трей-контур): full-бинарь без весов поднял
+/// HTTP (UI + `/v1/status` + `/v1/models/fetch` живут), каскадов НЕТ.
+/// Отдельная от `cascade-0-only` строка обязательна: `X-Guard-Stage` =
+/// `cascade-0-only` на релизном бинаре = ложь «я легален» (зуб
+/// `startup_without_model_dir_refuses_the_full_build...`, #185), а «ожидающий»
+/// статус — не деградация защиты, а состояние доставки весов.
+pub const STAGE_PENDING: &str = "models-pending";
+
 /// Спан, пришедший из модельного каскада (координаты — байты, как у каскада 0).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelSpan {
@@ -189,7 +197,15 @@ impl std::fmt::Display for CascadeFailure {
         match self {
             // Текст запроса в причину не попадает: имена файлов и классы — да,
             // содержимое — нет (AGENTS: оригиналы `ПДн` не светятся в логах).
-            Self::Load(m) => write!(f, "модельный каскад не загружен: {m}"),
+            // #199: Load = путь назван первичкой (имена файлов, раскладка),
+            // путь ДОКАЧКИ добавляется здесь же: оператор Load-отказа — тот
+            // же win-двойной-клик, что и ModelsNotConfigured.
+            Self::Load(m) => write!(
+                f,
+                "модельный каскад не загружен: {m}; скачай веса: UI \
+                 (http://127.0.0.1:<порт>/ → «Скачать веса») или \
+                 scripts/fetch-models.sh (win: scripts\\fetch-models.ps1) (#199)"
+            ),
             Self::Inference(m) => write!(f, "сбой инференса: {m}"),
             Self::Timeout { budget_ms, stage } => {
                 write!(f, "инференс ({stage}) не уложился в {budget_ms} мс")
@@ -211,7 +227,10 @@ impl std::fmt::Display for CascadeFailure {
             Self::ModelsNotConfigured => write!(
                 f,
                 "FASAD_MODEL_DIR не задан: полный контур требует весов \
-                 (models/README.md в бандле); каскад-0-only — не продакшн-режим"
+                 (models/README.md в бандле); каскад-0-only — не продакшн-режим. \
+                 Скачай веса: UI (http://127.0.0.1:<порт>/ → «Скачать веса») \
+                 или scripts/fetch-models.sh (win: scripts\\fetch-models.ps1) — \
+                 путь докачки в тексте (#199)"
             ),
         }
     }
@@ -685,6 +704,61 @@ pub fn startup(cfg: &Config) -> Result<(), CascadeFailure> {
             Err(CascadeFailure::BuiltWithoutInference)
         }
     }
+}
+
+/// Чистый предикат «модельный отказ = доставка весов» (#198): варианты
+/// `Load`/`ModelsNotConfigured` — единственные, которые чинит кнопка
+/// «Скачать веса»; чистая часть решётки [`startup_pending_contour`]
+/// без флага трей-контура.
+#[must_use]
+pub fn is_model_delivery_failure(failure: &CascadeFailure) -> bool {
+    matches!(
+        failure,
+        CascadeFailure::Load(_) | CascadeFailure::ModelsNotConfigured
+    )
+}
+
+/// Чистый предикат «полный `model_dir` смонтирован» (#198, симметрия
+/// харнес-контура, ревью #203 §2.1): `FASAD_TEST_CASCADE0` на трей-мишени
+/// обязан давать каскад-0-семантику (харнес-инвариант #185), а не третий
+/// исход `models-pending`, где stage харнесу врёт. Формулировка без env:
+/// вызывающий (`Config::from_env`) спрашивает её, когда флаг выставлен.
+#[must_use]
+pub fn harness_dir_fully_mounted(model_dir: &Option<std::path::PathBuf>) -> bool {
+    model_dir
+        .as_deref()
+        .is_some_and(crate::weights::layout_complete)
+}
+
+/// Решётка ожидающего старта (#198): полный отказ модельного пути на
+/// desktop-контуре (фича `tray`, win/mac) НЕ есть отказ старта: демон
+/// поднимает HTTP (UI + `/v1/status` + `/v1/models/fetch` живут), stage =
+/// [`STAGE_PENDING`], кнопка «Скачать веса» достижима двойным кликом (issue
+/// #198: в MessageBox-окне отказа она недостижима по построению — UI не
+/// стартовал).
+///
+/// Рюлинг #185 (каскад-0-only молча = не продукт) для prod-контура НЕ
+/// тронут: headless-бинарь (`fasad` без фичи `tray`, systemd/докер) = по-
+/// прежнему `startup` → rc=2. Решётка = «трей + отказ именно МОДЕЛЬНОЙ
+/// ДОСТАВКИ» ([`CascadeFailure::Load`] / [`CascadeFailure::ModelsNotConfigured`]);
+/// `BuiltWithoutInference` (битая сборка), `Timeout` (битая машина) — не
+/// доставка весов, pending не чинит: старт краснеет как раньше.
+///
+/// Аргумент `contour` = compile-time-факт вызывающей мишени (`true` =
+/// трей-desktop win/mac, `false` = headless/иная мишень): env-граница (#192)
+/// при unset HOME резолвит Some(default-dir), при unset HOME = None — оба
+/// исхода = модельная доставка, «веса уже смонтированы» = не отказ и в
+/// решётку не попадает, `model_dir` в решении не участвует.
+#[must_use]
+pub fn startup_pending_of(contour: bool, failure: &CascadeFailure) -> bool {
+    contour && is_model_delivery_failure(failure)
+}
+
+/// То же, имя для вызова из `main` (тот же контракт; unit-контур — тест
+/// `pending_gate_is_tray_only_and_model_failures_only`).
+#[must_use]
+pub fn startup_pending_contour(contour: bool, failure: &CascadeFailure) -> bool {
+    startup_pending_of(contour, failure)
 }
 
 /// Бюджет загрузки весов при старте, мс (публичный геттер: константа живёт в
@@ -1737,6 +1811,19 @@ mod tests {
                 text.contains("models/README.md"),
                 "в тексте нет пути к инструкции: {text}"
             );
+            // #199: текст отказа обязан называть ПУТЬ ДОКАЧКИ (UI-кнопка +
+            // скрипт), а не только причину: оператор win-двойного-клика
+            // читает окно/консоль, а не docs. Зуб краснеет на возврате к
+            // «причине без действия».
+            assert!(
+                text.contains("Скачать веса") && text.contains("fetch-models"),
+                "в тексте отказа нет пути докачки (#199): {text}"
+            );
+            let load = CascadeFailure::Load("нет файла x.onnx".into()).to_string();
+            assert!(
+                load.contains("Скачать веса") && load.contains("fetch-models"),
+                "Load-отказ без пути докачки (#199): {load}"
+            );
         }
         #[cfg(not(feature = "ort-inference"))]
         assert_eq!(
@@ -1745,5 +1832,55 @@ mod tests {
             "каскад-0-бинарь (харнес-контур) без весов стартует"
         );
         assert_eq!(cfg.stage(), "cascade-0-only");
+    }
+
+    #[test]
+    fn pending_gate_is_tray_only_and_model_failures_only() {
+        // (a) headless/иная мишень (contour=false): НИКОГДА pending, ни при
+        // каком отказе (дискриминатор «prod fail-closed #185 цел»).
+        assert!(!startup_pending_of(
+            false,
+            &CascadeFailure::ModelsNotConfigured
+        ));
+        assert!(!startup_pending_of(
+            false,
+            &CascadeFailure::Load("x".into())
+        ));
+        // (b) трей-контур (contour=true): delivery-отказ (Load/
+        // ModelsNotConfigured) → pending; non-model (BuiltWithoutInference/
+        // Timeout) = не доставка весов → refuse (pending чинит ДОСТАВКУ, не
+        // сломанный бинарь).
+        assert!(startup_pending_of(
+            true,
+            &CascadeFailure::ModelsNotConfigured
+        ));
+        assert!(startup_pending_of(
+            true,
+            &CascadeFailure::Load("нет файла".into())
+        ));
+        assert!(!startup_pending_of(
+            true,
+            &CascadeFailure::BuiltWithoutInference
+        ));
+        assert!(!startup_pending_of(
+            true,
+            &CascadeFailure::Timeout {
+                budget_ms: 1,
+                stage: "x"
+            }
+        ));
+        // Env-обёртка main = та же решётка (зуб симметрии).
+        assert!(!startup_pending_contour(
+            false,
+            &CascadeFailure::ModelsNotConfigured
+        ));
+        assert!(startup_pending_contour(
+            true,
+            &CascadeFailure::ModelsNotConfigured
+        ));
+        // Строки stage дискриминированы (#185: pending ≠ cascade-0-only).
+        assert_eq!(STAGE_PENDING, "models-pending");
+        assert_ne!(STAGE_PENDING, "cascade-0-only");
+        assert_ne!(STAGE_PENDING, STAGE_MOUNTED);
     }
 }

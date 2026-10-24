@@ -10,7 +10,14 @@
   <body>
     <header>
       <h1>fasad — песочница</h1>
+      <!-- #201-добавка (оператор 23.10): режим vault = КОНФИГ демона (env при
+           старте, первичка config.rs from_env:466 / http.rs anonymize: mode из
+           Inner.config), НЕ запрос-параметр: UI-переключатель физически
+           невозможен без серверной части. Формулировка = человекочитаемый
+           факт + путь смены (env), смена дефолта = продукт-решение оператора
+           (issue #201, в комменте), UI его не делает молча. -->
       <p id="mode" class="mode">режим: запрашивается…</p>
+      <p id="modeHint" class="hint"></p>
     </header>
 
     <main>
@@ -29,6 +36,21 @@
         </div>
         <progress id="fetchBar" max="100" value="0" hidden></progress>
         <p id="fetchMsg" class="status" role="status"></p>
+      </section>
+
+      <!-- #198: баннер ожидающего старта. Заполняется из /health stage =
+           models-pending (app.js applyStage): модельный контур не смонтирован,
+           кнопки конвейера задизейблены с причиной, карточка весов выше =
+           действие. Пустой баннер = контур живой (ничего не рисуем). -->
+      <section class="pane pending" id="pendingPane" hidden>
+        <h2>Весов нет — песочница в ожидающем режиме</h2>
+        <p class="status" id="pendingText" role="status">
+          Модельный контур не смонтирован: разбор, обезличивание и прокси
+          отклоняются (503 models_pending). Скачай веса кнопкой выше
+          («Скачать веса»), после завершения <strong>перезапусти fasad</strong>
+          (трей: меню → Выход, затем запуск заново) — каскады монтируются на
+          старте.
+        </p>
       </section>
 
       <section class="pane">
@@ -56,11 +78,27 @@
           <div id="types" class="types">загружается…</div>
         </fieldset>
 
+        <!-- #201: конвейер = шаги 1-2-3 (порядок читается с глаз, документация
+             не нужна); неактивная кнопка = disabled + title с причиной очереди.
+             «Новая сессия» = сброс с явной формулировкой (не «Сброс сессии»). -->
+        <ol class="steps" id="steps" aria-label="шаги конвейера">
+          <li id="step1"><b>1</b> <span id="step1t">Разобрать</span></li>
+          <li id="step2"><b>2</b> <span id="step2t">Обезличить</span></li>
+          <li id="step3"><b>3</b> <span id="step3t">Развернуть</span></li>
+        </ol>
+        <div class="row">
+          <!-- #202: «Пример» = большой демо-документ (кнопка + автозаполнение
+               при первом открытии, localStorage-флаг «больше не показывать»).
+               Документ покрывает все 8 классов схемы + формы #200 (паспорт/
+               телефон) честными вхождениями. -->
+          <button id="btnDemo" type="button" title="большой демо-документ: 8 классов ПДн в деловом письме">Пример</button>
+          <label class="hint"><input id="demoNoAuto" type="checkbox"> автозаполнение примера не показывать</label>
+        </div>
         <div class="row">
           <button id="btnAnalyze" type="button">Разобрать</button>
-          <button id="btnAnon" type="button">Обезличить</button>
-          <button id="btnDean" type="button">Развернуть</button>
-          <button id="btnReset" type="button">Сброс сессии</button>
+          <button id="btnAnon" type="button" disabled title="сначала «Разобрать»">Обезличить</button>
+          <button id="btnDean" type="button" disabled title="сначала «Обезличить»">Развернуть</button>
+          <button id="btnReset" type="button">Новая сессия</button>
         </div>
         <p id="session" class="hint"></p>
         <p id="status" class="status" role="status"></p>
@@ -84,6 +122,62 @@
 
         <h2>Ответ</h2>
         <div id="out" class="out"></div>
+
+        <!-- #201: пара «что ушло / что вернулось» бок-о-бок; развёрнутый
+             текст НЕ затирает обезличенный (окна независимы, roundtrip
+             виден целиком). -->
+        <!-- #202: панель «В свой AI-чат» = ручная проверка оператора
+             (обезличенный → upstream через гард → ответ с токенами →
+             «Раскрыть ответ» = оригиналы в ответе ИИ). upstream = тот же
+             allowlist-контур #68 (X-Upstream-URL), адрес живёт в localStorage.
+             Шаг-4 подсказка = смысл проверки словами. -->
+        <div class="pane chat">
+          <h2>В свой AI-чат (через гард)</h2>
+          <div class="row">
+            <label class="block" for="upstream">Адрес чата (X-Upstream-URL, должен быть в FASAD_UPSTREAM_ALLOWLIST демона)</label>
+            <!-- placeholder без схемы: net-аудит статики (net_audit) запрещает
+                 абсолютные адреса в UI; адрес upstream вводит оператор -->
+            <input id="upstream" class="grow" type="text" placeholder="хост чата, напр. api.example.com/v1/chat/completions (https, адрес в allowlist демона)" autocomplete="off">
+            <input id="chatModel" type="text" placeholder="модель, напр. gpt-4o-mini" autocomplete="off">
+            <!-- #202: ключ апстрима = поле type=password (маскируется), летит
+                 только в заголовок Authorization запроса к СВОЕМУ гарду
+                 (loopback); carry_headers прокси (#68) переносит его апстриму;
+                 в localStorage не пишется (saveChatPrefs = адрес+модель). -->
+            <input id="chatKey" type="password" placeholder="ключ чата (Bearer, не сохраняется)" autocomplete="off">
+            <button id="btnChat" type="button" disabled title="сначала «Обезличить»">В чат через прокси</button>
+            <button id="btnReveal" type="button" disabled title="сначала «В чат через прокси»">Раскрыть ответ</button>
+          </div>
+          <!-- #203 ревью §4: прокси-кнопка = бонус КОРОТКИХ кусков (окно
+               экстрактора 256 subword'ов #84 режут не байты, а токены-подмены:
+               промер 3×stateless-токена OK, 4× = 502; session-метки 12 OK,
+               20 = 502). Полный документ = ручной цикл (кнопка «Раскрыть
+               вставленный» ниже), README §1 = оба пути. -->
+          <p class="hint">4-й шаг ручной проверки: вставь обезличенный в свой чат и сравни — смысл цел, ПДн нет. Прокси-кнопка = короткие куски (абзацы ≲350 Б, ≤3 подмены stateless / ≤12 session — промер #84); полный документ: «Скопировать обезличенный» → твой чат → вставь ответ в поле ниже → «Раскрыть вставленный».</p>
+          <h2>Ответ ИИ (с токенами)</h2>
+          <div id="outChat" class="out"></div>
+          <textarea id="chatPaste" rows="5" placeholder="…или вставь ответ из своего чата сюда (полный цикл без прокси: «Скопировать обезличенный» → твой чат → сюда)"></textarea>
+          <div class="row">
+            <button id="btnRevealPaste" type="button" disabled title="вставь текст ответа в поле выше">Раскрыть вставленный</button>
+          </div>
+          <h2>Ответ с оригиналами</h2>
+          <div id="outChatRevealed" class="out"></div>
+          <p id="chatStatus" class="status" role="status"></p>
+        </div>
+
+        <div class="cols">
+          <div>
+            <h2>
+              Что ушло (обезличено)
+              <button id="btnCopy" type="button" disabled title="сначала «Обезличить»">Скопировать обезличенный</button>
+            </h2>
+            <div id="outMasked" class="out"></div>
+          </div>
+          <div>
+            <h2>Исходник вернулся</h2>
+            <div id="outBack" class="out"></div>
+            <p id="roundtrip" class="status" role="status" hidden></p>
+          </div>
+        </div>
       </section>
     </main>
 

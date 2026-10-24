@@ -73,6 +73,14 @@ impl Daemon {
             .env("FASAD_TEST_CASCADE0", "1")
             .env_remove("FASAD_THREADS")
             .env_remove("FASAD_TIMEOUT_MS")
+            // #203 §2.1 (блокер R4): env-мишень #198 из оболочки НЕ
+            // наследуется: симметрия config.rs (флаг + трей-мишень +
+            // смонтированный HOME-дефолт = Some(кеш оператора)) на машине
+            // с весами красила харнес (28/4: stage cascade-0+models +
+            // модельные спаны; промер ревью на HOME оператора). Зубы
+            // pending-контура ставят флаг ЯВНО (env-пары теста применяются
+            // после remove в `Daemon::start`).
+            .env_remove("FASAD_TEST_TRAY_CONTOUR")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -610,6 +618,145 @@ fn full_bin_without_model_dir_refuses_to_start_before_binding() {
     assert!(
         !stdout.contains("listening"),
         "баннер напечатан до отказа: {stdout}"
+    );
+}
+
+/// #198 живая нога ожидающего старта (орт-контур `wire_e2e`): трей-решётка
+/// смодулирована env-мишенью (`FASAD_TEST_TRAY_CONTOUR`, primary: main.rs —
+/// симуляция compile-time-мишени, НЕ решения; `tray`-сборка = tray-check/
+/// verify-bundle), каталог весов = tmp-пусто (HOME-изолят #192-контур),
+/// НОГА = feature-off (CI-матрица, харнес-контур файла): env-мишень
+/// `FASAD_TEST_TRAY_CONTOUR` (симуляция compile-time-мишени `tray`/win/mac;
+/// решение `startup_pending_contour` от фичи НЕ зависит — unit-контур
+/// `pending_gate_is_tray_only_and_model_failures_only`) +
+/// `FASAD_TEST_CASCADE0` + tmp-пустой HOME = харнес cascade-0 (#185):
+/// `startup` = Ok, stage `cascade-0-only` (харнес легален), НЕ pending
+/// (решётка не трогает успешный старт) и НЕ rc=2 (флаг = харнес-контур,
+/// дефолт не подставлен, `BuiltWithoutInference` нет). Дискриминатор
+/// «харнес #185 цел на трей-мишени с флагом» (#203 §2.1): stage-зуб
+/// X-Stage + /v1/analyze = 200 (каскад-0 жив, не 503 pending).
+#[test]
+fn pending_flag_on_tray_contour_keeps_the_cascade0_harness() {
+    let home = std::env::temp_dir().join(format!("fasad198-hw-{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("HOME-изолят создаётся");
+    let d = Daemon::start(&[
+        ("FASAD_TEST_TRAY_CONTOUR", "1"),
+        ("FASAD_TEST_CASCADE0", "1"),
+        ("HOME", home.to_str().expect("HOME путь utf-8")),
+    ]);
+    let h = call(&d.addr, "GET", "/health", &[], b"");
+    assert_eq!(h.status, 200, "харнес cascade-0 поднят");
+    assert_eq!(
+        h.json()["stage"],
+        "cascade-0-only",
+        "флаг на трей-мишени = каскад-0-харнес, НЕ pending/не rc=2 (#203 §2.1)"
+    );
+    let a = call(
+        &d.addr,
+        "POST",
+        "/v1/analyze",
+        &[("content-type", "application/json")],
+        format!(r#"{{"text":"{TWO_SPAN_TEXT}"}}"#).as_bytes(),
+    );
+    assert_eq!(a.status, 200, "каскад-0-харнес анализирует (#185)");
+    assert_ne!(
+        a.json()["error"]["code"].as_str(),
+        Some("models_pending"),
+        "pending-код на харнесе = ложь stage (#203 §2.1)"
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// #198: живой pending-контур ТРЕЙ-МИШЕНИ (орт-фича: полный бинарь, живой
+/// двойной клик win/mac без весов = `ModelsNotConfigured` → решётка = true).
+/// Feature-off (CI-матрица) = SKIPPED-контракт файла (полного бинаря там
+/// нет; HTTP-контур pending покрывают `cascade_http` + unit `http` на
+/// lib-роутере, live = этот тест на ort-ноге + mac-промер).
+#[test]
+fn pending_tray_contour_serves_ui_and_refuses_model_routes() {
+    if !cfg!(feature = "ort-inference") {
+        eprintln!(
+            "SKIP|wire_e2e|pending-нога = full-бинарь (#185-контур: feature-off              cascade-0 стартует легально, ожидание не про него); live-контур              ort-фичи = cargo --features ort-inference"
+        );
+        return;
+    }
+    let home = std::env::temp_dir().join(format!("fasad198-home-{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("HOME-изолят создаётся");
+    let d = Daemon::start(&[
+        ("FASAD_TEST_TRAY_CONTOUR", "1"),
+        ("HOME", home.to_str().expect("HOME путь utf-8")),
+    ]);
+    // Баннер ждёт сам Daemon::start; здесь — контракты сокетов.
+    let h = call(&d.addr, "GET", "/health", &[], b"");
+    assert_eq!(h.status, 200, "health в pending = живая витрина");
+    assert_eq!(h.json()["stage"], "models-pending", "stage #198");
+    let a = call(
+        &d.addr,
+        "POST",
+        "/v1/analyze",
+        &[("content-type", "application/json")],
+        format!(r#"{{"text":"{TWO_SPAN_TEXT}"}}"#).as_bytes(),
+    );
+    assert_eq!(a.status, 503, "analyze в pending = 503, не 200-обман");
+    assert_eq!(
+        a.json()["error"]["code"],
+        "models_pending",
+        "отказ обязан быть своим кодом (#198: не молчание, не cascade-0-обман)"
+    );
+    let st = call(&d.addr, "GET", "/v1/status", &[], b"");
+    assert_eq!(
+        st.status, 200,
+        "витрина веса = 200 в pending (кнопка живёт)"
+    );
+    let ui = call(&d.addr, "GET", "/", &[], b"");
+    assert_eq!(
+        ui.status, 200,
+        "UI = 200 в pending (двойной клик доходит до кнопки)"
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// #198 вторая нога: та же решётка на смонтированном каталоге (tmp с 5/5
+/// файлов, размеры = манифест) НЕ заводит pending — старт обязан смонтировать
+/// каскады (ort-фича) = stage cascade-0+models. Живой ЛОАД требует настоящих
+/// ONNX (879 МБ в CI не заводятся, первичка файла), поэтому нога =
+/// feature-off-нелегальна (нет фичи → `BuiltWithoutInference` не про это):
+/// на ort-фиче проверка «решётка не сработала» = banner listening +
+/// stage != models-pending, с фолбэком на rc=2-load (орк-контур требует
+/// реальных весов). Фиксируем ОБА легальных исхода — red только pending.
+#[test]
+fn pending_gate_does_not_fire_on_complete_layout() {
+    if !cfg!(feature = "ort-inference") {
+        eprintln!("SKIP|wire_e2e|нога = ort-контур монтирования (см. выше)");
+        return;
+    }
+    // 5/5 файлов ПУСТЫМИ байтами с точными размерами манифеста невозможны
+    // (load их отвергнет); поэтому нога проверяет решётку на НЕполном
+    // каталоге, смонтированном ранее: здесь = «layout_complete(tmp) = false
+    // при пустом» = решёточный предикат (unit `pending_gate_...` покрыл);
+    // живая часть = pending НЕ поднимается, когда model_dir ЯВНО задан на
+    // несуществующий каталог и решётка трей-мишени НЕ активна (headless
+    // ноги: refuse rc=2 — дискриминатор контура).
+    let out = Command::new(env!("CARGO_BIN_EXE_fasad"))
+        .env("FASAD_BIND", "127.0.0.1")
+        .env("FASAD_PORT", "0")
+        .env("FASAD_MODEL_DIR", "/nonexistent-fasad198-dir")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("процесс стартует")
+        .wait_with_output()
+        .expect("процесс завершился");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "headless (без трей-мишени) с битым каталогом = rc=2, pending не протёк"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("скачай веса"),
+        "#199: Load-отказ без пути докачки: {err}"
     );
 }
 
@@ -1876,6 +2023,8 @@ fn banner_carries_ui_line_with_the_actual_port() {
             .env("FASAD_PORT", "0")
             .env_remove("FASAD_MODEL_DIR")
             .env("FASAD_TEST_CASCADE0", "1")
+            // #203 §2.1: env-мишень #198 не наследуется (`Daemon::start`).
+            .env_remove("FASAD_TEST_TRAY_CONTOUR")
             .env_remove("FASAD_THREADS")
             .env_remove("FASAD_TIMEOUT_MS")
             .stdin(Stdio::null())

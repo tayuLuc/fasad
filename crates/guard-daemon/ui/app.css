@@ -179,19 +179,104 @@ code {
   font-size: 12px;
 }
 
+/* #201 п.4: status-полоса = главный канал подсказок (первичка: 13px hint
+   оператор не замечал, «Развернуть при пустом masked» объяснялось мелким
+   текстом) — крупнее и жирнее базового текста. */
 .status {
   margin: 12px 0 0;
-  min-height: 20px;
-  padding: 6px 10px;
+  min-height: 24px;
+  padding: 8px 12px;
   border-radius: 7px;
   background: var(--bg);
   border: 1px solid var(--line);
-  font-size: 13px;
+  font-size: 15px;
+  font-weight: 500;
   white-space: pre-wrap;
 }
 
 .status[data-kind="err"] {
   border-color: var(--block);
+}
+
+/* #201 п.1: шаги конвейера над кнопками (1 Разобрать → 2 Обезличить →
+   3 Развернуть). .active у текущего шага рисует app.js (setStepActive). */
+.steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  list-style: none;
+  margin: 14px 0 2px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.steps li {
+  border-bottom: 2px solid transparent;
+  padding: 2px 2px 3px;
+}
+
+.steps li b {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  line-height: 20px;
+  text-align: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  margin-right: 6px;
+}
+
+.steps li.active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+/* #201 п.2: пара окон результата бок-о-бок (stack на узком экране). */
+.cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.cols h2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+@media (max-width: 820px) {
+  .cols {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* #202: панель «В свой AI-чат» + растущие поля строки (input в .row не
+   сжимает placeholder до нечитаемого). */
+.pane.chat {
+  margin-top: 12px;
+}
+
+.row input.grow,
+.row .grow {
+  flex: 1;
+  min-width: 120px;
+}
+
+/* #201 fallback копирования: textarea вне экрана (класс вместо inline-стиля
+   — style-src CSP, контракт песни). */
+.clip-box {
+  position: fixed;
+  top: -1000px;
+  left: 0;
+}
+
+/* #198: баннер ожидающего старта (карточка веса = действие, баннер = факт). */
+.pane.pending .status {
+  border-color: var(--accent);
+  font-weight: 400;
 }
 
 .painted,

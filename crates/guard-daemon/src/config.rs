@@ -415,9 +415,84 @@ impl Config {
             // `BuiltWithoutInference` (дефолт = Some!), и тесты UI/pad-контура
             // краснели бы на машине с HOME. Машине оператора переменная не
             // нужна: она на пути без неё.
+            // Симметрия харнеса (ревью #203 §2.1): `FASAD_TEST_CASCADE0` =
+            // «харнес cascade-0», он отключает ОБЕ подстановки дефолта —
+            // базовую #192 и #198-ветку смонтированного дефолта. На
+            // трей-мишени с флагом был живой ALIVE-контур `models-pending`
+            // (third outcome: stage харнесу врал, flag документирован как
+            // cascade-0-харнес); теперь флаг на любой мишени = каскад-0
+            // семантика (feature-off легально, full-бинарь = честный
+            // `BuiltWithoutInference` текстом «бинарь без орт-контура», не
+            // pending-ложью). Зубы (env-граница читает процесс-среде, юнит
+            // = живой бинарь, первичка #192-контур): live-нога wire_e2e
+            // `pending_flag_on_tray_contour_keeps_the_cascade0_harness`
+            // (флаг+мишень+tmp-пустой HOME = cascade-0-only харнес, НЕ
+            // pending) и харнес-дискриминатор `Daemon::start`
+            // (`env_remove FASAD_TEST_TRAY_CONTOUR` = прогон с весами цел,
+            // ревью #203 §2.1-провен 28/4 → 32/0).
             match var {
                 "FASAD_MODEL_DIR" if std::env::var("FASAD_TEST_CASCADE0").is_ok() => {
-                    v.filter(|s| !s.trim().is_empty())
+                    // Харнес cascade-0 с ЯВНО названным каталогом обязан
+                    // сохранить путь (feature-off = зуб `BuiltWithoutInference`
+                    // «бинарь без орт при названных весах», ZUB В verify-bundle):
+                    // подстановка дефолта здесь = stage-ложь харнеса.
+                    let explicit = v.filter(|x| !x.trim().is_empty());
+                    if explicit.is_some() {
+                        return explicit;
+                    }
+                    // Симметрия (ревью #203 §2.1) ТОЛЬКО на трей-мишени
+                    // (compile-time cfg! + env-симуляция контура #198): трей
+                    // с флагом + смонтированным HOME-дефолтом (5/5) =
+                    // Some(каталог) = mounted-смысл (#198-зуб layout),
+                    // pending не заводится. На headless-мишени флаг = чистый
+                    // None = прежняя каскад-0-семантика харнеса wire_e2e
+                    // (#192): HOME=кеш оператора на feature-off давал Some =
+                    // `BuiltWithoutInference` = харнес красный (провен этого
+                    // прогона: stateless_roundtrip).
+                    let tray = cfg!(all(
+                        feature = "tray",
+                        any(target_os = "windows", target_os = "macos")
+                    )) || std::env::var("FASAD_TEST_TRAY_CONTOUR").is_ok();
+                    let resolved = std::env::var("HOME")
+                        .ok()
+                        .as_deref()
+                        .and_then(|h| default_model_dir_from_home(Some(h)));
+                    if tray && crate::cascades::harness_dir_fully_mounted(&resolved) {
+                        return resolved.map(|p| p.display().to_string());
+                    }
+                    None
+                }
+                // #198: симметричный ЗУБ — трей desktop-доставки (win/mac,
+                // feature `tray`) с РЕЗОЛВНУТЫМ HOME-дефолтом, где раскладка
+                // 5/5 СМОНТИРОВАНА, обязан стартовать МОНТИРОВАННЫМ
+                // (model_dir=Some → mount → cascade-0+models). Ветка живёт
+                // ВЫШЕ базовой (#192) именно потому, что match берёт первую
+                // совпавшую ветку: смонтированный дефолт = Some(dir), пустой
+                // дефолт = НЕ эта ветка (guard `layout_complete` ложный) →
+                // базовая #192 = Some(default-dir) → `startup` Load-отказ →
+                // pending-решётка main (#198 core). На feature-off/иной
+                // мишени guard ложный всегда (cfg! константа) = прежнее
+                // поведение (#185/#192 контуры целы; юниты:
+                // `default_model_dir_from_home_*` (форма резолва),
+                // `weights::tests::layout_complete_*` (5/5 против пустого),
+                // `cascades::tests::pending_gate_is_tray_only_and_model_failures_only`
+                // (решётка main на Load/ModelsNotConfigured),
+                // `pending_flag_on_tray_contour_keeps_the_cascade0_harness`
+                // (wire_e2e, live-флаг) + харнес-`env_remove` (ревью #203
+                // §2.2: прежняя ссылка на несуществующий юнит).
+                "FASAD_MODEL_DIR"
+                    if v.as_deref().is_none_or(|x| x.trim().is_empty())
+                        && cfg!(all(
+                            feature = "tray",
+                            any(target_os = "windows", target_os = "macos")
+                        ))
+                        && std::env::var("FASAD_TEST_CASCADE0").is_err() =>
+                {
+                    std::env::var("HOME").ok().as_deref().and_then(|h| {
+                        default_model_dir_from_home(Some(h)).and_then(|p| {
+                            crate::weights::layout_complete(&p).then(|| p.display().to_string())
+                        })
+                    })
                 }
                 "FASAD_MODEL_DIR" => v.filter(|s| !s.trim().is_empty()).or_else(|| {
                     std::env::var("HOME").ok().as_deref().and_then(|h| {

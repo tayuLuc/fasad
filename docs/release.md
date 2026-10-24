@@ -20,10 +20,35 @@
    манифест `models/manifest.tsv`) в архив не входят: бандл несёт
    `scripts/fetch-models.sh` + манифест + `models/README.md` (скачивание по
    commit-шейа со сверкой sha256, fail-closed). Full-бинарь **требует**
-   `FASAD_MODEL_DIR`: без весов старт отказывает (`ModelsNotConfigured`,
-   код 2, причина в stderr — #185, рюлинг оператора 22.10), молчаливой
-   деградации до `cascade-0-only` нет; stage каскад-0-only = харнес/тесты
-   (каскад-0-бинарь без фичи), не продакшн-режим.
+   `FASAD_MODEL_DIR`: без весов HEADLESS-бинарь отказывает (`ModelsNotConfigured`,
+   код 2, причина + путь докачки в stderr — #185/#199, рюлинг оператора 22.10),
+   молчаливой деградации до `cascade-0-only` нет; stage каскад-0-only = харнес/тесты
+   (каскад-0-бинарь без фичи), не продакшн-режим. ТРЕЙ-бинарь (win/mac,
+   `fasad-tray`) без весов = ОЖИДАЮЩИЙ СТАРТ (#198, замена утверждения #185
+   для desktop-контура): UI + `/v1/status` + кнопка «Скачать веса» живы,
+   `stage=models-pending`, модельные маршруты = 503 `models_pending` (не
+   каскад-0-обман); двойной клик по иконке доходит до кнопки доставки.
+   `MessageBox` отказа win-трея (#190) остаётся на НЕмодельных отказах
+   (схема/vault/конфиг) и += кнопка «Открыть инструкцию» (#198).
+   Форма «переменная не задана» = та же для unset HOME/USERPROFILE:
+   desktop-контур (#192 резолвит каталог по HOME, win — по USERPROFILE)
+   при unset = НЕ rc=2, а ожидающий старт трея (решётка `startup_pending*`
+   берёт отказ доставки; промер ревью #203 §2.3: `env -i` без HOME на
+   трей-бинаре = pending UI). Headless-бинарь при unset HOME = rc=2,
+   строка #192 в таблице выше про него и остаётся.
+   `FASAD_TEST_CASCADE0=1` (харнес-флаг #185) на feature-off-мишени =
+   каскад-0-семантика (харнес легален, дефолт не подставлен). На
+   ТРЕЙ-мишени с флагом раньше всходил ALIVE `models-pending` (stage
+   харнесу врёт, #203 §2.1); теперь трей+флаг = Some(каталог) при
+   СМОНТИРОВАННОМ HOME-дефолте = живой mounted-контур (не pending, не
+   каскад-0: трей с весами монтируется, feature-off + трей env-мишень +
+   смонтированный кеш = ALIVE `cascade-0+models`), при пустом = каскад-0
+   (зуб `pending_flag_on_tray_contour_keeps_the_cascade0_harness` +
+   `weights::tests::layout_complete_counts_five_of_five_only` +
+   `cascades::tests::pending_gate_is_tray_only_and_model_failures_only`).
+   Харнес тестов (`Daemon::start` wire/ui_sandbox) снимает
+   `FASAD_TEST_TRAY_CONTOUR` из унаследованной среды (#203 §2.1-блокер:
+   прогон на машине с весами = 32/0, не 28/4).
 3. Назвал `FASAD_MODEL_DIR`, а смонтировать нечем (бинарь без орт-контура
    или веса битые/отсутствуют) — демон **не стартует**
    (`CascadeFailure::BuiltWithoutInference` / `Load`, `cascades.rs:635-650`);
@@ -186,7 +211,7 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 | `FASAD_VAULT_MODE` | stateless-контур; значения `2\|3\|session\|stateless` | config.rs:345 |
 | `FASAD_MLOCK` | `strict` (`strict\|best_effort`) | config.rs:128-142 |
 | `FASAD_SCHEMA` | встроенный канон (`schema.default.json` в бандле) | config.rs:263, :425 |
-| `FASAD_MODEL_DIR` | full-бинарь без него **не стартует** (#185, `ModelsNotConfigured`); задан = `cascade-0+models` (отказ старта, если смонтировать нечем) | config.rs:424, cascades.rs:635-650 |
+| `FASAD_MODEL_DIR` | full-бинарь (headless) без него **не стартует** (#185, `ModelsNotConfigured`, текст += путь докачки #199); трей-бинарь (win/mac) = ожидающий UI `models-pending` с кнопкой «Скачать веса» (#198); задан = `cascade-0+models` (отказ старта, если смонтировать нечем) | config.rs, cascades.rs `startup`/`startup_pending*` |
 | `FASAD_UPSTREAM_ALLOWLIST` | пусто = наружу ходить некуда | config.rs:271, :431 |
 | `FASAD_PROXY_LOOPBACK_HTTP` | false | config.rs:277, :432 |
 
@@ -302,7 +327,9 @@ release.yml:428); имя артефакта dispatch-прогона несёт �
 39861721435/39863245106 — латенты #192-контура (HOME-дефолт веса́й в зубах
 `env -u FASAD_MODEL_DIR` = `FASAD_TEST_CASCADE0=1`-контур config.rs:419-421;
 strings-форма манифест-зуба = живой /v1/status-промер; win-отказ трея =
-модальный MessageBoxW #190 = `FASAD_WIN_NO_UI=1`), каждая строка — в
+модальный MessageBoxW #190 = `FASAD_WIN_NO_UI=1` (флаг читается в
+`tray/win.rs` с #198; до этого в Rust его НЕ БЫЛО — контракт живал только
+в комментарии verify-bundle: латент win-ячейки, закрыт этим PR), каждая строка — в
 CHANGELOG v0.1.1.
 
 Прогнать матрицу до слияния нельзя было: `gh workflow run release.yml --ref

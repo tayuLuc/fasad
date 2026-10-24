@@ -111,13 +111,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     //    отказывает здесь же (`ModelsNotConfigured`) — молчаливого
     //    `cascade-0-only` в релизном контуре нет; stage каскад-0-only легален
     //    только харнесам/тестам (бинарь без фичи).
-    if let Err(e) = guard_daemon::cascades::startup(&cfg) {
-        refuse_startup(&e);
-    }
+    // 4. #198 (win-UX первого запуска): ТРЕЙ-бинарь desktop-доставки при
+    //    отказе МОДЕЛЬНОЙ ДОСТАВКИ (Load/ModelsNotConfigured) НЕ выходит
+    //    rc=2 — стартует «ожидающим UI-режимом»: HTTP жив (UI + `/v1/status`
+    //    + кнопка «Скачать веса»), stage = `models-pending` (отдельная
+    //    строка: `cascade-0-only` на релизном бинаре = ложь stage-зуба
+    //    #185), модельные маршруты = 503 `models_pending` (не молчание, не
+    //    каскад-0-обман). Headless (`fasad` без фичи, systemd/докер) =
+    //    прежнее rc=2: prod fail-closed цел, решётка `startup_pending`
+    //    (cascades.rs) unit-контуром закрыта с обеих сторон. Прочие отказы
+    //    (схема/vault/конфиг/BuiltWithoutInference/Timeout) = refuse и в
+    //    трее: pending-режим чинит доставку весов, а не сломанный бинарь.
+    // Feature-мишень по канону крейта (`ui::router` #171): константа на
+    // feature-off мишени = false, без ветвей `#[cfg(not)]` и заглушек.
+    // Тестовый контур wire_e2e (живой бинарь, не lib-роутер): env-флаг
+    // симулирует трей-мишень на headless-двойнике `fasad` (орт-контур
+    // wire_e2e под `ort-inference` без `tray`-фичи: 879 МБ весов в live-тесты
+    // не заводятся, первичка файла; `tray`-сборка = `just tray-check`,
+    // live-нога = `verify-bundle`). Флаг не меняет РЕШИМКУ (`startup_pending
+    // / _contour` = contract unit), только compile-time-мишень — ровно так
+    // же, как `FASAD_TEST_CASCADE0` отключает подстановку дефолта (#192).
+    let tray_contour = cfg!(all(
+        feature = "tray",
+        any(target_os = "windows", target_os = "macos")
+    )) || std::env::var("FASAD_TEST_TRAY_CONTOUR").is_ok();
+    let pending = match guard_daemon::cascades::startup(&cfg) {
+        Ok(()) => false,
+        Err(e) => {
+            if guard_daemon::cascades::startup_pending_contour(tray_contour, &e) {
+                eprintln!(
+                    "fasad: весов нет ({e}) — ожидающий режим #198: UI поднят, \
+                     кнопка «Скачать веса» в песочнице; после скачка перезапусти"
+                );
+                true
+            } else {
+                refuse_startup(&e);
+            }
+        }
+    };
 
     // Loopback обязателен и проверен на разборе: гард не сетевой сервис
     // (SPEC §1 п.6), и `0.0.0.0` сюда протаскивается только через эту стену.
-    let tray_stage = cfg.stage();
+    let tray_stage = if pending {
+        guard_daemon::cascades::STAGE_PENDING
+    } else {
+        cfg.stage()
+    };
     let health = Health {
         version: env!("CARGO_PKG_VERSION"),
         stage: tray_stage,
@@ -135,7 +174,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Состояние — общим `Arc`ом (`inner_arc`): на него смотрит роутер, и на
     // том же объекте трей читает счётчики деградации (метрика tooltip'а обязана
     // сходиться с `/health`, две копии сошлись бы враньём — #128).
-    let state = guard_daemon::http::AppState::new(cfg.clone(), schema, health, vault);
+    let state =
+        guard_daemon::http::AppState::with_pending(cfg.clone(), schema, health, vault, pending);
     let app = guard_daemon::http::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
@@ -147,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!(
         "fasad {} {}, listening on http://{}/health (классов схемы: {}, vault: {}/{}, ключ: {})",
         env!("CARGO_PKG_VERSION"),
-        cfg.stage(),
+        tray_stage,
         addr,
         classes,
         cfg.vault_mode.as_str(),
@@ -251,9 +291,24 @@ fn serve_on_worker(
 /// с тем же текстом (контур острова — `tray::win`; mac-трей и headless
 /// ничего не получают: у mac запуск из Terminal/Terminal видит stderr,
 /// у `fasad.exe` консоль есть всегда).
+/// Подсказка пути докачки в тексте отказа (#199). Строковая константа, не
+/// калькулятор: `refuse_startup` вызывается и на отказе конфига (HOME
+/// может быть тем самым сломанным env), а UI-контур #198 при живом HTTP
+/// показывает конкретный путь витриной `/v1/status` (tilde-форма) — stderr
+/// называет форму по умолчанию, не пересобирая резолв config.
+const WEIGHTS_HINT: &str = "веса: скачай через UI (http://127.0.0.1:<порт>/ → \
+«Скачать веса») или scripts/fetch-models.sh (win: scripts\\fetch-models.ps1); \
+каталог по умолчанию: $HOME/.cache/fasad-models (win: %USERPROFILE%\\.cache\\fasad-models), \
+свой — FASAD_MODEL_DIR";
+
 fn refuse_startup(err: &dyn std::fmt::Display) -> ! {
+    // #199: текст отказа обязан называть ПУТЬ ДОКАЧКИ, а не только причину:
+    // оператор win-двойного-клика читает окно/консоль, а не docs. Канала два
+    // (UI-кнопка для ожидающего контура #198 и скрипт для headless), каталог
+    // = тот, что подставляет config (#192).
     let msg = format!("fasad: старт невозможен: {err}");
     eprintln!("{msg}");
+    eprintln!("fasad: {WEIGHTS_HINT}");
     #[cfg(all(feature = "tray", target_os = "windows"))]
     guard_daemon::tray::win::show_startup_failure("fasad — запуск не удался", &msg);
     std::process::exit(EXIT_BAD_CONFIG);

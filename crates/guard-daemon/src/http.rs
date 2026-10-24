@@ -89,6 +89,13 @@ pub struct Inner {
     /// `Err` хранится, а не роняет старт: плохой `FASAD_HF_HOST` ломает
     /// кнопку, а не демон (`/health` остаётся жив, отказ — кодом endpoint).
     fetch: Result<crate::fetch::FetchConfig, crate::fetch::FetchError>,
+    /// Ожидающий старт (#198): трей-бинарь без весов поднял HTTP, каскадов
+    /// нет. Не выводится из `health().stage` намеренно: юнит-роутеры
+    /// (`cascade_http`, харнесы) живут со `stage="cascade-0+models"` и
+    /// фейковым mount; провайдер отказа обязан быть одним на четыре
+    /// маршрута (analyze/anonymize/deanonymize/chat) и заведомо `false` у
+    /// них, а не зависеть от строки, которую пишут тесты.
+    pending: bool,
 }
 
 impl Inner {
@@ -107,6 +114,20 @@ impl AppState {
     /// отказ старта уже случился бы раньше — здесь инвариант, а не валидация.
     #[must_use]
     pub fn new(cfg: Config, schema: Schema, health: Health, vault: Vault) -> Self {
+        Self::with_pending(cfg, schema, health, vault, false)
+    }
+
+    /// [`new`](Self::new) + флаг ожидающего старта (#198, ставит `main`
+    /// трей-контура при отказе модельного пути: UI живёт, модельный отказ =
+    /// 503 `models_pending`, а не 200-обман каскадом 0).
+    #[must_use]
+    pub fn with_pending(
+        cfg: Config,
+        schema: Schema,
+        health: Health,
+        vault: Vault,
+        pending: bool,
+    ) -> Self {
         let client = crate::proxy::Client::new(&cfg);
         let fetch = crate::fetch::FetchConfig::from_config(&cfg);
         Self {
@@ -117,6 +138,7 @@ impl AppState {
                 vault,
                 client,
                 fetch,
+                pending,
             }),
         }
     }
@@ -137,6 +159,29 @@ impl AppState {
     #[must_use]
     pub fn health(&self) -> Health {
         self.inner.health.clone()
+    }
+
+    /// Ожидающий старт (#198): true = веса не примонтированы, демон поднял
+    /// UI в режиме доставки (model-маршруты = 503 `models_pending`).
+    #[must_use]
+    pub fn pending(&self) -> bool {
+        self.inner.pending
+    }
+
+    /// Отказ модельного контура (#198): единый провайдер для четырёх
+    /// маршрутов, которые требуют каскадов (analyze/anonymize/deanonymize/
+    /// proxy). `None` = контур готов; `Some` = 503 со своим кодом — не
+    /// молчание и не каскад-0-обман (fail-closed: без весов анализ =
+    /// отказ, а не частичная защита).
+    #[must_use]
+    pub fn model_refusal(&self) -> Option<ApiError> {
+        self.inner.pending.then(|| {
+            ApiError::new(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "models_pending",
+                "модельный контур не смонтирован: веса не скачаны (UI: «Скачать веса», затем перезапуск fasad)",
+            )
+        })
     }
 
     /// Хранилище обратимых подмен.
@@ -295,6 +340,14 @@ fn tilde_dir(p: &std::path::Path) -> String {
 }
 
 async fn status_handler(State(st): State<AppState>) -> axum::Json<StatusReply> {
+    status_reply_of(&st)
+}
+
+/// Тело `GET /v1/status` — свободная функция (юнит-зуб #198 монтирует
+/// `AppState` с `pending=true` и требует витрину СВОЕЙ stage-строкой, не
+/// `cfg.stage()`: харнеси (`from_lookup`) живут stage-семантикой cascade-0,
+/// ожидающий старт = отдельная строка).
+fn status_reply_of(st: &AppState) -> axum::Json<StatusReply> {
     let cfg = st.config();
     let vault = st.vault();
     let entries = crate::weights::embedded_entries();
@@ -437,6 +490,12 @@ async fn analyze_handler(State(st): State<AppState>, req: Request) -> Response {
         Err(err) => return err.into_response(),
     };
     guarded(move || {
+        // #198: ожидающий старт = отказ модельных маршрутов своим кодом.
+        // Каскад-0 на pending НЕ выпускается: релизный контур без весов,
+        // объявленный «защищённым», = тихая деградация (#185), а не продукт.
+        if let Some(refusal) = st.model_refusal() {
+            return Err(refusal);
+        }
         let req: AnalyzeRequest = json_body(&body)?;
         let policy = parse_policy(&headers)?;
         let res = pipeline::analyze(&req, st.schema(), st.config(), policy)
@@ -575,6 +634,9 @@ async fn anonymize_handler(State(st): State<AppState>, req: Request) -> Response
     let started = Instant::now();
     guarded(move || {
         let req: AnonymizeRequest = json_body(&body)?;
+        if let Some(refusal) = st.model_refusal() {
+            return Err(refusal);
+        }
         let session = session_of(&headers)?;
         let anon = st
             .vault()
@@ -611,6 +673,9 @@ async fn deanonymize_handler(State(st): State<AppState>, req: Request) -> Respon
     };
     let started = Instant::now();
     guarded(move || {
+        if let Some(refusal) = st.model_refusal() {
+            return Err(refusal);
+        }
         let req: DeanonymizeRequest = json_body(&body)?;
         let session = session_of(&headers)?;
         let done = st
@@ -990,6 +1055,81 @@ mod tests {
             health,
             vault,
         )
+    }
+
+    /// #198: ожидающий старт = 503 `models_pending` на модельных маршрутах,
+    /// а не 200-обман каскадом 0 и не 500. Pending-состояние собирается
+    /// конструктором (тот же путь, что `main` трей-контура), stage =
+    /// `models-pending`: зуб дискриминирует и ложь stage (cascade-0-only на
+    /// релизном бинаре, #185), и fail-open конвейера.
+    #[tokio::test]
+    async fn pending_mode_refuses_model_routes_with_own_code() {
+        let cfg = Config::from_lookup(|_| None).expect("дефолты sane");
+        let health = Health {
+            version: env!("CARGO_PKG_VERSION"),
+            stage: crate::cascades::STAGE_PENDING,
+            mode: cfg.vault_mode.as_str(),
+        };
+        let vault = Vault::startup(cfg.vault_mode, cfg.mlock).expect("хранилище");
+        let st = AppState::with_pending(
+            cfg,
+            Schema::embedded().expect("канон валиден"),
+            health,
+            vault,
+            true,
+        );
+        let app = router(st.clone());
+
+        let r = app
+            .clone()
+            .oneshot(analyze_req(r#"{"text":"ИНН 2482014338"}"#, None))
+            .await
+            .expect("анализ идёт");
+        assert_eq!(r.status(), 503, "analyze в pending = 503");
+        let j = json_of(r).await;
+        assert_eq!(j["error"]["code"], "models_pending", "{j}");
+
+        // health/status = живые витрины ожидающего режима (UI обязан их
+        // читать, чтобы показать карточку весов).
+        let r = app
+            .clone()
+            .oneshot(
+                Request::get("/health")
+                    .body(Body::empty())
+                    .expect("запрос строится"),
+            )
+            .await
+            .expect("health идёт");
+        assert_eq!(r.status(), 200);
+        let j = json_of(r).await;
+        assert_eq!(j["stage"], crate::cascades::STAGE_PENDING);
+        assert_ne!(j["stage"], "cascade-0-only", "stage не обязан лгать #185");
+
+        let r = app
+            .oneshot(
+                Request::get("/v1/status")
+                    .body(Body::empty())
+                    .expect("запрос строится"),
+            )
+            .await
+            .expect("status идёт");
+        assert_eq!(r.status(), 200, "витрина веса живёт в pending");
+    }
+
+    /// Дискриминатор конструктора: обычный роутер (pending=false) НЕ даёт
+    /// `models_pending` (else-ветка флага = зелёный путь прежний).
+    #[tokio::test]
+    async fn mounted_mode_has_no_models_pending() {
+        let r = router(state())
+            .oneshot(analyze_req(r#"{"text":"ИНН 2482014338"}"#, None))
+            .await
+            .expect("анализ идёт");
+        let j = json_of(r).await;
+        assert_ne!(
+            j["error"]["code"],
+            serde_json::json!("models_pending"),
+            "{j}"
+        );
     }
 
     fn analyze_req(body: &str, policy: Option<&str>) -> Request<Body> {

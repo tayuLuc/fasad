@@ -211,6 +211,21 @@ pub struct WeightFile {
     pub ok: bool,
 }
 
+/// Все пять файлов раскладки смонтированы (присутствуют и размеры совпали
+/// с манифестом). #198: env-граница `Config::from_env` чинит ожидающий старт
+/// на «веса уже скачаны, перезапусти» — трей без env обязан ПОДНЯТЬСЯ и
+/// показать карточку с ✓ (кнопка не нужна), а не окном отказа. Пустой
+/// каталог/несовпадение = false (окно/ожидающий UI = честная причина).
+#[must_use]
+pub fn layout_complete(dir: &Path) -> bool {
+    let entries = embedded_entries();
+    if entries.is_empty() {
+        // Манифест вшитый испорчен: смонтировать нечего, «готов» = ложь.
+        return false;
+    }
+    scan(dir, &entries).iter().all(|f| f.ok)
+}
+
 /// Присутствие 5 файлов layout в каталоге (по фактическому `dir`).
 #[must_use]
 pub fn scan(dir: &Path, entries: &[ManifestEntry]) -> Vec<WeightFile> {
@@ -329,6 +344,60 @@ pub fn set_fetch_state(state: FetchState) {
 #[allow(clippy::unwrap_used, clippy::expect_used)] // в тестах паника = красный CI, это канал ответа
 mod tests {
     use super::*;
+
+    /// #198: полный контур «5/5 И размеры совпали» (тот же код, что читает
+    /// env-граница #192/#198 через `layout_complete`). Мок-манифест через
+    /// env-мок манифеста НЕ ставится: `runtime_manifest_text` кэширует
+    /// `OnceLock` на процесс, а юниты параллельны — мок отравил бы соседям «вшитый» манифест
+    /// (класс ложно-зелёной проверки: `manifest_parses_all_five_rows…` читал
+    /// бы фикстуру, думая, что читает `include_str!`). Поэтому фикстура
+    /// передаётся ПРЯМЫМ списком entries (тот же контракт `scan`/`WeightFile`,
+    /// из которого собран `layout_complete`), а живой `layout_complete` на
+    /// вшитом манифесте промеряется ниже на пустом каталоге (false гарантирован
+    /// без мока: ни одна машина CI не имеет 879 МБ в tmp).
+    #[test]
+    fn layout_complete_counts_five_of_five_only() {
+        // Мок-записи = layout-пути, размеры 1 Б (tmp-файлики по байту).
+        let mk = |size: u64| -> Vec<ManifestEntry> {
+            layout()
+                .iter()
+                .map(|rel| ManifestEntry {
+                    role: role_for(rel).expect("роль есть").to_owned(),
+                    repo: rel.split('/').next().expect("repo есть").to_owned(),
+                    revision: "rev1".to_owned(),
+                    file: rel.split_once('/').expect("repo/file").1.to_owned(),
+                    sha256: "0".repeat(64),
+                    size_bytes: size,
+                })
+                .collect()
+        };
+        let root = std::env::temp_dir().join(format!("fasad-wc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let full = root.join("full");
+        std::fs::create_dir_all(&full).expect("tmp создаётся");
+        for rel in layout() {
+            let path = layout_path(&full, rel);
+            std::fs::create_dir_all(path.parent().expect("родитель есть")).expect("дерево");
+            std::fs::write(&path, b"x").expect("байт пишется");
+        }
+        // Полный контур: scan + all(ok) = contract `layout_complete`.
+        let complete = |dir: &std::path::Path, size: u64| scan(dir, &mk(size)).iter().all(|f| f.ok);
+        assert!(complete(&full, 1), "5/5 по байту = смонтировано");
+        assert!(
+            !complete(&full, 2),
+            "размер не из манифеста = не смонтировано"
+        );
+        let empty = root.join("empty");
+        std::fs::create_dir_all(&empty).expect("tmp создаётся");
+        assert!(!complete(&empty, 1), "пустой каталог ≠ смонтировано");
+        // Живой `layout_complete` на вшитом манифесте: пустой tmp = false
+        // (без 879 МБ смонтированным не бывает).
+        assert!(
+            !layout_complete(&empty),
+            "вшитый манифест на пустом = false"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn manifest_parses_all_five_rows_with_hex_sha() {
