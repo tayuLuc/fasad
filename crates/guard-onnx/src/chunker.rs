@@ -1015,7 +1015,7 @@ mod tests {
     // «прилипшем» конце (последняя граница предложения у старта окна, хвост без
     // `.!?`) давал форс-шаг 1–2 байта и O(len) чанков. Замеры НА СТАРОМ КОДЕ
     // (этот файл, git-история коммита с тестами): email44 → 23, gray283 → 49,
-    // tail2133 → 88, golden-строка g0001 (358 Б) → 89, max по 204 строкам
+    // tail2133 → 88, golden-строка g0001 (358 Б) → 89, max по 226 строкам
     // golden → 98 (cfg 256/32; 384/32: 23/49/87/89). Форма фикстур = форма
     // ревьюера (44 B email с точкой в домене `.ru`, серый документ 283 B,
     // выгрузка 2133 B); его числа 22/89/131 — его тексты, наши пересняты.
@@ -1087,7 +1087,7 @@ mod tests {
         t
     }
 
-    /// Генератор фикстур из data/golden: поле `text` всех 204 строк
+    /// Генератор фикстур из data/golden: поле `text` всех 226 строк
     /// golden-v1.jsonl (len-дистрибуция реальных документов). Парсер мини:
     /// дерево гарантирует в `text` отсутствие `\"`, `\\`, `\u` (промер 19.10
     /// гейтом golden-verify), из экранных последовательностей — только `\n`.
@@ -1112,7 +1112,11 @@ mod tests {
                 rest[..close].replace("\\n", "\n")
             })
             .collect();
-        assert_eq!(rows.len(), 204, "golden-v1 — 204 строки (N≥150, AGENTS §4)");
+        assert_eq!(
+            rows.len(),
+            226,
+            "golden-v1 — 226 строк (v1.2 #200-A2; N≥150, AGENTS §4)"
+        );
         assert!(rows.iter().all(|r| !r.is_empty()));
         rows
     }
@@ -1126,7 +1130,7 @@ mod tests {
             ("gray283".into(), fixture_gray283()),
             ("tail2133".into(), fixture_tail2133()),
             ("showcase_g0001".into(), rows[0].clone()),
-            ("golden_stream204".into(), rows.join("\n")),
+            ("golden_stream226".into(), rows.join("\n")),
             ("sentences300".into(), sentences(300)),
             (
                 "dots1159_tail1000".into(),
@@ -1175,7 +1179,7 @@ mod tests {
     #[test]
     fn showcase_forms_are_single_chunk_identity() {
         // Регрессия 1-чанк пути: всё, что накрывается окном (showcase-форма:
-        // email44, gray283, все 204 golden-строки), — РОВНО один чанк [0, len),
+        // email44, gray283, все 226 golden-строк), — РОВНО один чанк [0, len),
         // тождественный тексту.
         let rows = golden_rows();
         assert!(
