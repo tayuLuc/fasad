@@ -180,6 +180,13 @@ impl FetchConfig {
         })
     }
 
+    /// Канонический адрес для витрины (`GET /v1/config`, #220): `scheme://host`.
+    #[must_use]
+    pub fn host_display(&self) -> String {
+        let scheme = if self.https { "https" } else { "http" };
+        format!("{scheme}://{}", self.host)
+    }
+
     /// URL файла из манифеста. Путь собирается побайтово, без «склейки
     /// пользовательских строк»: все части — из вшитого файла (см. док модуля).
     #[must_use]

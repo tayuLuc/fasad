@@ -214,6 +214,16 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 | `FASAD_MODEL_DIR` | full-бинарь (headless) без него **не стартует** (#185, `ModelsNotConfigured`, текст += путь докачки #199); трей-бинарь (win/mac) = ожидающий UI `models-pending` с кнопкой «Скачать веса» (#198); задан = `cascade-0+models` (отказ старта, если смонтировать нечем) | config.rs, cascades.rs `startup`/`startup_pending*` |
 | `FASAD_UPSTREAM_ALLOWLIST` | пусто = наружу ходить некуда | config.rs:271, :431 |
 | `FASAD_PROXY_LOOPBACK_HTTP` | false | config.rs:277, :432 |
+| `FASAD_CONFIG` | нет (`%APPDATA%\fasad\config` win / `$XDG_CONFIG_HOME`|`$HOME/.config`/fasad/config unix, mac) | config.rs `config_file_path` (#219) |
+
+4a. Файл конфигурации (#219, #220): приоритет **env > файл > дефолт**; формат
+KV `KEY=значение` (собственный парсер, зависимостей ноль — промер
+docs/dep-verify-crates.md §17); значения проходят те же валидаторы, что env
+(`config::validate_value` = единая точка). Разрешённые ключи = реестр
+`config::FILE_ALLOWED_KEYS` (таблица в README §Файл конфигурации); секрет
+`FASAD_VAULT_KEY`, бинд, mlock и харнес-флаги в файле = отказ старта. Харнесы
+wire_e2e/ui_sandbox изолированы иглой `FASAD_CONFIG=<пустой файл в tmp>`
+(E-контур #219: файл оператора не должен протекать в тесты).
 
 5. Модели каскадов 1–2 (контур full, #181): скачивание из каталога бандла —
    `./scripts/fetch-models.sh` (sha256-гейт по `models/manifest.tsv`,

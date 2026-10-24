@@ -75,6 +75,15 @@ impl Daemon {
             .env_remove("FASAD_TEST_TRAY_CONTOUR")
             .env_remove("FASAD_THREADS")
             .env_remove("FASAD_TIMEOUT_MS")
+            // #219 (E-контур): харнес обязан быть изолирован от файла
+            // конфигурации. Файл оператора (`~/.config/fasad/config`) на
+            // локальной машине дал бы харнесу его значения (порт, пороги,
+            // режим) — CI-раннер «чисто» не чинит этого, и тот же аргумент,
+            // что у env_remove выше: воспроизводимость на машине оператора.
+            // Игла = СУЩЕСТВУЮЩИЙ пустой файл в tmp (см. `fasad_empty_config`):
+            // env-граница обязана получить «значений нет», а не «HOME
+            // оператора»; несуществующий путь дал бы отказ старта (#185).
+            .env("FASAD_CONFIG", fasad_empty_config())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -123,6 +132,18 @@ impl Daemon {
             started.elapsed()
         );
     }
+}
+
+/// Путь-игла E-контура #219: СУЩЕСТВУЮЩИЙ пустой файл конфигурации в tmp.
+///
+/// Пустой, а не «несуществующий»: явный `FASAD_CONFIG` в несуществующий путь =
+/// отказ старта (#185-контур: опечатка в пути обязана быть названа), а харнесу
+/// нужен ровно «файла нет по существу» = пустые значения. Файл создаётся на
+/// вызове: CI-раннер обязан найти его, а не оператора tmp-содержимое.
+fn fasad_empty_config() -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("fasad-harness-empty-{}.cfg", std::process::id()));
+    std::fs::write(&path, "# fasad harness (#219): empty = no values\n").expect("игла создаётся");
+    path
 }
 
 impl Drop for Daemon {
@@ -1051,7 +1072,12 @@ fn ui_html_carries_the_weights_card() {
     let d = Daemon::start(&[]);
     let r = call(&d.addr, "GET", "/", &[], b"");
     let t = r.text();
-    for id in ["weightsPane", "weightsFiles", "btnFetch", "fetchBar"] {
+    for id in [
+        "weightsPaneSettings",
+        "weightsFilesS",
+        "btnFetchS",
+        "fetchBarS",
+    ] {
         assert!(t.contains(id), "в index.html нет карточки: {id}");
     }
     assert!(t.contains("Скачать веса"), "нет подписи кнопки");
@@ -1116,4 +1142,203 @@ fn ui_html_carries_steps_windows_and_pending_pane() {
             "app.js не знает про {id} (id-контракт разъехался)"
         );
     }
+}
+
+// --- #220/#221: табы, страница настроек, GET/POST /v1/config ----------------
+
+/// DOM-контракт двух табов + формы настроек + #221 (порог = number).
+/// id-сетка = контракт app.js (переименование молча ломает фронт: тот же
+/// класс, что `ui_html_carries_steps_windows_and_pending_pane`).
+#[test]
+fn ui_html_carries_tabs_and_settings_form() {
+    let d = Daemon::start(&[]);
+    let t = call(&d.addr, "GET", "/", &[], b"").text();
+    for id in [
+        "tabs",
+        "tabWork",
+        "tabSettings",
+        "tabWorkPane",
+        "tabSettingsPane",
+        "weightsStrap",
+        "settingsPane",
+        "configRows",
+        "settingsFile",
+        "restartBanner",
+        "settingsStatus",
+    ] {
+        assert!(t.contains(id), "в index.html нет #220-элемента: {id}");
+    }
+    assert!(t.contains("Настройки"), "нет подписи таба");
+    assert!(t.contains("Работа"), "нет подписи таба");
+    assert!(
+        t.contains("требуется перезапуск"),
+        "баннер перезапуска потерян (#219: hot-reload вне контура)"
+    );
+    // #221: порог = type=number с диапазоном валидатора, output-дубль убран.
+    assert!(
+        t.contains(r#"<input id="thr" type="number" min="0" max="1" step="0.01""#),
+        "порог S не стал number (#221)"
+    );
+    assert!(!t.contains(r#"type="range""#), "range-ползунок остался");
+    assert!(
+        !t.contains("thrOut"),
+        "output-дублирование значения осталось"
+    );
+    // Секретный инвариант страницы: формулировка «только env» в разметке.
+    assert!(t.contains("FASAD_VAULT_KEY"), "нет строки про ключ");
+}
+
+/// JS-пара #220: табы и форма живут в app.js (localStorage-контур, POST-контур).
+#[test]
+fn ui_js_carries_tab_and_config_wiring() {
+    let js = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"))
+        .expect("app.js читается");
+    for needle in [
+        "fasad.tab",
+        "showTab",
+        "tabSettingsPane",
+        "loadSettings",
+        "saveConfig",
+        "CFG_NUMERIC",
+    ] {
+        assert!(js.contains(needle), "app.js потерял {needle}");
+    }
+    assert!(js.contains("/v1/config"), "app.js не зовёт /v1/config");
+    assert!(
+        js.contains("min: 1, max: 65535"),
+        "порт без числавого диапазона валидатора (#221)"
+    );
+    assert!(
+        js.contains("min: 0, max: 1, step: 0.01"),
+        "пороги без диапазона [0,1] (#221)"
+    );
+}
+
+/// `GET /v1/config` на живом демоне: таблица ключей = белый список,
+/// СЕКРЕТОВ В ОТВЕТЕ НЕТ даже при заданном `FASAD_VAULT_KEY` (#220: ключ
+/// показывается фактом «задан», не байтами), bind read-only.
+#[test]
+fn config_endpoint_lists_keys_and_hides_the_secret() {
+    let d = Daemon::start(&SESSION);
+    let r = call(&d.addr, "GET", "/v1/config", &[], b"");
+    assert_eq!(r.status, 200, "config = read-only витрина");
+    let body = r.text();
+    let j = r.json();
+    assert_eq!(j["vault_key"], "задан", "ключ = факт наличия, не значение");
+    assert!(
+        !body.contains("00112233445566778899aabbccddeeff"),
+        "значение FASAD_VAULT_KEY утекло в GET /v1/config"
+    );
+    assert!(
+        !body.contains("FASAD_VAULT_KEY\\\":\\\"00"),
+        "ключ уехал значением: {body}"
+    );
+    let keys: Vec<&str> = j["entries"]
+        .as_array()
+        .expect("entries = массив")
+        .iter()
+        .map(|e| e["key"].as_str().expect("ключ строкой"))
+        .collect();
+    assert!(keys.contains(&"FASAD_MODEL_DIR"), "{keys:?}");
+    assert!(keys.contains(&"FASAD_PORT"), "{keys:?}");
+    assert!(
+        !keys.contains(&"FASAD_VAULT_KEY") && !keys.contains(&"FASAD_BIND"),
+        "секрет/бинд в таблице = утечка (белый список config.rs нарушен): {keys:?}"
+    );
+    for e in j["entries"].as_array().expect("entries") {
+        let src = e["source"].as_str().expect("источник");
+        assert!(
+            matches!(src, "env" | "file" | "default"),
+            "источник вне канона: {src}"
+        );
+        assert_eq!(e["restart_required"], true, "все ключи = старт-время");
+    }
+    // Бинд = строка адреса (read-only, вне таблицы), порт = фактический.
+    let bind = j["bind"].as_str().expect("bind строкой");
+    assert!(bind.starts_with("127.0.0.1:"), "бинд не loopback: {bind}");
+    let port = j["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .find(|e| e["key"] == "FASAD_PORT")
+        .expect("порт в таблице")["value"]
+        .as_str()
+        .expect("значение строкой");
+    assert_eq!(
+        bind.rsplit(':').next().expect("порт в bind"),
+        port,
+        "эффективный порт обязан совпасть с bind (витрина не врёт)"
+    );
+}
+
+/// POST /v1/config: запрещённые ключи = 403 с причиной; вне белого списка =
+/// 403; мусорное значение = 422 текстом валидатора (не браузером); запись
+/// в `FASAD_CONFIG` (tmp-файл харнеса) = 200 + «требуется перезапуск».
+#[test]
+fn config_write_endpoint_validates_and_refuses_secrets() {
+    // Харнес уже указывает FASAD_CONFIG в tmp (изоляция E-контура); для
+    // записи нужен сушествующий каталог — свой файл на свой порт.
+    let dir = std::env::temp_dir().join(format!("fasad-cfg-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("каталог");
+    let file = dir.join("config");
+    std::fs::write(&file, "# харнес #220\n").expect("база");
+    let d = Daemon::start(&[
+        ("FASAD_CONFIG", file.to_str().expect("utf-8 путь")),
+        ("FASAD_PORT", "0"),
+    ]);
+    let post = |body: String| {
+        call(
+            &d.addr,
+            "POST",
+            "/v1/config",
+            &[("content-type", "application/json")],
+            body.as_bytes(),
+        )
+    };
+    // Секрет = 403 с причиной, файл не тронут.
+    let r = post(r#"{"key":"FASAD_VAULT_KEY","value":"aa"}"#.to_owned());
+    assert_eq!(r.status, 403, "секрету в файл запрещено");
+    assert!(r.text().contains("env"), "причина обязана назвать канал");
+    // Вне белого списка = отказ.
+    assert_eq!(
+        post(r#"{"key":"FASAD_BUDUSCHEE","value":"1"}"#.to_owned()).status,
+        403
+    );
+    // Бинд (инвариант loopback) = 403.
+    assert_eq!(
+        post(r#"{"key":"FASAD_BIND","value":"8.8.8.8"}"#.to_owned()).status,
+        403
+    );
+    // Мусорное число = 422 ТЕКСТОМ валидатора (#221: серверная стенока, не браузер).
+    let r = post(r#"{"key":"FASAD_THREADS","value":"abc"}"#.to_owned());
+    assert_eq!(r.status, 422, "не число = 422, ответ: {}", r.text());
+    assert!(r.text().contains("FASAD_THREADS"), "{}", r.text());
+    // Инвариант порогов = 422 текстом (gray_hi 0.9 > дефолтный tau_high 0.8).
+    let r = post(r#"{"key":"FASAD_GRAY_HI","value":"0.9"}"#.to_owned());
+    assert_eq!(r.status, 422, "инвариант красен: {}", r.text());
+    assert!(r.text().contains("пороги"), "текст инварианта потерян");
+    // Легальная запись = 200 + restart_required + файл обновлён.
+    let r = post(r#"{"key":"FASAD_THREADS","value":"2"}"#.to_owned());
+    assert_eq!(r.status, 200, "запись прошла: {}", r.text());
+    assert_eq!(
+        r.json()["restart_required"],
+        true,
+        "успех обязан требовать перезапуск"
+    );
+    let text = std::fs::read_to_string(&file).expect("файл");
+    assert!(text.contains("FASAD_THREADS=2"), "{text}");
+    assert!(
+        text.contains("# харнес"),
+        "комментарий не пережил запись: {text}"
+    );
+    assert!(
+        !dir.join("config.part").exists(),
+        ".part обязан исчезнуть после rename (атомарность)"
+    );
+    // Только-для-файла (FASAD_SCHEMA) = 403 key_read_only (ui_editable=false).
+    assert_eq!(
+        post(r#"{"key":"FASAD_SCHEMA","value":"/tmp/x.json"}"#.to_owned()).status,
+        403
+    );
+    std::fs::remove_dir_all(&dir).ok();
 }

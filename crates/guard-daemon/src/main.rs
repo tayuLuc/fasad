@@ -57,6 +57,7 @@ const USAGE_HELP: &str = concat!(
     "  FASAD_TIMEOUT_MS=3000    бюджет конвейера (на монтаже держите ≥ 5000)\n",
     "  FASAD_SCHEMA=…           своя схема классов (канон встроен)\n",
     "  FASAD_UPSTREAM_ALLOWLIST=…  адреса прокси /v1/chat/completions (пусто = выключен)\n",
+    "  FASAD_CONFIG=…             файл конфигурации (env > файл > дефолт; README §Файл конфигурации)\n",
     "веса: scripts/fetch-models.sh (win: .\\scripts\\fetch-models.ps1), sha256-гейт\n",
     "исходники: https://github.com/tayuLuc/fasad\n"
 );
@@ -88,10 +89,30 @@ fn parse_args() {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     parse_args();
     install_panic_hook();
-    let cfg = match Config::from_env() {
-        Ok(cfg) => cfg,
+    // #219 atom-1: env > файл > дефолт. Предупреждения файла (неизвестные
+    // ключи) печатаются СЮДА, а не из lib: юнит меряет вектор
+    // (`LoadedConfig::warnings`), а eprintln из библиотеки тесту невидим —
+    // warning, который никто не печатает, = та же ложь нулём, что молча
+    // проигнорированная строка.
+    let loaded = match Config::load_config() {
+        Ok(loaded) => loaded,
         Err(e) => refuse_startup(&e),
     };
+    for warning in &loaded.warnings {
+        eprintln!("fasad: {warning}");
+    }
+    let loaded_file_used = loaded.file_used;
+    let cfg = loaded.config;
+    // Путь файла в баннере (#219): оператор, записавший настройку через UI,
+    // обязан видеть, какой файл демон прочитал, иначе «сохранил и не
+    // применилось» неразличимо с «сохранил не туда».
+    // Путь = всегда, когда резолвился (пишем в тот же файл, где читали);
+    // `file_used` гейтит только строку баннера (печатать «конфиг: путь» на
+    // пустом файле = ложь о том, что файл на что-то повлиял).
+    let config_path = loaded.path;
+    // Записанное значение #219 atom-2 = файл, а файл применяется на старте:
+    // UI обязан уметь сказать «куда писать» без второй правды о пути.
+    guard_daemon::http::set_config_path(config_path.clone());
 
     // Схема проверяется до подъёма сокета: частично применимая схема хуже
     // отсутствующей, а `/health` с 200 на испорченном каноне ввёл бы оператора
@@ -203,6 +224,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // (`split_once("listening on http://")`) строку не видит — контракт
     // порта не тронут.
     println!("fasad: UI браузера — http://{addr}/");
+    // Строка файла конфигурации (#219): только когда файл реально дал значения.
+    // Молчание «файла нет» = правда; печатать несуществующий путь = ложь,
+    // по которой оператор пойдёт править несуществующий файл.
+    if let Some(path) = config_path.as_deref().filter(|_| loaded_file_used) {
+        println!("fasad: конфиг-файл {} (значения из файла)", path.display());
+    }
 
     // Трей (#128 фаза 2, win/mac). Первичка docs крейта: на macOS иконка и меню
     // живут только на главном потоке с крутящимся event loop'ом

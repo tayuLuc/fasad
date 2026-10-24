@@ -248,6 +248,14 @@ pub fn router(state: AppState) -> Router {
         // относительные пути — домашнего пути нет).
         .route("/v1/status", get(status_handler))
         .route("/v1/models/fetch", post(fetch_models_handler))
+        // #219/#220: страница «Настройки». GET = read-only список
+        // РАЗРЕШЁННЫХ ключей с эффективными значениями и источниками; POST =
+        // запись в файл конфигурации (белый список, валидаторы env-контура,
+        // атомарная запись). Секретов в GET нет по построению таблицы
+        // (`FILE_ALLOWED_KEYS` не содержит VAULT_KEY/BIND), путь файла =
+        // пользовательский путь (не ПДн), loopback-контур = тот же, что
+        // `/v1/status` (#192 прецедент: витрина первого запуска).
+        .route("/v1/config", get(config_handler).post(config_write_handler))
         .merge(crate::ui::router())
         .with_state(state)
 }
@@ -285,6 +293,230 @@ async fn health_handler(State(st): State<AppState>) -> axum::Json<HealthReply> {
             unrestored_mismatch: vault.unrestored_mismatch(),
         },
     })
+}
+
+// ── #219/#220: страница «Настройки» (GET/POST /v1/config) ──────────────────
+
+/// Путь файла конфигурации, который прочитал демон (`main`, #220).
+///
+/// Слот процесс-global по той же причине, что `weights::fetch_slot`: POST
+/// обязан писать ТОТ ЖЕ файл, который был прочитан на старте, а не резолвить
+/// путь повторно на запросе — `FASAD_CONFIG` процесса неизменен с момента
+/// старта, и вторая правда о пути (резолв на запросе) дала бы «пишем не туда,
+/// где читали». `None` = резолв на старте не дал пути (ни `FASAD_CONFIG`, ни
+/// `HOME`/`APPDATA`/`XDG_CONFIG_HOME`): POST отвечает классом, а не пишет в
+/// пустой путь.
+static CONFIG_PATH: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+/// Записать путь (вызывает `main` один раз, до подъёма сокета).
+pub fn set_config_path(path: Option<std::path::PathBuf>) {
+    let mut slot = CONFIG_PATH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *slot = path;
+}
+
+/// Текущий путь файла конфигурации (для ответов и юнитов).
+#[must_use]
+pub fn config_path() -> Option<std::path::PathBuf> {
+    CONFIG_PATH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// Одна строка `GET /v1/config`.
+#[derive(Debug, serde::Serialize)]
+struct ConfigRow {
+    key: &'static str,
+    label: &'static str,
+    value: String,
+    source: &'static str,
+    ui_editable: bool,
+    restart_required: bool,
+}
+
+/// Ответ `GET /v1/config` (#220).
+#[derive(Debug, serde::Serialize)]
+struct ConfigReply {
+    #[serde(flatten)]
+    health: Health,
+    /// Путь файла конфигурации (tilde-форма, как витрина весов) + существует ли.
+    file: ConfigFileInfo,
+    /// Разрешённые ключи с эффективными значениями. Секретов здесь нет по
+    /// построению таблицы (док у [`crate::config::Config::view`]).
+    entries: Vec<ConfigRow>,
+    /// `FASAD_VAULT_KEY` = «задан/нет», значение НЕ отдаётся (#220: секрет
+    /// показывается фактом наличия, не байтами).
+    vault_key: &'static str,
+    /// Бинд: read-only (только env, инвариант loopback).
+    bind: String,
+    /// Потоки/режим — то, что витрина показывает крупно.
+    threads: usize,
+    mode: &'static str,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ConfigFileInfo {
+    path: String,
+    exists: bool,
+}
+
+fn config_reply_of(st: &AppState) -> axum::Json<ConfigReply> {
+    let cfg = st.config();
+    let path = config_path();
+    let file = ConfigFileInfo {
+        path: path.as_deref().map_or_else(
+            || "не определён (задай FASAD_CONFIG или HOME)".to_owned(),
+            tilde_dir,
+        ),
+        exists: path.as_deref().is_some_and(std::path::Path::exists),
+    };
+    let entries = cfg
+        .view()
+        .into_iter()
+        .map(|v| ConfigRow {
+            key: v.key,
+            label: v.label,
+            // Хост загрузки весов живёт в `FetchConfig` (#192), не в `Config`:
+            // пустую строку из `effective_value` подменяем его значением —
+            // одной правдой, а не двумя.
+            value: if v.key == "FASAD_HF_HOST" {
+                st.fetch_config()
+                    .map(|fc| fc.host_display())
+                    .unwrap_or_default()
+            } else {
+                v.value
+            },
+            source: v.source.as_str(),
+            ui_editable: v.ui_editable,
+            restart_required: v.restart_required,
+        })
+        .collect();
+    axum::Json(ConfigReply {
+        health: st.health(),
+        file,
+        entries,
+        vault_key: crate::config::secret_present(std::env::var("FASAD_VAULT_KEY").ok().as_deref()),
+        bind: cfg.addr.to_string(),
+        threads: cfg.threads,
+        mode: cfg.vault_mode.as_str(),
+    })
+}
+
+async fn config_handler(State(st): State<AppState>) -> axum::Json<ConfigReply> {
+    config_reply_of(&st)
+}
+
+/// Тело `POST /v1/config`: `{ключ, значение}` (#220).
+#[derive(Debug, serde::Deserialize)]
+struct ConfigWriteRequest {
+    key: String,
+    value: String,
+}
+
+/// Ответ `POST /v1/config`: запись применится только после перезапуска.
+#[derive(Debug, serde::Serialize)]
+struct ConfigWriteReply {
+    ok: bool,
+    key: String,
+    value: String,
+    path: String,
+    restart_required: bool,
+    message: String,
+}
+
+async fn config_write_handler(
+    State(st): State<AppState>,
+    body: axum::body::Bytes,
+) -> Result<axum::Json<ConfigWriteReply>, ApiError> {
+    let req: ConfigWriteRequest = serde_json::from_slice(&body).map_err(|e| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_json",
+            &format!("ожидается JSON c полями key/value: {e}"),
+        )
+    })?;
+    // Белый список + запрет секретов — на входе, ДО валидатора: отказ обязан
+    // называть причину «ключ не записывается из UI», а не «значение плохое».
+    if crate::config::is_forbidden_file_key(&req.key) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "key_forbidden",
+            &format!(
+                "ключ {} запрещён к записи: {}",
+                req.key,
+                crate::config::forbidden_file_key_reason(&req.key)
+                    .unwrap_or("см. README §Файл конфигурации")
+            ),
+        ));
+    }
+    if !crate::config::ui_editable_key(&req.key) {
+        let known = crate::config::allowed_key(&req.key).is_some();
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            if known {
+                "key_read_only"
+            } else {
+                "key_unknown"
+            },
+            &format!(
+                "ключ {} не редактируется из UI ({})",
+                req.key,
+                if known {
+                    "только файл/env"
+                } else {
+                    "нет в белом списке"
+                }
+            ),
+        ));
+    }
+    // Значение валидируется против ЭФФЕКТИВНЫХ порогов живого демона:
+    // «gray_hi=0.1 при gray_lo=0.22» = 422 с текстом инварианта, а не файл,
+    // на котором демон не стартует (#219 §D).
+    let canonical = crate::config::allowed_key(&req.key)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "key_unknown", "ключ не разобран"))?;
+    crate::config::validate_value(canonical, &req.value, &st.config().thresholds).map_err(|e| {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "bad_value",
+            &e.to_string(),
+        )
+    })?;
+    let path = config_path().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "config_path_unknown",
+            "путь файла конфигурации не определён (ни FASAD_CONFIG, ни HOME/APPDATA/XDG): \
+             запиши FASAD_CONFIG=<путь> при запуске",
+        )
+    })?;
+    crate::config::write_config_value(&path, canonical, &req.value).map_err(|e| match e {
+        crate::config::ConfigError::FileKeyForbidden { .. } => {
+            ApiError::new(StatusCode::FORBIDDEN, "key_forbidden", &e.to_string())
+        }
+        crate::config::ConfigError::FileUnreadable { .. } => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "config_write_failed",
+            &e.to_string(),
+        ),
+        other => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "bad_value",
+            &other.to_string(),
+        ),
+    })?;
+    Ok(axum::Json(ConfigWriteReply {
+        ok: true,
+        key: canonical.to_owned(),
+        value: req.value.trim().to_owned(),
+        path: tilde_dir(&path),
+        restart_required: true,
+        // hot-reload вне контура #219 (монтаж/сокет = старт-время): ответ
+        // обязан говорить это, а не «сохранено» (тогда «не применилось» =
+        // ложь интерфейса).
+        message: "сохранено; требуется перезапуск демона".to_owned(),
+    }))
 }
 
 // ── #192: статус весов + загрузка по клику ─────────────────────────────────
