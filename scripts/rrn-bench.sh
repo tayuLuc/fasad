@@ -100,6 +100,7 @@ if [ "$MODE" = "full" ]; then
 fi
 
 LOG="$(mktemp "${TMPDIR:-/tmp}/rrn-bench-daemon-XXXXXX.log")"
+# shellcheck disable=SC2329  # вызывается трапом EXIT/INT/TERM (ниже)
 cleanup() {
     if [ -n "${DPID:-}" ] && kill -0 "$DPID" 2>/dev/null; then
         kill "$DPID" 2>/dev/null || true
