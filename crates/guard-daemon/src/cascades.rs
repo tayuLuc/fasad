@@ -462,11 +462,38 @@ pub(super) fn decide_degrades(err: &guard_onnx::arbitrate::ArbError) -> bool {
 /// (issue #41/дальше), не раньше.
 #[must_use]
 pub fn merge_disjoint(spans: &[(usize, usize, f64, bool)]) -> Vec<usize> {
+    merge_protected(spans, &[])
+}
+
+/// `merge_disjoint` с защищённым множеством (#253): `protected` = индексы
+/// кандидатов, которые модель не имеет права сожрать, НО которые не
+/// вето-1.0 (иначе их место в `d`-флаге). Механика: protected =
+/// второй `det`-контур (правило «model, пересекающий защищённый,
+/// отбрасывается»), скор и источник protected-хита НЕ меняются:
+/// frame-хит 0.95 (#234) детерминирован по ПРОИСХОЖДЕНИЮ (каркасный
+/// сканер), его 0.95 = осознанный штраф невалидности, а не «модельный
+/// кандидат» — повышение до 1.0 запрещено контрактом #234 (зуб
+/// `frame_invalid_source_is_not_veto`), защита = слой merger, порог
+/// S = слой routing (контра #249: 0.95 при S=0.99 НЕ маскируется —
+/// protected от model-каннибализма, не от оператора).
+#[must_use]
+pub fn merge_protected(spans: &[(usize, usize, f64, bool)], protected: &[usize]) -> Vec<usize> {
     let mut keep: Vec<usize> = Vec::with_capacity(spans.len());
     let mut det: Vec<(usize, usize)> = Vec::new();
     for (i, (start, end, _, d)) in spans.iter().enumerate() {
         if *d {
             det.push((*start, *end));
+            keep.push(i);
+        }
+    }
+    // #253: защищённые не-вето (frame 0.95) едут в тот же `det`-контур:
+    // они живы безусловно, модель, пересёкшая их, отбрасывается.
+    for &i in protected {
+        // Индекс может уже стоять в `keep` (d-флаг true + protected =
+        // входная ошибка вызывающего): множество не плодим.
+        if spans.get(i).is_some_and(|(_, _, _, d)| !*d) && !keep.contains(&i) {
+            let (start, end, _, _) = spans[i];
+            det.push((start, end));
             keep.push(i);
         }
     }

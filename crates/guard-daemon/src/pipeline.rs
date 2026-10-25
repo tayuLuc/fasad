@@ -399,12 +399,26 @@ fn model_mount(
     }
     // Слияние каскада 0 с модельным выходом: вето чексуммы не понижается и не
     // дублируется, модельные пересечения снимаются leftmost-longest.
+    // #253: frame-хиты (#234, 0.95) = protected-контур merger'а:
+    // детерминированы по ПРОИСХОЖДЕНИЮ (каркасный сканер), не вето по
+    // весу — модель 1.0 (address/person, gliner = normal для арбитра)
+    // на их байтах отбрасывается, а не съедает их (иначе = тихий FN
+    // без рычага: score 0.95, d-флаг false = «все живут»-контра).
+    // Скор/источник frame НЕ меняются (контра #234, зуб not_veto);
+    // S-гейт = отдельный контур routing (#249): protected от
+    // каннибализма, не от оператора.
     let tuples: Vec<(usize, usize, f64, bool)> = cands
         .iter()
         .map(|c| (c.span.start, c.span.end, c.score, c.veto))
         .collect();
+    let protected: Vec<usize> = cands
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.source == guard_types::DetectionSource::FrameInvalidChecksum)
+        .map(|(i, _)| i)
+        .collect();
     let mut kept = vec![false; cands.len()];
-    for i in cascades::merge_disjoint(&tuples) {
+    for i in cascades::merge_protected(&tuples, &protected) {
         kept[i] = true;
     }
     *cands = std::mem::take(cands)
@@ -574,7 +588,11 @@ pub fn analyze_with(
             // #234: «каркас + форма без чексуммы» = 0.95 (константа контракта),
             // остальные детерминированные = вето 1.0 (h.score()).
             let score = if source == guard_types::DetectionSource::FrameInvalidChecksum {
-                guard_types::DetectionSource::FRAME_INVALID_W
+                // #246: вес каркасного хита = рычаг оператора
+                // (`FASAD_FRAME_MIN`, дефолт = константа контракта 0.95):
+                // при UI-пороге S > 0.95 хиты отсекались гейтом (#245),
+                // рычаг поднимает вес над порогом, вето 1.0 не трогает.
+                cfg.frame_min
             } else {
                 h.score()
             };
@@ -1241,6 +1259,131 @@ mod mount_tests {
         )
         .expect("ок");
         assert!(a.spans.is_empty(), "нестабильная связка = контур выключен");
+    }
+
+    /// #253 merger-контра: модельный 1.0 (НЕ вето: address,
+    /// `gliner_extractor`) на байтах frame-хита = ОБА живы (первичка
+    /// ревью 148f912e: `merge_disjoint` защищал только d-флаг, frame
+    /// 0.95 = d:false = съедался leftmost-longest). S-гейт = отдельный
+    /// контур (#249): protected не спасает от порога оператора.
+    #[test]
+    fn model_1_0_does_not_eat_frame_hit_253() {
+        let text = "Заявка ОГРН 1027739401110 от 12.05; адрес 107031 Москва";
+        let mount = FakeMount::with_p2(
+            vec![span_of(text, "ОГРН 1027739401110", "address", 1.0)],
+            vec![("address".to_owned(), 1.0)],
+        );
+        let r = AnalyzeRequest {
+            text: text.to_owned().into(),
+            entities: None,
+            score_threshold: None,
+        };
+        let a = analyze_with(&r, &schema(), &cfg(), Policy::Mask, Some(&mount)).expect("ок");
+        let frame = a
+            .spans
+            .iter()
+            .find(|x| x.class == "ogrn")
+            .expect("frame-хит жив: модель 1.0 его не съедает");
+        assert!(
+            (frame.score - 0.95).abs() < 1e-12,
+            "вес = 0.95 (не 1.0): {}",
+            frame.score
+        );
+        assert_eq!(
+            frame.source,
+            guard_types::DetectionSource::FrameInvalidChecksum,
+            "источник остаётся каркасным (вето НЕ становится)"
+        );
+        assert!(
+            !a.spans.iter().any(|x| x.class == "address"),
+            "модельный наездник отброшен merger'ом (protected-контра)"
+        );
+        // S-гейт-контра цела: protected от каннибализма, НЕ от порога.
+        let r2 = AnalyzeRequest {
+            text: text.to_owned().into(),
+            entities: None,
+            score_threshold: Some(0.99),
+        };
+        let a2 = analyze_with(&r2, &schema(), &cfg(), Policy::Mask, Some(&mount)).expect("ок");
+        assert!(
+            !a2.spans.iter().any(|x| x.class == "ogrn"),
+            "frame при S=0.99 = отсечён гейтом (#249-контра целая)"
+        );
+    }
+
+    /// #246 рычаг `FASAD_FRAME_MIN`: score каркасного хита = config-поле
+    /// (env/файл/UI, дефолт = константа контракта 0.95), вето 1.0
+    /// не трогается. Таблица `frame_min` x S -> маскируется:
+    ///
+    /// | frame_min | S=0.99 | S=0.20 |
+    /// |---|---|---|
+    /// | 0.95 (дефолт) | отсечён (#245) | маскируется |
+    /// | 0.99 | маскируется, score 0.99 | маскируется |
+    /// | 1.0 | маскируется (score 1.0; source остаётся каркасным = вето НЕ становится) | маскируется |
+    #[test]
+    fn frame_min_lever_moves_frame_score_246() {
+        let text = "Заявка: ОГРН 1027739401110, ИНН 7707083893";
+        for (fm, thr, expect) in [
+            (0.95_f64, Some(0.99), false),
+            (0.99, Some(0.99), true),
+            (1.0, Some(0.99), true),
+            (0.99, None, true),
+        ] {
+            let mut c = cfg();
+            c.frame_min = fm;
+            let r = AnalyzeRequest {
+                text: text.to_owned().into(),
+                entities: None,
+                score_threshold: thr,
+            };
+            let a = analyze_with(&r, &schema(), &c, Policy::Mask, None).expect("ок");
+            let ogrn = a.spans.iter().find(|x| x.class == "ogrn");
+            assert_eq!(ogrn.is_some(), expect, "frame_min={fm} S={thr:?}");
+            if let Some(sp) = ogrn {
+                assert!((sp.score - fm).abs() < 1e-12, "score = рычаг: {}", sp.score);
+                assert_eq!(
+                    sp.source,
+                    guard_types::DetectionSource::FrameInvalidChecksum,
+                    "вето-контра: источник остаётся каркасным (не ChecksumRf)"
+                );
+            }
+            // вето 1.0 рычагом не тронуто
+            let inn = a
+                .spans
+                .iter()
+                .find(|x| x.class == "inn")
+                .expect("вето проходит любой S");
+            assert_eq!(inn.score, 1.0);
+        }
+    }
+
+    /// #246 config-контра рычага: env `FASAD_FRAME_MIN` (диапазон (0.5, 1]),
+    /// дефолт = `FRAME_INVALID_W`, валидатор UI-записи = та же граница.
+    #[test]
+    fn frame_min_config_contour_246() {
+        let d = Config::from_lookup(|_| None).expect("дефолт");
+        assert!(
+            (d.frame_min - guard_types::DetectionSource::FRAME_INVALID_W).abs() < 1e-12,
+            "дефолт = константа контракта"
+        );
+        let up = Config::from_lookup(|k| (k == "FASAD_FRAME_MIN").then(|| "0.99".to_owned()))
+            .expect("0.99 валиден");
+        assert!((up.frame_min - 0.99).abs() < 1e-12);
+        assert!(
+            Config::from_lookup(|k| (k == "FASAD_FRAME_MIN").then(|| "1.01".to_owned())).is_err(),
+            ">1 = подделка вето, отказ"
+        );
+        assert!(
+            Config::from_lookup(|k| (k == "FASAD_FRAME_MIN").then(|| "0.5".to_owned())).is_err(),
+            "нижняя граница открыта (0.5, 1]"
+        );
+        // UI-запись: тот же диапазон (validate_value = единое правило)
+        let sane = crate::config::Thresholds::default_working();
+        assert!(crate::config::validate_value("FASAD_FRAME_MIN", "0.97", &sane, false).is_ok());
+        assert!(
+            crate::config::validate_value("FASAD_FRAME_MIN", "2", &sane, false).is_err(),
+            "POST 2.0 = 422"
+        );
     }
 
     /// #245 первичка-решётка score-пути (скрин v0.1.5: «ОГРН/СНИЛС не
