@@ -33,6 +33,10 @@ let session = newSession();
 let spans = [];
 let masked = "";
 let classes = [];
+// #248: состояние таблицы терминов. Термин = (класс + текст вхождения);
+// span-строки разворачиваются по клику (openTerms), фильтр-строка = termFilter.
+let openTerms = Object.create(null);
+let termFilter = "";
 // #225: метки последней подмены = items anonymize-ответа (replacement-forms:
 // `[КЛАСС_н_nonce]` session / `[[F0#…]]` stateless; суррогаты operator=replace
 // меток НЕ зовут и в список не попадают — фильтр по пустому replacement).
@@ -170,6 +174,7 @@ function status(text, kind) {
 
 function fail(err) {
   spans = [];
+  openTerms = Object.create(null);
   renderSpans([]);
   renderDropCounter(0, 0);
   paint($("src").value, []);
@@ -300,6 +305,239 @@ function renderDropCounter(baseLen, shownLen) {
   if (el) el.textContent = String(maskDropped(baseLen, shownLen));
 }
 
+/* --- таблица терминов (#248) ------------------------------------------------
+
+   Плоский список span-строк (43 строки на демо = слепота к типам, idea-контур
+   #247) перегруппирован в «термин = (класс + текст) ×N вхождений»: классы =
+   секции с заголовком-чекбоксом, повтор = строка со счётчиком, клик по строке
+   разворачивает span-детали (S/вердикт/кто нашёл/валидатор) — разбор НЕ
+   прячется за default-collapse, строки остаются в DOM, фильтр = скрытие.
+
+   ПЕРВИЧКА wire-контракта: analyze-ответ НЕ несёт текст спана
+   (`AnalyzedSpan`, pipeline.rs: поля entity_type, start, end, score, class,
+   byte_start, byte_end, role, source, verdict, validator). Термин = срез
+   исходника по байтовым координатам через ту же таблицу байт→символ, что
+   `paint` (один контур
+   координат на краску и таблицу). Срез = чистая функция, поэтому острова
+   `spanTexts`/`groupSpans`/`sortGroups`/`filterGroups` исполняются и в
+   браузере, и node-зубом `span_groups_runner.js` (контур #250).
+
+   Чекбокс заголовка = ТОТ ЖЕ контур, что #203 (`#t_<class>` → `entities`
+   запроса, `enabledClasses`): снимает класс для ЭТОГО разбора, сущность не
+   дублируется — чекбокс таблицы и есть чекбокс схемы (один id, синхронно). */
+
+/* Термин каждого спана = текст исходника на его байтовом интервале.
+   Спаны, чьи координаты не влезают в текст (защита: ответ не с этого
+   исходника), получают "" и в таблицу не идут — их видно в краске. */
+function spanTexts(text, list) {
+  const map = byteToChar(String(text === null || text === undefined ? "" : text));
+  return list.map(function (span) {
+    const a = map.get(span.byte_start);
+    const b = map.get(span.byte_end);
+    if (a === undefined || b === undefined || b < a) return "";
+    return String(text).slice(a, b);
+  });
+}
+
+/* Группировка span→термин: ключ = (класс + текст). Порядок = первое вхождение
+   (стабильный, JS-Map), счётчик = число вхождений (повтор = ОДИН термин ×N,
+   vault-семантика: одна форма — много мест). */
+function groupSpans(list, texts) {
+  const groups = new Map();
+  for (let i = 0; i < list.length; i += 1) {
+    const span = list[i];
+    const text = texts[i];
+    const cls = String(span.entity_type || "—");
+    const key = cls + "\u0000" + text;
+    let g = groups.get(key);
+    if (!g) {
+      g = { cls: cls, text: text, count: 0, spans: [] };
+      groups.set(key, g);
+    }
+    g.count += 1;
+    g.spans.push(span);
+  }
+  return Array.from(groups.values());
+}
+
+/* Порядок секций: детерминированные первыми — человек читает сверху вниз
+   «что гарантировано» (#248 п.4, колонка «Кто нашёл» = первичка #247).
+   Ранг = индекс в КОНСТАНТЕ-ТАБЛИЦЕ; имя источника, которого таблица не
+   знает, = ранг последней группы (детерминированность списка — по
+   `DetectionSource` verdict.rs:88, JSON-имена = snake_case + два
+   не-snake_case serde-rename). Внутри группы порядок = first-occurrence
+   (стабильный). */
+const SOURCE_RANK = [
+  "checksum_rf",
+  "checksum_eu",
+  "base64_decode",
+  "secret_entropy",
+  "aho_corasick_rule",
+  "frame_invalid_checksum",
+  "gliner_extractor",
+  "gliner_decide_arbitrator",
+];
+
+function sourceRankFn(rank, source) {
+  const i = rank.indexOf(String(source || ""));
+  return i < 0 ? rank.length : i;
+}
+
+function sourceRank(source) {
+  return sourceRankFn(SOURCE_RANK, source);
+}
+
+function groupRank(g) {
+  let best = SOURCE_RANK.length;
+  const rank = SOURCE_RANK;
+  for (const span of g.spans) best = Math.min(best, sourceRankFn(rank, span.source));
+  return best;
+}
+
+function sortGroups(groups) {
+  return groups
+    .map(function (g, i) { return { g: g, i: i, rank: groupRank(g) }; })
+    .sort(function (a, b) { return a.rank - b.rank || a.i - b.i; })
+    .map(function (e) { return e.g; });
+}
+
+/* Фильтр по термину = подстрока, регистронезависимая; пустая строка = всё.
+   Пустой текст (сбой координат) не фильтруется — иначе молча исчезает. */
+function filterGroups(groups, q) {
+  const needle = String(q === null || q === undefined ? "" : q).trim().toLowerCase();
+  if (needle === "") return groups;
+  return groups.filter(function (g) {
+    return g.text === "" || g.text.toLowerCase().indexOf(needle) >= 0;
+  });
+}
+
+/* Одна span-деталь = строка разбора (класс/S/вердикт/кто нашёл/валидатор).
+   Строка живёт в DOM всегда — фильтр только скрывает (оператор читает
+   разбором, #248: детали НЕ прячутся за collapse). */
+function detailRow(span) {
+  const tr = document.createElement("tr");
+  tr.className = "span-detail";
+  const cells = [
+    span.entity_type,
+    Number(span.score).toFixed(2),
+    span.verdict,
+    span.source,
+    span.validator || "—",
+  ];
+  for (const value of cells) {
+    const td = document.createElement("td");
+    td.textContent = value === null || value === undefined ? "—" : String(value);
+    tr.append(td);
+  }
+  return tr;
+}
+
+function termRow(g) {
+  const tr = document.createElement("tr");
+  tr.className = "span-term";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = true;
+  box.addEventListener("change", function () { setClassChecked(g.cls, box.checked); });
+  const t1 = document.createElement("td");
+  t1.append(box, document.createTextNode(g.cls));
+  const t2 = document.createElement("td");
+  t2.className = "term-text";
+  t2.textContent = g.text === "" ? "(текст не пришёл)" : g.text;
+  const t3 = document.createElement("td");
+  t3.className = "term-count";
+  t3.textContent = "×" + g.count;
+  const t4 = document.createElement("td");
+  t4.colSpan = 2;
+  t4.textContent = "вхождений: " + g.count + " (клик = детали)";
+  tr.append(t1, t2, t3, t4);
+  tr.title = "клик = детали вхождений";
+  tr.addEventListener("click", function () {
+    openTerms[g.cls + "\u0000" + g.text] = !openTerms[g.cls + "\u0000" + g.text];
+    renderSpans(spans);
+  });
+  return tr;
+}
+
+function classSection(cls, terms, host) {
+  const head = document.createElement("tr");
+  head.className = "span-class";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.id = "t_" + cls;
+  box.checked = true;
+  box.title = "снять класс = не маскировать его в этом разборе (entities)";
+  box.addEventListener("change", function () { syncClassCheckbox(cls, box.checked); });
+  const th = document.createElement("th");
+  th.colSpan = 5;
+  th.append(box, document.createTextNode(" " + cls + " · терминов: " + terms.length));
+  head.append(th);
+  host.append(head);
+  for (const g of terms) {
+    host.append(termRow(g));
+    if (openTerms[g.cls + "\u0000" + g.text]) {
+      for (const span of g.spans) host.append(detailRow(span));
+    }
+  }
+}
+
+/* Одна span-строка (#201-форма, пять колонок) = фолбэк-контур: плоская
+   таблица `#spanRows` живёт и при JS-сбое группировки (строки разбора не
+   должны исчезать вместе с украшением). */
+function flatRow(span) {
+  const tr = document.createElement("tr");
+  const cells = [
+    span.entity_type,
+    Number(span.score).toFixed(2),
+    span.verdict,
+    span.source,
+    span.validator || "—",
+  ];
+  for (const value of cells) {
+    const td = document.createElement("td");
+    td.textContent = value === null || value === undefined ? "—" : String(value);
+    tr.append(td);
+  }
+  return tr;
+}
+
+/* Одна секция на класс (термины, попавшие под фильтр); пустой класс секции
+   не получает. Заголовок-чекбокс = id из панели #203, синхронизируется в обе
+   стороны (панель = источник истины для `entities`). */
+function renderSpans(list) {
+  const host = $("spanGroups");
+  const flat = $("spanRows");
+  const safe = Array.isArray(list) ? list : [];
+  if (!host || !flat) return;
+  const groups = filterGroups(sortGroups(groupSpans(safe, spanTexts($("src").value, safe))), termFilter);
+  // Фолбэк-строки (#201-форма) = ВСЕ спаны, фильтр их не прячет; группа =
+  // основной вид (display-контур CSS), плоская = страховка.
+  flat.replaceChildren(...safe.map(flatRow));
+  host.replaceChildren();
+  const byClass = new Map();
+  for (const g of groups) {
+    const arr = byClass.get(g.cls);
+    if (arr) arr.push(g);
+    else byClass.set(g.cls, [g]);
+  }
+  let terms = 0;
+  for (const cls of classes) {
+    const arr = byClass.get(cls);
+    if (!arr || arr.length === 0) continue;
+    byClass.delete(cls);
+    terms += arr.length;
+    classSection(cls, arr, host);
+  }
+  // Класс вне загруженной схемы (оверрайд FASAD_SCHEMA / сбой) — в конец,
+  // не молча: таблица не имеет права терять строки разбора.
+  for (const arr of byClass.values()) {
+    terms += arr.length;
+    classSection(arr[0].cls, arr, host);
+  }
+  const n = $("spanTerms");
+  if (n) n.textContent = String(terms);
+}
+
 /* --- запросы песочницы -------------------------------------------------- */
 
 function enabledClasses() {
@@ -307,6 +545,26 @@ function enabledClasses() {
     const box = $("t_" + id);
     return box ? box.checked : true;
   });
+}
+
+/* #248: один чекбокс класса = один id `t_<class>` (панель #203). Таблица
+   терминов рисует СВОЙ заголовок с тем же id (панель на вкладке «Настройки»,
+   таблица — на «Работа»), поэтому состояние развозится вручную в обе стороны;
+   `entities` читает `enabledClasses` = id панели = источник истины. */
+function setClassChecked(cls, checked) {
+  const box = $("t_" + cls);
+  if (box) box.checked = checked;
+}
+
+function syncClassCheckbox(cls, checked) {
+  setClassChecked(cls, checked);
+  const label = $("type_" + cls);
+  if (label) label.classList.toggle("off", !checked);
+  status(
+    "класс " + cls + ": " + (checked ? "маскируется" : "снят для ЭТОГО разбора (entities)") +
+    " — нажми «Разобрать», чтобы применить",
+    checked ? "" : "warn",
+  );
 }
 
 async function analyze() {
@@ -319,6 +577,8 @@ async function analyze() {
   try {
     const res = await api("/v1/analyze", body);
     spans = Array.isArray(res.data) ? res.data : [];
+    // #248: разворот терминов = состояние разбора, новое «Разобрать» = свёрнуто
+    openTerms = Object.create(null);
     paint(text, spans);
     renderSpans(spans);
     // #246: базовый прогон (порог не поднят) = второй, параллельный; нужен
@@ -414,6 +674,7 @@ async function resetSession() {
     session = newSession();
     showSession();
     spans = [];
+    openTerms = Object.create(null);
     masked = "";
     lastLabels = [];
     $("revealChecklist").hidden = true;
@@ -455,10 +716,14 @@ async function loadSchema() {
     host.replaceChildren();
     for (const id of classes) {
       const label = document.createElement("label");
+      // #248: id подписи = якорь синхронизации (таблица терминов подсвечивает
+      // снятый класс; чекбокс остаётся `t_<class>` — id из панели #203).
+      label.id = "type_" + id;
       const box = document.createElement("input");
       box.type = "checkbox";
       box.id = "t_" + id;
       box.checked = true;
+      box.addEventListener("change", function () { syncClassCheckbox(id, box.checked); });
       label.append(box, document.createTextNode(id));
       host.append(label);
     }
@@ -804,6 +1069,12 @@ $("btnDean").addEventListener("click", deanonymize);
 $("btnReset").addEventListener("click", resetSession);
 
 $("btnFetchS").addEventListener("click", fetchWeights);
+// #248: фильтр таблицы терминов = live-DOM (перебор групп по строкам исходника,
+// без сети): счётчик «Терминов» пересчитывается на тех же группах, что и строки.
+$("termFilter").addEventListener("input", function () {
+  termFilter = $("termFilter").value;
+  renderSpans(spans);
+});
 $("btnCopy").addEventListener("click", copyMasked);
 $("btnCopyTask").addEventListener("click", copyMaskedTask);
 $("btnDemo").addEventListener("click", setDemoText);

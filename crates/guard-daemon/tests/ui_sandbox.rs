@@ -1861,3 +1861,176 @@ fn config_write_endpoint_validates_and_refuses_secrets() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// --- #248: таблица терминов (группы по классу, счётчик ×N, фильтр) ---------
+
+/// JS-зуб #248: острова `spanTexts`/`groupSpans`/`sortGroups`/`filterGroups`
+/// из ui/app.js (тот же `run_js_fixture`-контур #203/#246; движок node,
+/// фолбэк osascript JXA, отсутствие обоих = SKIP — контра #250, node-зуб
+/// живёт на всех трёх ОС через osascript-фолбэк только на mac, node =
+/// win/linux-раннеры CI). Фикстура меряет: байт→UTF-16-срез термина
+/// (кириллица/эмодзи), повтор токена = один термин ×2, детерминированные
+/// первыми + стабильность first-occurrence, фильтр-подстрока (регистр,
+/// обрезка, пустой запрос), graceful мусорных координат и ранг мусорного
+/// источника = последняя группа, контракт `SOURCE_RANK` = JSON-имена
+/// `DetectionSource` (verdict.rs, первичка 04fe306). Мутации островов
+/// (проверено 7 мутациями) = красный.
+#[test]
+fn span_group_islands() {
+    let app = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"));
+    let fixture = include_str!("fixtures/span_groups_runner.js");
+    let out = run_js_fixture(fixture, app);
+    if out.trim().is_empty() {
+        eprintln!("SKIP span_group_islands: ни node, ни osascript недоступны");
+        return;
+    }
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("зуб печатает JSON");
+    for key in [
+        "case1_textSlice",
+        "case2_repeatCount",
+        "case3_detFirst",
+        "case4_filter",
+        "case5_graceful",
+        "case6_sourceRank",
+    ] {
+        assert_eq!(v[key], serde_json::json!(true), "#248 остров {key}: {out}");
+    }
+}
+
+/// Живая DOM-контра #248: таблица терминов = (класс + текст) ×N.
+/// (а) Повтор одного токена = ДВА спана одного класса с ОДИНАКОВЫМ срезом
+///     координат (промер живым демоном main 04fe306, порт 18901: «ИНН
+///     2482014338 ИНН 2482014338 ИНН 7707083893» = 3 инн-спана, первые два
+///     = один термин); группировка фронта даёт ×2 (JS-зуб case2);
+/// (б) wire-контур заголовка-чекбокса = `entities` (#203): снятый класс
+///     выпадает из ответа, чужие классы живут (счётчик «Терминов» таблицы
+///     пересчитывается фронтендом по ответу);
+/// (в) первичка wire-контракта (pipeline.rs `AnalyzedSpan`): текст спана в
+///     ответе НЕ едет → фронт режет термин из исходника по байтовым
+///     координатам (тот же `byteToChar`, что paint; JS-зуб case1).
+#[test]
+fn ui_span_grouping_and_entities_filter_on_wire() {
+    let d = Daemon::start(&SESSION);
+    let json = [
+        ("content-type", "application/json"),
+        ("x-session-id", &ui_session() as &str),
+    ];
+    let text = "ИНН 2482014338 ИНН 2482014338 ИНН 7707083893 СНИЛС 65707715421";
+    let body = format!(
+        r#"{{"text": {}}}"#,
+        serde_json::to_string(text).expect("json")
+    );
+    let full = call(&d.addr, "POST", "/v1/analyze", &json, body.as_bytes());
+    assert_eq!(full.status, 200, "analyze: {}", full.text());
+    let spans_of = |reply: &Reply| -> Vec<(String, usize, usize)> {
+        reply
+            .json()
+            .as_array()
+            .expect("массив")
+            .iter()
+            .map(|s| {
+                (
+                    s["entity_type"].as_str().expect("класс").to_owned(),
+                    usize::try_from(s["byte_start"].as_u64().expect("байт-старт"))
+                        .expect("влезает"),
+                    usize::try_from(s["byte_end"].as_u64().expect("байт-конец")).expect("влезает"),
+                )
+            })
+            .collect()
+    };
+    // Координаты в ответе не отсортированы (первичка промера: инн-спаны
+    // идут в порядке каскада) — порядок канонизируем здесь же, где срез.
+    let mut base = spans_of(&full);
+    base.sort_by_key(|span| (span.1, span.2));
+    let cut =
+        |a: usize, b: usize| String::from_utf8(text.as_bytes()[a..b].to_vec()).expect("utf8-срез");
+    let inn_terms: Vec<String> = base
+        .iter()
+        .filter(|(c, _, _)| c == "inn")
+        .map(|(_, a, b)| cut(*a, *b))
+        .collect();
+    assert_eq!(inn_terms.len(), 3, "три ИНН-хита потеряны: {base:?}");
+    // Термин ×2: два одинаковых среза + третий = другой термин (×1).
+    assert_eq!(
+        inn_terms,
+        vec!["2482014338", "2482014338", "7707083893"],
+        "повтор токена не собрался в термин ×2 (срез координат = текст спана)"
+    );
+    // (б) entities = снятый класс выпадает, чужой живёт (wire-контур #203).
+    let filtered = format!(
+        r#"{{"text": {}, "entities": ["snils", "person_name", "card_pan", "phone", "email", "address", "passport"]}}"#,
+        serde_json::to_string(text).expect("json")
+    );
+    let without_inn = call(&d.addr, "POST", "/v1/analyze", &json, filtered.as_bytes());
+    assert_eq!(without_inn.status, 200, "entities: {}", without_inn.text());
+    let after: Vec<String> = spans_of(&without_inn)
+        .into_iter()
+        .map(|(c, _, _)| c)
+        .collect();
+    assert!(
+        !after.iter().any(|c| c == "inn"),
+        "снятый класс не выпал из ответа (заголовок-чекбокс = entities #203): {after:?}"
+    );
+    assert!(
+        after.iter().any(|c| c == "snils"),
+        "entities-фильтр задел чужой класс: {after:?}"
+    );
+}
+
+/// DOM/JS-контракты #248 (гранулярность = пара static-зубов #221):
+/// id-сетка таблицы терминов живёт в index.html, wiring — в app.js,
+/// #246-легенда НЕ тронута.
+#[test]
+fn ui_span_table_grouping_wiring() {
+    let d = Daemon::start(&[]);
+    let t = call(&d.addr, "GET", "/", &[], b"").text();
+    // `id="…"`Literally (a plain contains() = substring: `termFilter`
+    // matches `termFilterXXX` — the probe caught that).
+    for id in [
+        "termFilter",
+        "spanTerms",
+        "spanGroups",
+        "spanRows",
+        "maskLegend",
+        "spanDropped",
+    ] {
+        assert!(
+            t.contains(&format!(r#"id="{id}""#)),
+            "в index.html нет #248-элемента: {id}"
+        );
+    }
+    assert!(
+        t.contains("Терминов"),
+        "счётчик терминов потерял подпись (#248 п.3)"
+    );
+    assert!(
+        t.contains("полный разбор = панель РАЗБОР"),
+        "#246-легенда tables потеряла объяснение (не трогать)"
+    );
+    let js = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"))
+        .expect("app.js читается");
+    for needle in [
+        "function spanTexts(text, list)",
+        "function groupSpans(list, texts)",
+        "function sortGroups(groups)",
+        "function filterGroups(groups, q)",
+        "const SOURCE_RANK",
+        r#"$("termFilter").addEventListener"#,
+        r#"$("spanGroups")"#,
+        "spanTerms",
+    ] {
+        assert!(js.contains(needle), "app.js потерял #248-контур: {needle}");
+    }
+    // Чекбокс-класс = НЕ новая сущность: таблица ходит тем же id `t_`,
+    // что панель #203 (entities-контур).
+    assert!(
+        js.contains("function setClassChecked") && js.contains(r#"$("t_" + cls)"#),
+        "заголовок-чекбокс таблицы отъехал от entities-контура #203"
+    );
+    // Контра #248: группировка НЕ съела плоскую span-таблицу: #spanRows
+    // заполняется ВСЕМИ спанами (фолбэк при JS-сбое), скрыт display-классом.
+    assert!(
+        js.contains("flat.replaceChildren(...safe.map(flatRow))"),
+        "плоская span-таблица (фолбэк) перестала заполняться"
+    );
+}
