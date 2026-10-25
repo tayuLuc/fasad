@@ -861,6 +861,69 @@ fn ui_session_reset_closes_the_restore() {
     );
 }
 
+/// #246: легенда таблицы в странице + счётчик «снято порогом» на live-промере.
+/// (а) Статика: над таблицей «Кто нашёл» живёт `#maskLegend` со span-счётчиком
+/// `#spanDropped` — таблица = маскируемые, полный разбор = панель РАЗБОР
+/// (первичка оператора v0.1.5: РАЗБОР красит 0.95/0.99-хиты, таблица молчит).
+/// (б) Живой промер: каркасный 0.95-хит (#234, golden g0147) при S=0.99 из
+/// ответа ВЫПАДАЕТ (primary-промер main 42a5e8c: server `route_spans` режет до
+/// ответа), базовый прогон без порога его держит: delta = 1 — ровно то число,
+/// которое фронт рисует в счётчике (`maskDropped(base, shown)`, JS-зуб
+/// `mask_dropped_counter_island`).
+#[test]
+fn ui_legend_and_dropped_counter_match_the_live_delta() {
+    let d = Daemon::start(&SESSION);
+    let page = call(&d.addr, "GET", "/", &[], b"").text();
+    assert!(
+        page.contains("id=\"maskLegend\"") && page.contains("id=\"spanDropped\""),
+        "легенда таблицы (#246) исчезла из страницы"
+    );
+    assert!(
+        page.contains("полный разбор = панель РАЗБОР"),
+        "легенда потеряла объяснение расхождения"
+    );
+
+    let json = [
+        ("content-type", "application/json"),
+        ("x-session-id", &ui_session() as &str),
+    ];
+    // g0147 = каркасный невалидный ИНН (0.95 frame_invalid, #234).
+    let text = "Проверка контрагента: ИНН 1110005080 — автокредит отклонён.";
+    let base = call(
+        &d.addr,
+        "POST",
+        "/v1/analyze",
+        &json,
+        format!(r#"{{"text":"{text}"}}"#).as_bytes(),
+    );
+    let high = call(
+        &d.addr,
+        "POST",
+        "/v1/analyze",
+        &json,
+        format!(r#"{{"text":"{text}","score_threshold":0.99}}"#).as_bytes(),
+    );
+    let n = |r: &Reply| r.json().as_array().expect("массив").len();
+    assert_eq!(base.status, 200, "базовый: {}", base.text());
+    assert_eq!(high.status, 200, "порог: {}", high.text());
+    assert_eq!(n(&base), 1, "базовый прогон потерял каркасный 0.95-хит");
+    assert_eq!(n(&high), 0, "порог 0.99 обязан снять каркасный 0.95-хит");
+    assert_eq!(
+        n(&base) - n(&high),
+        1,
+        "фронт покажет в #spanDropped не 1 (остров maskDropped = base-shown)"
+    );
+    // Порог 0.95 включительно хит ДЕРЖИТ (гейт `score >= thr`): счётчик 0.
+    let keep = call(
+        &d.addr,
+        "POST",
+        "/v1/analyze",
+        &json,
+        format!(r#"{{"text":"{text}","score_threshold":0.95}}"#).as_bytes(),
+    );
+    assert_eq!(n(&keep), 1, "0.95 при S=0.95 снят — гейт сдвинулся");
+}
+
 /// Редактор схемы говорит с API двумя полями, и оба обязаны работать так, как
 /// подписаны во фронте: `entities` — фильтр классов, `score_threshold` — планка,
 /// которую можно только поднимать.
@@ -1116,6 +1179,28 @@ fn chat_token_counter_counts_both_forms() {
         return;
     }
     assert_eq!(out.trim(), "[2,3]", "счётчик токенов (обе формы): {out}");
+}
+
+/// JS-зуб #246: остров `maskDropped` из ui/app.js (тот же run_js_fixture-контур
+/// #203). Фикстура `mask_dropped_runner.js` меряет пару (базовый прогон,
+/// показанный): (7,6)→1 = каркасный 0.95-хит, снятый порогом 0.99 (скрин
+/// оператора v0.1.5); (2,2)→0, (0,0)→0; (5,6)→0 = монотонность (отрицательной
+/// разницы счётчик не показывает); NaN/мусор→0 (graceful). Мутация островa =
+/// красный.
+#[test]
+fn mask_dropped_counter_island() {
+    let app = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"));
+    let fixture = include_str!("fixtures/mask_dropped_runner.js");
+    let out = run_js_fixture(fixture, app);
+    if out.trim().is_empty() {
+        eprintln!("SKIP mask_dropped_counter: ни node, ни osascript недоступны");
+        return;
+    }
+    assert_eq!(
+        out.trim(),
+        "[1,0,0,0,0,2]",
+        "счётчик снятых (остров): {out}"
+    );
 }
 
 /// JS-зуб #225: шаблон-промпта «с задачей» + `labelForms` (обе формы метки,

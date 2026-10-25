@@ -171,6 +171,7 @@ function status(text, kind) {
 function fail(err) {
   spans = [];
   renderSpans([]);
+  renderDropCounter(0, 0);
   paint($("src").value, []);
   status(err instanceof ApiError ? err.message : "сетевой сбой: " + err, "err");
 }
@@ -275,6 +276,30 @@ function renderSpans(list) {
   }
 }
 
+/* #246: счётчик «снято порогом» и его второй прогон.
+   Первичка контура (промер живым демоном main 42a5e8c, порт 18899, golden
+   g0147/g0244): analyze-ответ = порождённый срез — спаны ниже эффективного
+   порога сервер отбрасывает ДО ОТВЕТА (pipeline::route_spans), счётчика
+   снятых в контракте нет, полный разбор = панель РАЗБОР (тот же массив).
+   Единственный детерминированный score-класс НИЖЕ 0.99 = каркасное вето 0.95
+   (#234 `FRAME_INVALID_W`; промер histogram на negative-сплите: дельта
+   len(порог≤0.95) − len(порог>0.95) = ровно их число). Заголовки базовый
+   прогон не заменяют (max-risk = сигнал класса, не число). Значит полный
+   контур = ДВА analyze-прогона: базовый (порог не поднят, thr=0) +
+   запрошенный; снято = разница длин. Остров чист (node-зуб
+   mask_dropped_runner.js). */
+function maskDropped(baseLen, shownLen) {
+  const b = Number(baseLen);
+  const s = Number(shownLen);
+  if (!Number.isFinite(b) || !Number.isFinite(s)) return 0;
+  return Math.max(0, Math.round(b - s));
+}
+
+function renderDropCounter(baseLen, shownLen) {
+  const el = $("spanDropped");
+  if (el) el.textContent = String(maskDropped(baseLen, shownLen));
+}
+
 /* --- запросы песочницы -------------------------------------------------- */
 
 function enabledClasses() {
@@ -296,6 +321,15 @@ async function analyze() {
     spans = Array.isArray(res.data) ? res.data : [];
     paint(text, spans);
     renderSpans(spans);
+    // #246: базовый прогон (порог не поднят) = второй, параллельный; нужен
+    // ОДИН запрос на весь текст (заголовки не дают числа снятых, первичка
+    // в острове выше), ответ только в len. Отказ базового = «0» (счётчик не
+    // смелкует: без базовой мерки он молчит честным нулём, статус-строка
+    // живая). При S = 0 прогон не нужен: базовый = показанный.
+    const base = thr > 0
+      ? await api("/v1/analyze", { text: text, entities: body.entities })
+      : { data: res.data };
+    renderDropCounter(Array.isArray(base.data) ? base.data.length : 0, spans.length);
     $("out").textContent = "";
     masked = "";
     $("outMasked").textContent = "";
@@ -384,6 +418,7 @@ async function resetSession() {
     lastLabels = [];
     $("revealChecklist").hidden = true;
     renderSpans([]);
+    renderDropCounter(0, 0);
     paint("", []);
     $("out").textContent = "";
     $("outMasked").textContent = "";
