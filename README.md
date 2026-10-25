@@ -377,7 +377,9 @@ full-бинарь **требует** `FASAD_MODEL_DIR`: старт без вес
   же демон плюс иконка статуса — клик открывает `http://127.0.0.1:<порт>/ui`
   браузером ОС, меню = «Выход (graceful)» = shutdown-канал демона, tooltip =
   `UI 127.0.0.1:<порт> — fasad: <счётчик отказов> / <stage>` без ПДн. Запуск — исполнением бинаря;
-  env-контракт тот же, что в таблице §1. На linux фича `tray` физически
+  тексты startup/refuse/отказов пишутся в лог `<config-root>/fasad-tray.log`
+  (#263: win = `%APPDATA%\fasad\`, mac/linux = `$XDG_CONFIG_HOME/fasad`/
+  `$HOME/.config/fasad`; путь = env `FASAD_TRAY_LOG`), env-контракт тот же, что в таблице §1. На linux фича `tray` физически
   недоступна (`compile_error!` в `tray-icon-0.26.1`, verdict —
   [docs/dep-verify-crates.md](docs/dep-verify-crates.md) §16), трей в
   linux-артефакт не входит физически.

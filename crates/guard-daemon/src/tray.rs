@@ -50,6 +50,15 @@
 #[cfg(target_os = "windows")]
 pub mod win;
 
+/// Лог-контур «запустил и забыл» (#244 → #263): след startup/refuse/warning/
+/// трей-отказ текстов в `<config-root>/fasad-tray.log`. Мишень = вся
+/// `tray`-фича (не ОС): win = GUI-подсистема (stderr = NULL), mac/linux =
+/// ДВОЙНОЙ КЛИК Finder'ом / launcher без терминала = та же тихая ветка
+/// (первичка #263: mac-ассет v0.1.6 нёс контур в win-cfg-острове = 0
+/// следов на mac). Механика = чистый std, win-cfg не требовался.
+#[cfg(feature = "tray")]
+pub mod traylog;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -343,8 +352,9 @@ pub static OPEN_CLICKS: AtomicU64 = AtomicU64::new(0);
 /// Отказ поднять иконку НЕ валит демон: трей = витрина, HTTP-контур = продукт
 /// (fail-closed относится к запросам). Причина видна ТРЕМЯ каналами (#244,
 /// контракт «запустил и забыл = видимые отказы»): stderr (console-контур),
-/// лог-файл `%APPDATA%\fasad\fasad-tray.log` (win: stderr под
-/// GUI-подсистемой = NULL, файл = след; путь — в README бандла), окно
+/// лог-файл `<config-root>/fasad-tray.log` (#263: win = stderr под
+/// GUI-подсистемой = NULL; mac/linux = тихий запуск без терминала; файл =
+/// след на всех трей-ногах; путь — в README бандла), окно
 /// `MB_ICONWARNING|MB_TOPMOST` на win (`win::show_tray_failure`: вызов с
 /// трей-потока = модальность блокирует ТОЛЬКО поток трея — serving живёт на
 /// `fasad-serve`, первичка потоков main.rs; «ОК» = тихий park, UI уже
@@ -359,11 +369,12 @@ pub fn run(vault: &Arc<Inner>, stage: &'static str, port: u16, shutdown: &Shutdo
             // #244: под GUI-подсистемой (win) eprintln = NULL: лог + окно
             // обязательны — «процесс висит без иконки» обязан называть
             // причину и путь чтения (контракт «видим при ВСЕХ отказах»).
+            // #263: лог = tray-нога (все ОС: тихий запуск = mac-Finder/
+            // launcher без терминала, win = GUI-подсистема); окно = win-
+            // мишень (mac/linux консольный запуск = stderr виден).
+            traylog::append_log(&msg);
             #[cfg(target_os = "windows")]
-            {
-                win::append_log(&msg);
-                win::show_tray_failure(&e.to_string(), port, win::log_path().as_deref());
-            }
+            win::show_tray_failure(&e.to_string(), port, traylog::log_path().as_deref());
             park_forever(&shutdown.flag());
             return;
         }

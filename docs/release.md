@@ -833,13 +833,19 @@ models_pending (трей) = ЗУБ Г, не дефект.
 встроенный контур крейта, lib.rs:885-898; первичка: обработчик вызывается
 НАПРЯМУЮ из wndproc'а = поток создателя окна = наш поток; канал обходится) +
 `pump_win`-цикл (MenuEvent-чтение + tooltip-тик + shutdown-флаг); mac-контур
-`poll_once` НЕ тронут. (2) log-файл `%APPDATA%\fasad\fasad-tray.log`
-(append, ротация 5 МБ + слой `.1`, env `FASAD_TRAY_LOG` = харнес-оверрайд):
-startup/warning/refuse/serve-fatal/трей-отказ — все тексты GUI-контура.
+`poll_once` НЕ тронут. (2) log-файл `<config-root>/fasad-tray.log`
+(win = `%APPDATA%\fasad\...`, mac/linux = `$XDG_CONFIG_HOME/fasad`/
+`$HOME/.config/fasad` — #263: контур ОС-независим под `tray`-фичей, первичка
+mac-ассета v0.1.6 = 0 следов; append, ротация 5 МБ + слой `.1`, env
+`FASAD_TRAY_LOG` = харнес-оверрайд): startup/warning/refuse/serve-fatal/
+трей-отказ — все тексты GUI-контура.
 (3) `show_tray_failure` = `MB_ICONWARNING|MB_TOPMOST|MB_OK` с причиной,
 адресом UI и путём лога; блокирует только поток трея (serve = рабочий поток,
 первичка main.rs). (4) bind/serve-смерть = окно. Зубы: unit-контра log-
-пути/формата/ротации (win.rs, на win-ноге CI), FASAD_WIN_NO_UI-контра
+пути/формата/ротации (`tray::traylog`, cfg-нейтрально с #263 — меряется на
+любой ноге; win-канон = прямая формула + `cfg!(windows)`-лег), строка-зуб
+`strings bin/fasad-tray | grep -c fasad-tray.log` (release.yml, win/mac —
+дискриминатор #263: на базе mac = 0), FASAD_WIN_NO_UI-контра
 headless-ноги, compile-гейт win = CI build-test/tray-check (ring/cc локально
 недостижим — урок #228). Полка v0.1.5-b: живая win-нога — иконка, лог,
 окно при отказе; второй экземпляр = bind-окно rc=2.

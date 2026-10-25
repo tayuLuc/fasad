@@ -181,6 +181,23 @@ jobs:
         # — в full-бандле оба бинаря одного контура.
         if: matrix.os != 'ubuntu-24.04'
         run: just release-build-tray
+      - name: "Зуб #263: лог-контур в бинаре трея (strings-промер артефакта)"
+        # Первичка родителя: mac-ассет v0.1.6 `strings bin/fasad-tray |
+        # grep -c fasad-tray.log` = 0 = лог-контур #244 жил в win-cfg-острове
+        # (тихий mac-запуск = молчаливые отказы). Чин #263 = контур под
+        # `all(feature = "tray")` на всех трей-ногах; дискриминатор на базе =
+        # mac-нога КРАСНАЯ (0 совпадений). Промер артефакта, НЕ unit:
+        # `LOG_FILE_NAME` = `pub const &str`, строка в бинаре только если
+        # модуль примонтирован и достижим (промер этой сессии: debug-бинарь
+        # mac `--features tray` = 1 совпадение; релизный профиль = CI-провен
+        # первого тега после влития).
+        if: matrix.os != 'ubuntu-24.04'
+        shell: bash
+        run: |
+          set -euo pipefail
+          n=$(strings target/release/fasad-tray | grep -c "fasad-tray.log" || true)
+          echo "fasad-tray.log-строк в бинаре: $n"
+          [ "$n" -ge 1 ] || { echo "ОШИБКА: лог-контур #244/#263 не в бинаре (win/mac)"; exit 1; }
       - name: "Linux-бандл: systemd-юнит (#140)"
         # Кладём юнит в dist/ — make-bundle.sh берёт его с дерева (linux-ветка
         # требует contrib/systemd/fasad.service), этот шаг — явная запись
