@@ -233,8 +233,10 @@ fn c0_covers_structural_classes_of_recall_split() {
     // Счётчик-страж: 3 паспорта + 6 телефонов новых строк g0205–g0216
     // (промер golden_gen RECALL_CAT: passport 16→19, phone 36→42);
     // #212 (golden-v1.3): +7 паспортных строк F-1/F-3 форм g0227–g0233
-    // (промер RECALL_CAT: passport 19→26).
-    assert_eq!(per[0].2, 26, "паспортных gold-спанов в recall уехало");
+    // (промер RECALL_CAT: passport 19→26); #215 (golden-v1.8): +5
+    // паспортных спанов двойного/тройного паспорта g0279–g0280
+    // (промер RECALL_CAT: passport 26→31).
+    assert_eq!(per[0].2, 31, "паспортных gold-спанов в recall уехало");
     assert_eq!(per[1].2, 42, "телефонных gold-спанов в recall уехало");
     assert!(
         miss.is_empty(),
