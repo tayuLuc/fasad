@@ -206,6 +206,14 @@ jobs:
           [ -f "$b" ] || b="$b.exe"
           n=$(grep -ac "fasad-tray.log" "$b" || true)
           echo "fasad-tray.log-вхождений в бинаре ($b): $n"
+          if [ "${{ matrix.os }}" = "macos-14" ]; then
+            # ПЕРВИЧКА-ПРОБЕГ (не гейт): версия rustc toolchain-ноги +
+            # маркер ASCII-константы того же модуля (tray.rs, LOG_FILE_NAME
+            # = «fasad-tray», строка «graceful» из quit-меню = обе все-ОС).
+            rustc -vV | head -1
+            echo "ASCII LOG_FILE_NAME-ядро: $(grep -ac 'fasad-tray' "$b" || true)"
+            echo "quit-меню 'graceful': $(grep -ac 'graceful' "$b" || true)"
+          fi
           if [ "$n" -lt 1 ]; then
             ls -la "$b"
             # ПРОБЕГ (первичка, не гейт): кириллическая строка tray.rs
