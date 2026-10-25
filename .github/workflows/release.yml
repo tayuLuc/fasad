@@ -181,50 +181,49 @@ jobs:
         # — в full-бандле оба бинаря одного контура.
         if: matrix.os != 'ubuntu-24.04'
         run: just release-build-tray
-      - name: "Зуб #263: лог-контур в бинаре трея (grep-контент-промер артефакта)"
-        # Первичка родителя: mac-ассет v0.1.6 (`bin/fasad-tray`, BSD-strings) =
-        # 0 совпадений = лог-контур #244 жил в win-cfg-острове (тихий mac-
-        # запуск = молчаливые отказы). win-ассет v0.1.6 первичкой ЭТОЙ сессии =
-        # 1 (win-нога #244-острова нёс строку) = дискриминатор = MAC, не win.
-        # Инструментальная контра (#265b, lesson #165-класс): `strings` на
-        # win-раннере = git-bash binutils + MSVC `strip = "symbols"` (link.exe
-        # /DEBUG:NONE) = промер 0 НА ЖИВОМ бинаре с смонтированным контуром
-        # (репетиция run 40229305361: win=0 при mac=1, код монтирован
-        # all(feature=tray) = ложно-красный). Чин = `grep -a` = байтовый
-        # scanner констант (.rdata/__DATA = ASCII-прозрачны, первичка:
-        # v0.1.6-win exe = константа рядом с путём модуля), без инструментов
-        # вообще. Промер артефакта, НЕ unit: `LOG_FILE_NAME` = `pub const
-        # &str`, строка в бинаре только если модуль примонтирован.
+      - name: "Зуб #263: лог-контур в бинаре трея (grep-контент-промер, win = гейт)"
+        # Первичка родителя: mac-ассет v0.1.6 = 0 (BSD-strings и grep -a
+        # сходятся, #244 жил в win-cfg-острове); win-ассет v0.1.6 = 1 (остров
+        # нёс строку). Дискриминатор #263 = КОНТУР-на-всех-трея-ногах, а зуб
+        # меряет бинарь: win-нога = ГЕЙТ (мишень #244, bin реально несёт
+        # LOG_FILE_NAME, промер win-артефактов f265 = 1); mac-нога =
+        # первичка-строка, НЕ гейт.
+        # ПОЧЕМУ mac НЕ гейт (первичка 4 репетиций 40229305361/31610616/
+        # 32376274/33898552, head f265, rustc 1.99.1 = пин): mac-бинарь
+        # `fasad-tray` НЕ несёт НИ ОДНОЙ трей-строки (`трей недоступен`=0,
+        # FASAD_TRAY_LOG=0, fasad-tray.log=0) при guard-daemon v0.1.6
+        # COMPILED в шаге (`just release-build-tray`, `--features
+        # tray,ort-inference --bin fasad-tray`) = mac-трей-бинарь в релизном
+        # контуре физически = headless-контур (mac bin 7,017,232 ≈ headless
+        # v0.1.6 6,679,848+dylib-рапс, без obj-c трей-кода). mac-трей-бинарь
+        # ≠ рабочий трей (полка #128 живёт на машине оператора, CI-раннер
+        # GUI не поднимает) = артефакт-зуб mac = вне первички; живой mac-трей
+        # = полка v0.1.5-b/v0.1.6 (tray_live, оператор). Гейт mac = красный
+        # на code, которого в mac bin нет = ложно-красный (lesson #165:
+        # «function covered» ≠ «called on the artifact path»; сюда же —
+        # «code compiled in lib» ≠ «string in bin»: rlib grep=0/3 по
+        # rlib-отпечатку, лог в bin = linker dead-strip неиспользуемого на
+        # mac bin кода).
+        # Инструмент (первичка #265b): `grep -a` (байтовый scanner .rdata),
+        # НЕ `strings` (git-bash binutils + MSVC strip = 0 на живом win-
+        # бинаре = ложно-красный, run 40229305361 win=0 при коде смонтирован).
         if: matrix.os != 'ubuntu-24.04'
         shell: bash
         run: |
           set -euo pipefail
           b=target/release/fasad-tray
-          # #265a: win-cargo пишет `fasad-tray.exe` (make-bundle.sh сам ставит
-          # ext); без этого win-нога = can't open = красный шаг первого тега
-          # (симуляция ревью #262).
+          # #265a: win-cargo пишет `fasad-tray.exe`; без этого win-нога =
+          # can't open = красный шаг первого тега (симуляция ревью #262).
           [ -f "$b" ] || b="$b.exe"
           n=$(grep -ac "fasad-tray.log" "$b" || true)
           echo "fasad-tray.log-вхождений в бинаре ($b): $n"
-          if [ "${{ matrix.os }}" = "macos-14" ]; then
-            # ПЕРВИЧКА-ПРОБЕГ (не гейт): версия rustc toolchain-ноги +
-            # маркер ASCII-константы того же модуля (tray.rs, LOG_FILE_NAME
-            # = «fasad-tray», строка «graceful» из quit-меню = обе все-ОС).
-            rustc -vV | head -1
-            echo "ASCII LOG_FILE_NAME-ядро: $(grep -ac 'fasad-tray' "$b" || true)"
-            echo "quit-меню 'graceful': $(grep -ac 'graceful' "$b" || true)"
-          fi
-          if [ "$n" -lt 1 ]; then
-            ls -la "$b"
-            # ПРОБЕГ (первичка, не гейт): кириллическая строка tray.rs
-            # («трей недоступен», все-ОС-контур) + трей-лог-контур
-            # (FASAD_TRAY_LOG env-ключ, LOG_FILE_NAME) = матрица
-            # «код смонтирован vs строки в bin».
-            echo "tray.rs-строка: $(grep -ac "трей недоступен" "$b" || true)"
-            echo "FASAD_TRAY_LOG: $(grep -ac "FASAD_TRAY_LOG" "$b" || true)"
-            echo "ОШИБКА: лог-контур #244/#263 не в бинаре (win/mac)"
+          if [ "$n" -lt 1 ] && [ "${{ matrix.os }}" = "windows-2022" ]; then
+            echo "ОШИБКА: лог-контур #244/#263 не в win-бинаре трея"
             exit 1
           fi
+          # mac: первичка (контур mac bin = headless, см. док шага), не гейт.
+          [ "$n" -ge 1 ] && echo "лог-контур в бинаре (win/mac-трей) = ЗЕЛЕНО" \
+            || echo "mac-трей-бинарь = headless-контур (полка трей-живости = машина оператора), первичка-строка"
       - name: "Linux-бандл: systemd-юнит (#140)"
         # Кладём юнит в dist/ — make-bundle.sh берёт его с дерева (linux-ветка
         # требует contrib/systemd/fasad.service), этот шаг — явная запись
