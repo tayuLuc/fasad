@@ -33,6 +33,10 @@ let session = newSession();
 let spans = [];
 let masked = "";
 let classes = [];
+// #225: метки последней подмены = items anonymize-ответа (replacement-forms:
+// `[КЛАСС_н_nonce]` session / `[[F0#…]]` stateless; суррогаты operator=replace
+// меток НЕ зовут и в список не попадают — фильтр по пустому replacement).
+let lastLabels = [];
 
 function showSession() {
   $("session").textContent = "сессия: " + session;
@@ -63,6 +67,15 @@ function refreshButtons() {
      cascade-0+models) карточка сворачивается в статус-ленту (кнопка
      скрыта, remount-кнопки НЕТ — каскады монтируются на старте, #192). */
   const an = $("btnAnalyze"), ao = $("btnAnon"), de = $("btnDean"), cp = $("btnCopy");
+  // #225: «Скопировать с задачей» = активность как у «Скопировать
+  // обезличенный» (есть masked) + честный title про список меток.
+  const ct = $("btnCopyTask");
+  ct.disabled = cp.disabled;
+  ct.title = cp.disabled
+    ? "сначала «Обезличить»"
+    : uniqueLabels(lastLabels).length === 0
+      ? "копирует задачу без списка меток (меток не найдено)"
+      : "masked + задача + список меток (" + uniqueLabels(lastLabels).length + ")";
   an.disabled = modelRefused;
   an.title = modelRefused ? "нужны веса: «Скачать веса» выше, затем перезапуск" : "";
   ao.disabled = modelRefused || spans.length === 0;
@@ -293,6 +306,8 @@ async function analyze() {
     $("outChat").textContent = "";
     $("outChatRevealed").textContent = "";
     $("btnReveal").disabled = true;
+    lastLabels = [];
+    $("revealChecklist").hidden = true;
     setStepActive(2);
     refreshButtons();
     status("спанов: " + spans.length + headerLine(res.headers));
@@ -310,6 +325,12 @@ async function anonymize() {
     /* spans уходят дословно как из /v1/analyze: лишних полей контракт не требует */
     const res = await api("/v1/anonymize", { text: $("src").value, spans: spans });
     masked = res.data.text;
+    // #225: список меток = из items ответа (контур #203: класс+n из
+    // replacement, НЕ regex по masked); дубли складываются в уникальные
+    // (одна форма много вхождений = одна строка чек-листа).
+    lastLabels = (Array.isArray(res.data.items) ? res.data.items : [])
+      .map(function (it) { return it && it.replacement ? String(it.replacement) : ""; })
+      .filter(function (r) { return r !== ""; });
     /* #201: обезличенный живёт в СВОЁМ окне; исходник в #out и развёрнутый
        в #outBack его не затирают — пара «что ушло / что вернулось». */
     $("outMasked").textContent = masked;
@@ -318,7 +339,9 @@ async function anonymize() {
     setStepActive(3);
     refreshButtons();
     status(
-      "подмен: " + res.data.items.length + headerLine(res.headers),
+      "подмен: " + res.data.items.length +
+      " | меток: " + uniqueLabels(lastLabels).length +
+      headerLine(res.headers),
     );
   } catch (err) {
     fail(err);
@@ -358,6 +381,8 @@ async function resetSession() {
     showSession();
     spans = [];
     masked = "";
+    lastLabels = [];
+    $("revealChecklist").hidden = true;
     renderSpans([]);
     paint("", []);
     $("out").textContent = "";
@@ -741,6 +766,7 @@ $("btnReset").addEventListener("click", resetSession);
 
 $("btnFetchS").addEventListener("click", fetchWeights);
 $("btnCopy").addEventListener("click", copyMasked);
+$("btnCopyTask").addEventListener("click", copyMaskedTask);
 $("btnDemo").addEventListener("click", setDemoText);
 $("demoNoAuto").addEventListener("change", toggleDemoNoAuto);
 $("btnChat").addEventListener("click", sendToChat);
@@ -752,6 +778,71 @@ $("btnRevealPaste").addEventListener("click", function () { revealChatAnswer("pa
 $("chatPaste").addEventListener("input", function () {
   $("btnRevealPaste").disabled = $("chatPaste").value === "";
 });
+
+/* --- #225: шаблон промпта с задачей + список меток ------------------------
+
+  Задача-обёртка = ФИКСИРОВАННАЯ константа (текст генерится не моделью,
+  ПДн в шаблоне нет — промер node-зубом); подставляются masked-выход и
+  СПИСОК НАЙДЕННЫХ меток из anonymize-ответа (items[].replacement,
+  span-контур #203 — НЕ regex по masked). Формат скобки-метки = обе
+  формы vault (session/`stateless`) — контур chatTokens ниже. */
+const TASK_TEMPLATE_HEADER =
+  "Прочитай служебное письмо. Данные обезличены гардом: метки вида [КЛАСС_н_XXXX] и [[F0#…]] — это замены ПДн, а не выдумка.\n" +
+  "Задачи:\n" +
+  "1) О чём речь — 3 пункта.\n" +
+  "2) Заполни таблицу реквизитов (сторона А, сторона Б, договор, счёт, карта, телефон, e-mail): значения БУКВАЛЬНО из текста, метки сохраняй, не раскрывай и не придумывай.\n" +
+  "3) Проверь арифметику: сумма договора/счёта/платежа, посчитай итог.\n" +
+  "4) Перечисли все числа, которые выглядят как паспорт/карта, и скажи, какие данные отсутствуют.\n";
+
+function uniqueLabels(list) {
+  const seen = Object.create(null);
+  const out = [];
+  for (const label of list) {
+    if (!seen[label]) {
+      seen[label] = true;
+      out.push(label);
+    }
+  }
+  return out;
+}
+
+/* Полный текст «с задачей» = шапка + список меток (graceful: пуст =
+   «меток не найдено») + masked. Тот же для кнопки и для прокси-запроса. */
+function taskPrompt(text, labels) {
+  const uniq = uniqueLabels(labels);
+  const listLine = uniq.length === 0
+    ? "Меток не найдено — скопируй с задачей после «Обезличить»."
+    : "Метки в тексте (" + uniq.length + "): " + uniq.join(", ");
+  return TASK_TEMPLATE_HEADER + listLine + "\n\n---\n" + text;
+}
+
+/* #225: копирование masked+задача (тот же Clipboard-контур #201, fallback
+   textarea+execCommand). */
+async function copyMaskedTask() {
+  if (masked === "") return;
+  const payload = taskPrompt(masked, lastLabels);
+  try {
+    await navigator.clipboard.writeText(payload);
+    status("текст с задачей скопирован (меток: " + uniqueLabels(lastLabels).length + ")");
+  } catch (err) {
+    const ta = document.createElement("textarea");
+    ta.value = payload;
+    ta.setAttribute("readonly", "");
+    ta.className = "clip-box";
+    document.body.append(ta);
+    ta.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch (copyErr) {
+      ok = false;
+    }
+    ta.remove();
+    status(ok
+      ? "текст с задачей скопирован (меток: " + uniqueLabels(lastLabels).length + ")"
+      : "буфер недоступен: " + err + " — скопируй окно «Что ушло» вручную", ok ? "" : "err");
+  }
+}
 
 /* #201 п.3: копирование обезличенного = главный практический выход.
    Clipboard API (self-origin; CSP без new permission-директив, write —
@@ -816,7 +907,7 @@ const DEMO_TEXT = [
   "со стороны ООО «Вектор-Инвест»: Ушакова Кира Саввична, паспорт 45 09 123456, выдан ОВД г. Москвы 12.05.2019, адрес регистрации: 123308, Москва, 3-й Силиконный проезд, д. 6, кв. 212, телефон +7 916 240-18-77, e-mail: ushakova@ektor-invest.example;",
   "со стороны ООО «Ромашка»: Соколов Денис Андреевич (транслит в реестре: Ushakov Petr Sergeevich, Sokolov Denis), СНИЛС 112-233-455 95, телефон +7 (903) 118-45-90, e-mail: d.sokolov@romashka.example.",
   "",
-  "Оплата по договору: перевод на расчётный счёт получателя № 40702810900000012345 в ПАО «Банк-Запад» (БИК 044525225, к/с 30101810400000000225), карта получателя 2202 2036 5123 4567 expiry 12/28, CVC не указывается в переписке.",
+  "Оплата по договору № 77-Д/26: сумма договора 1 224 000 рублей, аванс 30 % = 367 200 рублей, остаток 856 800 рублей переводом на расчётный счёт получателя № 40702810900000012345 в ПАО «Банк-Запад» (БИК 044525225, к/с 30101810400000000225), карта получателя 2202 2036 5123 4567 expiry 12/28, CVC не указывается в переписке.",
   "Паспортные данные директора плательщика для реестра: 4508 455561, выдан 07.04.2015 (форма серии/номера подряд — каскад 0 её не находит, и это видно в разборе ниже: проверка границ детектора, не опечатка в примере).",
   "",
   "Просим подтвердить получение и направить подписанный экземпляр по адресу: 107031, Москва, ул. Кузнецкий Мост, д. 18, стр. 2, а также на e-mail: reestr@romashka.example; вопросы по реквизитам — +7 495 789-65-43 (доб. 21).",
@@ -928,8 +1019,12 @@ async function sendToChat() {
     model: model,
     stream: true,
     messages: [
-      { role: "system", content: "Отвечай по делу, формат и токены вида [[…]] и [КЛАСС#…] не меняй." },
-      { role: "user", content: masked },
+      // #225: задача = та же константа-обёртка, что у кнопки копирования
+      // (прокси-путь = user-шаблон; system = короткая константа «метки не
+      // трогай»: бюджет подмен #84 промерен на document-размер = к шаблону
+      // добавляется ~полкилобайта константы, не подмен).
+      { role: "system", content: "Ты обрабатываешь обезличенный документ. Метки вида [КЛАСС_н_XXXX] и [[F0#…]] не трогай, значения из текста не придумывай." },
+      { role: "user", content: taskPrompt(masked, lastLabels) },
     ],
   };
   chatText = "";
@@ -937,6 +1032,7 @@ async function sendToChat() {
   $("outChat").textContent = "";
   $("outChatRevealed").textContent = "";
   $("btnReveal").disabled = true;
+  $("revealChecklist").hidden = true;
   chatStatus("отправка в чат… (ответ придёт по мере генерации)");
   const headers = {
     "Content-Type": "application/json",
@@ -1001,6 +1097,41 @@ async function sendToChat() {
   }
 }
 
+/* #225: чек-лист расшифровки «изменённого ответа». Формы метки = ОБЕ
+   (контур chatTokens #203: stateless `[[F0#…]]` + session `[КЛАСС_н_…]`);
+   «остаточные» = совпадения формы в ответе ДО deanonymize (ответ чата
+   обязан нести ровно известные метки) и ПОСЛЕ (после > 0 = модель
+   мутировала метку = она не развернулась = честное предупреждение). */
+const LABEL_FORM = /\[\[[^\]\n]*\]\]|\[[a-z][a-z0-9_]*_\d+_[^\]\n]*\]/gi;
+
+function labelForms(text) {
+  return (text.match(LABEL_FORM) || []);
+}
+
+function renderRevealChecklist(before, after, substituted) {
+  const el = $("revealChecklist");
+  const uniq = uniqueLabels(lastLabels);
+  const m = uniq.length;
+  const seen = labelForms(before);
+  // «вернулась» = метка сессии дошла до ответа чата (вхождением в before).
+  const back = uniq.filter(function (label) { return seen.indexOf(label) >= 0; });
+  const lost = uniq.filter(function (label) { return seen.indexOf(label) < 0; });
+  const residual = labelForms(after).length;
+  const lines = [];
+  lines.push("раскрыто " + back.length + " из " + m +
+    " (подмен деанона: " + substituted + ")");
+  if (m > 0 && lost.length > 0) {
+    lines.push("не вернулись (" + lost.length + "): " + lost.join(", "));
+  }
+  if (residual > 0) {
+    lines.push("ОСТАТОЧНЫЕ МЕТКИ после раскрытия: " + residual +
+      " — модель мутировала метки (форма цела, замена не распознана)");
+  }
+  el.textContent = lines.join(" | ");
+  el.dataset.kind = (lost.length > 0 || residual > 0) ? "err" : "";
+  el.hidden = false;
+}
+
 async function revealChatAnswer(source) {
   const text = source === "paste" ? $("chatPaste").value : chatText;
   if (text === "") {
@@ -1016,6 +1147,7 @@ async function revealChatAnswer(source) {
     const res = await api("/v1/deanonymize", { text: text });
     const n = res.data.substituted;
     $("outChatRevealed").textContent = res.data.text;
+    renderRevealChecklist(text, String(res.data.text || ""), n);
     chatStatus(
       "токенов в ответе: " + chatTokens(text) + " | токенов раскрыто: " + n +
       headerLine(res.headers) +

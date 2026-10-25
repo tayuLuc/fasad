@@ -165,6 +165,9 @@
           <div class="row">
             <button id="btnRevealPaste" type="button" disabled title="вставь текст ответа в поле выше">Раскрыть вставленный</button>
           </div>
+          <!-- #225: чек-лист расшифровки «изменённого ответа»: N из M меток
+               вернулись + остаточные метки (модель мутировала). -->
+          <p id="revealChecklist" class="status" role="status" hidden></p>
           <h2>Ответ с оригиналами</h2>
           <div id="outChatRevealed" class="out"></div>
           <p id="chatStatus" class="status" role="status"></p>
@@ -175,6 +178,10 @@
             <h2>
               Что ушло (обезличено)
               <button id="btnCopy" type="button" disabled title="сначала «Обезличить»">Скопировать обезличенный</button>
+              <!-- #225: копирование С ЗАДАЧЕЙ: masked + фиксированная
+                   задача-обёртка + список меток из anonymize-ответа
+                   (span-контур #203, не regex по masked). -->
+              <button id="btnCopyTask" type="button" disabled title="сначала «Обезличить»">Скопировать с задачей</button>
             </h2>
             <div id="outMasked" class="out"></div>
           </div>
