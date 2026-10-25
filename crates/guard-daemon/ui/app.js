@@ -979,6 +979,13 @@ async function loadSettings() {
   $("settingsMeta").textContent =
     "версия " + (d.version || "—") + " · стадия " + (d.stage || "—") +
     " · режим " + (d.mode || "—") + " · потоков " + (d.threads || "—");
+  // #227: адрес UI = ЭФФЕКТИВНЫЙ url, а не догадка: `window.location.origin`
+  // = то, по чему браузер реально открыл песочницу (localhost и 127.0.0.1
+  // — оба легальны при loopback-бинде, сервер про хост не судит). Порт
+  // настраиваем полем FASAD_PORT в таблице ниже (#224); бинд = env-контра
+  // #224 (строка `settingsSecret`), адрес-строка = только чтение.
+  $("settingsAddr").textContent = "адрес интерфейса: " + window.location.origin;
+  $("btnCopyAddr").hidden = false;
   const f = d.file || {};
   $("settingsFile").textContent =
     "файл конфигурации: " + (f.path || "—") + (f.exists ? " (существует)" : " (файла нет — значения по умолчанию)");
@@ -1077,6 +1084,8 @@ $("termFilter").addEventListener("input", function () {
 });
 $("btnCopy").addEventListener("click", copyMasked);
 $("btnCopyTask").addEventListener("click", copyMaskedTask);
+// #227: адрес UI = effective url (location.origin), read-only + копир.
+$("btnCopyAddr").addEventListener("click", copyAddr);
 $("btnDemo").addEventListener("click", setDemoText);
 $("demoNoAuto").addEventListener("change", toggleDemoNoAuto);
 $("btnChat").addEventListener("click", sendToChat);
@@ -1185,6 +1194,37 @@ async function copyMasked() {
     status(ok
       ? "обезличенный текст скопирован в буфер"
       : "буфер недоступен: " + err + " — скопируй окно «Что ушло» вручную", ok ? "" : "err");
+  }
+}
+
+/* #227: копирование адресной строки = тот же Clipboard-контур #230
+   (navigator.clipboard + textarea/execCommand-фолбэк; read-only, текст
+   строки берётся из DOM, а не из `location` — копир копирует ровно то,
+   что увидел оператор). */
+async function copyAddr() {
+  const payload = $("settingsAddr").textContent.replace(/^адрес интерфейса:\s*/, "");
+  if (payload === "" || payload === "запрашивается…") return;
+  try {
+    await navigator.clipboard.writeText(payload);
+    settingsStatus("адрес скопирован: " + payload, "");
+  } catch (err) {
+    const ta = document.createElement("textarea");
+    ta.value = payload;
+    ta.setAttribute("readonly", "");
+    ta.className = "clip-box";
+    document.body.append(ta);
+    ta.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch (copyErr) {
+      ok = false;
+    }
+    ta.remove();
+    settingsStatus(
+      ok ? "адрес скопирован: " + payload : "буфер недоступен: " + err + " — скопируй адрес из строки вручную",
+      ok ? "" : "err"
+    );
   }
 }
 

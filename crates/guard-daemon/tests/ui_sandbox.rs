@@ -1606,9 +1606,20 @@ fn ui_html_carries_tabs_and_settings_form() {
         "settingsFile",
         "restartBanner",
         "settingsStatus",
+        // #227: адресная строка настроек = эффективный url + копир.
+        "settingsAddr",
+        "btnCopyAddr",
     ] {
         assert!(t.contains(id), "в index.html нет #220-элемента: {id}");
     }
+    assert!(
+        t.contains(r#"<span id="settingsAddr">"#),
+        "#227: адрес-строка потеряла read-only span (текст строки = текст span, кнопка вне него)"
+    );
+    assert!(
+        t.contains(r#"id="btnCopyAddr" type="button" hidden"#),
+        "#227: копир-кнопка адреса потеряла hidden-инит (её включает loadSettings)"
+    );
     assert!(t.contains("Настройки"), "нет подписи таба");
     assert!(t.contains("Работа"), "нет подписи таба");
     assert!(
@@ -1641,6 +1652,10 @@ fn ui_js_carries_tab_and_config_wiring() {
         "loadSettings",
         "saveConfig",
         "CFG_NUMERIC",
+        // #227: адрес UI = эффективный url браузера, не догадка про бинд.
+        "window.location.origin",
+        "settingsAddr",
+        "btnCopyAddr",
     ] {
         assert!(js.contains(needle), "app.js потерял {needle}");
     }
