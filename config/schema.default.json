@@ -75,7 +75,7 @@
       "answers": ["yes", "no"],
       "model": true,
       "lockr_tags": ["EMAIL"],
-      "validators": [],
+      "validators": ["email_rfc"],
       "validator_only": false
     },
     {

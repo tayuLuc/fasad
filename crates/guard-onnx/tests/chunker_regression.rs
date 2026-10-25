@@ -111,8 +111,8 @@ fn golden_rows() -> Vec<String> {
         .collect();
     assert_eq!(
         rows.len(),
-        247,
-        "golden-v1 — 247 строк (v1.4 #223; N≥150, AGENTS §4)"
+        262,
+        "golden-v1 — 262 строки (v1.5 #222; N≥150, AGENTS §4)"
     );
     assert!(rows.iter().all(|r| !r.is_empty()));
     rows

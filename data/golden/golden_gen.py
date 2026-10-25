@@ -842,6 +842,48 @@ def main():
         spans = [span_at(t, v, c, srcv) for (v, c, srcv) in sps]
         add(t, spans, "negative", src)
 
+    # golden-v1.5 (#222): email = форматный валидатор addr-spec RFC 5322
+    # (детектируемая форма вместо model-only: BPE-обрезки «d.sokolov@rom»
+    # закрыты вето 1.0). recall-формы + negative-бэйты коллизий (git-стиль,
+    # URL-прагматика, двойная вставка, обрез, одно-меточный домен). Строки
+    # ДОБАВЛЕНЫ ПОСЛЕ v1.4-блока #223: g0001..g0247 побайтово идентичны (гейт
+    # golden_regen_verify). Значения = константы (не PRNG).
+    V14B_RECALL = [
+        # (text, value, value_source)
+        ("Запрос от support@cloud.i-o.example по тарифу.",
+         "support@cloud.i-o.example", "support@cloud.i-o.example"),
+        ("Отдел кадров: HR.Team+2026@corp-vektor.example, ждём ответ.",
+         "HR.Team+2026@corp-vektor.example", "HR.Team+2026@corp-vektor.example"),
+        ("В письме «d.sokolov@romashka.example» адрес для связи.",
+         "d.sokolov@romashka.example", "d.sokolov@romashka.example"),
+        ("Срочно: nikitin76@breeze.example; копия reestr@romashka.example.",
+         "nikitin76@breeze.example", "nikitin76@breeze.example"),
+        ("Смена: A.B.C.D@sub.mailforge.example (три уровня домена).",
+         "A.B.C.D@sub.mailforge.example", "A.B.C.D@sub.mailforge.example"),
+        ("Архив: archive-2024@xn--80ak6aa92e.test — письмо вернулось.",
+         "archive-2024@xn--80ak6aa92e.test", "archive-2024@xn--80ak6aa92e.test"),
+        ("Служебка: u$r!name@corp-vektor.example = служебный ящик.",
+         "u$r!name@corp-vektor.example", "u$r!name@corp-vektor.example"),
+        ("Регистр: SUPPORT@CORP-VEKTOR.EXAMPLE в заголовке.",
+         "SUPPORT@CORP-VEKTOR.EXAMPLE", "SUPPORT@CORP-VEKTOR.EXAMPLE"),
+        ("Обращение: d.sokolov@romashka.example,тел. +7 905 552-52-86.",
+         "d.sokolov@romashka.example", "d.sokolov@romashka.example"),
+    ]
+    for t, value, src in V14B_RECALL:
+        add(t, [span_at(t, value, "email", src)], "recall", "synthetic-checksum")
+    # negative-бэйты #222: коллизии addr-spec, маскировать нельзя (scope =
+    # ПДн-класс; git-хеш, URL-прагматика, обрезанный ввод = не адреса).
+    V14B_NEG = [
+        "В коде: author@commit 7f0ce0a (git-стиль, не адрес).",
+        "ftp://files@ftp.example/resource — путь протокола.",
+        "a@b@cd.example — двойная вставка при копировании.",
+        "Не полный адрес: d.sokolov@ (обрезан в форме).",
+        "Служебное: support@ (пустое поле в заявке).",
+        "Локальное имя a@localhost (имя машины, не почта).",
+    ]
+    for t in V14B_NEG:
+        add(t, [], "negative", "synthetic-no-pii")
+
     # ---------------- гейты ----------------
     total = len(rows)
     recall = sum(1 for r in rows if r["split"] == "recall")

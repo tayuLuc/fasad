@@ -46,7 +46,11 @@ const GOLDEN: &str = include_str!("../../../data/golden/golden-v1.jsonl");
 const TAU: f64 = guard_onnx::routing::DEFAULT_TAU_LOW;
 
 /// Классы, которые каскад 0 не находит никогда: ради них и затевался #14A.
-const MODEL_ONLY: [&str; 5] = ["person_name", "phone", "email", "address", "passport"];
+/// #222: email закрыт форматным валидатором addr-spec, phone/passport —
+/// структурным вето #200-A2: в model-only контуре промера остались чистые
+/// модельные классы (реестр = `validators` схемы, зуб
+/// `model_only_registry_matches_schema`).
+const MODEL_ONLY: [&str; 2] = ["person_name", "address"];
 
 /// Флаг «веса обязательны»: на гейт-машине пропуск = падение, а не зелёный.
 ///
@@ -122,6 +126,25 @@ fn rows() -> Vec<Row> {
             }
         })
         .collect()
+}
+
+/// Реестр `MODEL_ONLY` = первичка схемы: класс без детерминированного
+/// валидатора = ровно он (зуб не даёт реестру отстать от схемы: email
+/// закрыт #222, phone/passport — #200-A2; iban = чексумма, НЕ model-only).
+#[test]
+fn model_only_registry_matches_schema() {
+    let schema = guard_daemon::schema::Schema::embedded().expect("канон валиден");
+    for c in &schema.classes {
+        let model_only = MODEL_ONLY.contains(&c.id.as_str());
+        assert_eq!(
+            c.validators.is_empty() && c.model,
+            model_only,
+            "класс {} (validators={:?}, model={}) разошёлся с реестром MODEL_ONLY",
+            c.id,
+            c.validators,
+            c.model
+        );
+    }
 }
 
 /// Три строки промера: с золотым спаном model-only класса и короткие, чтобы не
