@@ -14,7 +14,15 @@
 //! 3. Тест под `#![cfg(feature = "ort-inference")]`: в CI (фичи нет) он не
 //!    собирается, а отказ без фичи проверяется юнит-тестом
 //!    `cascades::tests::startup_without_inference_is_refused_when_models_are_configured`,
-//!    который в CI идёт всегда.
+//!    который в CI идёт всегда. С #204 файл монтирован в CI job `ort-build`
+//!    (шаг «ort-тесты debug») = слепая зона закрыта: RED-контра — тест был
+//!    красен на main с c7a499b (#192-порядок layout: first-missing =
+//!    external-data арбитра, не lockR) и этого никто не видел.
+//!    Контрактура #198 (headless `rc=2` + «Скачать веса») = UI/tray-слой
+//!    (`startup_pending_contour`), НЕ текст `Load`-причины старта: причина
+//!    старта обязана называть ИМЯ отсутствующего файла (AGENTS), порядок
+//!    файлов = `weights::layout()` (#192), тест сверяет имя с
+//!    `weights::startup_missing_first()` — единый источник порядка.
 //!
 //! Тесту нужен настоящий `tokenizer.json` (иначе отказ наступает раньше, чем
 //! мы дошли до битого графа): он берётся из кэша весов; нет кэша — печатаем
@@ -143,9 +151,30 @@ fn empty_model_dir_names_the_missing_file() {
     let Err(CascadeFailure::Load(reason)) = res else {
         panic!("пустой каталог весов обязан отказывать старт: {res:?}");
     };
+    // Контра #192 (1de4d63, влита в v0.1.1 = база c7a499b): раскладка весов
+    // = единый источник `weights::layout()` (5 файлов, порядок = порядок
+    // скачивания, мелкие первыми: быстрый первый ✓ в UI-карточке), а
+    // external-data арбитра (ARB_DATA_FILE) проверяется ПЕРВЫМ — отдельной
+    // проверкой до общей петли (монтаж без него = ✓ над несмонтируемым
+    // бандлом, заголовок манифеста). Пустой каталог => первое отсутствующее
+    // звено = он, а не lockR: assert «первое — lockR» описывал порядок ДО
+    // #192 и красен с влития (permutation-of-order, не fail-open).
+    // Дискриминаторы теста целы: причина = Load с ИМЕНЕМ отсутствующего
+    // файла из layout (ниже по общему контракту) + отсутствие секрета.
     assert!(
-        reason.contains("lockR"),
-        "первое отсутствующее звено — lockR: {reason}"
+        reason.contains("onnx-community") && reason.contains("model_q4f16.onnx_data"),
+        "первое отсутствующее звено пустого каталога = external-data арбитра
+         (#192: layout-порядок, мелкие первыми; первичка cascades.rs
+         `arb_data`-проверки до общей петли): {reason}"
+    );
+    // Тот же контракт общей формулой (без литерала выше): имя отсутствующего
+    // файла = первый файл layout() в порядке старта (AGENTS «отказ называет
+    // истинную причину»: имя + полный путь, не «не могу стартовать»).
+    let first_missing = guard_daemon::weights::startup_missing_first();
+    assert_eq!(
+        first_missing,
+        Some("onnx-community/GLiNER2.5-Decide-ONNX/onnx/model_q4f16.onnx_data"),
+        "порядок отказа уехал из layout — сверь cascades.rs::OnnxMount::load"
     );
 }
 
