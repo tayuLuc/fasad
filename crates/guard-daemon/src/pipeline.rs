@@ -474,7 +474,14 @@ pub fn analyze_with(
         .map(|h| {
             // Поля читаем до переезда `class`: `ClassId` — `String`, частичный
             // move ломает последующие заимствования хита.
-            let (span, score, source, validator) = (h.span, h.score(), h.source, h.validator);
+            let (span, source, validator) = (h.span, h.source, h.validator);
+            // #234: «каркас + форма без чексуммы» = 0.95 (константа контракта),
+            // остальные детерминированные = вето 1.0 (h.score()).
+            let score = if source == guard_types::DetectionSource::FrameInvalidChecksum {
+                guard_types::DetectionSource::FRAME_INVALID_W
+            } else {
+                h.score()
+            };
             Cand {
                 span,
                 class: h.class,
