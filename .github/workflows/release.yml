@@ -173,6 +173,9 @@ jobs:
         run: |
           bash scripts/fetch-models.sh --no-rewrite
           echo "FASAD_MODEL_DIR=$HOME/.cache/fasad-models" >> "$GITHUB_ENV"
+      - name: "СВЕЖИЙ-контур #265: чистый target перед трей-шагом (mac-провен: cache-hit rlib = bin v0.1.6-размера 7,017,232 = лог-контур физически вне бинаря, репетиции 40229305361/31610616/32376274: mac=0, win=1)"
+        if: matrix.os == 'macos-14'
+        run: cargo clean
       - name: "Трей-бинарь win/mac (features tray,ort-inference, #128/#181)"
         # Linux пропускает: фича физически несобираема на linux
         # (compile_error в tray-icon без libappindicator/ksni —
