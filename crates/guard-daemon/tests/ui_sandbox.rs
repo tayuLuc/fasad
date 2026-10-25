@@ -1185,7 +1185,7 @@ fn chat_token_counter_counts_both_forms() {
 /// #203). Фикстура `mask_dropped_runner.js` меряет пару (базовый прогон,
 /// показанный): (7,6)→1 = каркасный 0.95-хит, снятый порогом 0.99 (скрин
 /// оператора v0.1.5); (2,2)→0, (0,0)→0; (5,6)→0 = монотонность (отрицательной
-/// разницы счётчик не показывает); NaN/мусор→0 (graceful). Мутация островa =
+/// разницы счётчик не показывает); NaN/мусор→0 (graceful). Мутация острова =
 /// красный.
 #[test]
 fn mask_dropped_counter_island() {
@@ -1201,6 +1201,25 @@ fn mask_dropped_counter_island() {
         "[1,0,0,0,0,2]",
         "счётчик снятых (остров): {out}"
     );
+}
+
+/// JS-зуб #252-дочистка: `CFG_NUMERIC` из ui/app.js += `FASAD_FRAME_MIN`
+/// (#221-контра: number-поле = README-обещание диапазона). Ожидается
+/// `[0.51, 1, 0.01, 11]`: нижняя граница 0.51 = шаговая сетка над ОТКРЫТОЙ
+/// 0.5 (первичка `validate_value`: `v > 0.5`, min 0.5 = UI-ловушка «приму
+/// и откажу»), max 1 = вето-потолок, счётчик ключей = 11 (мута-контра:
+/// молчаливое добавление/удаление ключа краснит зуб). Мутация
+/// диапазона/ключа = красный (тот же `run_js_fixture` #203).
+#[test]
+fn cfg_numeric_frame_min_island() {
+    let app = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"));
+    let fixture = include_str!("fixtures/cfg_numeric_runner.js");
+    let out = run_js_fixture(fixture, app);
+    if out.trim().is_empty() {
+        eprintln!("SKIP cfg_numeric_frame_min: ни node, ни osascript недоступны");
+        return;
+    }
+    assert_eq!(out.trim(), "[0.51,1,0.01,11]", "CFG_NUMERIC: {out}");
 }
 
 /// JS-зуб #225: шаблон-промпта «с задачей» + `labelForms` (обе формы метки,

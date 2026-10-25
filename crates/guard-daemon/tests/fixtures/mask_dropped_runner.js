@@ -1,7 +1,7 @@
 // JS-зуб #246: остров maskDropped из ui/app.js (тот же run_js_fixture-контур
 // #203: node argv[2] / osascript __APP_PATH__). CRLF-контракт (win git
 // checkout = \r\n; CI-провен #225): промер живёт на LF-нормализации.
-// Мутация островa (вычесть base, вернуть 0) = красный.
+// Мутация острова (вычесть base, вернуть 0) = красный.
 var app;
 if (typeof process !== "undefined" && process.argv) {
   app = require("fs").readFileSync(process.argv[2], "utf8");
