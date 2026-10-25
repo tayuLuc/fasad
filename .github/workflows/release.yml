@@ -173,9 +173,6 @@ jobs:
         run: |
           bash scripts/fetch-models.sh --no-rewrite
           echo "FASAD_MODEL_DIR=$HOME/.cache/fasad-models" >> "$GITHUB_ENV"
-      - name: "СВЕЖИЙ-контур #265: чистый target перед трей-шагом (mac-провен: cache-hit rlib = bin v0.1.6-размера 7,017,232 = лог-контур физически вне бинаря, репетиции 40229305361/31610616/32376274: mac=0, win=1)"
-        if: matrix.os == 'macos-14'
-        run: cargo clean
       - name: "Трей-бинарь win/mac (features tray,ort-inference, #128/#181)"
         # Linux пропускает: фича физически несобираема на linux
         # (compile_error в tray-icon без libappindicator/ksni —
@@ -210,20 +207,13 @@ jobs:
           n=$(grep -ac "fasad-tray.log" "$b" || true)
           echo "fasad-tray.log-вхождений в бинаре ($b): $n"
           if [ "$n" -lt 1 ]; then
-            # ДИАГНОСТИКА (не гейт): mac-нога 40230477642 = 0 при смонтированном
-            # контуре = bin-контур mac-артефакта; промер v0.1.6-ассета (#263
-            # влит) = grep 0 / strings 0 = констант нет в bin. Диагнозы: size,
-            # presence в lib-rlib, --emit-metrics, c-string-маркеры.
             ls -la "$b"
-            echo "rlib grep: $(find target/release/deps -name 'libguard_daemon*.rlib' -exec grep -ac fasad-tray.log {} + 2>/dev/null | head -3)"
-            echo "cstr-маркер: $(grep -ac "cstr::from_bytes" "$b" || true)"
-            echo "FASAD-маркер: $(grep -ac "FASAD_TRAY_LOG" "$b" || true)"
-            # Диагност-2: чин ли bin-файл вообще (headless = контур без
-            # трей-кода, размер-референс) + presence в rlib-контуре:
-            ls -la target/release/fasad target/release/fasad.exe 2>/dev/null || true
-            echo "headless grep: $(grep -ac fasad-tray.log target/release/fasad* 2>/dev/null | head -2)"
-            echo "rlib presence: $(find target/release/deps -name 'libguard_daemon*.rlib' -exec sh -c 'echo {} $(grep -ac FASAD_TRAY_LOG {})' \; 2>/dev/null | head -4)"
-            echo "md5 bin: $(md5sum "$b" 2>/dev/null || md5 "$b")"
+            # ПРОБЕГ (первичка, не гейт): кириллическая строка tray.rs
+            # («трей недоступен», все-ОС-контур) + трей-лог-контур
+            # (FASAD_TRAY_LOG env-ключ, LOG_FILE_NAME) = матрица
+            # «код смонтирован vs строки в bin».
+            echo "tray.rs-строка: $(grep -ac "трей недоступен" "$b" || true)"
+            echo "FASAD_TRAY_LOG: $(grep -ac "FASAD_TRAY_LOG" "$b" || true)"
             echo "ОШИБКА: лог-контур #244/#263 не в бинаре (win/mac)"
             exit 1
           fi
