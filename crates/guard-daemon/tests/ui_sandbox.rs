@@ -1124,7 +1124,10 @@ fn chat_token_counter_counts_both_forms() {
 /// graceful пустого списка («меток не найдено»), хвост = masked-текст,
 /// labelForms = 2 (stateless + session; формат-подстановка `[Телефон:…]` и
 /// числа `4508 455561`/`1 224 000` = НЕ формы), длина 48-меточного
-/// промпта ≤ 2000 (константа + список, личных данных в шаблоне нет).
+/// промпта ≤ 2000 (константа + список, личных данных в шаблоне нет) и
+/// `headerAlive` (константа доехала в остров целиком). Фикстура =
+/// CRLF-нормализация входа (#225 CI-провен: win git checkout = \r\n,
+/// маркеры с \n-якорем красны на windows; промер на LF-копии = идентичен).
 #[test]
 fn task_prompt_template_islands() {
     let app = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"));
@@ -1154,6 +1157,11 @@ fn task_prompt_template_islands() {
         v["tailIsText"],
         serde_json::json!(true),
         "masked не в хвосте: {out}"
+    );
+    assert_eq!(
+        v["headerAlive"],
+        serde_json::json!(true),
+        "константа-шаблон не доехала в остров целиком: {out}"
     );
     assert_eq!(
         v["forms"],
