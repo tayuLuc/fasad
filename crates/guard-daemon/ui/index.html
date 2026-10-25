@@ -242,6 +242,14 @@
         <section class="pane" id="settingsPane">
           <h2>Настройки демона</h2>
           <p id="settingsMeta" class="hint">версия · стадия · режим · файл конфигурации</p>
+          <!-- #227: адрес = location.origin браузера = эффективный url
+               ( opener открыл песочницу по нему; bind-контра #224 = env,
+               адрес-строка не врёт ни при каком бинде). Порт = FASAD_PORT
+               в таблице ниже (#224 = поле + POST). -->
+          <p id="settingsAddrLine" class="hint">
+            <span id="settingsAddr">адрес: запрашивается…</span>
+            <button id="btnCopyAddr" type="button" hidden>Копировать</button>
+          </p>
           <p id="settingsFile" class="hint">файл: запрашивается…</p>
           <p id="settingsSecret" class="hint"></p>
           <div id="restartBanner" class="banner" hidden>
