@@ -1118,6 +1118,52 @@ fn chat_token_counter_counts_both_forms() {
     assert_eq!(out.trim(), "[2,3]", "счётчик токенов (обе формы): {out}");
 }
 
+/// JS-зуб #225: шаблон-промпта «с задачей» + `labelForms` (обе формы метки,
+/// контур chatTokens #203). Фикстура `task_prompt_runner.js` режет остров
+/// функций из ui/app.js и меряет: подстановка уникальных меток со счётчиком,
+/// graceful пустого списка («меток не найдено»), хвост = masked-текст,
+/// labelForms = 2 (stateless + session; формат-подстановка `[Телефон:…]` и
+/// числа `4508 455561`/`1 224 000` = НЕ формы), длина 48-меточного
+/// промпта ≤ 2000 (константа + список, личных данных в шаблоне нет).
+#[test]
+fn task_prompt_template_islands() {
+    let app = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"));
+    let fixture = include_str!("fixtures/task_prompt_runner.js");
+    let out = run_js_fixture(fixture, app);
+    if out.trim().is_empty() {
+        eprintln!("SKIP task_prompt_template: ни node, ни osascript недоступны");
+        return;
+    }
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("зуб печатает JSON");
+    assert_eq!(
+        v["labelsCounted"],
+        serde_json::json!(true),
+        "список меток не подставлен: {out}"
+    );
+    assert_eq!(
+        v["deduped"],
+        serde_json::json!(true),
+        "дубли меток не схлопнуты: {out}"
+    );
+    assert_eq!(
+        v["graceful"],
+        serde_json::json!(true),
+        "пустой список не graceful: {out}"
+    );
+    assert_eq!(
+        v["tailIsText"],
+        serde_json::json!(true),
+        "masked не в хвосте: {out}"
+    );
+    assert_eq!(
+        v["forms"],
+        serde_json::json!(2),
+        "labelForms обязан считать ОБЕ формы и не считать формат-подстановку/числа: {out}"
+    );
+    let len48 = v["len48"].as_u64().expect("длина числом");
+    assert!(len48 <= 2000, "48-меточный промпт раздут: {len48}");
+}
+
 /// Запуск фикстуры-раннера (#203 §4): node (argv = [script, app]), фолбэк
 /// osascript JXA (argv в `-f`-скрипт не пробрасывается — первичка JXA-провен,
 /// `-f` = не флаг: man osascript; путь app = литерал `__APP_PATH__`, который
@@ -1164,6 +1210,55 @@ fn run_js_fixture(fixture: &str, app: &std::path::Path) -> String {
         let _ = app;
         String::new()
     }
+}
+
+/// #225: DOM/JS-контракты шаблона-промпта (кнопка, список меток из items,
+/// чек-лист раскрытия, прокси-шаблон).
+#[test]
+fn ui_task_template_wiring() {
+    let d = Daemon::start(&[]);
+    let t = call(&d.addr, "GET", "/", &[], b"").text();
+    assert!(
+        t.contains("btnCopyTask") && t.contains("revealChecklist"),
+        "в index.html нет #225-элементов (кнопка/чек-лист)"
+    );
+    let js = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"))
+        .expect("app.js читается");
+    assert!(
+        js.contains(r#"$("btnCopyTask").addEventListener"#) && js.contains("copyMaskedTask"),
+        "нет кнопки «Скопировать с задачей» (#225)"
+    );
+    assert!(
+        js.contains("res.data.items") && js.contains("lastLabels"),
+        "список меток не из items anonymize-ответа (#225)"
+    );
+    assert!(
+        js.contains("renderRevealChecklist") && js.contains(r#"$("revealChecklist")"#),
+        "нет чек-листа раскрытия N из M / остаточные метки (#225)"
+    );
+    assert!(
+        js.contains("taskPrompt(masked, lastLabels)"),
+        "прокси-запрос не несёт шаблон-задачу (#225)"
+    );
+}
+
+/// #225: демо-документ += платёжная связка с проверяемым итогом (задача
+/// «посчитай арифметику» даёт модели результат, который оператор глазами
+/// видит вернувшимся после расшифровки).
+#[test]
+fn ui_demo_carries_payment_arithmetic() {
+    let js = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"))
+        .expect("app.js читается");
+    let start = js.find("const DEMO_TEXT = [").expect("DEMO_TEXT есть");
+    let end = js[start..]
+        .find("].join(")
+        .map(|o| start + o)
+        .expect("join есть");
+    let body = &js[start..end];
+    assert!(
+        body.contains("1 224 000") && body.contains("367 200") && body.contains("856 800"),
+        "в DEMO_TEXT пропала арифметическая связка #225 (сумма/аванс/остаток)"
+    );
 }
 
 /// #202: демо-документ + чат-панель — DOM/JS-контракты и покрытие классов.
