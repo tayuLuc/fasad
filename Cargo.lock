@@ -621,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "guard-daemon"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -646,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "guard-detectors"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "aho-corasick",
  "guard-types",
@@ -657,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "guard-onnx"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "guard-types",
  "ndarray",
@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "guard-types"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "guard-vault"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "base64 0.23.1",
  "chacha20poly1305",
