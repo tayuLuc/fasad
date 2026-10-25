@@ -159,6 +159,17 @@ pub const fn layout() -> &'static [&'static str] {
     ]
 }
 
+/// Первое отсутствующее звено старта (тошнотный порядок `OnnxMount::load`:
+/// external-data арбитра отдельной проверкой ДО общей петли layout, потом
+/// 4 файла `layout()[..4]`). Тест failclosed сверяет имя в причине отказа с
+/// этой функцией — порядок живёт в одном месте, не в двух литералах.
+#[must_use]
+pub fn startup_missing_first() -> Option<&'static str> {
+    let mut order: Vec<&'static str> = vec![ARB_DATA_FILE];
+    order.extend_from_slice(&layout()[..4]);
+    order.first().copied()
+}
+
 /// Путь файла layout в каталоге весов.
 #[must_use]
 pub fn layout_path(dir: &Path, rel: &str) -> PathBuf {

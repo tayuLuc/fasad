@@ -229,6 +229,37 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ort"
           tar -xzf "$RUNNER_TEMP/ort.tgz" -C "$RUNNER_TEMP/ort"
           echo "ORT_DIR=$RUNNER_TEMP/ort/onnxruntime-osx-arm64-1.31.0" >> "$GITHUB_ENV"
+      - name: "ort-тесты debug (failclosed + parity): слепая зона #204"
+        # #204: ort-тесты (`#![cfg(feature = "ort-inference")]`-файлы
+        # cascade_failclosed.rs + cascade_parity.rs) НЕ собирались ни в одной
+        # job: build-test гонит clippy без линковки и тесты без фичи, ort-build
+        # собирал только release-ликовку. Красный дискриминатор
+        # cascade_failclosed::empty_model_dir_names_the_missing_file жил
+        # красным на main с c7a499b (#192-порядок layout) НИКЕМ не замеченный
+        # = класс «непрогоранный workflow» (реестр 27).
+        # debug, НЕ release: тестам нужен рабочий ort-контур, не релизный
+        # профиль (release + ort = 2 шага выше, линковка доказана); weights
+        # 879 МБ в CI НЕ тянутся: cascade_parity печатает обязательную
+        # строку SKIP (файл сам так устроен, «без весов = зелёный со
+        # строкой», FASAD_REQUIRE_MODELS не ставим) и проверяет монтаж
+        # фичи+линовки; failclosed = RED/GREEN-гейт (пустой каталог, веса
+        # не нужны). mac = dylib §W2 (тот же env, что build-шаги), win/
+        # linux = pyke-статика. Бюджет: debug-сборка тестов на warm
+        # job-кэше (dependency-артефакты уже собраны build-шагами) ≈
+        # минуты, timeout-минуты job = 30.
+        # RED-контра #204: на 63afc66 до чина теста эта строка КРАСНА
+        # (log proof в PR), после = зелёна; проверка живая (log-строка
+        # «running … cascade_failclosed» видна в артефакте лога).
+        run: |
+          set -euo pipefail
+          if [ -n "${ORT_DIR:-}" ] && [ -d "$ORT_DIR/lib" ]; then
+            export ORT_PREFER_DYNAMIC_LINK=1
+            export ORT_LIB_PATH="$ORT_DIR/lib"
+            echo "ort-tests: mac-контур dylib ($ORT_DIR/lib)"
+          fi
+          cargo test -p guard-daemon --features ort-inference \
+            --test cascade_failclosed --test cascade_parity -- --test-threads=1
+
       - name: "Headless fasad: release + ort-inference (linux = весь релизный контур)"
         run: |
           set -euo pipefail
