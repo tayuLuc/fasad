@@ -239,6 +239,19 @@ impl Thresholds {
             //    `AnnotatedSpan::new` отвергает уже в конвейере.
             && in_unit(self.alpha)
     }
+
+    /// Стабильность транслит-контура #238 при ЭТИХ порогах: инвариант
+    /// `α·gray_lo < τ_low` (контра первички диспатча #51). Вывод S при
+    /// `p2 = 0` (арбитр сказал «не человек» предельно): `S = α·p1`, а
+    /// кандидат живёт на `p1 = gray_lo` ⇒ при `α·gray_lo ≥ τ_low`
+    /// кандидат маскируется ВСЕГДА (фильтр арбитра выключен арифметикой)
+    /// = FP-фабрика брендов/гео. Дефолты SPEC: 0.5·0.22 = 0.11 < 0.20 ✓.
+    /// Связка НЕ входит `is_sane` (валить старт демонов = feature-gate-контра:
+    /// транслит-контур выключается с причиной, каскады живут).
+    #[must_use]
+    pub fn translit_stable(&self) -> bool {
+        self.is_sane() && self.alpha * self.gray_lo < self.tau_low
+    }
 }
 
 /// Каталог конфигурации по первичке канона XDG (`$XDG_CONFIG_HOME`, дефолт
@@ -622,6 +635,11 @@ pub const FILE_ALLOWED_KEYS: &[FileKey] = &[
         ui_editable: true,
     },
     FileKey {
+        key: "FASAD_TRANSLIT",
+        label: "Транслит-ФИО кандидаты серой зоны (#238, 1/0)",
+        ui_editable: true,
+    },
+    FileKey {
         key: "FASAD_HF_HOST",
         label: "Хост загрузки весов",
         ui_editable: true,
@@ -738,6 +756,13 @@ pub struct Config {
     /// Каталог весов; `None` = каскады 1–2 не поднимаются, работает только
     /// детерминированный каскад 0 (деградация явная, см. `/health`).
     pub model_dir: Option<std::path::PathBuf>,
+    /// Транслит-ФИО эвристика серой зоны (#51/#238): `FASAD_TRANSLIT=off`
+    /// выключает подачу кандидатов в серую зону. ВКЛЮЧЕНА по умолчанию,
+    /// НО живёт только при выполняется [`Thresholds::translit_stable`]
+    /// (инвариант `α·gray_lo < τ_low`): при операторских порогах вне
+    /// связки кандидат перестал бы фильтроваться арбитром = FP-фабрика
+    /// (выключение = выключение с причиной в логе, не тихий FN).
+    pub translit: bool,
     /// Политика залочкивания (`FASAD_MLOCK`), см. [`Mlock`].
     pub mlock: Mlock,
     /// Путь к файлу схемы классов (`FASAD_SCHEMA`); `None` = встроенный канон
@@ -1368,6 +1393,7 @@ impl Config {
         };
         Ok(Self {
             mlock,
+            translit: bool_or(&mut lookup, "FASAD_TRANSLIT", true)?,
             addr,
             max_body_bytes: usize_or(&mut lookup, "FASAD_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)?,
             timeout_ms: u64_or(&mut lookup, "FASAD_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)?,
@@ -1466,6 +1492,7 @@ impl Config {
             "FASAD_PROXY_LOOPBACK_HTTP" => {
                 (if self.proxy_loopback_http { "1" } else { "0" }).to_owned()
             }
+            "FASAD_TRANSLIT" => (if self.translit { "1" } else { "0" }).to_owned(),
             "FASAD_SCHEMA" => self
                 .schema_path
                 .as_ref()
@@ -2554,7 +2581,7 @@ mod tests {
         // публичный контракт UI/README, молчаливое расхождение = ложь таблицы.
         assert_eq!(
             FILE_ALLOWED_KEYS.len(),
-            16,
+            17,
             "реестр ключей изменился: синхронизируй README §Файл конфигурации, docs/release.md §Запуск и CFG_NUMERIC в ui/app.js"
         );
         for k in FILE_ALLOWED_KEYS {

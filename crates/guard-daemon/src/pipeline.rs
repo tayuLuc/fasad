@@ -362,6 +362,8 @@ fn model_mount(
 ) -> Result<cascades::Cascade2, AnalyzeError> {
     let plan = Plan::from_config(cfg, threshold);
     let out = mount.model_spans(&req.text, schema, &plan)?;
+    // #238: транслит-контра читает p2/cascade2 ДО переезда out.spans в glue.
+    let translit = TranslitCtx::of(cfg, &out);
     // Кандидат-клей #200-A1: соседние одноимённые числовые обрывки модели
     // склеиваются в КАНДИДАТА, который уходит в вето-контур каскада-0;
     // победивший валидатор = спан 1.0 с целыми границами, проигравший =
@@ -389,6 +391,12 @@ fn model_mount(
             veto: m.source.deterministic_weight().is_some(),
         });
     }
+    // #238 (контур A′): транслит-кандидаты серой зоны = эвристика
+    // `guard_detectors::translit` + арбитраж row-level p2 (контра
+    // диспатча #51: «кандидат + арбитр решает», первичка apply_arbiter).
+    if let Some(t) = &translit {
+        t.push_candidates(req, schema, &plan, cands);
+    }
     // Слияние каскада 0 с модельным выходом: вето чексуммы не понижается и не
     // дублируется, модельные пересечения снимаются leftmost-longest.
     let tuples: Vec<(usize, usize, f64, bool)> = cands
@@ -406,6 +414,94 @@ fn model_mount(
         .map(|(_, c)| c)
         .collect();
     Ok(out.cascade2)
+}
+
+/// #238 (контур A′): контекст транслит-кандидатов = решение «живёт ли
+/// контур на ЭТОМ запросе», вычисленное ДО переезда [`cascades::Outcome`]
+/// (поля читаются до `glue_model_spans`). Контра решения диспатча #51:
+///
+/// - кандидат = окно эвристики [`guard_detectors::translit::name_runs`]
+///   с `p1 = gray_lo` (серая зона по построению), финальный скор =
+///   `blend(p1, p2, α)` из row-level p2 каскада 2 (тот же blend, что
+///   `apply_arbiter` для модельных спанов серой зоны);
+/// - `FASAD_TRANSLIT=off` = контур выключён (field `Config::translit`);
+/// - инвариант `α·gray_lo < τ_low` (`Thresholds::translit_stable`): при
+///   невыполнении кандидат маскировался бы при любом p2 = FP-фабрика;
+///   контур выключается с log-причиной в stderr (feature-gate-контра:
+///   старт не валится; лог ОДИН на запрос, в `of`), каскады живут;
+/// - арбитр обязан ответить по `person_name` (`Cascade2::Ok` + класс в p2).
+///   Без ответа = арбитража не было = кандидаты не живут (`p1` ≥ `τ_low` =
+///   маска без арбитра = FP-фабрика; первичка `apply_arbiter`: p2 нет →
+///   спан остаётся на p1);
+/// - окна, пересечённые модельными person_name-спанами, не подаются;
+/// - custom-схема без `person_name` = класс из воздуха недопустим.
+struct TranslitCtx {
+    p2: f64,
+    disabled_log: bool,
+}
+
+impl TranslitCtx {
+    /// Живёт ли контур: Some = p2 готов; None = выключен (env, арбитр
+    /// молчит, схема без класса). Нестабильная связка порогов = Some с
+    /// флагом одноразового лога + пуш ничего не добавит.
+    fn of(cfg: &Config, out: &cascades::Outcome) -> Option<Self> {
+        if !cfg.translit {
+            return None;
+        }
+        let p2 = match out.cascade2 {
+            cascades::Cascade2::Ok => out
+                .p2
+                .iter()
+                .find(|(c, _)| c == "person_name")
+                .map(|(_, p)| *p),
+            _ => None,
+        }?;
+        let disabled_log = !cfg.thresholds.translit_stable();
+        if disabled_log {
+            eprintln!(
+                "translit candidates disabled: alpha*gray_lo ({}) >= tau_low ({}) —                  фильтр арбитра выключен настройкой порогов (#238)",
+                cfg.thresholds.alpha * cfg.thresholds.gray_lo,
+                cfg.thresholds.tau_low
+            );
+        }
+        Some(Self { p2, disabled_log })
+    }
+
+    fn push_candidates(
+        &self,
+        req: &AnalyzeRequest,
+        schema: &Schema,
+        plan: &cascades::Plan,
+        cands: &mut Vec<Cand>,
+    ) {
+        if self.disabled_log {
+            return;
+        }
+        if !schema.classes.iter().any(|c| c.id == "person_name") {
+            return;
+        }
+        let occupied: Vec<(usize, usize)> = cands
+            .iter()
+            .filter(|c| c.class.as_str() == "person_name")
+            .map(|c| (c.span.start, c.span.end))
+            .collect();
+        for (start, end) in guard_detectors::translit::name_runs(&req.text) {
+            if occupied.iter().any(|(os, oe)| start < *oe && *os < end) {
+                continue;
+            }
+            let Ok(span) = guard_types::ByteSpan::new(&req.text, start, end) else {
+                continue;
+            };
+            cands.push(Cand {
+                span,
+                class: guard_types::ClassId::from_id("person_name"),
+                score: cascades::blend(plan.gray_lo, self.p2, plan.alpha),
+                source: guard_types::DetectionSource::GlinerDecideArbitrator,
+                validator: None,
+                veto: false,
+            });
+        }
+    }
 }
 
 /// Кандидат на выход конвейера: один спан с классом, скором и авторством.
@@ -862,6 +958,8 @@ mod mount_tests {
     struct FakeMount {
         spans: Vec<ModelSpan>,
         cascade2: cascades::Cascade2,
+        /// #238: row-level p2 фейка (пусто = «арбитража не было»).
+        p2: Vec<(String, f64)>,
         fail: Option<CascadeFailure>,
         calls: std::sync::atomic::AtomicUsize,
     }
@@ -872,6 +970,7 @@ mod mount_tests {
                 spans,
                 fail: None,
                 cascade2: cascades::Cascade2::Ok,
+                p2: vec![("person_name".to_owned(), 1.0)],
                 calls: std::sync::atomic::AtomicUsize::new(0),
             }
         }
@@ -882,6 +981,18 @@ mod mount_tests {
                 spans,
                 fail: None,
                 cascade2: cascades::Cascade2::Skipped,
+                p2: Vec::new(),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        /// #238: фейк с произвольным p2 (зубы транслит-контура: низкий
+        /// p2 = арбитр сказал «не человек»).
+        fn with_p2(spans: Vec<ModelSpan>, p2: Vec<(String, f64)>) -> Self {
+            Self {
+                spans,
+                fail: None,
+                cascade2: cascades::Cascade2::Ok,
+                p2,
                 calls: std::sync::atomic::AtomicUsize::new(0),
             }
         }
@@ -890,6 +1001,7 @@ mod mount_tests {
                 spans: Vec::new(),
                 fail: Some(f),
                 cascade2: cascades::Cascade2::Ok,
+                p2: Vec::new(),
                 calls: std::sync::atomic::AtomicUsize::new(0),
             }
         }
@@ -909,6 +1021,7 @@ mod mount_tests {
                 None => Ok(cascades::Outcome {
                     spans: self.spans.clone(),
                     cascade2: self.cascade2,
+                    p2: self.p2.clone(),
                 }),
             }
         }
@@ -944,6 +1057,166 @@ mod mount_tests {
     }
 
     const NAME_TEXT: &str = "Иванов Пётр Сергеевич звонил";
+
+    const TRANSLIT_TEXT: &str = "Contract: Ushakov Petr Sergeevich, Moscow Region";
+
+    /// #238 полный контур (`FakeMount` = арбитражный ответ): транслит-окно
+    /// без пересечения с моделью получает серую кандидатуру + blend
+    /// `α·gray_lo + (1−α)·p2`: при p2=0.3 → S = 0.5·0.22+0.5·0.3 = 0.26 ≥
+    /// `τ_low` 0.20 = спан маскируется, source = арбитр (честное авторство).
+    #[test]
+    fn translit_candidate_masked_when_arbiter_confirms() {
+        let mount = FakeMount::with_p2(Vec::new(), vec![("person_name".to_owned(), 0.3)]);
+        let a = analyze_with(
+            &req(TRANSLIT_TEXT),
+            &schema(),
+            &cfg(),
+            Policy::Mask,
+            Some(&mount),
+        )
+        .expect("ок");
+        let s = a
+            .spans
+            .iter()
+            .find(|x| x.class == "person_name")
+            .expect("кандидат стал спаном");
+        assert_eq!(
+            &TRANSLIT_TEXT[s.byte_start..s.byte_end],
+            "Ushakov Petr Sergeevich"
+        );
+        assert!((s.score - 0.26).abs() < 1e-12, "blend: {}", s.score);
+        assert_eq!(s.source, DetectionSource::GlinerDecideArbitrator);
+        assert!(s.validator.is_none(), "валидатора у кандидата нет");
+    }
+
+    /// #238: арбитр сказал «не человек» (`p2 = 0`) = S = α·`gray_lo` = 0.11 <
+    /// `τ_low` = ВЫБРОС на пороговом гейте. Это FP-фильтр брендов/гео
+    /// («Gazprom Neft»-класс): эвристика формально fire'ит, арбитр решают.
+    #[test]
+    fn translit_candidate_dropped_when_arbiter_denies() {
+        let mount = FakeMount::with_p2(Vec::new(), vec![("person_name".to_owned(), 0.0)]);
+        let a = analyze_with(
+            &req("Vendor: Gazprom Neft signed"),
+            &schema(),
+            &cfg(),
+            Policy::Mask,
+            Some(&mount),
+        )
+        .expect("ок");
+        assert!(a.spans.is_empty(), "p2=0 = дроп: {:?}", a.spans);
+    }
+
+    /// #238 контра «арбитража не было = кандидаты не живут»: Cascade2
+    /// `Skipped` / p2 без `person_name` = спанов транслита НЕТ (иначе p1
+    /// маскировался бы без фильтра = FP-фабрика, первичка `apply_arbiter`).
+    #[test]
+    fn translit_needs_the_arbiter_answer() {
+        let mount = FakeMount::skipped(Vec::new());
+        let a = analyze_with(
+            &req(TRANSLIT_TEXT),
+            &schema(),
+            &cfg(),
+            Policy::Mask,
+            Some(&mount),
+        )
+        .expect("ок");
+        assert!(
+            a.spans.is_empty(),
+            "Skipped = кандидату негде взять p2: {:?}",
+            a.spans
+        );
+        let mount2 = FakeMount::with_p2(Vec::new(), vec![("address".to_owned(), 1.0)]);
+        let a = analyze_with(
+            &req(TRANSLIT_TEXT),
+            &schema(),
+            &cfg(),
+            Policy::Mask,
+            Some(&mount2),
+        )
+        .expect("ок");
+        assert!(a.spans.is_empty(), "p2 без person_name = тишина");
+    }
+
+    /// #238: модель увидела транслит (person_name-спан с пересечением) =
+    /// кандидата нет (окно занято; merge не плодит двойной спан).
+    #[test]
+    fn translit_skips_model_covered_runs() {
+        let mount = FakeMount::with_p2(
+            vec![span_of(TRANSLIT_TEXT, "Ushakov Petr", "person_name", 0.9)],
+            vec![("person_name".to_owned(), 1.0)],
+        );
+        let a = analyze_with(
+            &req(TRANSLIT_TEXT),
+            &schema(),
+            &cfg(),
+            Policy::Mask,
+            Some(&mount),
+        )
+        .expect("ок");
+        let names: Vec<&str> = a
+            .spans
+            .iter()
+            .filter(|x| x.class == "person_name")
+            .map(|x| &TRANSLIT_TEXT[x.byte_start..x.byte_end])
+            .collect();
+        assert_eq!(names, ["Ushakov Petr"], "только модельный спан: {names:?}");
+    }
+
+    /// #238 `FASAD_TRANSLIT=off` = контур выключен (word-boundary bool,
+    /// харнес `from_lookup`).
+    #[test]
+    fn translit_env_off_kills_candidates() {
+        let mut cfg = cfg();
+        cfg.translit = false;
+        let mount = FakeMount::with_p2(Vec::new(), vec![("person_name".to_owned(), 1.0)]);
+        let a = analyze_with(
+            &req(TRANSLIT_TEXT),
+            &schema(),
+            &cfg,
+            Policy::Mask,
+            Some(&mount),
+        )
+        .expect("ок");
+        assert!(a.spans.is_empty(), "off = тишина");
+        let off = Config::from_lookup(|k| (k == "FASAD_TRANSLIT").then(|| "off".to_owned()))
+            .expect("off парсится");
+        assert!(!off.translit);
+    }
+
+    /// Инвариант #238: стабильность фильтра = `α·gray_lo < τ_low`.
+    /// Дефолт ✓; операторский `gray_lo=0.5` (α=0.5, τ=0.2) = 0.25 ≥ 0.2 =
+    /// контур выключается (эвристика masqueraded бы при любом p2), а
+    /// `is_sane` НЕ валится (связка — feature-gate, не старт-контра).
+    #[test]
+    fn translit_stability_invariant() {
+        let t = crate::config::Thresholds::default_working();
+        assert!(t.translit_stable(), "дефолт SPEC стабилен");
+        let mut t2 = t;
+        t2.gray_lo = 0.5; // sane: 0.2 ≤ 0.5 < 0.8 ≤ 0.8
+        assert!(t2.is_sane());
+        assert!(!t2.translit_stable(), "α·gray_lo = 0.25 ≥ τ_low = 0.2");
+        let mut t3 = t;
+        t3.alpha = 1.0; // 1·0.22 < 0.20? = 0.22 ≥ 0.2 = нестабильно
+        assert!(!t3.translit_stable());
+    }
+
+    /// Нестабильная связка = кандидаты НЕ подаются (feature-gate с
+    /// логом, не тихий FN-выключатель: лог-строка в `of`).
+    #[test]
+    fn translit_disabled_when_thresholds_unstable() {
+        let mut cfg = cfg();
+        cfg.thresholds.gray_lo = 0.5;
+        let mount = FakeMount::with_p2(Vec::new(), vec![("person_name".to_owned(), 1.0)]);
+        let a = analyze_with(
+            &req(TRANSLIT_TEXT),
+            &schema(),
+            &cfg,
+            Policy::Mask,
+            Some(&mount),
+        )
+        .expect("ок");
+        assert!(a.spans.is_empty(), "нестабильная связка = контур выключен");
+    }
 
     /// Значение `stage` сверяется строкой, а не фактом «что-то поменялось»:
     /// тест-пара имён слеп к тому, что реально читает оператор в заголовке,
