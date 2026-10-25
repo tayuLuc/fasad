@@ -260,6 +260,35 @@ jobs:
           cargo test -p guard-daemon --features ort-inference \
             --test cascade_failclosed --test cascade_parity -- --test-threads=1
 
+      - name: "Веса каскадов 1–2 (mac/linux: живая полка #238, рецепт release.yml dist)"
+        # #238-полка: translit_live = ЖИВОЙ контур транслита (p2 арбитра на
+        # весах). mac = dylib-контур (тот же env, что ort-тесты); win =
+        # пропуск (HF-кеш в win-матрице = решение #181: +879 МБ на ногу,
+        # здесь не расширяем). sha256-гейт манифеста fail-closed,
+        # scripts/fetch-models.sh = первичка release.yml:174 (тот же рецепт).
+        if: matrix.os != 'windows-2022'
+        run: |
+          set -euo pipefail
+          bash scripts/fetch-models.sh --no-rewrite
+          echo "FASAD_MODEL_DIR=$HOME/.cache/fasad-models" >> "$GITHUB_ENV"
+      - name: "Живая полка #238: translit_live (p2 арбитра на весах, mac/linux)"
+        # Дисциплина #232: зуб = СРАВНЕНИЕ (ushakov-person > gazprom-бейт),
+        # абсолютные p2 = артефакт промера, печатается строкой
+        # TRANSLIT_LIVE|… (число в PR-комменте, не пин).
+        # FASAD_REQUIRE_MODELS = провен монтирования (#87): кеш есть, веса
+        # не смонтировались = КРАСНЫЙ, не молчаливый SKIP.
+        if: matrix.os != 'windows-2022'
+        env:
+          FASAD_REQUIRE_MODELS: "1"
+        run: |
+          set -euo pipefail
+          if [ -n "${ORT_DIR:-}" ] && [ -d "$ORT_DIR/lib" ]; then
+            export ORT_PREFER_DYNAMIC_LINK=1
+            export ORT_LIB_PATH="$ORT_DIR/lib"
+            echo "translit_live: mac-контур dylib ($ORT_DIR/lib)"
+          fi
+          cargo test -p guard-daemon --features ort-inference \
+            --test translit_live -- --test-threads=1 --nocapture
       - name: "Headless fasad: release + ort-inference (linux = весь релизный контур)"
         run: |
           set -euo pipefail

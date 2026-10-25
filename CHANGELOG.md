@@ -5,6 +5,9 @@
 Правила: заменяющие утверждения (ruling #182); даты = дата влития; числа = артефакт прогона.
 
 ## Unreleased
+### Added
+- Живая полка #238 (транслит-FIO на НАСТОЯЩЕЙ модели, закрывающий контур): `tests/translit_live.rs` под `ort-inference` = CI-контур (локально build-запрет 22.10 = ort-живой промер физически CI-дело): ci.yml job `ort-build` += шаг весов `scripts/fetch-models.sh --no-rewrite` (рецепт release.yml `dist`) + шаг теста `translit_live` (mac/linux, win = HF-кеш-решение #181 не расширяем): ЗУБ-СРАВНЕНИЕ (lesson #232: абсолют = артефакт, пинится только после первого промера): живой `person_name`-скор «Ushakov Petr Sergeevich» > компани-бейта «Gazprom Neft» (тот же Capitalized-формат, эвристика кандидатит оба = различает арбитр), + артефакт-строки `TRANSLIT_LIVE|ushakov/gazprom|<score>` (первые числа = PR-коммент), + контра-зуб стабильности без весов (`translit_stable` = unit). Провен монтирования = `FASAD_REQUIRE_MODELS` (#87): кеш без весов = красный, SKIP-контра локальных прогонов целая.
+
 ### Fixed
 - Дочистка #252 (ревью-миноры): run-пробелы в `FASAD_FRAME_MIN` reason-литерале (#224/#238-класс, рецидив переноса) = одна физическая строка + решёточный зуб `config_reason_texts_have_no_space_runs` (run-пробелов в prod-`reason`-литералах config.rs = 0; #238-зуб pipeline-скоупа не дублирован); `CFG_NUMERIC` += `FASAD_FRAME_MIN` {min 0.51, max 1, step 0.01} = number-поле #221-контур (0.51 = шаг над открытой 0.5, серверный валидатор первичен), JS-зуб islands `[0.51,1,0.01,11]`; daemon-scope: `frame_min=1.0` = поведение-вето, формально НЕ вето (`route_span` Block = validator-флаг, не score).
 
