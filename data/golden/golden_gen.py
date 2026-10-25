@@ -1085,6 +1085,23 @@ def main():
 
     sys.stderr.write("TOTAL %d RECALL %d NEG %d SPANS %d\n"
                      % (total, recall, neg, sum(len(r["spans"]) for r in rows)))
+    # Живое число «грязных» спанов (README § «Счётчики v1»): регулярка README
+    # (разрыв цифры = пробел/дефис/thin-space) по спан-текстам числовых
+    # классов (#258: метрика = счёт генератора, не ручная цифра — memory law
+    # «a number typed by hand into a document is a claim»).
+    DIRTY_RE = re.compile(r"\d[ .\u2009\-\u202f\u00a0]+\d")
+    NUMERIC = {"inn", "snils", "ogrn", "ogrnip", "iban", "card_pan", "phone",
+               "passport", "bik", "bank_account"}
+    dirty = sum(
+        1
+        for r in rows
+        for s_ in r["spans"]
+        if s_["category"] in NUMERIC
+        and DIRTY_RE.search(r["text"][s_["start_char"]:s_["end_char"]]
+                             if "start_char" in s_ else
+                             r["text"].encode()[s_["start_byte"]:s_["end_byte"]].decode())
+    )
+    sys.stderr.write("DIRTY_SPANS %d\n" % dirty)
     sys.stderr.write("RECALL_CAT %s\n" % dict(sorted(recall_cat.items())))
     sys.stderr.write("NEG_CAT %s\n" % dict(sorted(neg_cat.items())))
 

@@ -5565,7 +5565,11 @@ mod tests {
         let mut w = vec![(35usize, 47usize), (41usize, 52usize)];
         veto_bridge_windows(&mut w);
         let sorted_out = w.clone();
-        assert_eq!(sorted_out, vec![(35, 47)], "отсортированный вход: канон жив");
+        assert_eq!(
+            sorted_out,
+            vec![(35, 47)],
+            "отсортированный вход: канон жив"
+        );
 
         // Non-monotonic вход (каркас (35,47) ПРИСЛАН ПОСЛЕ моста (41,52)) =
         // тот же исход = sort жив (приём возрастающим start).
