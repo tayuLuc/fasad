@@ -930,8 +930,8 @@ def main():
          "ИНН 825082492964 и СНИЛС 105-325-268 49 в карточке.",
          ["Ushakov Petr Sergeevich", "Sokolov Denis"]),
         ("Претензия должнику: Petr Sergeevich Ushakov (транслит в реестре), "
-         "Ушаков Пётр Сергеевич (кириллица).",
-         ["Petr Sergeevich Ushakov", "Ушаков Пётр Сергеевич"]),
+         "Ушаков Тимофей Сергеевич (кириллица).",
+         ["Petr Sergeevich Ushakov", "Ушаков Тимофей Сергеевич"]),
     ]
     for t, values in V17_RECALL:
         spans = [span_at(t, v, "person_name", v) for v in values]

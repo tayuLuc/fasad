@@ -57,8 +57,12 @@ person_name (g0271–g0272: «Ushakov Petr Sergeevich, Sokolov Denis» форм�
 Corporation / New York City / Moscow Region / Boston Consulting Group /
 The Beatles / «Meeting in New York City, January 15» — эвристика обязана
 молчать по стоп-контуру; bait-счётчик C0NEG не растёт); строки
-g0001–g0270 побайтово идентичны v1.6 (промер `cmp` префикса), SHA-256
-перепринят (B2): `432240d1c1ca285128efbd6e1a987ffe7cc83d43d567c12f3af5e40ca42add47`
+g0001–g0270 побайтово идентичны v1.6 (промер `cmp` префикса). Первый
+вариант g0272 («Ушаков Пётр Сергеевич») снят: «Петр» = суррогат
+пула маскирования (P6-контра guard-vault: «суррогат не должен жить в
+golden» — промер golden-vault на v1.7), пара переписана на «Ушаков
+Тимофей Сергеевич». SHA-256
+перепринят (B2): `c37c3e724646ff182ed4be5d6becf17c44b19b1c7eee25c9629ae709d268cba7`
 (v1.6 = `c084af58…`).
 
 ## Гейт-права B1–B5 (issue #14, ревью #13 CHANGES_REQUESTED)
