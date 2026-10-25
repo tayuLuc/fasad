@@ -108,6 +108,21 @@ pub enum DetectionSource {
     GlinerExtractor,
     /// Арбитр каскада 2 (`GLiNER` Decide) — решение по серой зоне.
     GlinerDecideArbitrator,
+    /// Каркас + канон-ФОРМА без чексуммы (#234): «СНИЛС 112-233-455 95» =
+    /// каркасное слово даёт класс, канон 3+3+3+2 даёт форму, контрольная
+    /// цифра НЕ сходится (промер v0.1.3: mod101→97). Документ с невалидным
+    /// номером = реальные персональные данные (наш демо-документ сам
+    /// несёт `95/1110`),
+    /// FN
+    /// маскировать нечем. Скор фиксирован константой
+    /// [`Self::FRAME_INVALID_W`] = 0.95: ВЫШЕ модели (непонятный номер
+    /// надёжнее гипотезы сети), НИЖЕ вето 1.0 (форма без контрольной — не
+    /// доказательство), в `AnnotatedSpan::new` проходит: источник НЕ в
+    /// детерминированной тройке `deterministic_weight`, контракт
+    /// `DeterministicMustWeighOne` не трогается (зуб
+    /// `frame_invalid_source_is_not_veto`).
+    #[serde(rename = "frame_invalid_checksum")]
+    FrameInvalidChecksum,
 }
 
 impl DetectionSource {
@@ -117,6 +132,11 @@ impl DetectionSource {
     /// нарушен — сверка имени в `tests/invariant_checksum_w.rs`.
     #[allow(non_upper_case_globals)]
     pub const DeterministicW: f64 = 1.0;
+
+    /// Ровный вес «каркас + форма без чексуммы» (#234): 0.95. Числом, не
+    /// словами: ниже вето (1.0), выше модельных скоров, порождаемых τ-зоной;
+    /// контракт проверяет зуб `frame_invalid_score_is_the_constant`.
+    pub const FRAME_INVALID_W: f64 = 0.95;
 
     /// Вес детекции: `Some(1.0)` ровно у чексумм (абсолютное вето, SPEC §2 каскад 0:
     /// «приоритет чексуммы = 1.0, нейросети его не пересматривают»), `None` — у
@@ -133,7 +153,8 @@ impl DetectionSource {
             Self::SecretEntropy
             | Self::AhoCorasickRule
             | Self::GlinerExtractor
-            | Self::GlinerDecideArbitrator => None,
+            | Self::GlinerDecideArbitrator
+            | Self::FrameInvalidChecksum => None,
         }
     }
 

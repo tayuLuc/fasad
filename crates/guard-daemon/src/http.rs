@@ -1482,6 +1482,32 @@ mod tests {
         assert_eq!(span["score"], 1.0);
     }
 
+    /// #234 сквозь wire-контур: каркасный 0.95 = отдельный спан с
+    /// `source: frame_invalid_checksum`, `validator: frame_invalid`,
+    /// `score: 0.95` (UI-таблица «Валидатор» читается), валидный номер
+    /// рядом = 1.0 без понижения.
+    #[tokio::test]
+    async fn analyze_frame_invalid_carries_score_and_validator() {
+        let app = router(state());
+        let resp = app
+            .oneshot(analyze_req(
+                r#"{"text":"СНИЛС 112-233-455 95 и 384-051-346 70"}"#,
+                None,
+            ))
+            .await
+            .expect("обработчик не падает");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_of(resp).await;
+        let spans = v.as_array().expect("массив спанов");
+        assert_eq!(spans.len(), 2, "{v}");
+        let frame = &spans[0];
+        assert_eq!(frame["source"], "frame_invalid_checksum");
+        assert_eq!(frame["validator"], "frame_invalid");
+        assert_eq!(frame["score"], 0.95);
+        assert_eq!(spans[1]["validator"], "snils");
+        assert_eq!(spans[1]["score"], 1.0, "валидный = вето без понижения");
+    }
+
     #[tokio::test]
     async fn policy_header_changes_verdicts_and_is_echoed() {
         for (raw, verdict) in [

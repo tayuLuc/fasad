@@ -33,7 +33,7 @@ pub const MAX_SCHEMA_BYTES: usize = 65_536;
 /// (`pub fn` того же имени): опечатка в имени валидатора означала бы «класс
 /// объявлен, а проверять его нечем» — то есть тихий fail-open в детерминированном
 /// каскаде, поэтому имя вне списка = [`SchemaError::UnknownValidator`].
-pub const KNOWN_VALIDATORS: [&str; 13] = [
+pub const KNOWN_VALIDATORS: [&str; 14] = [
     "inn10",
     "inn12",
     "snils",
@@ -47,6 +47,10 @@ pub const KNOWN_VALIDATORS: [&str; 13] = [
     "passport_format",
     "phone_rf",
     "email_rfc",
+    // #234: «каркас + форма без чексуммы» = имя хита 0.95 (не вызов
+    // валидатора: имя = метка валидатора для X-Guard-*/UI-таблицы, контракт
+    // KNOWN_VALIDATORS = «имя из схемы — не опечатка»).
+    "frame_invalid",
 ];
 
 /// Один класс схемы.

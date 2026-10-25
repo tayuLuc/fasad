@@ -39,7 +39,7 @@ fn golden_path() -> PathBuf {
 // сверено в этом же заходе).
 // Правка датасета без пересчёта хэша ломает этот тест, а не проходит незамеченной
 // (обещание README «гейт привязан к SHA-256» из B2 становится машиной, не словами).
-const GOLDEN_V1_SHA256: &str = "db34b3f153e5d15e085bc0955b8514b481c8bd0bfc160030107a745cbac22298";
+const GOLDEN_V1_SHA256: &str = "c084af5843a195c9e3c50f8572ae255dc55d4bb824cf38a42081c8bece6b3aed";
 
 /// B2: пересчитать SHA-256 файла и сверить с зашитой константой.
 ///
@@ -934,9 +934,15 @@ fn golden_v1_structural_gates() {
                     *cats.entry(s2.category.to_string()).or_default() += 1;
                 }
             }
-            // чексуммы: recall — валидны, negative — НЕ валидны (для номерных категорий)
+            // чексуммы: recall — валидны, negative — НЕ валидны (для номерных
+            // категорий). Исключение #234: каркасные recall (g0263–g0267,
+            // source «synthetic-checksum» + id >= g0263) = НЕвалидные номера с
+            // каркасом — контракт 0.95 (frame_invalid): recall-значение =
+            // невалидный номер,.mask-контракт, не вето. Строки вне этого
+            // диапазона обязаны быть валидны (гейт цел).
+            let frame234 = r.split == "recall" && r.id >= "g0263";
             if let Some(ok) = checksum_valid(s.category, s.value_source) {
-                if r.split == "recall" {
+                if r.split == "recall" && !frame234 {
                     assert!(
                         ok,
                         "{}: recall-эталон {} {value_source} не проходит чексумму",

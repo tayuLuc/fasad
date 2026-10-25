@@ -186,6 +186,7 @@ mod tests {
                 "AhoCorasickRule",
                 "GlinerExtractor",
                 "GlinerDecideArbitrator",
+                "FrameInvalidChecksum",
             ]
         );
         // Ни один вариант не потерялся между «взвешен» и «вероятностен»:
@@ -194,8 +195,8 @@ mod tests {
             variants.iter().filter(|v| !weighed.contains(v)).collect();
         assert_eq!(
             probabilistic.len(),
-            4,
-            "вероятностных источников должно быть 4"
+            5,
+            "вероятностных источников должно быть 5 (#234: FrameInvalidChecksum)"
         );
     }
 

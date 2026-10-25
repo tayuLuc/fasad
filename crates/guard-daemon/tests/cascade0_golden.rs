@@ -46,7 +46,7 @@ const CLASSES: [&str; 7] = [
 /// `c0_measurements_are_emitted` на этом датасете. Тест сверяет состав,
 /// прежде чем требовать покрытия: правка датасета обязана красить счётчик, а
 /// не молча уменьшать знаменатель.
-const GOLD_CHECKSUM_SPANS: usize = 230;
+const GOLD_CHECKSUM_SPANS: usize = 235;
 
 /// Сколько из них email (#222): base64-обход email не закрывает (prefilter
 /// `scan_base64` требует ASCII-цифру в декоде, addr-spec = не цифры;
@@ -64,6 +64,19 @@ struct Row {
     text: String,
     split: String,
     spans: Vec<Span>,
+}
+
+impl Row {
+    /// Каркасные recall-строки #234 (g0263–g0267) = в base64-прогоне вне
+    /// обещания контура: каркас требует ключевое слово, декод-проза его
+    /// не несёт, а номера невалидны чексуммно.
+    fn is_frame_234(&self) -> bool {
+        self.id.starts_with("g0263")
+            || self.id.starts_with("g0264")
+            || self.id.starts_with("g0265")
+            || self.id.starts_with("g0266")
+            || self.id.starts_with("g0267")
+    }
 }
 
 #[derive(Deserialize)]
@@ -186,9 +199,10 @@ fn c0_measurements_are_emitted() {
         // String в качестве приемника `write!` не инвалидируется никогда.
         let _ = write!(line, "|{c}|{k}/{n}");
     }
-    let (spans, bait, nrows) = negative_counts();
+    let (spans, bait, nrows, frame) = negative_counts();
     println!("{line}");
     println!("C0NEG|rows|{nrows}|spans|{spans}|bait|{bait}");
+    println!("C0FRAME|negative-hits|{frame} (каркасные 0.95 #234, вне bait-счёта)");
 }
 
 /// Покрытие структурных классов #200-A2 (passport/phone) recall-сплита:
@@ -255,25 +269,32 @@ fn recall_coverage() -> (usize, Vec<(&'static str, usize, usize)>) {
 }
 
 /// Шум на negative-сплите: `(выпущено спанов, попаданий в бейты, строк)`.
-fn negative_counts() -> (usize, usize, usize) {
+fn negative_counts() -> (usize, usize, usize, usize) {
     let schema = Schema::embedded().expect("канон схемы валиден");
     let mut bait = 0usize;
     let mut spans = 0usize;
+    let mut frame = 0usize;
     let mut nrows = 0usize;
     for r in rows().iter().filter(|r| r.split != "recall") {
         nrows += 1;
         let hits = scan(&r.text, &schema);
         spans += hits.len();
+        // #234: каркасные 0.95-хиты на РАЗМеченных невалидных = продукт,
+        // не шум: считаем отдельно, bait = только вето-попадания.
+        frame += hits
+            .iter()
+            .filter(|h| h.validator == "frame_invalid")
+            .count();
         for s in &r.spans {
-            if hits
+            let hit = hits
                 .iter()
-                .any(|h| h.span.start < s.end_byte && h.span.end > s.start_byte)
-            {
+                .find(|h| h.span.start < s.end_byte && h.span.end > s.start_byte);
+            if hit.is_some_and(|h| h.validator != "frame_invalid") {
                 bait += 1;
             }
         }
     }
-    (spans, bait, nrows)
+    (spans - frame, bait, nrows, frame)
 }
 
 /// Контроль ложных срабатываний: на negative-сплите каскад-0 не имеет права
@@ -287,29 +308,38 @@ fn c0_releases_no_bait_span_on_negative_split() {
     let mut detail: Vec<String> = Vec::new();
     for r in rows().iter().filter(|r| r.split != "recall") {
         let hits = scan(&r.text, &schema);
-        spans += hits.len();
-        for s in &r.spans {
-            if hits
+        spans += hits
+            .iter()
+            .filter(|h| h.validator != "frame_invalid")
+            .count();
+        for sp in &r.spans {
+            let hit = hits
                 .iter()
-                .any(|h| h.span.start < s.end_byte && h.span.end > s.start_byte)
-            {
+                .find(|h| h.span.start < sp.end_byte && h.span.end > sp.start_byte);
+            // #234: каркасный хит 0.95 (frame_invalid) на РАЗМечЕННОМ
+            // невалидном номере = продукт-контракт (FN-класс закрыт),
+            // bait = только вето-попадания (1.0 на невалидном).
+            let Some(h) = hit else { continue };
+            if h.validator != "frame_invalid" {
                 bait += 1;
-                detail.push(format!("{} {} «{}»", r.id, s.category, slice(&r.text, s)));
+                detail.push(format!("{} {} «{}»", r.id, sp.category, slice(&r.text, sp)));
             }
         }
     }
     assert_eq!(bait, 0, "каскад-0 выдаёт бейты:\n{}", detail.join("\n"));
-    // Порог по числу выпущенных спанов — промер `c0_measurements_are_emitted`
-    // этого же захода: 8 (5 чексумменных, как до шага 9, + 3 новых телефон-
-    // сработки #200-A2 на городских бейтах g0220–g0222: валидные телефоны РФ
-    // без разметки = честный FP-bait, README § «Происхождение значений» п.3;
-    // мерка ложных срабатываний = bait = 0). Полная тишина не требуется.
-    // #223: бейт g0245 («ОГРНИП 304502700000001» = Luhn-валидная не-структура)
-    // даёт честный card_pan-спан (15 цифр = 1 лунный хит) при bait = 0 —
-    // промер C0NEG|spans|8 (порог не двигался).
+    // Порог по числу выпущенных ВЕТО-спанов — промер
+    // `c0_measurements_are_emitted` этого же захода: 8 (5 чексумменных, как
+    // до шага 9, + 3 новых телефон-сработки #200-A2 на городских бейтах
+    // g0220–g0222: валидные телефоны РФ без разметки = честный FP-bait,
+    // README § «Происхождение значения» п.3; мерка ложных срабатываний =
+    // bait = 0). Полная тишина не требуется.
+    // #223: бейт g0245 («ОГРНИП 304502700000001» = Luhn-валидная
+    // не-структура) даёт честный card_pan-спан при bait = 0.
+    // #234: каркасные хиты 0.95 из счётчика ВНЕШНИ (счётчик = вето-хиты,
+    // 0.95 = продукт на размеченных, C0FRAME=13 отдельно). Порог 8 цел.
     assert!(
         spans <= 8,
-        "каскад-0 стал шумнее на negative-сплите: {spans} спанов (порог 8, промер 24.10)"
+        "каскад-0 стал шумнее на negative-сплите: {spans} вето-спанов (порог 8, промер 25.10)"
     );
 }
 
@@ -355,6 +385,13 @@ fn c0_covers_every_checksum_value_wrapped_in_base64() {
             if s.category == "email" {
                 continue;
             }
+            // #234: каркасные recall (g0263–g0267: невалидные чексуммно
+            // номера) в base64-прогоне = вне обещания контура: scan_base64
+            // подтверждает ЧЕКСУММЫ, каркас требует ключевое слово, а
+            // декод-проза его не несёт. Знаменатель = текстовые вето-спаны.
+            if r.is_frame_234() && r.split == "recall" {
+                continue;
+            }
             let token = base64::engine::general_purpose::STANDARD.encode(wrapped(gold));
             let text = format!("приложение {token} конец");
             let hits = scan(&text, &schema);
@@ -383,7 +420,8 @@ fn c0_covers_every_checksum_value_wrapped_in_base64() {
     );
     assert_eq!(
         total,
-        GOLD_CHECKSUM_SPANS - GOLD_EMAIL_SPANS,
+        // -5: каркасные recall-строки #234 (g0263–g0267), см. continue выше.
+        GOLD_CHECKSUM_SPANS - GOLD_EMAIL_SPANS - 5,
         "знаменатель base64-прогона = текстовый минус email (prefilter scan_base64 = цифры, email-декод их не содержит)"
     );
     assert!(
