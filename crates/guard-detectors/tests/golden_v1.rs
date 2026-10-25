@@ -39,7 +39,7 @@ fn golden_path() -> PathBuf {
 // сверено в этом же заходе).
 // Правка датасета без пересчёта хэша ломает этот тест, а не проходит незамеченной
 // (обещание README «гейт привязан к SHA-256» из B2 становится машиной, не словами).
-const GOLDEN_V1_SHA256: &str = "c084af5843a195c9e3c50f8572ae255dc55d4bb824cf38a42081c8bece6b3aed";
+const GOLDEN_V1_SHA256: &str = "432240d1c1ca285128efbd6e1a987ffe7cc83d43d567c12f3af5e40ca42add47";
 
 /// B2: пересчитать SHA-256 файла и сверить с зашитой константой.
 ///
@@ -577,7 +577,7 @@ const SPAN_CATEGORIES: [&str; 13] = [
     "bik",
     "bank_account",
 ];
-const MATCH_SOURCES: [&str; 7] = [
+const MATCH_SOURCES: [&str; 8] = [
     "synthetic-checksum",
     "registry-example",
     "primary-invalid-vector",
@@ -585,6 +585,7 @@ const MATCH_SOURCES: [&str; 7] = [
     "doc-valid-vector",
     "foreign-bait",
     "synthetic-no-pii",
+    "synthetic-translit", // golden-v1.7 (#238): транслит-ФИО recall
 ];
 
 /// B4: формат `value_source` по канону README § «поле `value_source`» (номерки —
