@@ -273,6 +273,12 @@ pub struct Outcome {
     pub spans: Vec<ModelSpan>,
     /// Что сделал каскад 2 на этом запросе.
     pub cascade2: Cascade2,
+    /// Row-level p2 каскада 2 (`Decide`-ответы по контекстным классам),
+    /// `None` = Decide не звался (серой зоны не было) или деградировал.
+    /// #238: транслит-кандидаты серой зоны перескоряются ИМЕННО этим
+    /// вектором — кандидаты подаются только когда арбитр отвечал по
+    /// классу; пустой вектор = «арбитража не было» = кандидаты не живут.
+    pub p2: Vec<(String, f64)>,
 }
 
 /// Контракт модельного пути. Отделён от `ort`, чтобы стад-машину конвейера
@@ -1023,6 +1029,7 @@ mod onnx {
             return Ok(Outcome {
                 spans,
                 cascade2: Cascade2::Ok,
+                p2: Vec::new(),
             });
         }
         // u64::MAX при невозможном переполнении (584 млн лет аптайма) =
@@ -1042,7 +1049,11 @@ mod onnx {
             .collect();
         let (p2, cascade2) = decide_p2(arb, job, &asked)?;
         apply_arbiter(&mut spans, &p2, &job.ctx, &job.plan);
-        Ok(Outcome { spans, cascade2 })
+        Ok(Outcome {
+            spans,
+            cascade2,
+            p2: p2.clone(),
+        })
     }
 
     /// Каскад 1 чанками: окно = `PAD`, порядок последовательный, координаты —

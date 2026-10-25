@@ -66,6 +66,9 @@ impl Cascade12 for Fake {
                     "absent" => guard_daemon::cascades::Cascade2::Absent,
                     _ => guard_daemon::cascades::Cascade2::Ok,
                 },
+                // #238: фейк отвечает p2 по person_name = 1.0 (арбитраж
+                // «есть человек»): транслит-кандидаты живут и маскируются.
+                p2: vec![("person_name".to_owned(), 1.0)],
             }),
         }
     }
@@ -247,6 +250,56 @@ fn span_of<'a>(v: &'a serde_json::Value, class: &str) -> &'a serde_json::Value {
         .into_iter()
         .find(|s| s["entity_type"] == class)
         .unwrap_or_else(|| panic!("спана {class} нет в ответе"))
+}
+
+/// #238 wire-контра: транслит-кандидат доезжает до HTTP-ответа (фейк
+/// отвечает `p2=1.0` по `person_name`; S = 0.5·0.22+0.5·1.0 = 0.61,
+/// source = арбитр). Класс, скор, авторство = контракт клиента.
+#[tokio::test]
+async fn analyze_translit_candidate_reaches_the_answer() {
+    let _guard = mount_exclusive().await;
+    install_test_mount(Some(Arc::new(Fake {
+        spans: Vec::new(),
+        fail: None,
+        cascade2: "ok",
+    })));
+    let body = r#"{"text":"Contract: Ushakov Petr Sergeevich, Moscow Region"}"#;
+    let (status, _h, v) = json_of(analyze(body).await).await;
+    install_test_mount(None);
+    assert_eq!(status, StatusCode::OK);
+    let name = span_of(&v, "person_name");
+    assert_eq!(name["source"], "gliner_decide_arbitrator");
+    let score = name["score"].as_f64().expect("скор числом");
+    assert!(
+        (score - 0.61).abs() < 1e-12,
+        "blend(0.22, 1.0, 0.5) = 0.61, получено {score}"
+    );
+    assert_eq!(
+        name["entity_type"], "person_name",
+        "класс = схема, не выдумка эвристики"
+    );
+}
+
+/// #238: без живого арбитра (лег `Cascade2::Skipped`) транслит-спан НЕ
+/// появляется, хотя фейк приносит p2-вектор: контур читает Cascade2 —
+/// Skipped = арбитража не было = кандидату негде жить. cascade-0-only
+/// витрина FN остаётся FN на любой стадии без Decide.
+#[tokio::test]
+async fn analyze_translit_silent_without_arbiter() {
+    let _guard = mount_exclusive().await;
+    install_test_mount(Some(Arc::new(Fake {
+        spans: Vec::new(),
+        fail: None,
+        cascade2: "skipped",
+    })));
+    let body = r#"{"text":"Contract: Ushakov Petr Sergeevich, Moscow Region"}"#;
+    let (status, _h, v) = json_of(analyze(body).await).await;
+    install_test_mount(None);
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        classes(&v).is_empty(),
+        "Skipped = кандидату неоткуда брать p2: {v:?}"
+    );
 }
 
 #[tokio::test]
