@@ -582,10 +582,9 @@ struct ModelInfo {
 
 fn tilde_dir(p: &std::path::Path) -> String {
     // Только для витрины: `C:\Users\alex\...` → `~\...`.
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .and_then(|h| h.into_string().ok())
-        .filter(|h| !h.is_empty())
+    // #264: единая точка домашнего каталога (`HOME` → `USERPROFILE`).
+    crate::config::default_home_dir(|k| std::env::var(k).ok())
+        .and_then(|h| h.to_str().map(str::to_owned))
         .and_then(|h| {
             p.strip_prefix(&h)
                 .ok()

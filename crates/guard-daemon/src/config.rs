@@ -969,19 +969,46 @@ impl std::error::Error for ConfigError {}
 /// (#192 требование A: «двойной клик → браузер, ноль консоли»).
 ///
 /// Контур разрешённости (#192): при `FASAD_MODEL_DIR` unset каталог =
-/// `$HOME/.cache/fasad-models`; при `HOME` unset (win cmd без `USERPROFILE`
-/// попадается) — `None`, т.е. прежнее поведение отказа старта с текстом
-/// (`cascades::startup`, рюлинг #185: смонтировать нечем = старт red, не
-/// молчание). Явный `FASAD_MODEL_DIR` жив как override: дефолт подставляется
-/// ТОЛЬКО на unset/пустое, и только на env-границе `from_env` (не в чистой
-/// `from_lookup` — харнеси `from_lookup(|_| None)` остаются cascade-0).
+/// `$HOME/.cache/fasad-models`; при `HOME` unset — `None`, т.е. прежнее
+/// поведение отказа старта с текстом (`cascades::startup`, рюлинг #185:
+/// смонтировать нечем = старт red, не молчание). Явный `FASAD_MODEL_DIR` жив
+/// как override: дефолт подставляется ТОЛЬКО на unset/пустое, и только на
+/// env-границе `from_env` (не в чистой `from_lookup` — харнеси
+/// `from_lookup(|_| None)` остаются cascade-0).
 pub const DEFAULT_MODEL_DIR_SUFFIX: &str = ".cache/fasad-models";
 
-/// Значение дефолтного пути по `HOME` (unix; Git-Bash-win = `%USERPROFILE%`
-/// под bash; ps1 #190 пишет в `$env:USERPROFILE\.cache\fasad-models` — тот же
-/// путь, win-нэйтив) + суффикс. Только home, без `xdg`-обходов: скриптовый
-/// контракт должен читаться в две секунды. `None` на пустом/отсутствующем
-/// `HOME` — не краш, а прежнее поведение отказа старта с текстом (#185).
+/// Дефолтный HOME для кеша весов: `HOME` → (`#264`) `USERPROFILE`.
+/// Первичка дефекта (#264, win-полка v0.1.6): у win-процесса двойного клика
+/// `HOME` НЕ установлен, `USERPROFILE` = есть → кеш-дефолт
+/// `$USERPROFILE\.cache\fasad-models` не резолвился = «не задан» = pending/
+/// отказ, оператор ставил env руками (ритуал release.md §5 ps1-блока).
+/// win-контур кеша = `$env:USERPROFILE\.cache\fasad-models` — первичка
+/// `scripts/fetch-models.ps1:127` (пишет ровно туда, `~/.cache` = unix-
+/// аналог) + release.md §5 = константа доки. Фолбэк = тот же, что витрина
+/// `tilde_dir` (http.rs: HOME→USERPROFILE) = единая точка, runtime env-
+/// lookup, БЕЗ `cfg!` (кросс-платформенно честно: Git-Bash-set- HOME
+/// первичен; `USERPROFILE`-только-машина = win-нэйтив).
+#[must_use]
+pub fn default_home_dir<L>(mut lookup: L) -> Option<std::path::PathBuf>
+where
+    L: FnMut(&'static str) -> Option<String>,
+{
+    let home = lookup("HOME")
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            lookup("USERPROFILE")
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+        })?;
+    Some(std::path::PathBuf::from(home))
+}
+
+/// Значение дефолтного пути по домашнему каталогу ([`default_home_dir`]:
+/// unix = `HOME`, win-нэйтив = `USERPROFILE` #264, ps1 пишет туда же — тот же
+/// путь) + суффикс. Только home, без `xdg`-обходов: скриптовый контракт
+/// должен читаться в две секунды. `None` на пустых/отсутствующих обоих — не
+/// краш, а прежнее поведение отказа старта с текстом (#185).
 #[must_use]
 pub fn default_model_dir_from_home(home: Option<&str>) -> Option<std::path::PathBuf> {
     home.map(str::trim)
@@ -1111,10 +1138,8 @@ pub(crate) fn env_boundary_lookup() -> impl FnMut(&'static str) -> Option<String
                     feature = "tray",
                     any(target_os = "windows", target_os = "macos")
                 )) || std::env::var("FASAD_TEST_TRAY_CONTOUR").is_ok();
-                let resolved = std::env::var("HOME")
-                    .ok()
-                    .as_deref()
-                    .and_then(|h| default_model_dir_from_home(Some(h)));
+                let resolved = default_home_dir(|k| std::env::var(k).ok())
+                    .and_then(|h| default_model_dir_from_home(h.to_str()));
                 if tray && crate::cascades::harness_dir_fully_mounted(&resolved) {
                     return resolved.map(|p| p.display().to_string());
                 }
@@ -1146,15 +1171,15 @@ pub(crate) fn env_boundary_lookup() -> impl FnMut(&'static str) -> Option<String
                     ))
                     && std::env::var("FASAD_TEST_CASCADE0").is_err() =>
             {
-                std::env::var("HOME").ok().as_deref().and_then(|h| {
-                    default_model_dir_from_home(Some(h)).and_then(|p| {
+                default_home_dir(|k| std::env::var(k).ok()).and_then(|h| {
+                    default_model_dir_from_home(h.to_str()).and_then(|p| {
                         crate::weights::layout_complete(&p).then(|| p.display().to_string())
                     })
                 })
             }
             "FASAD_MODEL_DIR" => v.filter(|s| !s.trim().is_empty()).or_else(|| {
-                std::env::var("HOME").ok().as_deref().and_then(|h| {
-                    default_model_dir_from_home(Some(h)).map(|p| p.display().to_string())
+                default_home_dir(|k| std::env::var(k).ok()).and_then(|h| {
+                    default_model_dir_from_home(h.to_str()).map(|p| p.display().to_string())
                 })
             }),
             _ => v,
@@ -2403,6 +2428,60 @@ mod tests {
         let err = Config::from_file_aware_with(|k| f.value_of(k).map(str::to_owned))
             .expect_err("рассогласование = отказ");
         assert!(matches!(err, ConfigError::ThresholdsInsane(_)), "{err:?}");
+    }
+
+    /// #264-решётка домашнего каталога кеша весов (`default_home_dir`,
+    /// runtime env-lookup, чистая env-машина = меряется на любой ОС;
+    /// win-двойной-клик = HOME unset/USERPROFILE set = ровно кейс 2):
+    /// первичка `scripts/fetch-models.ps1:127` — кеш = USERPROFILE\.cache.
+    #[test]
+    fn default_home_dir_lattice_home_then_userprofile() {
+        fn lookup(
+            kv: &[(&'static str, &'static str)],
+        ) -> impl FnMut(&'static str) -> Option<String> {
+            let kv = kv.to_vec();
+            move |k| {
+                kv.iter()
+                    .find(|(key, _)| *key == k)
+                    .map(|(_, v)| (*v).to_owned())
+            }
+        }
+        // 1. HOME задан = первичен (unix/mac/Git-Bash; USERPROFILE игнорируется).
+        let h = default_home_dir(lookup(&[
+            ("HOME", "/home/op"),
+            ("USERPROFILE", "C:\\Users\\op"),
+        ]));
+        assert_eq!(
+            h,
+            Some(std::path::PathBuf::from("/home/op")),
+            "HOME первичен"
+        );
+        // 2. win-двойной-клик: HOME unset, USERPROFILE set = кеш резолвится.
+        let h = default_home_dir(lookup(&[("USERPROFILE", "C:\\Users\\op")]));
+        let dir = h
+            .as_deref()
+            .and_then(|p| default_model_dir_from_home(p.to_str()))
+            .expect("USERPROFILE даёт кеш-дефолт (#264: без env, двойной клик)");
+        assert_eq!(
+            dir,
+            std::path::Path::new("C:\\Users\\op").join(DEFAULT_MODEL_DIR_SUFFIX),
+            "win-кеш = %USERPROFILE%\\.cache\\fasad-models (ps1-контра)"
+        );
+        // 3. оба заданы = HOME (кейс 1); пустой HOME = не «дом», фолбэк живой
+        //    (trim-контра #219-lookup, симметрично env-канонов).
+        let h = default_home_dir(lookup(&[("HOME", "   "), ("USERPROFILE", "/u")]));
+        assert_eq!(
+            h,
+            Some(std::path::PathBuf::from("/u")),
+            "пустой HOME = unset"
+        );
+        // 4. ни одного (ни HOME, ни USERPROFILE = сломанный env) = None =
+        //    прежнее поведение (#185: «не задан» текстом, не выдуманный путь).
+        assert_eq!(default_home_dir(lookup(&[])), None);
+        assert_eq!(
+            default_home_dir(lookup(&[("HOME", ""), ("USERPROFILE", "")])),
+            None
+        );
     }
 
     /// Путь: `FASAD_CONFIG` выигрывает всё; win = `%APPDATA%\fasad\config`;

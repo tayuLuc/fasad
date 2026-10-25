@@ -238,10 +238,10 @@ impl FetchConfig {
                 // #192: дефолт подставляется на env-границе `Config::from_env`;
                 // харнеси `from_lookup` её минуют — каталог резолвится здесь,
                 // из env, для всех источников конфига одинаково.
-                std::env::var("HOME")
-                    .ok()
-                    .as_deref()
-                    .and_then(|h| crate::config::default_model_dir_from_home(Some(h)))
+                // #264: единая точка домашнего каталога (`HOME` → `USERPROFILE`,
+                // win-двойной-клик).
+                crate::config::default_home_dir(|k| std::env::var(k).ok())
+                    .and_then(|h| crate::config::default_model_dir_from_home(h.to_str()))
             }),
         })
     }

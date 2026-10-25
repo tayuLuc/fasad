@@ -244,9 +244,12 @@ wire_e2e/ui_sandbox изолированы иглой `FASAD_CONFIG=<пусто�
    `./scripts/fetch-models.sh` (sha256-гейт по `models/manifest.tsv`,
    commit-шейа revision, кеш `~/.cache/fasad-models`, зеркало
    `FASAD_HF_HOST`), затем `export FASAD_MODEL_DIR="$HOME/.cache/fasad-models"`.
-   Windows (#190): `\.\scripts\fetch-models.ps1` +
-   `$env:FASAD_MODEL_DIR = "$env:USERPROFILE\.cache\fasad-models"`
-   (паритет `.sh`; Git-Bash — альтернатива, кеш тот же). Баннер демона несёт
+   Windows (#190): `\.\scripts\fetch-models.ps1` (кеш
+   `$env:USERPROFILE\.cache\fasad-models` = ps1:127); **env с #264 НЕ нужен**:
+   кеш-дефолт резолвится по `USERPROFILE` при HOME-unset (двойной клик),
+   кнопка «Скачать веса» в UI качает в тот же кеш, перезапуск = смонтирован.
+   Явный `$env:FASAD_MODEL_DIR` = override (свой путь), не ритуал (заменяющее
+   #182; Git-Bash — альтернатива, кеш тот же). Баннер демона несёт
    строку `UI браузера — http://<порт>/`, `--help` = usage (#191).
    Детали и раскладка — `models/README.md` бандла и §«Как включить монтаж
    каскадов 1–2» в `crates/guard-daemon/README.md` (владелец деталей).

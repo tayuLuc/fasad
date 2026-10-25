@@ -72,7 +72,7 @@ curl -s localhost:8765/health
 | `FASAD_UPSTREAM_ALLOWLIST` | пусто = прокси выключен | список `host[:port]`, куда пускать `X-Upstream-URL` |
 | `FASAD_PROXY_LOOPBACK_HTTP` | выключен | разрешить `http://` только на loopback (для локального стенда) |
 | `FASAD_SCHEMA` | нет (схема встроена) | путь к своей схеме классов; канон встроенной — `config/schema.default.json` (`schema.rs:24`), поле — config.rs:267 |
-| `FASAD_MODEL_DIR` | `$HOME/.cache/fasad-models` (#192: unset = кеш-контракт fetch-скриптов; HOME unset = отказ старта текстом) | каталог весов каскадов 1–2; **на смонтированной сборке читается**: разбор — config.rs:424, метка стадии `cascade-0+models` — `config.rs:457`. Full-бинарь (фича `ort-inference`) без `FASAD_MODEL_DIR` отказывает старта́м (`ModelsNotConfigured`, `cascades.rs::startup`, #185: каскад-0-only — харнес/тесты, не продакшн). Стартовый precheck четырёх файлов (`cascades.rs:752-765`, вход — `cascades.rs:742` через `cascades.rs:638`): весов нет или бинарь собран без фичи `ort-inference` — демон не поднимается (exit 2, сокет не биндится, в stderr имя файла; промер 21.10 на пустом каталоге). Раскладка весов, команда сборки и dylib — §«Как включить монтаж каскадов 1–2» в [crates/guard-daemon/README.md](crates/guard-daemon/README.md), он владелец деталей |
+| `FASAD_MODEL_DIR` | `$HOME/.cache/fasad-models`; win-нэйтив (HOME unset, двойной клик) = `$USERPROFILE\.cache\fasad-models` (#264; ps1:127 = тот же кеш); обоих нет = отказ старта текстом (#192: unset = кеш-контракт fetch-скриптов) | каталог весов каскадов 1–2; **на смонтированной сборке читается**: разбор — config.rs:424, метка стадии `cascade-0+models` — `config.rs:457`. Full-бинарь (фича `ort-inference`) без `FASAD_MODEL_DIR` отказывает старта́м (`ModelsNotConfigured`, `cascades.rs::startup`, #185: каскад-0-only — харнес/тесты, не продакшн). Стартовый precheck четырёх файлов (`cascades.rs:752-765`, вход — `cascades.rs:742` через `cascades.rs:638`): весов нет или бинарь собран без фичи `ort-inference` — демон не поднимается (exit 2, сокет не биндится, в stderr имя файла; промер 21.10 на пустом каталоге). Раскладка весов, команда сборки и dylib — §«Как включить монтаж каскадов 1–2» в [crates/guard-daemon/README.md](crates/guard-daemon/README.md), он владелец деталей |
 | `FASAD_HF_HOST` | `https://huggingface.co` | хост загрузки весов кнопкой UI (`POST /v1/models/fetch`, #192): резолвится при старте, запрос-параметра нет; `http://` — только loopback с `FASAD_PROXY_LOOPBACK_HTTP=1` (тестовый mock-HF) |
 
 | `FASAD_CONFIG` | нет | путь файла конфигурации (#219): см. §Файл конфигурации ниже |
@@ -379,7 +379,14 @@ full-бинарь **требует** `FASAD_MODEL_DIR`: старт без вес
   `UI 127.0.0.1:<порт> — fasad: <счётчик отказов> / <stage>` без ПДн. Запуск — исполнением бинаря;
   тексты startup/refuse/отказов пишутся в лог `<config-root>/fasad-tray.log`
   (#263: win = `%APPDATA%\fasad\`, mac/linux = `$XDG_CONFIG_HOME/fasad`/
-  `$HOME/.config/fasad`; путь = env `FASAD_TRAY_LOG`), env-контракт тот же, что в таблице §1. На linux фича `tray` физически
+  `$HOME/.config/fasad`; путь = env `FASAD_TRAY_LOG`), env-контракт тот же, что в таблице §1.
+  **Env для весов не нужен (#264):** кеш-дефолт резолвится и на win-двойном
+  клике (HOME unset → `USERPROFILE`), кнопка «Скачать веса» качает в него,
+  после докачки = перезапуск бинаря. **Трей и консоль = ОДИН UI** (один
+  `index.html`): набор кнопок различается СТАДИЕЙ (pending #198 = карточка
+  «Скачать веса» + прогресс; mounted #185 = рабочая песочница) и несёт ТРИ
+  бинаря бандла (`fasad-tray.exe` / `fasad.exe` / headless), а не бинарём.
+  На linux фича `tray` физически
   недоступна (`compile_error!` в `tray-icon-0.26.1`, verdict —
   [docs/dep-verify-crates.md](docs/dep-verify-crates.md) §16), трей в
   linux-артефакт не входит физически.
