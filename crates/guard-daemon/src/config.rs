@@ -62,6 +62,17 @@ pub const DEFAULT_GRAY_LO: f64 = 0.22;
 /// Верхняя граница серой зоны арбитража.
 pub const DEFAULT_GRAY_HI: f64 = 0.80;
 
+/// Вес каркасного хита «каркас + форма без чексуммы» (#234, контур
+/// `frame_invalid`). Дефолт = константа контракта
+/// [`guard_types::DetectionSource::FRAME_INVALID_W`] (0.95); поле
+/// `FASAD_FRAME_MIN` (#246) = операторский рычаг класса: при UI-пороге
+/// S > 0.95 каркасные хиты отсекались гейтом = тихий FN-выключатель
+/// класса (первичка #245), рычаг поднимает вес хита над порогом, не
+/// трогая вето 1.0. Диапазон `(0.5, 1]`: выше 1.0 = подделка вето
+/// (контракт `DeterministicMustWeighOne`), ниже 0.5 = тонет под
+/// типичными модельными скорами серой зоны (контра #238).
+pub const DEFAULT_FRAME_MIN: f64 = guard_types::DetectionSource::FRAME_INVALID_W;
+
 /// Вес `α` смешивания `S = α·p1 + (1−α)·p2` (SPEC §2 каскад 2, серая зона).
 ///
 /// Числа в SPEC нет — `α` **не калибрована**, это наше решение, а не цифра
@@ -635,6 +646,11 @@ pub const FILE_ALLOWED_KEYS: &[FileKey] = &[
         ui_editable: true,
     },
     FileKey {
+        key: "FASAD_FRAME_MIN",
+        label: "Вес каркасного хита 0.95 (#234, диапазон (0.5, 1])",
+        ui_editable: true,
+    },
+    FileKey {
         key: "FASAD_TRANSLIT",
         label: "Транслит-ФИО кандидаты серой зоны (#238, 1/0)",
         ui_editable: true,
@@ -763,6 +779,9 @@ pub struct Config {
     /// связки кандидат перестал бы фильтроваться арбитром = FP-фабрика
     /// (выключение = выключение с причиной в логе, не тихий FN).
     pub translit: bool,
+    /// Вес каркасного хита #234 (`FASAD_FRAME_MIN`, см.
+    /// [`DEFAULT_FRAME_MIN`]): score frame-спанов на выходе = это число.
+    pub frame_min: f64,
     /// Политика залочкивания (`FASAD_MLOCK`), см. [`Mlock`].
     pub mlock: Mlock,
     /// Путь к файлу схемы классов (`FASAD_SCHEMA`); `None` = встроенный канон
@@ -1394,6 +1413,17 @@ impl Config {
         Ok(Self {
             mlock,
             translit: bool_or(&mut lookup, "FASAD_TRANSLIT", true)?,
+            frame_min: {
+                let v = float_or(&mut lookup, "FASAD_FRAME_MIN", DEFAULT_FRAME_MIN)?;
+                if !(v > 0.5 && v <= 1.0) {
+                    return Err(ConfigError::BadValue {
+                        var: "FASAD_FRAME_MIN",
+                        reason: "вне (0.5, 1]: выше 1.0 = подделка вето 1.0,                                 ниже 0.5 = каркасный класс тонет под модельными скорами"
+                            .to_owned(),
+                    });
+                }
+                v
+            },
             addr,
             max_body_bytes: usize_or(&mut lookup, "FASAD_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)?,
             timeout_ms: u64_or(&mut lookup, "FASAD_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)?,
@@ -1493,6 +1523,7 @@ impl Config {
                 (if self.proxy_loopback_http { "1" } else { "0" }).to_owned()
             }
             "FASAD_TRANSLIT" => (if self.translit { "1" } else { "0" }).to_owned(),
+            "FASAD_FRAME_MIN" => self.frame_min.to_string(),
             "FASAD_SCHEMA" => self
                 .schema_path
                 .as_ref()
@@ -1971,6 +2002,27 @@ pub fn validate_value(
     // внятного объяснения (#224 MINOR); root-сценарий = env, не UI-файл.
     if key == "FASAD_PORT" {
         let _ = port_strict_for_write(raw)?;
+        return Ok(());
+    }
+    // FRAME_MIN (#246): явная граница (0.5, 1] = env-контур (`from_lookup`
+    // выше) и UI-запись валидируются ОДНИМ правилом; от `is_threshold_key`
+    // блок вынесен намеренно: поле живёт НЕ в `Thresholds` (связка
+    // `is_sane` к нему неприменима, оно ниже всех порогов по контракту).
+    if key == "FASAD_FRAME_MIN" {
+        let v: f64 = raw
+            .parse()
+            .ok()
+            .filter(|v: &f64| v.is_finite())
+            .ok_or_else(|| ConfigError::BadNumber {
+                var: "FASAD_FRAME_MIN",
+                value: raw.to_owned(),
+            })?;
+        if !(v > 0.5 && v <= 1.0) {
+            return Err(ConfigError::BadValue {
+                var: "FASAD_FRAME_MIN",
+                reason: "вне (0.5, 1]".to_owned(),
+            });
+        }
         return Ok(());
     }
     // HF_HOST = тот же парсер, что у живого fetch-контура (ревью #224
@@ -2581,7 +2633,7 @@ mod tests {
         // публичный контракт UI/README, молчаливое расхождение = ложь таблицы.
         assert_eq!(
             FILE_ALLOWED_KEYS.len(),
-            17,
+            18,
             "реестр ключей изменился: синхронизируй README §Файл конфигурации, docs/release.md §Запуск и CFG_NUMERIC в ui/app.js"
         );
         for k in FILE_ALLOWED_KEYS {

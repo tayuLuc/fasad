@@ -227,6 +227,7 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 | `FASAD_MODEL_DIR` | full-бинарь (headless) без него **не стартует** (#185, `ModelsNotConfigured`, текст += путь докачки #199); трей-бинарь (win/mac) = ожидающий UI `models-pending` с кнопкой «Скачать веса» (#198); задан = `cascade-0+models` (отказ старта, если смонтировать нечем) | config.rs, cascades.rs `startup`/`startup_pending*` |
 | `FASAD_UPSTREAM_ALLOWLIST` | пусто = наружу ходить некуда | config.rs:271, :431 |
 | `FASAD_PROXY_LOOPBACK_HTTP` | false | config.rs:277, :432 |
+| `FASAD_FRAME_MIN` | 0.95 (вес каркасного хита #234, рычаг #246, диапазон (0.5, 1]) | config.rs `Config::frame_min`, `DEFAULT_FRAME_MIN` |
 | `FASAD_TRANSLIT` | true (1/0; кандидаты серой зоны #238, живут при `α·gray_lo < τ_low`) | config.rs `Config::translit`, pipeline `TranslitCtx` |
 | `FASAD_CONFIG` | нет (`%APPDATA%\fasad\config` win / `$XDG_CONFIG_HOME`|`$HOME/.config`/fasad/config unix, mac) | config.rs `config_file_path` (#219) |
 
