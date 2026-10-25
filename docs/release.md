@@ -847,8 +847,9 @@ mac-ассета v0.1.6 = 0 следов; append, ротация 5 МБ + сло
 первичка main.rs). (4) bind/serve-смерть = окно. Зубы: unit-контра log-
 пути/формата/ротации (`tray::traylog`, cfg-нейтрально с #263 — меряется на
 любой ноге; win-канон = прямая формула + `cfg!(windows)`-лег), строка-зуб
-`strings bin/fasad-tray | grep -c fasad-tray.log` (release.yml, win/mac —
-дискриминатор #263: на базе mac = 0), FASAD_WIN_NO_UI-контра
+`grep -ac fasad-tray.log` в бинаре трея (release.yml, win/mac — дискриминатор
+#263: на базе mac = 0, win = 1; `strings`-форма убита #265b: binutils-strings
+win-раннера + MSVC strip = 0 на живом бинаре = ложно-красный), FASAD_WIN_NO_UI-контра
 headless-ноги, compile-гейт win = CI build-test/tray-check (ring/cc локально
 недостижим — урок #228). Полка v0.1.5-b: живая win-нога — иконка, лог,
 окно при отказе; второй экземпляр = bind-окно rc=2.
