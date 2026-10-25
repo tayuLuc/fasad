@@ -432,9 +432,10 @@ Stateless-контур (режим по умолчанию) на том же т�
 
 ## 5. Что умеет сегодня, честно
 
-1. Каскад 0 = детерминированные валидаторы по восьми классам схемы
-   (`config/schema.default.json`): `person_name`, `inn`, `snils`, `card_pan`,
-   `phone`, `email`, `address`, `passport`. Приоритет чексуммы = 1.0, нейросеть
+1. Каскад 0 = детерминированные валидаторы: цифровые классы схемы
+   (`config/schema.default.json`): `inn`, `snils`, `card_pan`, `phone`,
+   `passport` (+ validator_only `ogrn`/`ogrnip`/`iban`) и форматный
+   `email` (addr-spec RFC 5322, #222). Приоритет чексуммы = 1.0, нейросеть
    его не понижает (AGENTS); в примере выше источник спана — `checksum_rf`,
    валидатор `inn10`.
 2. `person_name` каскадом 0 **не находится никогда**: его ищет
