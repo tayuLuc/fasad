@@ -276,3 +276,7 @@
 {"id":"g0276","text":"Консалтинг: Boston Consulting Group подготовил отчёт.","spans":[],"split":"negative","source":"synthetic-no-pii"}
 {"id":"g0277","text":"Плейлист конференции: The Beatles, 1969 год.","spans":[],"split":"negative","source":"synthetic-no-pii"}
 {"id":"g0278","text":"Meeting in New York City, January 15.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0279","text":"Сводка: паспорт 4508  455561, второй паспорт 4509  455562 приняты.","spans":[{"start_byte":29,"end_byte":41,"category":"passport","value_source":"4508  455561"},{"start_byte":71,"end_byte":83,"category":"passport","value_source":"4509  455562"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0280","text":"Паспорт 4508  455561 паспорт 4509  455562 паспорт 4510  455563 в реестре.","spans":[{"start_byte":15,"end_byte":27,"category":"passport","value_source":"4508  455561"},{"start_byte":43,"end_byte":55,"category":"passport","value_source":"4509  455562"},{"start_byte":71,"end_byte":83,"category":"passport","value_source":"4510  455563"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0281","text":"Серия 4508  455561 серия 4508  455561 — повтор поля в форме.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0282","text":"4508 серия 455561 серия 4508 серия 455561 — сводка полей.","spans":[],"split":"negative","source":"synthetic-no-pii"}
