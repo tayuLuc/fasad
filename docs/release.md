@@ -244,9 +244,12 @@ wire_e2e/ui_sandbox изолированы иглой `FASAD_CONFIG=<пусто�
    `./scripts/fetch-models.sh` (sha256-гейт по `models/manifest.tsv`,
    commit-шейа revision, кеш `~/.cache/fasad-models`, зеркало
    `FASAD_HF_HOST`), затем `export FASAD_MODEL_DIR="$HOME/.cache/fasad-models"`.
-   Windows (#190): `\.\scripts\fetch-models.ps1` +
-   `$env:FASAD_MODEL_DIR = "$env:USERPROFILE\.cache\fasad-models"`
-   (паритет `.sh`; Git-Bash — альтернатива, кеш тот же). Баннер демона несёт
+   Windows (#190): `\.\scripts\fetch-models.ps1` (кеш
+   `$env:USERPROFILE\.cache\fasad-models` = ps1:127); **env с #264 НЕ нужен**:
+   кеш-дефолт резолвится по `USERPROFILE` при HOME-unset (двойной клик),
+   кнопка «Скачать веса» в UI качает в тот же кеш, перезапуск = смонтирован.
+   Явный `$env:FASAD_MODEL_DIR` = override (свой путь), не ритуал (заменяющее
+   #182; Git-Bash — альтернатива, кеш тот же). Баннер демона несёт
    строку `UI браузера — http://<порт>/`, `--help` = usage (#191).
    Детали и раскладка — `models/README.md` бандла и §«Как включить монтаж
    каскадов 1–2» в `crates/guard-daemon/README.md` (владелец деталей).
@@ -844,8 +847,9 @@ mac-ассета v0.1.6 = 0 следов; append, ротация 5 МБ + сло
 первичка main.rs). (4) bind/serve-смерть = окно. Зубы: unit-контра log-
 пути/формата/ротации (`tray::traylog`, cfg-нейтрально с #263 — меряется на
 любой ноге; win-канон = прямая формула + `cfg!(windows)`-лег), строка-зуб
-`strings bin/fasad-tray | grep -c fasad-tray.log` (release.yml, win/mac —
-дискриминатор #263: на базе mac = 0), FASAD_WIN_NO_UI-контра
+`grep -ac fasad-tray.log` в бинаре трея (release.yml, win/mac — дискриминатор
+#263: на базе mac = 0, win = 1; `strings`-форма убита #265b: binutils-strings
+win-раннера + MSVC strip = 0 на живом бинаре = ложно-красный), FASAD_WIN_NO_UI-контра
 headless-ноги, compile-гейт win = CI build-test/tray-check (ring/cc локально
 недостижим — урок #228). Полка v0.1.5-b: живая win-нога — иконка, лог,
 окно при отказе; второй экземпляр = bind-окно rc=2.
