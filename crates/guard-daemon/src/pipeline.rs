@@ -1243,6 +1243,100 @@ mod mount_tests {
         assert!(a.spans.is_empty(), "нестабильная связка = контур выключен");
     }
 
+    /// #245 первичка-решётка score-пути (скрин v0.1.5: «ОГРН/СНИЛС не
+    /// замазаны, ИНН 5027196012 разбор показал 0.99»). Письмо = вектор
+    /// скрина: валидный ИНН 7707083893 + не-валидные с каркасом
+    /// (ИНН 5027196012, ОГРН 1027739401110, СНИЛС 112-233-455 95 =
+    /// frame-0.95 #234) + паспорт + телефон + email, поверх — модельные
+    /// address/organization/person 0.99, наедающие блоки. Таблица
+    /// (class, score) → masked по порогами:
+    ///
+    /// | S | checksum 1.0 | frame 0.95 | model 0.99 |
+    /// |---|---|---|---|
+    /// | 0.20 (дефолт) | маскируется | маскируется | маскируется |
+    /// | 0.99 | маскируется (veto-контра `route_span`, порог не трогает) | **отсечён** | маскируется |
+    ///
+    /// Корень скрина = строка `threshold: t.max(floor)` (ниже) + UI:
+    /// операторский S=0.99 НЕ ОПУСКАЕТ server floor 0.20 — он ПОДНИМАЕТ
+    /// эффективный порог; frame-0.95 отсекается гейтом (`0.95 < 0.99`),
+    /// вето 1.0 проходит безусловно; «ИНН 5027196012 = 0.99 в разборе»
+    /// = UI-строка тултипа `S = score.toFixed(2)` другого спана (0.95
+    /// печатается как 0.95 — проверено; 0.99 в таблице = модельные
+    /// address/organization/person скрина, 43 спана на смонтированном
+    /// пути), детерминированный скор нигде не понижается = зуб ниже.
+    #[test]
+    fn score_path_table_245_checksum_never_downgraded() {
+        let text = "ИНН 7707083893, контрагент ИНН 5027196012, ОГРН 1027739401110,                     СНИЛС 112-233-455 95, паспорт 45 09 123456, тел. +7 916 118-45-90,                     почта a@b.example";
+        let mount = FakeMount::with_p2(
+            vec![
+                span_of(text, "ИНН 5027196012", "address", 0.99),
+                span_of(text, "СНИЛС 112-233-455 95", "person_name", 0.99),
+            ],
+            vec![("person_name".to_owned(), 1.0)],
+        );
+        for thr in [None, Some(0.99)] {
+            let r = AnalyzeRequest {
+                text: text.to_owned().into(),
+                entities: None,
+                score_threshold: thr,
+            };
+            let a = analyze_with(&r, &schema(), &cfg(), Policy::Mask, Some(&mount)).expect("ок");
+            let by = |cls: &str, score: f64| {
+                a.spans
+                    .iter()
+                    .find(|x| x.class == cls && (x.score - score).abs() < 1e-12)
+            };
+            // вето 1.0: ни одна связка (порог, model-overlap) не понижает и
+            // не давит (merger: детерминированный выигрывает пересечение)
+            for (cls, val) in [("inn", "7707083893"), ("passport", "45 09 123456")] {
+                let _ = val;
+                let sp = by(cls, 1.0);
+                assert!(
+                    sp.is_some(),
+                    "S={thr:?}: {cls} 1.0 пропал: {:?}",
+                    a.spans
+                        .iter()
+                        .map(|x| (&x.class, x.score))
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(sp.expect("есть").score, 1.0, "S={thr:?}: {cls} понижен");
+            }
+            // frame 0.95: жив при дефолте, отсечён при S=0.99 (гейт, не
+            // понижение — в таблице ответа его нет целиком)
+            let frame = by("ogrn", 0.95).is_some();
+            assert_eq!(frame, thr.is_none(), "frame-контра S: thr={thr:?}");
+            if let Some(t) = thr {
+                assert!(
+                    a.threshold >= t.max(0.20) - 1e-12,
+                    "клиентский порог обязан ПОДНИМАТЬ эффективный, не опускать floor: {}",
+                    a.threshold
+                );
+            }
+        }
+    }
+
+    /// #245 wire-контра (HTTP): score-путь через /v1/analyze-контракт
+    /// конвейера = то же тело; здесь — ответ конвейера сериализуется
+    /// score-полем 1.0 для вето (UI-тултип печатает его дословно:
+    /// «0.99 в разборе» = чужой спан, не вето-хит).
+    #[test]
+    fn score_path_wire_245_veto_score_is_one() {
+        let text = "ИНН 7707083893 оплатил";
+        let r = AnalyzeRequest {
+            text: text.to_owned().into(),
+            entities: None,
+            score_threshold: Some(0.99),
+        };
+        let a = analyze_with(&r, &schema(), &cfg(), Policy::Mask, None).expect("ок");
+        let inn = a
+            .spans
+            .iter()
+            .find(|x| x.class == "inn")
+            .expect("вето проходит S=0.99 (route_span: validator до порогов)");
+        assert_eq!(inn.score, 1.0);
+        assert_eq!(inn.source, DetectionSource::ChecksumRf);
+    }
+
     /// Значение `stage` сверяется строкой, а не фактом «что-то поменялось»:
     /// тест-пара имён слеп к тому, что реально читает оператор в заголовке,
     /// поэтому здесь — точное значение гейт-строки (#87 review).
