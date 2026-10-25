@@ -15,6 +15,29 @@
 // идёт через публичный safe-API либы (`forbid` bin-крифта цел: промер
 // сессии — island под bin-forbid красен E0453, под lib-deny зелёный).
 #![warn(clippy::unwrap_used)]
+// #226: GUI-подсистема для `fasad-tray` (issue: оператор 24.10 «запуск на
+// винде даёт уродское терминальное окно; трей = запустил и забыл»). Атрибут
+// привязан к КОНТУРУ «трей на win» (`all(feature = "tray", windows)`),
+// НЕ к имени bin: bin-цели = два компайла ОДНОГО main.rs (Cargo.toml
+// [[bin]] ×2, `fasad-tray` = `required-features = ["tray"]`), аттрибут на
+// golem-уровне попал бы и в `fasad`. Релизный контур (just
+// release-build-tray = `cargo build --features tray --bin fasad-tray`;
+// релизный console-`fasad` = feature-off, промер рецепта 22.10) даёт
+// точное разделение: `fasad-tray.exe` = GUI (ни консоли при двойном
+// клике — первичка win.rs:85-92 «у обоих bin атрибута нет» обновлена
+// #226), `fasad.exe`/`fasad` = console-контракт #185 «текст отказа в
+// stderr» НЕ тронут. Побочный эффект контура (принят осознанно):
+// `cargo build --features tray` без `--bin` = и `fasad.exe` GUI (тот же
+// код+фича; CLI-контур #185 в релизе feature-off, не трей-сборка).
+// `windows_subsystem = "windows"` = PE
+// подсистема GUI: ни консоли при двойном клике, ни stdio-окна; refuse-
+// контур = MessageBoxW (не требует консоли, первичка win.rs island
+// #190); stdout-контра (баннер #224) на GUI-подсистеме деградирована в
+// null-поток = безвредна (flush-ошибки игнорируются, R4-контра).
+#![cfg_attr(
+    all(feature = "tray", target_os = "windows"),
+    windows_subsystem = "windows"
+)]
 
 use guard_daemon::Health;
 use guard_daemon::config::Config;
