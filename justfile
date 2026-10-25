@@ -167,7 +167,12 @@ lint-ci:
 
 # Тесты workspace + опциональные фичи отдельными прогонами.
 test:
+    # #224 CI-завись-контра: прогресс-строки между ногами = висяк виден по
+    # ПОСЛЕДНЕЙ напечатанной ноге (шаг `just test` в ci.yml = step-timeout
+    # 12 мин; без строк log-хвост молчит и не называет висящий прогон).
+    echo "just test: cargo test --workspace"
     cargo test --workspace
+    echo "just test: guard-vault decliner"
     cargo test -p guard-vault --features decliner
     # Тесты примеров БЕЗ ort-inference: формат строки вердикта харнеса гейта #14
     # (`recall_golden`) — носитель контракта, а под фичей эти тесты не линкуются

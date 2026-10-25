@@ -276,7 +276,7 @@ async function analyze() {
   const body = { text: text };
   const on = enabledClasses();
   if (on.length < classes.length) body.entities = on;
-  const thr = Number($("thr").value);
+  const thr = thrValue();
   if (thr > 0) body.score_threshold = thr;
   try {
     const res = await api("/v1/analyze", body);
@@ -444,6 +444,11 @@ async function loadHealth() {
 function applyStage(stage) {
   const pending = stage === "models-pending";
   $("pendingPane").hidden = !pending;
+  // #220: тонкая строка-статус на вкладке «Работа» + дефолтный таб.
+  $("weightsStrap").hidden = !pending;
+  if (pending && !window.localStorage.getItem(LS_TAB)) {
+    showTab("settings");
+  }
   modelRefused = pending;
   $("step1t").textContent = pending ? "Разобрать (нужны веса)" : "Разобрать";
   $("step2t").textContent = pending ? "Обезличить (нужны веса)" : "Обезличить";
@@ -472,13 +477,13 @@ async function loadWeights() {
   try {
     d = (await api("/v1/status")).data;
   } catch (err) {
-    $("weightsDir").textContent = "статус недоступен: " + err;
+    $("weightsDirS").textContent = "статус недоступен: " + err;
     return;
   }
   const w = d.weights || {};
-  $("weightsDir").textContent =
+  $("weightsDirS").textContent =
     "путь: " + (w.dir || "(не определён)") + (w.default ? " (по умолчанию)" : "");
-  const ul = $("weightsFiles");
+  const ul = $("weightsFilesS");
   ul.replaceChildren();
   for (const f of w.present || []) {
     const li = document.createElement("li");
@@ -493,7 +498,7 @@ async function loadWeights() {
     ul.append(li);
   }
   const m = d.model || {};
-  $("weightsModel").textContent =
+  $("weightsModelS").textContent =
     "lockR rev " + (m.lockr_revision || "—") +
     " · Decide rev " + (m.arbiter_revision || "—") +
     " · этап " + d.stage;
@@ -501,10 +506,10 @@ async function loadWeights() {
 }
 
 function renderFetch(fr) {
-  const bar = $("fetchBar");
-  const msg = $("fetchMsg");
-  const btn = $("btnFetch");
-  const phase = $("fetchPhase");
+  const bar = $("fetchBarS");
+  const msg = $("fetchMsgS");
+  const btn = $("btnFetchS");
+  const phase = $("fetchPhaseS");
   if (!fr) return;
   if (fr.state === "running") {
     btn.disabled = true;
@@ -551,8 +556,8 @@ function stopPoll() {
 }
 
 async function fetchWeights() {
-  const msg = $("fetchMsg");
-  $("btnFetch").disabled = true;
+  const msg = $("fetchMsgS");
+  $("btnFetchS").disabled = true;
   try {
     await api("/v1/models/fetch", {}, "POST");
     msg.textContent = "загрузка начата…";
@@ -561,21 +566,180 @@ async function fetchWeights() {
     msg.textContent = "старт не принят: " + err;
     msg.dataset.kind = "err";
   }
-  $("btnFetch").disabled = false;
+  $("btnFetchS").disabled = false;
   loadWeights();
+}
+
+/* --- #220: табы «Работа»/«Настройки» + форма конфигурации --------------------
+
+ DOM НЕ перерисовывается: переключение = hidden-класс (текст в textarea,
+ результаты разбора, очередь кнопок живут). Активный таб = localStorage
+ («перезапусти демона» из баннера = перезагрузка браузером, и человек
+ возвращается туда, где сидел). Дефолт = Работа; при ожидающем старте
+ (stage models-pending) = Настройки: там карточка весов с кнопкой докачки. */
+
+const LS_TAB = "fasad.tab";
+
+function showTab(name) {
+  const work = name !== "settings";
+  $("tabWorkPane").hidden = !work;
+  $("tabSettingsPane").hidden = work;
+  $("tabWork").classList.toggle("active", work);
+  $("tabSettings").classList.toggle("active", !work);
+  $("tabWork").setAttribute("aria-selected", work ? "true" : "false");
+  $("tabSettings").setAttribute("aria-selected", work ? "false" : "true");
+  try {
+    window.localStorage.setItem(LS_TAB, work ? "work" : "settings");
+  } catch (err) {
+    /* storage = не ПДн и не обязательный (issue #202 п.6): приватный режим
+       бросает на setItem — таб переключается, запоминание тихо теряется. */
+  }
+}
+
+function initTabs() {
+  let stored = "work";
+  try {
+    stored = window.localStorage.getItem(LS_TAB) || "work";
+  } catch (err) {
+    stored = "work";
+  }
+  showTab(stored);
+  $("tabWork").addEventListener("click", function () { showTab("work"); });
+  $("tabSettings").addEventListener("click", function () { showTab("settings"); });
+  $("strapSettings").addEventListener("click", function () { showTab("settings"); });
+}
+
+/* --- форма конфигурации: GET /v1/config + POST /v1/config (#220) -----------
+
+ Поля рисуются ОТВЕТОМ сервера (ключи/метки/флаги = белый список config.rs,
+ первичка = TABLE `FILE_ALLOWED_KEYS`, а не копия списка в JS: расхождение
+ «UI предлагает то, что сервер отвергает» лечится отсутствием второго списка).
+ Тип поля = number там, где валидатор config.rs числовой (диапазоны —
+ первичка валидаторов: тред/таймауты/байты = целые > 0, пороги = [0, 1]).
+ Сохранение = POST по одному ключу; успех = баннер «требуется перезапуск»
+ (hot-reload вне контура #219); отказ = текст 422/403 в статусной строке. */
+
+const CFG_NUMERIC = {
+  FASAD_PORT: { min: 1024, max: 65535, step: 1 }, // граница = port_strict_for_write (#224)
+  FASAD_THREADS: { min: 1, max: 256, step: 1 },
+  FASAD_TIMEOUT_MS: { min: 1, max: 3600000, step: 1 },
+  FASAD_READ_TIMEOUT_MS: { min: 1, max: 3600000, step: 1 },
+  FASAD_MAX_BODY_BYTES: { min: 1, max: 104857600, step: 1 },
+  FASAD_GRAY_LO: { min: 0, max: 1, step: 0.01 },
+  FASAD_GRAY_HI: { min: 0, max: 1, step: 0.01 },
+  FASAD_TAU_LOW: { min: 0, max: 1, step: 0.01 },
+  FASAD_TAU_HIGH: { min: 0, max: 1, step: 0.01 },
+  FASAD_ARBITER_ALPHA: { min: 0, max: 1, step: 0.01 },
+};
+
+function settingsStatus(text, kind) {
+  const el = $("settingsStatus");
+  el.textContent = text;
+  if (kind) el.dataset.kind = kind;
+  else delete el.dataset.kind;
+}
+
+async function loadSettings() {
+  let d;
+  try {
+    d = (await api("/v1/config")).data;
+  } catch (err) {
+    $("configRows").textContent = "конфиг недоступен: " + err;
+    return;
+  }
+  $("settingsMeta").textContent =
+    "версия " + (d.version || "—") + " · стадия " + (d.stage || "—") +
+    " · режим " + (d.mode || "—") + " · потоков " + (d.threads || "—");
+  const f = d.file || {};
+  $("settingsFile").textContent =
+    "файл конфигурации: " + (f.path || "—") + (f.exists ? " (существует)" : " (файла нет — значения по умолчанию)");
+  $("settingsSecret").textContent =
+    "ключ FASAD_VAULT_KEY: " + (d.vault_key || "нет") +
+    " · бинд " + (d.bind || "—") + " (оба — только переменные окружения)";
+  const host = $("configRows");
+  host.replaceChildren();
+  let pendingRestart = false;
+  for (const row of d.entries || []) {
+    host.append(configRow(row));
+    // #224 MINOR: `restart_required` из GET читается (не только из ответа
+    // POST): баннер обязан выживать на reload, «сохранено — не применилось»
+    // не должно становиться невидимым после F5.
+    if (row.source === "file" && row.restart_required) pendingRestart = true;
+  }
+  $("restartBanner").hidden = !pendingRestart && $("restartBanner").hidden;
+}
+
+function configRow(row) {
+  const wrap = document.createElement("div");
+  wrap.className = "cfgrow";
+  wrap.dataset.key = row.key;
+  const label = document.createElement("label");
+  label.setAttribute("for", "cfg_" + row.key);
+  label.textContent = row.label;
+  const input = document.createElement("input");
+  input.id = "cfg_" + row.key;
+  input.dataset.key = row.key;
+  const num = CFG_NUMERIC[row.key];
+  input.type = num ? "number" : "text";
+  if (num) {
+    input.min = String(num.min);
+    input.max = String(num.max);
+    input.step = String(num.step);
+  }
+  // Эффективное значение = стартовое; пустое = «значения нет» (не «пустой
+  // секрет»: секреты в таблице не ездит, первичка Config::view).
+  input.value = row.value || "";
+  input.disabled = !row.ui_editable;
+  const meta = document.createElement("span");
+  meta.className = "cfgmeta";
+  meta.textContent = row.key + " · из: " + row.source + (row.ui_editable ? "" : " · только файл");
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = "Сохранить";
+  btn.disabled = !row.ui_editable;
+  btn.addEventListener("click", function () { saveConfig(row.key, input.value); });
+  wrap.append(label, input, meta, btn);
+  return wrap;
+}
+
+async function saveConfig(key, value) {
+  settingsStatus("сохраняю " + key + "…", "");
+  try {
+    const res = await api("/v1/config", { key: key, value: value }, "POST");
+    $("restartBanner").hidden = false;
+    settingsStatus((res.data && res.data.message) || "сохранено", "");
+    loadSettings();
+  } catch (err) {
+    // Текст отказа = текст валидатора демона (422 по инварианту порогов,
+    // 403 по запрещённому ключу): браузерную валидацию числовых полей
+    // задают min/max/step, серверную — единая точка config.rs.
+    settingsStatus("отказ: " + (err instanceof ApiError ? err.message : err), "err");
+  }
 }
 
 /* --- wiring ------------------------------------------------------------- */
 
+/* #221: поле порога = number (нативные ↑/↓), output-дублирование убрано.
+   Number("") = NaN, и `NaN > 0` ложно: пустое поле = «порог не поднят»
+   (0.00 = дефолт запроса), контракт body.score_threshold не меняется. */
+function thrValue() {
+  const v = Number($("thr").value);
+  return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0;
+}
 $("thr").addEventListener("input", function () {
-  $("thrOut").value = Number($("thr").value).toFixed(2);
+  const v = Number($("thr").value);
+  if (!Number.isFinite(v) || v < 0 || v > 1) {
+    status("порог: пусто или вне [0, 1] — считаю 0.00 (дефолт)", "warn");
+    return;
+  }
+  $("thr").value = v.toFixed(2);
 });
 $("btnAnalyze").addEventListener("click", analyze);
 $("btnAnon").addEventListener("click", anonymize);
 $("btnDean").addEventListener("click", deanonymize);
 $("btnReset").addEventListener("click", resetSession);
 
-$("btnFetch").addEventListener("click", fetchWeights);
+$("btnFetchS").addEventListener("click", fetchWeights);
 $("btnCopy").addEventListener("click", copyMasked);
 $("btnDemo").addEventListener("click", setDemoText);
 $("demoNoAuto").addEventListener("change", toggleDemoNoAuto);
@@ -870,9 +1034,10 @@ if (demoAutofillOnLoad()) {
 }
 loadChatPrefs();
 showSession();
-$("thrOut").value = "0.00";
 setStepActive(1);
 refreshButtons();
+initTabs();
 loadHealth();
 loadSchema();
 loadWeights();
+loadSettings();

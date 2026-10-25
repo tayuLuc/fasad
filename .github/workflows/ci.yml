@@ -85,7 +85,21 @@ jobs:
           fi
           grep -q "must be enabled on Linux and BSD" tray-probe.log
           echo "red-line ok: linux-сборка фичи tray краснеет compile_error'ом крейта"
-      - run: just test
+      # #224 CI-завись-контра (diagnostic-контур, issue-строка #204-хвост
+      # «CI-завись just test: step-timeout + --list probe»):/ubuntu-нога
+      # трижды висела на «Run just test» 24–95 мин БЕЗ строк лога (шаги
+      # вокруг зелёные, локально unix-контур = секунды). Призрак привязан к
+      # раннеру, не к дереву; защита постоянная: probe-шаг = список тестов
+      # без запуска (30-мин step-timeout: висяк краснеет с логом вместо
+      # 65-минутного зависания), `just test` = 12 мин с прогресс-строками.
+      - name: Test probe (список тестов, без запуска)
+        timeout-minutes: 30
+        run: cargo test --workspace -- --list
+      - name: just test (step-timeout 12 мин = висяк краснеет с логом)
+        timeout-minutes: 12
+        env:
+          RUST_LOG: warn
+        run: just test
       - run: just deny
 
   ort-build:

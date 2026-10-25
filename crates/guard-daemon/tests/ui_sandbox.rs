@@ -18,7 +18,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![forbid(unsafe_code)]
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -28,9 +28,98 @@ use guard_daemon::ui::CSP;
 struct Daemon {
     child: Child,
     addr: String,
+    /// Общий лог stderr демона (#224 R4): диагностика отказов после баннера.
+    log: std::sync::Arc<std::sync::Mutex<String>>,
+    /// Держим канал строк stdout: ранняя гибель `rx` (паника теста) =
+    /// читатель выходит = трубка закрывается = EPIPE-паника print'а
+    /// ЖИВОГО демона (#224 R4, stdio.rs:1168).
+    _stdout_lines: std::sync::mpsc::Receiver<String>,
+}
+
+/// Поток-читатель stdout = пожизненный (#224 R4: раннее закрытие трубки =
+/// EPIPE-паника print'а демона, stdio.rs:1168); строки = канал, байты —
+/// sink процесса.
+fn stdout_reader(stdout: std::process::ChildStdout) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read as _;
+        let mut reader = stdout;
+        let mut carry = String::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let text = String::from_utf8_lossy(&chunk[..n]).into_owned();
+                    carry.push_str(&text);
+                    while let Some(pos) = carry.find('\n') {
+                        let line = carry[..=pos].to_owned();
+                        carry.drain(..=pos);
+                        if tx.send(line).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    });
+    rx
+}
+
+/// Читатель stderr демона в общий лог (#224 R4 диагностика: отказ после
+/// баннера обязан называть причину, а не молчать).
+fn stderr_log(child: &mut std::process::Child) -> std::sync::Arc<std::sync::Mutex<String>> {
+    let log = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    {
+        let log = std::sync::Arc::clone(&log);
+        let mut stderr = child.stderr.take().expect("stderr перехвачен");
+        std::thread::spawn(move || {
+            use std::io::Read as _;
+            let mut chunk = [0u8; 1024];
+            loop {
+                match stderr.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        log.lock()
+                            .expect("лог не отравлен")
+                            .push_str(&String::from_utf8_lossy(&chunk[..n]));
+                    }
+                }
+            }
+        });
+    }
+    log
 }
 
 impl Daemon {
+    /// Готовность = ОТВЕТИВШИЙ сокет, не баннер (#224 R4): connect-проба с
+    /// ливенес-проверкой до возврата addr (мёртвый процесс = exit-код).
+    fn wait_ready(
+        child: &mut Child,
+        addr: &str,
+        seen: &str,
+        log: &std::sync::Arc<std::sync::Mutex<String>>,
+    ) {
+        let ready = Instant::now();
+        loop {
+            if let Some(status) = child.try_wait().expect("статус читается") {
+                let buf = log.lock().expect("лог не отравлен").clone();
+                panic!(
+                    "демон умер в окне готовности (rc={:?}, {addr}); stdout: {seen:?} stderr: {buf:?}",
+                    status.code()
+                );
+            }
+            if TcpStream::connect(addr).is_ok() {
+                return;
+            }
+            assert!(
+                ready.elapsed() < Duration::from_secs(10),
+                "порт {addr} не открылся за 10 с; stdout: {seen:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn start(env: &[(&str, &str)]) -> Self {
         // #185: full-бинарь (feature `ort-inference`) без весов не стартует —
         // live-контур файла (UI-протокол, каскад-0-ожидания, ревью #87) =
@@ -74,7 +163,24 @@ impl Daemon {
             // Some(кеш) = stage cascade-0+models = харнес красный).
             .env_remove("FASAD_TEST_TRAY_CONTOUR")
             .env_remove("FASAD_THREADS")
+            // #224 R4 (первичка CI ubuntu: витрина вернула
+            // `file.path=/home/runner/.config/…` при HOME-игле = tempdir):
+            // канон-резолв config-файла = `XDG_CONFIG_HOME` > HOME, и
+            // XDG-переменные раннера/машины пробивают HOME-иглу (на
+            // ubuntu-раннере задан XDG_DATA_HOME — наследие среды =
+            // невоспроизводимый флейк). Иглы изоляции = ВСЕ канон-переменные.
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_DATA_HOME")
             .env_remove("FASAD_TIMEOUT_MS")
+            // #219 (E-контур): харнес обязан быть изолирован от файла
+            // конфигурации. Файл оператора (`~/.config/fasad/config`) на
+            // локальной машине дал бы харнесу его значения (порт, пороги,
+            // режим) — CI-раннер «чисто» не чинит этого, и тот же аргумент,
+            // что у env_remove выше: воспроизводимость на машине оператора.
+            // Игла = СУЩЕСТВУЮЩИЙ пустой файл в tmp (см. `fasad_empty_config`):
+            // env-граница обязана получить «значений нет», а не «HOME
+            // оператора»; несуществующий путь дал бы отказ старта (#185).
+            .env("FASAD_CONFIG", fasad_empty_config())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -83,20 +189,8 @@ impl Daemon {
         }
         let mut child = cmd.spawn().expect("бинарь фасада запускается");
         let stdout = child.stdout.take().expect("stdout перехвачен");
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                    break;
-                }
-                if tx.send(line.clone()).is_err() {
-                    break;
-                }
-            }
-        });
+        let rx = stdout_reader(stdout);
+        let log = stderr_log(&mut child);
         let started = Instant::now();
         let mut seen = String::new();
         while started.elapsed() < Duration::from_secs(25) {
@@ -113,7 +207,19 @@ impl Daemon {
                     .next()
                     .expect("адрес заканчивается путём")
                     .to_owned();
-                return Self { child, addr };
+                Self::wait_ready(&mut child, &addr, &seen, &log);
+                DAEMONS.lock().expect("реестр не отравлен").push((
+                    addr.clone(),
+                    child.id(),
+                    true,
+                    std::sync::Arc::clone(&log),
+                ));
+                return Self {
+                    child,
+                    addr,
+                    log,
+                    _stdout_lines: rx,
+                };
             }
         }
         let _ = child.kill();
@@ -125,10 +231,89 @@ impl Daemon {
     }
 }
 
+/// Уникальный tmp-путь теста. `std::process::id()` НЕ уникален: `cargo test`
+/// = ОДИН процесс, тесты живут в ПОТОКАХ — два теста с одним PID-суффиксом
+/// пишут в ОДИН каталог/файл (первичка CI ubuntu job 120977735379 @b68e853:
+/// `config_write…` получил ECONNREFUSED — демон стартовал на чужом
+/// перезаписанном `config` и отказался (rc=2), порт не занят). Суффикс =
+/// PID + атомарный счётчик + наносекунды (std-only, dev-deps не заводим).
+fn unique_tmp_path(prefix: &str) -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    // Уникальность = гонка-создание КАТАЛОГА (`create_dir` краснеет на
+    // коллизии, EEXIST = шаг счётчика): наносекунды часов не гарантируют её
+    // между потоками одного процесса — на CI два теста получили ОДИН
+    // tempdir-путь (первичка #224 R4). Возврат = ПУТЬ ВНУТРИ каталога
+    // (существование parent = инвариант всех потребителей; каталог =
+    // то, что вызывающие удаляют `remove_dir_all`-ем в конце теста).
+    let root = std::env::temp_dir();
+    for _ in 0..128 {
+        let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or_default();
+        let dir = root.join(format!("{prefix}-{}-{seq}-{nanos}", std::process::id()));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return dir.join("p"),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => panic!("unique_tmp_path({prefix}): {e}"),
+        }
+    }
+    panic!("unique_tmp_path: 128 коллизий имени {prefix}");
+}
+
+/// Путь-игла E-контура #219: СУЩЕСТВУЮЩИЙ пустой файл конфигурации в tmp.
+///
+/// Пустой, а не «несуществующий»: явный `FASAD_CONFIG` в несуществующий путь =
+/// отказ старта (#185-контур: опечатка в пути обязана быть названа), а харнесу
+/// нужен ровно «файла нет по существу» = пустые значения. Файл создаётся на
+/// вызове: CI-раннер обязан найти его, а не оператора tmp-содержимое.
+/// Игла E-контура = ОДИН путь на весь тест-процесс (PID-имя): пересоздание
+/// на каждый вызов роняло предыдущий демон на `MissingExplicitPath` (файл
+/// исчез) = rc=2 = порт не занят = «сокет/ответ недоступны 30 с» (первичка
+/// #224 R4: харнесевы ноги гоняют демонов параллельно).
+static HARNESS_EMPTY_CONFIG: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+fn fasad_empty_config() -> std::path::PathBuf {
+    HARNESS_EMPTY_CONFIG
+        .get_or_init(|| {
+            let path = unique_tmp_path("fasad-harness-empty.cfg");
+            std::fs::write(&path, "# fasad harness (#219): empty = no values\n")
+                .expect("игла создаётся");
+            path
+        })
+        .clone()
+}
+
+impl Daemon {
+    /// Снимок stderr демона (#224 R4): вшивается в assert-сообщения live-ног,
+    /// чтобы «сокет недоступен» превращался в «демон сказал X».
+    #[allow(dead_code)]
+    fn log_tail(&self) -> String {
+        self.log.lock().expect("лог не отравлен").clone()
+    }
+}
+
 impl Drop for Daemon {
     fn drop(&mut self) {
+        // #224 R4: SIGTERM = axum graceful: ACCEPT-ЦИКЛ закрывается МГНОВЕННО,
+        // «остальные запросы дозавершаются» (первичка docs/axum/src/serve.rs:
+        // `Listener::poll_accept` → `loop { ... self.accepting.get() ... }`
+        // stop, а graceful = только активные соединения). Сосед по тесту,
+        // стартующий в окне kill→reap, ловит ECONNREFUSED 30 с = весь
+        // призрак-класс. Graceful-дрейна у харнеса нет: shutdown-контур
+        // демона (SIGTERM-флаг) = отдельный продукт-контур, не тестовый.
+        // Харнес = SIGKILL: ядро закрывает listening-сокет сразу, освободив
+        // порт для следующего демона без окна refuse.
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Ok(mut reg) = DAEMONS.lock() {
+            for e in reg.iter_mut() {
+                if e.0 == self.addr {
+                    e.2 = false;
+                }
+            }
+        }
     }
 }
 
@@ -154,6 +339,27 @@ impl Reply {
     }
 }
 
+/// Реестр демонов процесса (#224 R4): addr → (pid, жив, хвост stderr).
+/// Первичка 30-с refused при «живом» демоне: реестр отвечает «жив ли, pid,
+/// что говорил» — диагностика без гадания.
+type DaemonReg = Vec<(String, u32, bool, std::sync::Arc<std::sync::Mutex<String>>)>;
+
+static DAEMONS: std::sync::Mutex<DaemonReg> = std::sync::Mutex::new(Vec::new());
+
+fn daemon_diag(addr: &str) -> String {
+    let reg = DAEMONS.lock().expect("реестр не отравлен");
+    let entry = reg.iter().find(|(a, _, _, _)| a == addr);
+    match entry {
+        Some((_, pid, alive, log)) => {
+            let v = log.lock().expect("лог не отравлен").clone();
+            let n = v.chars().count();
+            let tail: String = v.chars().skip(n.saturating_sub(600)).collect();
+            format!("pid={pid} жив={alive} stderr={tail:?}")
+        }
+        None => "в реестре (этот процесс) не значится".to_string(),
+    }
+}
+
 fn call(addr: &str, method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]) -> Reply {
     let mut req = format!(
         "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\nConnection: close\r\n",
@@ -166,13 +372,45 @@ fn call(addr: &str, method: &str, path: &str, headers: &[(&str, &str)], body: &[
     req.push_str("\r\n");
     let mut bytes = req.into_bytes();
     bytes.extend_from_slice(body);
-    let mut sock = TcpStream::connect(addr).expect("сокет поднимается");
-    sock.set_read_timeout(Some(Duration::from_secs(15)))
-        .expect("таймаут ставится");
-    sock.write_all(&bytes).expect("запрос уходит");
-    sock.flush().expect("флуш");
+    // Win-контра CI #224 (первичка job-лога): `Connection: close` =
+    // однократная связь; серия POST подряд (в решётке 8 ног) — следующий
+    // запрос попадает в RST-окно закрытия: write_all = EPIPE/ECONNRESET
+    // (unix) или ответ = RST без байт, `raw` пуст (winsock 10054; данные
+    // могут лежать в буфере — read_to_end отдаёт их с ошибкой). Оборот =
+    // reconnect ≤3 попытки, пауза 200 мс; после трёх пустых — panic (тест
+    // обязан видеть красное, а не молча глотать). НЕ сужать решётку: 8 ног
+    // = покрытие.
+    // #224 R4: reconnect-оборот: CI-раннер = «backlog заполнен» → SYN режет
+    // SYN/ACK → ECONNREFUSED; пустой ответ = RST-окно закрытия (win/unix).
+    // Бюджет окна 30 с (live-контур; CI-шаг = step-timeout 12 мин).
     let mut raw = Vec::new();
-    sock.read_to_end(&mut raw).expect("ответ читается до конца");
+    let started = std::time::Instant::now();
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        raw.clear();
+        if let Ok(mut sock) = TcpStream::connect(addr) {
+            sock.set_read_timeout(Some(Duration::from_secs(15)))
+                .expect("таймаут ставится");
+            let _ = sock.write_all(&bytes).and_then(|()| sock.flush());
+            // Данные могут лежать в буфере вместе с ошибкой (10054):
+            // read_to_end отдаёт их, заголовок прочитан = ответ принят.
+            let _ = sock.read_to_end(&mut raw);
+        }
+        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+        // Deadlines #224 R4: refused (демона нет на порту) = красное за ~2 с
+        // (полный цикл решётки не вешается на мёртвый демон), живой демон в
+        // RST/backlog-окне = окно 30 с.
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "сокет/ответ недоступны 30 с ({attempt} попыток): addr {addr}, байты {}. Демон: {}",
+            raw.len(),
+            daemon_diag(addr)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -724,7 +962,7 @@ fn weights_card_shows_files_and_fetch_lands_the_layout() {
         );
         return;
     }
-    let dir = std::env::temp_dir().join(format!("fasad-fetch-{}", std::process::id()));
+    let dir = unique_tmp_path("fasad-fetch");
     let _ = std::fs::remove_dir_all(&dir);
     let d = Daemon::start(&[
         ("FASAD_MODEL_DIR", dir.to_str().expect("tmp путь")),
@@ -886,7 +1124,7 @@ fn chat_token_counter_counts_both_forms() {
 /// тест подставляет в tmp-копию скрипта). Ошибка движка = panic (не тихий
 /// SKIP); отсутствие ОБОИХ = пустая строка (зуб печатает SKIP сам).
 fn run_js_fixture(fixture: &str, app: &std::path::Path) -> String {
-    let dir = std::env::temp_dir().join(format!("fasad203-ct-{}", std::process::id()));
+    let dir = unique_tmp_path("fasad203-ct");
     std::fs::create_dir_all(&dir).expect("tmp создаётся");
     let script = dir.join("runner.js");
     std::fs::write(
@@ -1051,7 +1289,12 @@ fn ui_html_carries_the_weights_card() {
     let d = Daemon::start(&[]);
     let r = call(&d.addr, "GET", "/", &[], b"");
     let t = r.text();
-    for id in ["weightsPane", "weightsFiles", "btnFetch", "fetchBar"] {
+    for id in [
+        "weightsPaneSettings",
+        "weightsFilesS",
+        "btnFetchS",
+        "fetchBarS",
+    ] {
         assert!(t.contains(id), "в index.html нет карточки: {id}");
     }
     assert!(t.contains("Скачать веса"), "нет подписи кнопки");
@@ -1116,4 +1359,281 @@ fn ui_html_carries_steps_windows_and_pending_pane() {
             "app.js не знает про {id} (id-контракт разъехался)"
         );
     }
+}
+
+// --- #220/#221: табы, страница настроек, GET/POST /v1/config ----------------
+
+/// DOM-контракт двух табов + формы настроек + #221 (порог = number).
+/// id-сетка = контракт app.js (переименование молча ломает фронт: тот же
+/// класс, что `ui_html_carries_steps_windows_and_pending_pane`).
+#[test]
+fn ui_html_carries_tabs_and_settings_form() {
+    let d = Daemon::start(&[]);
+    let t = call(&d.addr, "GET", "/", &[], b"").text();
+    for id in [
+        "tabs",
+        "tabWork",
+        "tabSettings",
+        "tabWorkPane",
+        "tabSettingsPane",
+        "weightsStrap",
+        "settingsPane",
+        "configRows",
+        "settingsFile",
+        "restartBanner",
+        "settingsStatus",
+    ] {
+        assert!(t.contains(id), "в index.html нет #220-элемента: {id}");
+    }
+    assert!(t.contains("Настройки"), "нет подписи таба");
+    assert!(t.contains("Работа"), "нет подписи таба");
+    assert!(
+        t.contains("требуется перезапуск"),
+        "баннер перезапуска потерян (#219: hot-reload вне контура)"
+    );
+    // #221: порог = type=number с диапазоном валидатора, output-дубль убран.
+    assert!(
+        t.contains(r#"<input id="thr" type="number" min="0" max="1" step="0.01""#),
+        "порог S не стал number (#221)"
+    );
+    assert!(!t.contains(r#"type="range""#), "range-ползунок остался");
+    assert!(
+        !t.contains("thrOut"),
+        "output-дублирование значения осталось"
+    );
+    // Секретный инвариант страницы: формулировка «только env» в разметке.
+    assert!(t.contains("FASAD_VAULT_KEY"), "нет строки про ключ");
+}
+
+/// JS-пара #220: табы и форма живут в app.js (localStorage-контур, POST-контур).
+#[test]
+fn ui_js_carries_tab_and_config_wiring() {
+    let js = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"))
+        .expect("app.js читается");
+    for needle in [
+        "fasad.tab",
+        "showTab",
+        "tabSettingsPane",
+        "loadSettings",
+        "saveConfig",
+        "CFG_NUMERIC",
+    ] {
+        assert!(js.contains(needle), "app.js потерял {needle}");
+    }
+    assert!(js.contains("/v1/config"), "app.js не зовёт /v1/config");
+    assert!(
+        js.contains("min: 1024, max: 65535"),
+        "порт без числавого диапазона валидатора (#221)"
+    );
+    assert!(
+        js.contains("min: 0, max: 1, step: 0.01"),
+        "пороги без диапазона [0,1] (#221)"
+    );
+}
+
+/// `GET /v1/config` на живом демоне: таблица ключей = белый список,
+/// СЕКРЕТОВ В ОТВЕТЕ НЕТ даже при заданном `FASAD_VAULT_KEY` (#220: ключ
+/// показывается фактом «задан», не байтами), bind read-only.
+#[test]
+fn config_endpoint_lists_keys_and_hides_the_secret() {
+    let d = Daemon::start(&SESSION);
+    let r = call(&d.addr, "GET", "/v1/config", &[], b"");
+    assert_eq!(r.status, 200, "config = read-only витрина");
+    let body = r.text();
+    let j = r.json();
+    assert_eq!(j["vault_key"], "задан", "ключ = факт наличия, не значение");
+    assert!(
+        !body.contains("00112233445566778899aabbccddeeff"),
+        "значение FASAD_VAULT_KEY утекло в GET /v1/config"
+    );
+    assert!(
+        !body.contains("FASAD_VAULT_KEY\\\":\\\"00"),
+        "ключ уехал значением: {body}"
+    );
+    let keys: Vec<&str> = j["entries"]
+        .as_array()
+        .expect("entries = массив")
+        .iter()
+        .map(|e| e["key"].as_str().expect("ключ строкой"))
+        .collect();
+    assert!(keys.contains(&"FASAD_MODEL_DIR"), "{keys:?}");
+    assert!(keys.contains(&"FASAD_PORT"), "{keys:?}");
+    assert!(
+        !keys.contains(&"FASAD_VAULT_KEY") && !keys.contains(&"FASAD_BIND"),
+        "секрет/бинд в таблице = утечка (белый список config.rs нарушен): {keys:?}"
+    );
+    for e in j["entries"].as_array().expect("entries") {
+        let src = e["source"].as_str().expect("источник");
+        assert!(
+            matches!(src, "env" | "file" | "default"),
+            "источник вне канона: {src}"
+        );
+        assert_eq!(e["restart_required"], true, "все ключи = старт-время");
+    }
+    // Бинд = строка адреса (read-only, вне таблицы), порт = фактический.
+    let bind = j["bind"].as_str().expect("bind строкой");
+    assert!(bind.starts_with("127.0.0.1:"), "бинд не loopback: {bind}");
+    let port = j["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .find(|e| e["key"] == "FASAD_PORT")
+        .expect("порт в таблице")["value"]
+        .as_str()
+        .expect("значение строкой");
+    assert_eq!(
+        bind.rsplit(':').next().expect("порт в bind"),
+        port,
+        "эффективный порт обязан совпасть с bind (витрина не врёт)"
+    );
+}
+
+/// POST /v1/config: запрещённые ключи = 403 с причиной; вне белого списка =
+/// 403; мусорное значение = 422 текстом валидатора (не браузером); запись
+/// в `FASAD_CONFIG` (tmp-файл харнеса) = 200 + «требуется перезапуск».
+#[test]
+#[allow(clippy::too_many_lines)] // решётка POST-отказов = один тест-контракт (решётка ног #224)
+fn config_write_endpoint_validates_and_refuses_secrets() {
+    // Харнес уже указывает FASAD_CONFIG в tmp (изоляция E-контура); для
+    // записи нужен сушествующий каталог — свой файл на свой порт.
+    let dir = unique_tmp_path("fasad-cfg-ui");
+    std::fs::create_dir_all(&dir).expect("каталог");
+    let file = dir.join("config");
+    // Файл с валидным FASAD_HF_HOST: он же живая нога #224 MAJOR-2 (GET
+    // обязан показать файловый хост и source=file, а не «дефолт + file»),
+    // и же база для всех POST-ног ниже.
+    std::fs::write(
+        &file,
+        "# харнес #220\nFASAD_HF_HOST=https://from-file.example.test\n",
+    )
+    .expect("база");
+    let d = Daemon::start(&[
+        ("FASAD_CONFIG", file.to_str().expect("utf-8 путь")),
+        ("FASAD_PORT", "0"),
+    ]);
+    {
+        let r = call(&d.addr, "GET", "/v1/config", &[], b"");
+        let j = r.json();
+        let row = j["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .find(|e| e["key"] == "FASAD_HF_HOST")
+            .expect("HF_HOST в таблице");
+        assert_eq!(
+            row["value"], "https://from-file.example.test",
+            "файловый HF_HOST обязан доходить до витрины: {j}"
+        );
+        assert_eq!(row["source"], "file", "источник = файл: {j}");
+    }
+    let post = |body: String| {
+        call(
+            &d.addr,
+            "POST",
+            "/v1/config",
+            &[("content-type", "application/json")],
+            body.as_bytes(),
+        )
+    };
+    // Секрет = 403 с причиной, файл не тронут.
+    let r = post(r#"{"key":"FASAD_VAULT_KEY","value":"aa"}"#.to_owned());
+    assert_eq!(r.status, 403, "секрету в файл запрещено");
+    assert!(r.text().contains("env"), "причина обязана назвать канал");
+    // Вне белого списка = отказ.
+    assert_eq!(
+        post(r#"{"key":"FASAD_BUDUSCHEE","value":"1"}"#.to_owned()).status,
+        403
+    );
+    // Бинд (инвариант loopback) = 403.
+    assert_eq!(
+        post(r#"{"key":"FASAD_BIND","value":"8.8.8.8"}"#.to_owned()).status,
+        403
+    );
+    // Мусорные значения = 422 ТЕКСТОМ валидатора (#221: серверная стена, не
+    // браузер; #224 MAJOR-1: тихого фолбэка `port_from_value` в контуре
+    // записи нет ни на одной ноге; #224 MAJOR-2: HF_HOST бьётся парсером
+    // fetch-контура).
+    for (body, why) in [
+        (r#"{"key":"FASAD_THREADS","value":"abc"}"#, "не число"),
+        (r#"{"key":"FASAD_PORT","value":"abc"}"#, "порт не число"),
+        // 0 = «случайный порт»: легален в env/файле (харнес-контракт #224),
+        // вне контура записи (UI): 422 текстом границы.
+        (
+            r#"{"key":"FASAD_PORT","value":"0"}"#,
+            "нулевой порт = харнес-контур, не UI",
+        ),
+        (r#"{"key":"FASAD_PORT","value":"-1"}"#, "отрицательный порт"),
+        (r#"{"key":"FASAD_PORT","value":"65536"}"#, "за u16"),
+        (r#"{"key":"FASAD_PORT","value":"99999"}"#, "за u16"),
+        // #224 MINOR: привилегированный порт = 422 текстом диапазона, а не
+        // rc=1 PermissionDenied после рестарта.
+        (
+            r#"{"key":"FASAD_PORT","value":"1"}"#,
+            "1 < 1024 привилегированный",
+        ),
+        (
+            r#"{"key":"FASAD_PORT","value":"1023"}"#,
+            "1023 привилегированный",
+        ),
+        (
+            r#"{"key":"FASAD_HF_HOST","value":"garbage-not-a-url"}"#,
+            "не URL",
+        ),
+        (
+            r#"{"key":"FASAD_HF_HOST","value":"ftp://files.example.test"}"#,
+            "не https",
+        ),
+        (
+            r#"{"key":"FASAD_HF_HOST","value":"https://user@evil.example"}"#,
+            "учётки в авторити",
+        ),
+    ] {
+        let r = post(body.to_owned());
+        assert_eq!(r.status, 422, "{why}: ожидаем 422, ответ: {}", r.text());
+    }
+    assert!(
+        post(r#"{"key":"FASAD_PORT","value":"1"}"#.to_owned())
+            .text()
+            .contains("1024..=65535"),
+        "текст отказа обязан называть диапазон"
+    );
+    // Грань диапазона легальна (PORT=1024) — зуб не мёртвый.
+    let r = post(r#"{"key":"FASAD_PORT","value":"1024"}"#.to_owned());
+    assert_eq!(r.status, 200, "1024 = нижняя грань: {}", r.text());
+    // Инвариант порогов = 422 текстом (gray_hi 0.9 > дефолтный tau_high 0.8).
+    let r = post(r#"{"key":"FASAD_GRAY_HI","value":"0.9"}"#.to_owned());
+    assert_eq!(r.status, 422, "инвариант красен: {}", r.text());
+    assert!(r.text().contains("пороги"), "текст инварианта потерян");
+    // Легальная запись = 200 + restart_required + файл обновлён; значение
+    // пишется trimmed (#224 MINOR): « 2 » → «FASAD_THREADS=2».
+    let r = post(r#"{"key":"FASAD_THREADS","value":" 2 "}"#.to_owned());
+    assert_eq!(r.status, 200, "запись прошла: {}", r.text());
+    assert_eq!(
+        r.json()["restart_required"],
+        true,
+        "успех обязан требовать перезапуск"
+    );
+    let text = std::fs::read_to_string(&file).expect("файл");
+    assert!(text.contains("FASAD_THREADS=2"), "{text}");
+    assert!(!text.contains("= 2 "), "значение пишется trimmed: {text}");
+    assert!(
+        text.contains("FASAD_HF_HOST=https://from-file.example.test"),
+        "HF_HOST обязан пережить перезапись (ключевая нога #224): {text}"
+    );
+    assert!(
+        text.contains("# харнес"),
+        "комментарий не пережил запись: {text}"
+    );
+    assert!(
+        // Имя-первичка #224 MINOR: `.part` = file_name + ".part" = `config.part`;
+        // после rename обязана исчезнуть (атомарность).
+        !dir.join("config.part").exists(),
+        ".part обязан исчезнуть после rename (атомарность)"
+    );
+    // Только-для-файла (FASAD_SCHEMA) = 403 key_read_only (ui_editable=false).
+    assert_eq!(
+        post(r#"{"key":"FASAD_SCHEMA","value":"/tmp/x.json"}"#.to_owned()).status,
+        403
+    );
+    std::fs::remove_dir_all(&dir).ok();
 }
