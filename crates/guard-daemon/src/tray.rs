@@ -71,6 +71,13 @@ pub const TRAY_GUID: u128 = 0x0f5a_d17e_5f72_4b1f_9a44_c3d2_8e01_7002;
 /// Меню-пункт «Открыть fasad UI»: id, по которому цикл различает пункты.
 pub const MENU_ID_OPEN: &str = "open-ui";
 
+/// Меню-пункт-строка «UI: 127.0.0.1:<порт>» (#226): disabled-пункт ПЕРВЫМ —
+/// адрес песочницы глазами (issue #226: «добавь в меню адрес UI»).
+/// `enabled = false`: первичка muda 0.21.2 — выключенный пункт не кликабелен
+/// и `MenuEvent` НЕ шлёт; обработчика у id нет — `handle_menu_event` на нём
+/// обязан вернуть `false` (зуб в решётке: ложный quit дороже ложного пропуска).
+pub const MENU_ID_ADDR: &str = "ui-address";
+
 /// Меню-пункт «Выход (graceful)»: свой `MenuItem` с id — НЕ `PredefinedMenuItem::quit`
 /// (тот не шлёт `MenuEvent`: win `PostQuitMessage(0)` / mac `terminate:`, первичка muda
 /// 0.21.2 — нить #151 M1). Обработчик — `poll_once`: по этому id поднимает
@@ -255,8 +262,16 @@ impl StatusInfo {
     /// оператора (комментарий к #128). Формат зафиксирован юнитом: это
     /// контракт видимости деградации, а не косметика.
     #[must_use]
+    /// Подсказка иконки: метрики + адрес UI (#226). Разделитель адреса = `·`
+    /// (слэш-счётчик метрик цел; адрес = не личные данные: собственный петлевой порт
+    /// демона, тот же в disabled-пункте меню).
     pub fn tooltip(&self) -> String {
-        format!("fasad: {} / {}", self.failures(), self.stage)
+        format!(
+            "fasad: {} / {} · UI 127.0.0.1:{}",
+            self.failures(),
+            self.stage,
+            self.port
+        )
     }
 
     /// Заголовок иконки: только порт (`:8765`). В win-трее заголовок печатается
@@ -413,6 +428,27 @@ pub fn poll_once(
     true
 }
 
+/// Строка disabled-пункта с адресом UI (#226): `127.0.0.1:<порт>` — только
+/// loopback и собственный порт (SPEC §1 п.6: бинд loopback = то и показываем;
+/// порт = фактический привязанный сокет (`addr.port()` из main.rs:
+/// `FASAD_PORT=0` = случайный порт виден здесь же, где в баннере).
+#[must_use]
+pub fn ui_address_label(port: u16) -> String {
+    format!("UI: 127.0.0.1:{port}")
+}
+
+/// Чистая сборка содержимого меню трея (#226): списком (id, подпись, enabled)
+/// — тестируется без живого `TrayIcon` (headless-контур #151). Порядок = вид
+/// оператором: адрес (disabled, глазами) → открыть (курок) → выход.
+#[must_use]
+pub fn menu_items(port: u16) -> Vec<(&'static str, String, bool)> {
+    vec![
+        (MENU_ID_ADDR, ui_address_label(port), false),
+        (MENU_ID_OPEN, "Открыть fasad UI в браузере".to_owned(), true),
+        (MENU_ID_QUIT, "Выход (graceful)".to_owned(), true),
+    ]
+}
+
 /// Поднять иконку, контекстное меню и подписать tooltip/заголовок.
 fn build_tray(
     vault: &Arc<Inner>,
@@ -421,10 +457,14 @@ fn build_tray(
 ) -> Result<TrayIcon, Box<dyn std::error::Error + Send + Sync>> {
     let status = StatusInfo::snapshot(vault, stage, port);
     let icon = Icon::from_rgba(status_rgba(status.icon_state()), 32, 32)?;
+    // #226: адрес ПЕРВЫМ (disabled = глазами, без события — первичка muda),
+    // разделитель между «глазами» и «курком», «Открыть fasad UI в браузере»
+    // = переименованный `MENU_ID_OPEN` (тот же id, не дубль).
     let menu = Menu::new();
     menu.append_items(&[
-        &MenuItem::with_id(MENU_ID_OPEN, "Открыть fasad UI", true, None),
+        &MenuItem::with_id(MENU_ID_ADDR, ui_address_label(port), false, None),
         &PredefinedMenuItem::separator(),
+        &MenuItem::with_id(MENU_ID_OPEN, "Открыть fasad UI в браузере", true, None),
         // Свой пункт с id, а не `PredefinedMenuItem::quit`: первичка muda 0.21.2 —
         // predefined Quit не шлёт MenuEvent (windows: `PostQuitMessage(0)`,
         // `platform_impl/windows/mod.rs:1142`; macOS: selector `terminate:`,
@@ -496,8 +536,59 @@ mod tests {
 
     #[test]
     fn tooltip_is_failures_slash_stage() {
-        assert_eq!(status(0).tooltip(), "fasad: 0 / cascade-0-only");
-        assert_eq!(status(7).tooltip(), "fasad: 7 / cascade-0-only");
+        assert_eq!(
+            status(0).tooltip(),
+            "fasad: 0 / cascade-0-only · UI 127.0.0.1:8765"
+        );
+        assert_eq!(
+            status(7).tooltip(),
+            "fasad: 7 / cascade-0-only · UI 127.0.0.1:8765"
+        );
+    }
+
+    #[test]
+    fn ui_address_label_is_loopback_with_real_port() {
+        // #226: адрес ПЕРВЫМ пунктом = глазами; порт = фактический привязанный
+        // (`addr.port()` = local_addr после bind: FASAD_PORT=0 = случайный
+        // порт виден здесь же, где в баннере).
+        assert_eq!(ui_address_label(8765), "UI: 127.0.0.1:8765");
+        assert_eq!(ui_address_label(0), "UI: 127.0.0.1:0");
+        assert_eq!(ui_address_label(65535), "UI: 127.0.0.1:65535");
+    }
+
+    #[test]
+    fn menu_layout_address_disabled_open_rename_quit() {
+        // #226 C: чистая сборка меню = тестируема без живого трея (#151).
+        // Порядок и флаги enabled = контракт: адрес (disabled, первичка muda:
+        // выключенный пункт MenuEvent НЕ шлёт) → открыть → выход.
+        let items = menu_items(8765);
+        assert_eq!(
+            items.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(),
+            vec![MENU_ID_ADDR, MENU_ID_OPEN, MENU_ID_QUIT],
+            "addr (глаза) → open (курок) → quit"
+        );
+        assert!(!items[0].2, "адрес = disabled-пункт (не кликается)");
+        assert!(items[1].2 && items[2].2, "открытие и выход кликабельны");
+        assert_eq!(items[0].1, "UI: 127.0.0.1:8765");
+        assert_eq!(items[1].1, "Открыть fasad UI в браузере");
+        assert_eq!(items[2].1, "Выход (graceful)");
+    }
+
+    #[test]
+    fn menu_address_id_never_opens_and_never_quits() {
+        // Решётка handle_menu_event (#226): disabled-пункт не генерирует
+        // событий (muda-первичка), но защитный контур обязан ответить на
+        // ложное событие «не обработано»: ни открытия, ни shutdown.
+        use tray_icon::menu::MenuId;
+        let sd = Shutdown::new();
+        let ev = MenuEvent {
+            id: MenuId::new(MENU_ID_ADDR),
+        };
+        assert!(
+            !handle_menu_event(&ev, 8765, &sd),
+            "addr-id не имеет обработчика (ложный open/quit дороже)"
+        );
+        assert!(!sd.triggered());
     }
 
     #[test]
@@ -509,7 +600,10 @@ mod tests {
             unrestored_mismatch: 4,
             ..status(0)
         };
-        assert_eq!(st.tooltip(), "fasad: 10 / cascade-0-only");
+        assert_eq!(
+            st.tooltip(),
+            "fasad: 10 / cascade-0-only · UI 127.0.0.1:8765"
+        );
     }
 
     #[test]
@@ -518,13 +612,31 @@ mod tests {
         // допускает только префикс, число, слэш, стадию. Проверка — по
         // конструкции: слэш ровно один, в хвосте (стадия) нет ни `@`, ни
         // адреса, ни пути.
+        // #226: формат = `fasad: <отказы> / <стадия> · UI 127.0.0.1:<порт>`.
+        // Слэш = РОВНО ОДИН (счётчик разделителей метрик цел; адрес отделён
+        // точкой — адрес = не личные данные: собственный петлевой порт демона). Стадия
+        // не несёт ни `@`, ни пути, ни адреса.
         let t = status(3).tooltip();
         assert!(t.starts_with("fasad: ") && t.contains(" / "));
         assert_eq!(t.matches('/').count(), 1, "ровно один слэш: {t}");
-        let tail = t.rsplit(" / ").next().unwrap_or_default();
+        let stage = t
+            .trim_start_matches("fasad: ")
+            .split(" / ")
+            .nth(1)
+            .unwrap_or_default()
+            .split(" ·")
+            .next()
+            .unwrap_or_default();
         for banned in ["@", "http", "\\", ":", " ", "."] {
-            assert!(!tail.contains(banned), "стадия содержит {banned:?}: {tail}");
+            assert!(
+                !stage.contains(banned),
+                "стадия содержит {banned:?}: {stage}"
+            );
         }
+        assert!(
+            t.ends_with("UI 127.0.0.1:8765"),
+            "адрес UI обязан быть в tooltip (#226): {t}"
+        );
     }
 
     #[test]
@@ -673,6 +785,8 @@ mod tests {
         // шлёт MenuEvent — первичка muda 0.21.2). Различимые id = два обработчика
         // на одном канале.
         assert_ne!(MENU_ID_OPEN, MENU_ID_QUIT);
+        assert_ne!(MENU_ID_ADDR, MENU_ID_OPEN);
+        assert_ne!(MENU_ID_ADDR, MENU_ID_QUIT);
     }
 
     #[test]

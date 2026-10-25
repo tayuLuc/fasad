@@ -85,14 +85,16 @@ const IDIGNORE: i32 = 5;
 ///
 /// Возврат не значим: после показа процесс уходит с `EXIT_BAD_CONFIG`.
 ///
-/// Окно поднимается ТОЛЬКО в GUI-контуре (решение #190 по первичке
-/// подсистемы): у обоих bin атрибута `windows_subsystem` нет = console по
-/// умолчанию (grep `crates/` = 0, промер этой сессии), т.е. у любого bin,
-/// запущенного из cmd/PowerShell,stderr виден оператору, а модалка на
-/// таймаутном/сервисном контуре = блокировка. Консоль закрывается вместе с
-/// процессом двойного клика — это ровно тот случай, для которого окно:
-/// вызывающий (`main.rs::refuse_startup`) зовёт функцию под
-/// `all(feature = "tray", windows)` = только `fasad-tray.exe`.
+/// Окно поднимается ТОЛЬКО в GUI-контуре. Первичка #190 («у обоих bin
+/// атрибута `windows_subsystem` нет = console по умолчанию») ЗАМЕНЕНА #226:
+/// `fasad-tray.exe` = GUI-подсистема (`windows_subsystem = "windows"` под
+/// `all(feature = "tray", windows)`, main.rs — «запустил и забыл»: двойной
+/// клик без консольного окна), headless `fasad.exe` = console-контракт #185
+/// без атрибута (feature-off). `MessageBoxW` НЕ требует консоли (первичка
+/// win32: собственное окно верхнего уровня) = отказ виден и на GUI-
+/// подсистеме. Вызывающий (`main.rs::refuse_startup`) зовёт функцию под
+/// `all(feature = "tray", windows)` = только трей-контур; на таймаутном/
+/// сервисном console-контуре модалки нет (блокировка исключена).
 pub fn show_startup_failure(caption: &str, message: &str) {
     fn to_wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -105,6 +107,11 @@ pub fn show_startup_failure(caption: &str, message: &str) {
     if std::env::var("FASAD_WIN_NO_UI").is_ok() {
         return;
     }
+    // #226: GUI-подсистема `fasad-tray.exe` (`windows_subsystem = "windows"`)
+    // НЕ ломает это окно: `MessageBoxW` = собственное модальное окно
+    // верхнего уровня, консоли/stdin-консоли не требует (первичка win32
+    // «Message Boxes», промер-полка release.md §матрица: live-зуб на
+    // win-машине; CI-контур = FASAD_WIN_NO_UI headless-путь, что и ниже).
     // `MB_ICONERROR`(16) | `MB_SETFOREGROUND`(65536) |
     // `MB_ABORTRETRYIGNORE`(3, #198: три канона = уйти / открыть инструкцию /
     // уйти через X); `MB_OK` = 0 и в сумму не входит (константы windows-sys
