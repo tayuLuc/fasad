@@ -215,6 +215,12 @@ jobs:
             echo "rlib grep: $(find target/release/deps -name 'libguard_daemon*.rlib' -exec grep -ac fasad-tray.log {} + 2>/dev/null | head -3)"
             echo "cstr-маркер: $(grep -ac "cstr::from_bytes" "$b" || true)"
             echo "FASAD-маркер: $(grep -ac "FASAD_TRAY_LOG" "$b" || true)"
+            # Диагност-2: чин ли bin-файл вообще (headless = контур без
+            # трей-кода, размер-референс) + presence в rlib-контуре:
+            ls -la target/release/fasad target/release/fasad.exe 2>/dev/null || true
+            echo "headless grep: $(grep -ac fasad-tray.log target/release/fasad* 2>/dev/null | head -2)"
+            echo "rlib presence: $(find target/release/deps -name 'libguard_daemon*.rlib' -exec sh -c 'echo {} $(grep -ac FASAD_TRAY_LOG {})' \; 2>/dev/null | head -4)"
+            echo "md5 bin: $(md5sum "$b" 2>/dev/null || md5 "$b")"
             echo "ОШИБКА: лог-контур #244/#263 не в бинаре (win/mac)"
             exit 1
           fi
