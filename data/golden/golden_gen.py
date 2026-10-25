@@ -917,6 +917,39 @@ def main():
     for t in V16_NEG:
         add(t, [], "negative", "synthetic-no-pii")
 
+    # ---------------- v1.7 (#238/#51: транслит-ФИО, контур A′) ----------------
+    # Recall = латиница-транслит ФИО (модельный класс person_name; каскад 0
+    # его не красит никогда, #238 = эвристика серой зоны при смонтированных
+    # весах: кандидатура + арбитраж Decide). Чексумм-гейт B1 на person_name
+    # не смотрит (первичка: recall-строки с person_name живут с v1.0,
+    # checksum_valid для класса = None). C0GOLDEN CLASSES из 7 без
+    # person_name = покрытие каскада-0 этих спанов не меряет (честно).
+    V17_RECALL = [
+        # (text, value)
+        ("Реестр контрагента: Ushakov Petr Sergeevich, Sokolov Denis, "
+         "ИНН 825082492964 и СНИЛС 105-325-268 49 в карточке.",
+         ["Ushakov Petr Sergeevich", "Sokolov Denis"]),
+        ("Претензия должнику: Petr Sergeevich Ushakov (транслит в реестре), "
+         "Ушаков Тимофей Сергеевич (кириллица).",
+         ["Petr Sergeevich Ushakov", "Ушаков Тимофей Сергеевич"]),
+    ]
+    for t, values in V17_RECALL:
+        spans = [span_at(t, v, "person_name", v) for v in values]
+        add(t, spans, "recall", "synthetic-translit")
+    # Negative-бейты #238: capitalized-окна НЕ-ФИО (гео/компани/даты) —
+    # эвристика обязана молчать (стоп-контур), bait-счётчик C0NEG не
+    # растёт. Формы — таблица первички диспатча #51 (решётка A′).
+    V17_NEG = [
+        "Comcast Corporation отчиталась за квартал.",
+        "Согласование адреса: New York City, 12 Broadway.",
+        "Отгрузка в Moscow Region, склад временного хранения.",
+        "Консалтинг: Boston Consulting Group подготовил отчёт.",
+        "Плейлист конференции: The Beatles, 1969 год.",
+        "Meeting in New York City, January 15.",
+    ]
+    for t in V17_NEG:
+        add(t, [], "negative", "synthetic-no-pii")
+
     # ---------------- гейты ----------------
     total = len(rows)
     recall = sum(1 for r in rows if r["split"] == "recall")

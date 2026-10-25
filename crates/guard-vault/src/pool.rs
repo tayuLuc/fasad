@@ -204,6 +204,11 @@ mod tests {
                 if sp.get("category").and_then(serde_json::Value::as_str) != Some("person_name") {
                     continue;
                 }
+                // #238: фильтр по ТОКЕНУ, не строке: транслит-пары несут
+                // кириллицу в тексте, а P6-проверка («суррогат не должен
+                // жить в golden») смотрит кириллический пул — латинские
+                // токены («Ushakov», «Petr») вне алфавита пула.
+                let is_cyrillic_token = |w: &str| w.chars().any(|c| ('Ѐ'..='ӿ').contains(&c));
                 let value = sp
                     .get("value_source")
                     .and_then(serde_json::Value::as_str)
@@ -216,6 +221,9 @@ mod tests {
                     });
                 if let Some(v) = value {
                     for w in v.split_whitespace() {
+                        if !is_cyrillic_token(w) {
+                            continue;
+                        }
                         out.insert(w.to_uppercase().replace('Ё', "Е"));
                     }
                 }

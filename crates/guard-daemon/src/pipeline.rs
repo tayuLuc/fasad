@@ -459,7 +459,7 @@ impl TranslitCtx {
         let disabled_log = !cfg.thresholds.translit_stable();
         if disabled_log {
             eprintln!(
-                "translit candidates disabled: alpha*gray_lo ({}) >= tau_low ({}) —                  фильтр арбитра выключен настройкой порогов (#238)",
+                "translit candidates disabled: alpha*gray_lo ({}) >= tau_low ({}) — фильтр арбитра выключен настройкой порогов (#238)",
                 cfg.thresholds.alpha * cfg.thresholds.gray_lo,
                 cfg.thresholds.tau_low
             );
@@ -1181,6 +1181,31 @@ mod mount_tests {
         let off = Config::from_lookup(|k| (k == "FASAD_TRANSLIT").then(|| "off".to_owned()))
             .expect("off парсится");
         assert!(!off.translit);
+    }
+
+    /// #224-класс («разъехавшийся литерал» = run пробелов в eprintln-тексте
+    /// выключения): disable-текст собирается одной строкой без двойных
+    /// пробелов. Зуб проверяет и факт выключения на нестабильной связке.
+    #[test]
+    fn translit_disable_text_has_no_space_runs() {
+        let mut c = cfg();
+        c.thresholds.gray_lo = 0.5; // 0.5·0.5 = 0.25 ≥ τ_low 0.2 = нестабильно
+        let out = cascades::Outcome {
+            spans: Vec::new(),
+            cascade2: cascades::Cascade2::Ok,
+            p2: vec![("person_name".to_owned(), 1.0)],
+        };
+        let t = TranslitCtx::of(&c, &out).expect("Ok + p2 = Some");
+        assert!(t.disabled_log, "связка обязана гасить контур");
+        let text = format!(
+            "translit candidates disabled: alpha*gray_lo ({}) >= tau_low ({}) — фильтр арбитра выключен настройкой порогов (#238)",
+            c.thresholds.alpha * c.thresholds.gray_lo,
+            c.thresholds.tau_low
+        );
+        assert!(
+            !text.contains("  "),
+            "run пробелов в disable-тексте: {text:?}"
+        );
     }
 
     /// Инвариант #238: стабильность фильтра = `α·gray_lo < τ_low`.

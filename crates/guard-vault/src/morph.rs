@@ -1165,6 +1165,13 @@ mod tests {
                 let Some(val) = s["value_source"].as_str() else {
                     continue;
                 };
+                // #238: латиница-транслит = НЕ объект морфологии (метрика C
+                // = кириллическая флексия; транслит не склоняется таблицей и
+                // не обязан): считаем его вне total/покрытия, фильтр по
+                // кириллице в токенах.
+                if !val.chars().any(|c| ('Ѐ'..='ӿ').contains(&c)) {
+                    continue;
+                }
                 total += 1;
                 let lemmas = match table().parse_span(val) {
                     SpanParse::Unique { lemmas, .. } => {
@@ -1204,7 +1211,12 @@ mod tests {
         eprintln!(
             "метрика C: покрыто {correct}/{total}, strict {strict}, lemma-unique {lemma_unique}, неверных {wrong}, не покрыто {uncovered}"
         );
-        assert_eq!(total, 56, "person_name-спанов в датасете должно быть 56");
+        assert_eq!(
+            total, 57,
+            "кириллических person_name-спанов в датасете 57 (56 v1.0–v1.6 +
+             1 v1.7 #238 кириллица-половина транслит-пары; латиница-транслит
+             идёт вне метрики C)"
+        );
         assert_eq!(
             correct + wrong + uncovered,
             total,
