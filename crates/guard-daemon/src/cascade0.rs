@@ -280,6 +280,18 @@ const PHONE_SPEC: Spec = Spec {
     structured: true,
 };
 
+/// Email — addr-spec RFC 5322 (#222): форматный валидатор, окно НЕ цифровое
+/// (токен строит [`email_tokens`]), в общий цифровой цикл `validated_windows`
+/// не едет — своей веткой, как IBAN. Контекстного ключа нет: адрес =
+/// формат-детерминант (issue #222: «email:» не нужен).
+const EMAIL_SPEC: Spec = Spec {
+    name: "email_rfc",
+    min: 6,
+    max: 320,
+    source: DetectionSource::ChecksumEu,
+    structured: false,
+};
+
 // Инвентарь структурных спек переехал в `mod tests` (страж
 // `structured_specs_are_the_declared_pair`): prod-код флаг не читает,
 // `clippy --lib` cfg(test)-использование не видит = dead_code.
@@ -395,6 +407,7 @@ fn call_validator(name: &str, input: &[u8]) -> Option<bool> {
         // телефон-канон не родится.
         "passport_format" => checksums::passport_format(input),
         "phone_rf" => checksums::phone_rf(input),
+        "email_rfc" => checksums::email_rfc(input),
         _ => None,
     }
 }
@@ -662,7 +675,128 @@ fn validated_windows(bytes: &[u8], wanted: &[(&'static str, ClassId)]) -> Vec<Wi
         }
     }
 
+    // Email (#222): токен с `@` (локальная atext-часть @ доменные метки);
+    // валидатор = единый addr-spec (B4-контра датасета, guard-detectors::
+    // checksums::email_rfc).
+    let em = &EMAIL_SPEC;
+    if wanted.iter().any(|(v, _)| *v == em.name) {
+        for (start, end) in email_tokens(bytes) {
+            // Правая рамка = word-break (#138): токен не приклеен буквой/
+            // цифрой справа.
+            if end < bytes.len() && bytes[end].is_ascii_alphanumeric() {
+                continue;
+            }
+            // Каноническое окно = суффикс токена после последнего
+            // разделителя-префикса (`:` — схема/ключ «mailto:», «почта:»;
+            // пробел — «почта d@…»). Токенизатор шире канона ровно на эти
+            // префиксы; точка/дефис = часть канона (dot-atom/метки), срез
+            // по ним = word-break-контра (токен maximal, спан = канон).
+            let cut = bytes[start..end]
+                .iter()
+                .rposition(|&b| b == b':' || b == b' ')
+                .map_or(start, |k| start + k + 1);
+            if end - cut < em.min || end - cut > em.max {
+                continue;
+            }
+            if call_validator(em.name, &bytes[cut..end]) == Some(true) {
+                out.push(Window {
+                    range: cut..end,
+                    spec: em,
+                });
+            }
+        }
+    }
+
     out
+}
+
+/// Кандидат-токены email: ASCII-локальная часть из atext-символов, `@`,
+/// доменные метки `A-Za-z0-9-` с точками. Сканер ШИРОКЙ (перехватывает
+/// и «user@host..com», и «a@b@cd»): форма = забота валидатора, разделение
+/// ролей как у цифровых окон (токенизатор широкий, чексумма узкая).
+fn email_tokens(bytes: &[u8]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let n = bytes.len();
+    let mut i = 0usize;
+    while i < n {
+        if !is_atext_byte(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut j = i;
+        let mut at = None;
+        while j < n {
+            let b = bytes[j];
+            if is_atext_byte(b) {
+                j += 1;
+            } else if b == b'.' {
+                // Точка = atext-разделитель (dot-atom-атомы и метки домена):
+                // в токен входит, только если за ней символ локальной части
+                // (до `@`) или символ доменной метки (после): хвостовая
+                // точка предложения в токен не попадает — её решение
+                // валидатора не касается, это рамка.
+                let is_local_char = |c: u8| is_atext_byte(c);
+                let is_domain_char = |c: u8| c.is_ascii_alphanumeric() || c == b'-';
+                let glue = j + 1 < n && {
+                    if at.is_none() {
+                        is_local_char(bytes[j + 1])
+                    } else {
+                        is_domain_char(bytes[j + 1])
+                    }
+                };
+                if !glue {
+                    break;
+                }
+                j += 1;
+            } else if b == b'@' && at.is_none() {
+                at = Some(j);
+                j += 1;
+            } else if b == b':' && at.is_none() {
+                // Двоеточие локальной части = только URL-префикс
+                // (`mailto:a@…`, RFC 6068; в dot-atom `:` = atext, но
+                // адрес с `:` в локале = экзотика, канон её не ищет).
+                // После `@` = граница: `https://host` не ест домен.
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        if at.is_some() && j > start {
+            out.push((start, j));
+            i = j;
+            continue;
+        }
+        i = start + 1;
+    }
+    out
+}
+
+/// atext RFC 5322 3.2.3 (ASCII-подмножество, без `.`: точка в локальной
+/// части = атом-разделитель, в домене = метка-разделитель).
+fn is_atext_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'/'
+                | b'='
+                | b'?'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'{'
+                | b'|'
+                | b'}'
+                | b'~'
+        )
 }
 
 /// Максимальные прогоны ASCII-цифр, `[start, end)` в байтах нормы.
@@ -1992,7 +2126,7 @@ fn passport_frame_windows(bytes: &[u8]) -> Vec<(usize, usize)> {
 /// рамкой #138 слева). Хвост 1–2 цифры (12/123-хвосты, «… 12») остаются в
 /// каноне и отшиваются длиной валидатора (11–12 цифр — не паспорт), как на
 /// базе: форма «12/123» первичкой ревью НЕ заявлена ожидаемой (FN «123»
-/// закрывается, «12/123» остаётся вFP-safe молчании — промер таблицы PR).
+/// закрывается, «12/123» остаётся в FP-safe молчании — промер таблицы PR).
 /// Отдельные валидаторы даты/года в список НЕ вынесены: оба решения живут
 /// одним правилом, второй реализации того же решения не заводим.
 fn passport_tail_break(bytes: &[u8], end: usize) -> Option<usize> {
@@ -2698,6 +2832,172 @@ mod tests {
 
     fn schema() -> Schema {
         Schema::embedded().expect("канон валиден")
+    }
+
+    /// #222 промер 17 форм (набор оператора 24.10 + demo-строки): форма
+    /// находится ЦЕЛИМ спаном (равна ожидаемому) или молчит (бэйты).
+    /// Заменяет «8/17 резаны, 4/17 усы, 0 целых» модели.
+    #[test]
+    fn email_seventeen_forms_probe() {
+        let sc = schema();
+        let cases: [(&str, Option<&str>); 17] = [
+            (
+                "Контакт d.sokolov@romashka.example,",
+                Some("d.sokolov@romashka.example"),
+            ),
+            (
+                "e-mail: reestr@romashka.example;",
+                Some("reestr@romashka.example"),
+            ),
+            (
+                "почта ushakova@ektor-invest.example",
+                Some("ushakova@ektor-invest.example"),
+            ),
+            (
+                "support@cloud.i-o.example",
+                Some("support@cloud.i-o.example"),
+            ),
+            (
+                "SUPPORT@CORP-VEKTOR.EXAMPLE",
+                Some("SUPPORT@CORP-VEKTOR.EXAMPLE"),
+            ),
+            ("a+b@mailforge.example", Some("a+b@mailforge.example")),
+            (
+                "A.B.C.D@sub.mailforge.example",
+                Some("A.B.C.D@sub.mailforge.example"),
+            ),
+            (
+                "u$r!name@corp-vektor.example",
+                Some("u$r!name@corp-vektor.example"),
+            ),
+            (
+                "archive-2024@xn--80ak6aa92e.test",
+                Some("archive-2024@xn--80ak6aa92e.test"),
+            ),
+            (
+                "«d.sokolov@romashka.example»",
+                Some("d.sokolov@romashka.example"),
+            ),
+            ("(support@breeze.example)", Some("support@breeze.example")),
+            (
+                "d.sokolov@romashka.example,тел. +7 905 552-52-86",
+                Some("d.sokolov@romashka.example"),
+            ),
+            (
+                "mailto:d.sokolov@romashka.example",
+                Some("d.sokolov@romashka.example"),
+            ),
+            ("user@", None),
+            ("@host.example", None),
+            ("a@b@cd.example", None),
+            ("a@localhost", None),
+        ];
+        for (text, want) in cases {
+            let found = scan(text, &sc);
+            let e: Vec<&str> = found
+                .iter()
+                .filter(|h| h.class.as_str() == "email")
+                .map(|h| &text[h.span.start..h.span.end])
+                .collect();
+            match want {
+                Some(w) => assert_eq!(e, vec![w], "форма {text:?}"),
+                None => assert!(e.is_empty(), "бэйт {text:?} дал {e:?}"),
+            }
+        }
+    }
+
+    /// #222: email = форматный валидатор (addr-spec RFC 5322): формы
+    /// находимы ЦЕЛИМИ спанами (BPE-обрезки закрыты), коллизии канона
+    /// (`user@`, `a@b@cd`, quoted-local, одно-меточный домен) = молчание,
+    /// ASCII-регистронезависимость домена, word-break рамок.
+    #[test]
+    fn email_rfc_scans_whole_spans_and_collisions() {
+        let sc = schema();
+        let hit1 = |t: &str, want: &str| {
+            let hits = scan(t, &sc);
+            let e: Vec<_> = hits
+                .iter()
+                .filter(|h| h.class.as_str() == "email")
+                .collect();
+            assert_eq!(e.len(), 1, "email-хит {t:?}");
+            assert_eq!(&t[e[0].span.start..e[0].span.end], want, "граница {t:?}");
+        };
+        hit1(
+            "Контакт d.sokolov@romashka.example,",
+            "d.sokolov@romashka.example",
+        );
+        hit1("SUPPORT@CORP-VEKTOR.EXAMPLE", "SUPPORT@CORP-VEKTOR.EXAMPLE");
+        hit1("a+b@mailforge.example", "a+b@mailforge.example");
+        hit1("«d.sokolov@romashka.example»", "d.sokolov@romashka.example");
+        hit1("(support@breeze.example)", "support@breeze.example");
+        // Коллизии канона = молчим.
+        for t in [
+            "user@ host.example",
+            "@host.example",
+            "a@b@cd.example",
+            "quoted \"local\"@host.example",
+            "a@localhost",
+            "d.sokolov@rom ashka.example",
+        ] {
+            let found = scan(t, &sc);
+            assert!(
+                found.iter().all(|h| h.class.as_str() != "email"),
+                "email не должно быть в {t:?}"
+            );
+        }
+        // Рамка isolated: соседняя буква приклеивает токен (word-break #138):
+        // «xSupport@b.com» = один токен, локал валиден = хит на полном токене
+        // (сканер шире, валидатор узкий) — проверяем, что НЕ два спана.
+        let t = "xx d.sokolov@romashka.example";
+        let found = scan(t, &sc);
+        let e: Vec<String> = found
+            .iter()
+            .filter(|h| h.class.as_str() == "email")
+            .map(|h| t[h.span.start..h.span.end].to_owned())
+            .collect();
+        assert_eq!(e, vec!["d.sokolov@romashka.example".to_owned()]);
+    }
+
+    /// #222: mailto-рамка: `mailto:a@b.example` = токен с префиксом схемы;
+    /// каноническое окно = суффикс после `:` = адрес находится без префикса
+    /// (промер канона: URL-подобные рамки = scope-решение issue: маскируем
+    /// адрес, не URL).
+    #[test]
+    fn email_mailto_prefix_frame() {
+        let sc = schema();
+        let hits = scan("mailto:sokolov@post-panda.example", &sc);
+        let e: Vec<String> = hits
+            .iter()
+            .filter(|h| h.class.as_str() == "email")
+            .map(|h| "sokolov@post-panda.example"[..h.span.end - h.span.start].to_owned())
+            .collect();
+        assert_eq!(e.len(), 1, "mailto-форма: {e:?}");
+        assert_eq!(e[0], "sokolov@post-panda.example");
+    }
+
+    /// #222 (бэйты датасета g0248–g0253 = молчание, первичка issue):
+    /// git-стиль `author@commit` без точки в «домене», URL-прагматика
+    /// `ftp://files@host/resource`, двойная вставка `a@b@cd`, обрезанный
+    /// `user@`, одно-меточный `a@localhost` (канон: домен = FQDN с точкой,
+    /// RFC 3.4.1 angle-addr «dot-atom-text», B4-контра датасета), кавычки
+    /// quoted-local.
+    #[test]
+    fn email_collisions_bait_silence() {
+        let sc = schema();
+        for t in [
+            "В коде: author@commit 7f0ce0a (git-стиль, не адрес).",
+            "ftp://files@ftp.example/resource — путь протокола.",
+            "a@b@cd.example — двойная вставка при копировании.",
+            "Не полный адрес: d.sokolov@ (обрезан в форме).",
+            "Служебное: support@ (пустое поле в заявке).",
+            "Локальное имя a@localhost (имя машины, не почта).",
+        ] {
+            let hits = scan(t, &sc);
+            assert!(
+                hits.iter().all(|h| h.class.as_str() != "email"),
+                "email-бэйт не должен даваться: {t:?}"
+            );
+        }
     }
 
     /// Побайтовый фолд кириллицы (#212, каркасные слова в любом регистре):
@@ -4575,9 +4875,9 @@ mod tests {
     /// рамкой), а не молчит и не тащит хвост в канон.
     #[test]
     fn c0_passport_right_frame_tail_cut() {
-        // Голые прогнyтые num-run-хвосты («4508 455561 2015») без каркаса —
+        // Голые прогонные num-run-хвосты («4508 455561 2015») без каркаса —
         // молчание: правая рамка F-2 живёт ВНУТРИ каркасных/ключевых окон,
-        // golый прогон не легитимизирован (#138 leading-frame + ключ).
+        // голый прогон не легитимизирован (#138 leading-frame + ключ).
         let hits = scan("4508 455561 2015", &schema());
         assert!(
             hits.iter().all(|h| h.class.as_str() != "passport"),

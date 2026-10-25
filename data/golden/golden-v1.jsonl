@@ -245,3 +245,18 @@
 {"id":"g0245","text":"ОГРНИП 304502700000001 числится недействительным (ЕГРИП, запись снята).","spans":[{"start_byte":13,"end_byte":28,"category":"ogrnip","value_source":"304502700000001"}],"split":"negative","source":"primary-invalid-vector"}
 {"id":"g0246","text":"Реквизиты: ОГРН 1027739401110 в выписке не найдено.","spans":[{"start_byte":29,"end_byte":42,"category":"ogrn","value_source":"1027739401110"}],"split":"negative","source":"primary-invalid-vector"}
 {"id":"g0247","text":"СНИЛС 308-320-228 29 из карточки клиента не найден.","spans":[{"start_byte":11,"end_byte":25,"category":"snils","value_source":"30832022829"}],"split":"negative","source":"primary-invalid-vector"}
+{"id":"g0248","text":"Запрос от support@cloud.i-o.example по тарифу.","spans":[{"start_byte":18,"end_byte":43,"category":"email","value_source":"support@cloud.i-o.example"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0249","text":"Отдел кадров: HR.Team+2026@corp-vektor.example, ждём ответ.","spans":[{"start_byte":25,"end_byte":57,"category":"email","value_source":"HR.Team+2026@corp-vektor.example"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0250","text":"В письме «d.sokolov@romashka.example» адрес для связи.","spans":[{"start_byte":18,"end_byte":44,"category":"email","value_source":"d.sokolov@romashka.example"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0251","text":"Срочно: nikitin76@breeze.example; копия reestr@romashka.example.","spans":[{"start_byte":14,"end_byte":38,"category":"email","value_source":"nikitin76@breeze.example"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0252","text":"Смена: A.B.C.D@sub.mailforge.example (три уровня домена).","spans":[{"start_byte":12,"end_byte":41,"category":"email","value_source":"A.B.C.D@sub.mailforge.example"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0253","text":"Архив: archive-2024@xn--80ak6aa92e.test — письмо вернулось.","spans":[{"start_byte":12,"end_byte":44,"category":"email","value_source":"archive-2024@xn--80ak6aa92e.test"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0254","text":"Служебка: u$r!name@corp-vektor.example = служебный ящик.","spans":[{"start_byte":18,"end_byte":46,"category":"email","value_source":"u$r!name@corp-vektor.example"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0255","text":"Регистр: SUPPORT@CORP-VEKTOR.EXAMPLE в заголовке.","spans":[{"start_byte":16,"end_byte":43,"category":"email","value_source":"SUPPORT@CORP-VEKTOR.EXAMPLE"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0256","text":"Обращение: d.sokolov@romashka.example,тел. +7 905 552-52-86.","spans":[{"start_byte":20,"end_byte":46,"category":"email","value_source":"d.sokolov@romashka.example"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0257","text":"В коде: author@commit 7f0ce0a (git-стиль, не адрес).","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0258","text":"ftp://files@ftp.example/resource — путь протокола.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0259","text":"a@b@cd.example — двойная вставка при копировании.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0260","text":"Не полный адрес: d.sokolov@ (обрезан в форме).","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0261","text":"Служебное: support@ (пустое поле в заявке).","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0262","text":"Локальное имя a@localhost (имя машины, не почта).","spans":[],"split":"negative","source":"synthetic-no-pii"}

@@ -1269,6 +1269,23 @@ fn ui_demo_carries_payment_arithmetic() {
     );
 }
 
+/// #222: email-форма в демо (плюс-адрес = RFC-atext `+`, витрина вето).
+#[test]
+fn ui_demo_carries_email_plus_form() {
+    let js = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"))
+        .expect("app.js читается");
+    let start = js.find("const DEMO_TEXT = [").expect("DEMO_TEXT есть");
+    let end = js[start..]
+        .find("].join(")
+        .map(|o| start + o)
+        .expect("join есть");
+    let body = &js[start..end];
+    assert!(
+        body.contains("support+reestr@cloud.i-o.example"),
+        "в DEMO_TEXT пропала email-форма #222 (плюс-адрес)"
+    );
+}
+
 /// #202: демо-документ + чат-панель — DOM/JS-контракты и покрытие классов.
 #[test]
 fn ui_demo_document_and_chat_panel() {

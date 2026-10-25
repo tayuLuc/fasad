@@ -39,7 +39,7 @@ fn golden_path() -> PathBuf {
 // сверено в этом же заходе).
 // Правка датасета без пересчёта хэша ломает этот тест, а не проходит незамеченной
 // (обещание README «гейт привязан к SHA-256» из B2 становится машиной, не словами).
-const GOLDEN_V1_SHA256: &str = "ea53b129886ee7275110f4bbcb00626caa3e5702986dfc564ea669d34866b223";
+const GOLDEN_V1_SHA256: &str = "db34b3f153e5d15e085bc0955b8514b481c8bd0bfc160030107a745cbac22298";
 
 /// B2: пересчитать SHA-256 файла и сверить с зашитой константой.
 ///
@@ -701,28 +701,34 @@ fn phone_e164_ok(v: &str) -> bool {
             || (7..=15).contains(&v.len()) && !v.starts_with('0'))
 }
 
-/// addr-spec (RFC 5322 упрощённо, как в README): dot-atom local @ hostname-метки,
-/// ≥2 меток, латиница/цифры/`-`, метка не пустая и не с дефиса.
-fn email_addr_spec(v: &str) -> bool {
-    let Some((local, domain)) = v.split_once('@') else {
-        return false;
-    };
-    if local.is_empty() || v.matches('@').count() != 1 {
-        return false;
+/// #222: B4 и валидатор каскада-0 = ОДИН код; зуб «эталоны формата не
+/// разъехались» = прямые векторы обеих форм через `email_addr_spec` и
+/// `checksums::email_rfc` (наших recall-форм датасета + канон-бэйтов).
+#[test]
+fn email_b4_delegates_to_checksums() {
+    for v in [
+        "d.sokolov@romashka.example",
+        "a+b@gmail.com",
+        "a@b.example.com",
+        "a@localhost",
+        "user@",
+        "user@host..com",
+        ".user@host.com",
+    ] {
+        assert_eq!(
+            email_addr_spec(v),
+            guard_detectors::checksums::email_rfc(v.as_bytes()) == Some(true),
+            "эталон B4 и валидатор разъехались на {v:?}"
+        );
     }
-    let ld = |s: &str| {
-        !s.is_empty()
-            && !s.starts_with('-')
-            && !s.ends_with('-')
-            && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    };
-    let local_ok = local.split('.').all(|x| {
-        !x.is_empty()
-            && x.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+/=?^_`{|}~-".contains(&b))
-    });
-    let domain_ok = domain.split('.').nth(1).is_some() && domain.split('.').all(ld);
-    local_ok && domain_ok
+}
+
+/// addr-spec (RFC 5322): ЕДИНАЯ точка истины = валидатор каскада-0
+/// `guard_detectors::checksums::email_rfc` (#222): эталон формата B4 и
+/// детерминированный валидатор физически не могут разъехаться (зуб
+/// `email_b4_delegates_to_checksums` = прямые векторы через обе функции).
+fn email_addr_spec(v: &str) -> bool {
+    guard_detectors::checksums::email_rfc(v.as_bytes()) == Some(true)
 }
 
 /// B3+B4: проход по всем строкам набора с структурными валидаторами.

@@ -28,18 +28,31 @@ use guard_daemon::schema::Schema;
 use guard_types::NewtypeId;
 
 /// Классы, у каскада-0 есть детерминированный валидатор.
-const CLASSES: [&str; 6] = ["inn", "snils", "ogrn", "ogrnip", "iban", "card_pan"];
+const CLASSES: [&str; 7] = [
+    "inn", "snils", "ogrn", "ogrnip", "iban", "card_pan",
+    // #222: addr-spec RFC 5322 = форматный валидатор (email из model-only
+    // класс стал детерминированным: BPE-обрезки границ закрыты вето 1.0).
+    "email",
+];
 
 /// Сколько золотых спанов этих классов в recall-сплите.
 ///
 /// Число промерено по файлу (`tools/metrics/union_recall.py`, таблица «Покрывка
 /// каскада 0» в §6 отчёта: 36 + 29 + 25 + 21 + 27 + 32 = 170 на golden-v1.0;
-/// golden-v1.2 (#200-A2) досчитала inn-коллизии: 170 + 3 = 173;
-/// golden-v1.4 (#223) досчитала каркасные СНИЛС +6 и ОГРНИП×карта +2
-/// (промер `c0_measurements_are_emitted`: 181/181). Тест сверяет состав,
+/// golden-v1.2 (#200-A2) досчитала inn-коллизии: 170 + 3 = 173; golden-v1.4
+/// (#223) досчитала каркасные СНИЛС +6 и ОГРНИП×карта +2 = 181; golden-v1.5
+/// (#222) добавила email-класс в покрытие: 181 + 40 (email recall-спанов
+/// v1.3) + 9 (новые формы #222) = 230 — промер
+/// `c0_measurements_are_emitted` на этом датасете. Тест сверяет состав,
 /// прежде чем требовать покрытия: правка датасета обязана красить счётчик, а
 /// не молча уменьшать знаменатель.
-const GOLD_CHECKSUM_SPANS: usize = 181;
+const GOLD_CHECKSUM_SPANS: usize = 230;
+
+/// Сколько из них email (#222): base64-обход email не закрывает (prefilter
+/// `scan_base64` требует ASCII-цифру в декоде, addr-spec = не цифры;
+/// «SUPPORT@CORP-VEKTOR.EXAMPLE» и т.п. декодируются в байты без
+/// цифр). Промер по датасету: 49 email-спанов recall (40 v1.3 + 9 #222).
+const GOLD_EMAIL_SPANS: usize = 49;
 
 fn golden_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/golden/golden-v1.jsonl")
@@ -91,7 +104,7 @@ fn c0_covers_every_checksum_span_of_recall_split() {
         for s in r
             .spans
             .iter()
-            .filter(|s| CLASSES.contains(&s.category.as_str()))
+            .filter(|sp| CLASSES.contains(&sp.category.as_str()))
         {
             total += 1;
             if !covered(&hits, s, &s.category) {
@@ -124,7 +137,7 @@ fn c0_span_of_formatted_number_sits_on_original_text() {
         for s in r
             .spans
             .iter()
-            .filter(|s| CLASSES.contains(&s.category.as_str()))
+            .filter(|sp| CLASSES.contains(&sp.category.as_str()))
         {
             let gold = slice(&r.text, s);
             let Some(h) = hits
@@ -228,7 +241,7 @@ fn recall_coverage() -> (usize, Vec<(&'static str, usize, usize)>) {
         for s in r
             .spans
             .iter()
-            .filter(|s| CLASSES.contains(&s.category.as_str()))
+            .filter(|sp| CLASSES.contains(&sp.category.as_str()))
         {
             let i = CLASSES.iter().position(|c| *c == s.category).unwrap();
             per[i].2 += 1;
@@ -331,9 +344,17 @@ fn c0_covers_every_checksum_value_wrapped_in_base64() {
         for s in r
             .spans
             .iter()
-            .filter(|s| CLASSES.contains(&s.category.as_str()))
+            .filter(|sp| CLASSES.contains(&sp.category.as_str()))
         {
             let gold = slice(&r.text, s);
+            // #222: у email-значений base64-прогон = НОЛЬ: prefilter
+            // scan_base64 требует ASCII-цифру в декоде (все чексуммы
+            // цифровые), «@» без цифр не проверяется ничем. Email
+            // закрывается на текстовом пути (форматный валидатор),
+            // base64-знаменатель = чексумменные классы.
+            if s.category == "email" {
+                continue;
+            }
             let token = base64::engine::general_purpose::STANDARD.encode(wrapped(gold));
             let text = format!("приложение {token} конец");
             let hits = scan(&text, &schema);
@@ -361,8 +382,9 @@ fn c0_covers_every_checksum_value_wrapped_in_base64() {
             .join("|")
     );
     assert_eq!(
-        total, GOLD_CHECKSUM_SPANS,
-        "знаменатель base64-прогона обязан равняться знаменателю текстового"
+        total,
+        GOLD_CHECKSUM_SPANS - GOLD_EMAIL_SPANS,
+        "знаменатель base64-прогона = текстовый минус email (prefilter scan_base64 = цифры, email-декод их не содержит)"
     );
     assert!(
         miss.is_empty(),
@@ -384,7 +406,7 @@ fn c0_base64_delivery_releases_no_bait_of_negative_split() {
         for s in r
             .spans
             .iter()
-            .filter(|s| CLASSES.contains(&s.category.as_str()))
+            .filter(|sp| CLASSES.contains(&sp.category.as_str()))
         {
             let gold = slice(&r.text, s);
             let token = base64::engine::general_purpose::STANDARD.encode(wrapped(gold));

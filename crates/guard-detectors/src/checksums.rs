@@ -1454,6 +1454,124 @@ pub fn phone_rf(input: &[u8]) -> Option<bool> {
     Some(d[0] == 7 || d[0] == 8)
 }
 
+/// Email addr-spec (#222): структурная проверка формы `local @ dtext`
+/// (RFC 5322 3.4.1, ASCII-dot-atom). Формат — не чексумма: контрольного
+/// разряда у адреса нет; подтверждается структура.
+///
+/// Единая точка истины: golden B4 (`tests/golden_v1.rs::email_addr_spec`)
+/// вызывает ЭТУ функцию — эталон формата датасета и валидатор каскада-0
+/// физически не могут разъехаться (зуб `email_b4_delegates_to_checksums`).
+///
+/// Канон решения (первичка RFC 5322 3.2.3 atext + 3.4.1 dot-atom; 1035
+/// метки домена):
+///
+/// - local = dot-atom: атомы atext (`A-Za-z0-9!#$%&'*+/=?^_{|}~-` без бэктика),
+///   разделённые одиночными точками; ведущей/хвостовой точки и пустого
+///   атома нет; total ≤ 64 (RFC-1123 практический лимит);
+/// - domain = точки-разделённые метки (RFC 1035 2.3.1: `[A-Za-z0-9]
+///   [A-Za-z0-9-]{0,62}`), метка не с дефиса и не с дефиса концом, ≤ 63;
+///   domain обязан содержать ≥ 1 точки — ОДНОМЕТОЧНЫЙ домен (`a@localhost`)
+///   не маскируем: в ПДн-контуре письмо-адрес = DNS-FQDN (RFC 5322 3.4.1
+///   требует «<atext> <dot-atom-text>», где dot-atom-text = ≥ 2 атомов, —
+///   первичка текста RFC, не конвенции: «dot-atom-text = 1\*atext \*("."
+///   1\*atext)» = 1 атом ЛЕГАЛЕН в local, domain = `<sub-domain> "."
+///   top-level` (3.4.1 angle-addr «dot-atom-text» с sub-domain = «1\*label
+///   \*("." label)», ТРЕБУЕТ точку — канон зашит в B4 датасета:
+///   `domain.split('.').nth(1).is_some()`), локальные адреса без точки
+///   = сетевые имена машин, не контактные личные данные);
+/// - ровно один `@` (кавычки quoted-local, комментарии, 8-бит UTF-8-local =
+///   вне dot-atom = `Some(false)`: детерминированный контур ловит mass-form,
+///   модель (model:true) остаётся сеткой для экзотики);
+/// - не-ASCII в кандидате = `None` («не канон формата», тот же контракт,
+///   что `None` у цифровых валидаторов): окно не для этого валидатора.
+///
+/// `None` = кандидат вне формата addr-spec КАНДИДАТА (нет `@`, пустая
+/// local-часть `@host.com`, второй `@`, не-ASCII — окно не для этого
+/// валидатора, тот же смысл `None` у цифровых);
+/// `Some(false)` = форма кандидата, но канон нарушен (`user@`, `a@b..com`,
+/// ведущая точка, IDN-метки).
+#[must_use]
+pub fn email_rfc(input: &[u8]) -> Option<bool> {
+    if !input.is_ascii() {
+        return None;
+    }
+    let at = input.iter().position(|&b| b == b'@')?;
+    if input[at + 1..].contains(&b'@') {
+        return None;
+    }
+    let (local, domain) = (&input[..at], &input[at + 1..]);
+    if local.is_empty() {
+        return None;
+    }
+    if local.len() > 64 {
+        return Some(false);
+    }
+    // dot-atom local: атомы atext, ОДИНОЧНЫЕ точки (токенизатор каскада-0
+    // режет локал по точкам — валидатор принимает dot-atom целиком), без
+    // ведущей/хвостовой точки и пустого атома. Пробел / кавычка =
+    // цитированная local-часть (RFC 5322 quoted-string) иль мусор = None.
+    if local[0] == b'.'
+        || local[local.len() - 1] == b'.'
+        || local.contains(&b' ')
+        || local.contains(&b'"')
+    {
+        return None;
+    }
+    if local
+        .split(|&c| c == b'.')
+        .any(|a: &[u8]| a.is_empty() || !a.iter().all(|&c| is_atext(c)))
+    {
+        return Some(false);
+    }
+    // domain: метки RFC 1035, ≥ 2 меток (B4-контра: FQDN с точкой).
+    if domain.is_empty()
+        || domain.len() > 253
+        || domain[0] == b'-'
+        || domain[domain.len() - 1] == b'-'
+    {
+        return Some(false);
+    }
+    let labels: Vec<&[u8]> = domain.split(|&c| c == b'.').collect();
+    if labels.len() < 2 {
+        return Some(false);
+    }
+    for l in &labels {
+        if l.is_empty() || l.len() > 63 || l[0] == b'-' || l[l.len() - 1] == b'-' {
+            return Some(false);
+        }
+        if !l.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-') {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
+/// atext RFC 5322 3.2.3 (ASCII-подмножество dot-atom без `.`).
+fn is_atext(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'/'
+                | b'='
+                | b'?'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'{'
+                | b'|'
+                | b'}'
+                | b'~'
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2566,6 +2684,30 @@ mod tests {
 
     /// #200-A2: телефон РФ = 11 цифр, ведущая 7/8, код 9xx. Таблица задана
     /// руками по формам issue #200 и golden-генератора (E.164 `7XXXXXXXXXX`).
+    /// #222: email addr-spec (RFC 5322). Таблица задана руками по канону
+    /// RFC 5322 3.4.1 + первичке golden B4 (`email_addr_spec`).
+    #[test]
+    fn email_rfc_table_222() {
+        let table: &[(&[u8], Option<bool>)] = &[
+            (b"d.sokolov@romashka.example", Some(true)),
+            (b"a+b@gmail.com", Some(true)), // плюс-адрес: `+` = atext (3.2.3)
+            (b"a@localhost", Some(false)),  // домен без точки (B4-контра, п.3 ниже)
+            (b"user@", Some(false)),
+            (b"@host.com", None),
+            (b"user@host..com", Some(false)),
+            (b"user name@host.com", None),
+            (b".user@host.com", None),
+            (b"a@b.example.com", Some(true)),
+            (b"xn--80ak6aa92e@xn--\xe4\xbe.com", None), // не-ASCII = None (ASCII-контра)
+            (b"a@-host.com", Some(false)),
+            (b"a@host-.com", Some(false)),
+            (b"quoted \"local\"@host.com", None),
+        ];
+        for (input, want) in table {
+            assert_eq!(email_rfc(input), *want, "email {input:?}");
+        }
+    }
+
     #[test]
     fn phone_rf_table_200() {
         let table: [(&[u8], Option<bool>); 10] = [
