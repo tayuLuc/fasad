@@ -21,6 +21,12 @@
 //! `%APPDATA%\fasad\fasad-tray.log` = след startup-текстов; второй запуск
 //! при живом первом = bind-отказ **окном** (rc=2, не тихая смерть #244);
 //! отказ иконки = окно «трей не поднялся» + лог (UI жив).
+//!
+//! #263 mac-полка (тот же прогон на машине оператора, mac): лог-контур =
+//! `<config-root>/fasad-tray.log` (`$XDG_CONFIG_HOME/fasad`/
+//! `$HOME/.config/fasad`): запуск из Terminal = stderr + файл; тихий запуск
+//! (Finder-двойной-клик без терминала) = файл = единственный след
+//! startup/refuse-текстов (win-полка, зеркало).
 
 #![cfg(all(feature = "tray", any(target_os = "windows", target_os = "macos")))]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // тестовый файл: паника = отказ теста

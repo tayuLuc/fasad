@@ -398,36 +398,42 @@ const WEIGHTS_HINT: &str = "веса: скачай через UI (http://127.0.0
 каталог по умолчанию: $HOME/.cache/fasad-models (win: %USERPROFILE%\\.cache\\fasad-models), \
 свой — FASAD_MODEL_DIR";
 
-/// Дубль текста в win-лог-файл (#244, win.rs `append_log`): GUI-подсистема
-/// (`fasad-tray.exe`) не имеет видимого stderr при запуске двойным кликом —
-/// startup-тексты обязаны оставлять след на диске. mac-контур = NOOP (mac-трей
-/// запускается из Terminal, консоль есть; решение ТЗ #244: файл — только
-/// Windows). Заголовок строки = момент жизни демона (startup/serve), текст =
+/// Дубль текста в трей-лог-файл (#244 → #263, `tray::traylog::append_log`):
+/// GUI-подсистема (`fasad-tray.exe`) не имеет видимого stderr при запуске
+/// двойным кликом; mac/linux-трей (#263, первичка mac-ассета v0.1.6) = та же
+/// тихая ветка при запуске без терминала (Finder-двойной-клик/launcher,
+/// `windows_subsystem` = win-only атрибут, stderr NULL). Startup-тексты
+/// обязаны оставлять след на диске на ВСЕХ трей-ногах: путь = config-root.
+/// Headless (`fasad`, фича выкл.) = NOOP: консоль есть всегда (#185/#190).
+/// Заголовок строки = момент жизни демона (startup/serve), текст =
 /// исходная строка stderr: две истины не плодим, каналы параллельны.
-#[cfg(all(feature = "tray", target_os = "windows"))]
+#[cfg(feature = "tray")]
 fn win_log(text: &str) {
-    guard_daemon::tray::win::append_log(text);
+    guard_daemon::tray::traylog::append_log(text);
 }
 
-#[cfg(not(all(feature = "tray", target_os = "windows")))]
+#[cfg(not(feature = "tray"))]
 fn win_log(_text: &str) {}
 
 /// Фатальный отказ ВНЕ refusal-контура (#244): serve-контур мёртв, процесс
 /// уходит с rc=3. Под GUI-подсистемой `eprintln` = NULL = тихая смерть
 /// (диагноз #244: видимы обязаны быть ВСЕ startup-отказы, не только
-/// config-ветки): лог + окно с причиной. mac/headless = NOOP-контур:
-/// консоль есть, окно не заводим (философия #190: окно = мишень win-трея).
+/// config-ветки): лог + окно с причиной. #263: лог = все трей-ноги
+/// (mac-двойной-клик = тихая ветка); окно = win-мишень (mac/linux консоль
+/// есть, окно не заводим — философия #190). headless = NOOP (консоль).
 #[cfg(all(feature = "tray", target_os = "windows"))]
 fn win_fatal(what: &str, reason: &str) {
     let msg = format!("fasad: {what}: {reason}");
-    guard_daemon::tray::win::append_log(&msg);
+    guard_daemon::tray::traylog::append_log(&msg);
     guard_daemon::tray::win::show_startup_failure("fasad — запуск не удался", &msg);
 }
 
 #[cfg(not(all(feature = "tray", target_os = "windows")))]
 fn win_fatal(_what: &str, _reason: &str) {
-    // mac/headless: текст уже в stderr (вызывающий печатает сам), окно =
-    // win-мишень; NOOP-контур = вызывающие компилируются на всех ногах.
+    // mac/linux-трей: лог = NOOP здесь (serve-контур mac = консольный
+    // запуск, текст уже в stderr; тихий mac-запуск = полка #238, log-контур
+    // на refuse/warning-ногах живёт через `win_log`), окно = win-мишень;
+    // NOOP-контур = вызывающие компилируются на всех ногах.
     // Единственный продуктовый вызов = serve-контур: на mac-трей-ноге он
     // ЗОВЁТСЯ (serve_on_worker компилируется под mac тоже), на headless-
     // бинаре = нет — `allow` (не `expect`: expectation = «нигде не зовётся»,
@@ -451,7 +457,7 @@ fn refuse_startup(err: &dyn std::fmt::Display) -> ! {
     {
         // Окно #244 += путь лога: «где читать» = ровно то, где пишет
         // `append_log` (контра README бандла + окно + файл = одна истина).
-        let win_msg = match guard_daemon::tray::win::log_path() {
+        let win_msg = match guard_daemon::tray::traylog::log_path() {
             Some(p) => format!("{msg}\nfasad: {WEIGHTS_HINT}\n\nЛог: {}", p.display()),
             None => format!("{msg}\nfasad: {WEIGHTS_HINT}"),
         };
