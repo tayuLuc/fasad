@@ -145,10 +145,15 @@ pub fn append_log(text: &str) {
 
 /// Механика [`append_log`] на названном пути (pub-контра unit-зуба win-ноги
 /// CI: живой файл = tempdir-уникальный путь (#224-харнес-урок), env-машина
-/// тестов не гоняется — `std::env::set_var` = race-класс). `Ok(true)` =
-/// строка записана; `Ok(false)` = путь не назван (молчание-норма);
-/// `Err` = сбой диска (ротация НЕ тронула живой файл, открыть не смог).
+/// тестов не гоняется — `std::env::set_var` = race-класс).
+///
+/// # Errors
+///
+/// `Err` = сбой диска: `rotate_if_needed` не тронул живой файл (metadata/
+/// rename) или открыть/записать не смог. `Ok(false)` = путь не назван
+/// (молчание-норма «писать негде»), `Ok(true)` = строка записана.
 pub fn append_log_at(path: Option<&std::path::Path>, text: &str) -> std::io::Result<bool> {
+    use std::io::Write;
     let Some(path) = path else { return Ok(false) };
     let Some(parent) = path.parent() else {
         return Ok(false);
@@ -161,7 +166,6 @@ pub fn append_log_at(path: Option<&std::path::Path>, text: &str) -> std::io::Res
         .create(true)
         .append(true)
         .open(path)?;
-    use std::io::Write;
     f.write_all(format_log_line(now_unix_secs(), text).as_bytes())?;
     Ok(true)
 }
@@ -318,13 +322,18 @@ pub fn show_startup_failure(caption: &str, message: &str) {
 /// [`append_log`] пишет (#244-контракт: README бандла + окно + файл = одна
 /// истина).
 pub fn show_tray_failure(reason: &str, port: u16, log_path: Option<&std::path::Path>) {
-    let mut msg = format!(
-        "fasad: трей не поднялся: {reason}\n\
-         Демон работает без иконки. UI жив: http://127.0.0.1:{port}/\n\
+    use std::fmt::Write as _;
+    let mut msg = String::from("fasad: трей не поднялся: ");
+    msg.push_str(reason);
+    let _ = write!(
+        msg,
+        "\nДемон работает без иконки. UI жив: http://127.0.0.1:{port}/\n\
          (иконка может быть скрыта в свёрнутой области уведомлений Windows)"
     );
     if let Some(p) = log_path {
-        msg.push_str(&format!("\nЛог: {}", p.display()));
+        // format-в-String = формат-в-write: без лишней аллокации
+        // (clippy format_push_string, win-нога CI).
+        let _ = write!(msg, "\nЛог: {}", p.display());
     }
     append_log(&format!(
         "трей недоступен: {reason} (UI жив: http://127.0.0.1:{port}/)"
@@ -345,9 +354,11 @@ pub fn show_tray_failure(reason: &str, port: u16, log_path: Option<&std::path::P
     {
         return;
     }
-    // `MB_OK`(0) | `MB_ICONWARNING`(48) | `MB_TOPMOST`(0x40000): окно поверх
-    // лотка, одиночная кнопка, демона НЕ валит (предупреждение, не отказ).
-    let style: u32 = 0 | 48 | 0x40_000;
+    // `MB_ICONWARNING`(48) | `MB_TOPMOST`(0x40_000): окно поверх лотка,
+    // одиночная кнопка, демона НЕ валит (предупреждение, не отказ);
+    // `MB_OK` = 0 = отсутствие флагов кнопок = НЕ вписывается в OR-сумму
+    // (identity_op, win-нога CI): ноль = не слагаемое.
+    let style: u32 = 0x0030 | 0x40_000;
     unsafe {
         windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
             std::ptr::null_mut(),
@@ -361,6 +372,28 @@ pub fn show_tray_failure(reason: &str, port: u16, log_path: Option<&std::path::P
 /// UTF-16 + завершающий NUL (тот же local-Vec-контра инвариантов острова).
 fn to_wide_static(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Открыть браузером инструкцию (win-маршрут, первичка `open_browser_command`
+/// tray.rs: `cmd /C start "" URL`). Публичность не нужна: остров = win-cfg,
+/// вызывается отсюда.
+fn open_instruction_url() {
+    const INSTRUCTION_URL: &str = "https://github.com/tayuLuc/fasad/blob/main/models/README.md";
+    // FASAD_REF_INSTRUCTION_URL = тестовый/стендовый оверрайд (win-CI полка
+    // не открывает реальный браузер; стенд оператора проверяет маршрут
+    // локальной страницей). Пустое значение = канон.
+    let url = std::env::var("FASAD_REF_INSTRUCTION_URL")
+        .ok()
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| INSTRUCTION_URL.to_owned());
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.args(["/C", "start", "", &url]);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+    // Spawn-ошибка = молчание: инструкция = бонус, отказ старта уже
+    // назван текстом и кодом, врать о причине из бонуса нельзя.
+    let _ = cmd.spawn();
 }
 
 #[cfg(test)]
@@ -442,26 +475,29 @@ mod tests {
             let big = std::fs::metadata(path).is_ok_and(|md| md.len() >= limit);
             if big {
                 let _ = std::fs::remove_file(sibling(path, ".1"));
-                std::fs::rename(path, sibling(path, ".1")).unwrap();
+                std::fs::rename(path, sibling(path, ".1")).expect("rename-ротация проходит");
             }
         }
         let dir = unique_log_dir("fasad-rot");
         let path = dir.join(LOG_FILE_NAME);
-        std::fs::write(&path, b"line-A").unwrap();
+        std::fs::write(&path, b"line-A").expect("файл пишется");
         // Порог 4 байта, файл 6 = ротация.
         rotate_at(&path, 4);
         assert!(!path.exists(), "живой файл освобождён");
-        assert_eq!(std::fs::read(sibling(&path, ".1")).unwrap(), b"line-A");
-        std::fs::write(&path, b"line-B").unwrap();
+        assert_eq!(
+            std::fs::read(sibling(&path, ".1")).expect("слой .1 читается"),
+            b"line-A"
+        );
+        std::fs::write(&path, b"line-B").expect("файл пишется");
         rotate_at(&path, 4);
         assert_eq!(
-            std::fs::read(sibling(&path, ".1")).unwrap(),
+            std::fs::read(sibling(&path, ".1")).expect("слой .1 читается"),
             b"line-B",
             "слой .1 = последний ротированный, НЕ колонна"
         );
         // Мета-контра: порог — живой файл, файл < порога не ротируется.
         rotate_at(&path, 4); // path сейчас не существует = NotFound-норма
-        std::fs::write(&path, b"ab").unwrap();
+        std::fs::write(&path, b"ab").expect("файл пишется");
         rotate_at(&path, 100);
         assert!(path.exists(), "файл меньше порога остаётся живым");
         let _ = std::fs::remove_dir_all(&dir);
@@ -479,7 +515,7 @@ mod tests {
         );
         let dir = unique_log_dir("fasad-rot-err");
         let file = dir.join("plain");
-        std::fs::write(&file, b"x").unwrap();
+        std::fs::write(&file, b"x").expect("файл пишется");
         // Ротация «файла-не-лога» с заведомо нулевым порогом: rename живого
         // файла в соседний слой обязан пройти (Ok) — негативных исходов на
         // tempdir-дереве не вымучиваем (права на CI неизвестны), контракт
@@ -505,37 +541,18 @@ mod tests {
         // Ok(false) без паники (молчание-норма «писать негде»).
         let dir = unique_log_dir("fasad-append");
         let path = dir.join(LOG_FILE_NAME);
-        assert!(append_log_at(Some(&path), "первая").unwrap());
-        assert!(append_log_at(Some(&path), "вторая").unwrap());
-        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(append_log_at(Some(&path), "первая").expect("первая строка пишется"));
+        assert!(append_log_at(Some(&path), "вторая").expect("вторая строка пишется"));
+        let body = std::fs::read_to_string(&path).expect("лог читается");
         let lines: Vec<&str> = body.lines().collect();
         assert_eq!(lines.len(), 2, "append, не затирание: {body}");
         assert!(lines[0].ends_with(" первая") && lines[1].ends_with(" вторая"));
-        assert_eq!(append_log_at(None, "нет пути").unwrap(), false);
+        assert!(
+            !append_log_at(None, "нет пути").expect("None-путь = Ok без паники"),
+            "None-путь = Ok(false)"
+        );
         // Файл меньше порога НЕ ротируется (полоса зубa ротации выше):
         assert!(!sibling(&path, ".1").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-/// Открыть браузером инструкцию (win-маршрут, первичка `open_browser_command`
-/// tray.rs: `cmd /C start "" URL`). Публичность не нужна: остров = win-cfg,
-/// вызывается отсюда.
-fn open_instruction_url() {
-    const INSTRUCTION_URL: &str = "https://github.com/tayuLuc/fasad/blob/main/models/README.md";
-    // FASAD_REF_INSTRUCTION_URL = тестовый/стендовый оверрайд (win-CI полка
-    // не открывает реальный браузер; стенд оператора проверяет маршрут
-    // локальной страницей). Пустое значение = канон.
-    let url = std::env::var("FASAD_REF_INSTRUCTION_URL")
-        .ok()
-        .filter(|u| !u.trim().is_empty())
-        .unwrap_or_else(|| INSTRUCTION_URL.to_owned());
-    let mut cmd = std::process::Command::new("cmd");
-    cmd.args(["/C", "start", "", &url]);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
-    // Spawn-ошибка = молчание: инструкция = бонус, отказ старта уже
-    // назван текстом и кодом, врать о причине из бонуса нельзя.
-    let _ = cmd.spawn();
 }

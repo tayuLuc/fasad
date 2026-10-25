@@ -409,8 +409,9 @@ pub fn run(vault: &Arc<Inner>, stage: &'static str, port: u16, shutdown: &Shutdo
         }
         tray_icon::TrayIconEvent::set_event_handler(None::<fn(tray_icon::TrayIconEvent)>);
         drop(icon);
-        return;
     }
+    // mac-полка: `poll_once`-контра целa (win-блок выше = ветка win-ноги;
+    // needless_return = win-нога CI, локальный host его не видит).
     #[cfg(not(target_os = "windows"))]
     {
         loop {
