@@ -797,3 +797,48 @@ models_pending (трей) = ЗУБ Г, не дефект.
 (mac, смонтированный контур, `/v1/analyze` mounted-нога), (2) локально на
 машине с весовым кешем `~/.cache/fasad-models` (879 МБ, fetch-models) без
 харнес-флагов, (3) debug-бинарь feature-off = харнес-контур (wire_e2e).
+
+## Полка win-трея #244 (25.10, v0.1.5-b): тихая смерть иконки при живом процессе
+
+Первичка диагноза (issue #244, коммент родителя 6399041556):
+
+1. КОРЕНЬ-кандидат (подтверждён первичкой крейта, не live-промером):
+   tray-icon-0.26.1 README:12 / lib.rs «Platform-specific notes»:17 — «On
+   Windows … an event loop must be running on the thread» (win-бэкенд не
+   самодостаточен; KSNI-исключение = только Linux). Контур `poll_once` =
+   `recv_timeout` на crossbeam-канале, НЕ разбор win-очереди: без pump'а
+   сообщения скрытого окна крейта не обрабатываются = иконка не заводится /
+   не живёт, процесс «висит» с мёртвой витриной. mac-полка #128 работала:
+   cocoa-контур доставляет в канал сам. v0.1.3-полка оператора («иконка
+   была») = live-провен той же ветки без pump: live-причина регресса
+   решёткой не покрыта (полка v0.1.5), pump = требование первички.
+2. Ветка «трей недоступен: {e}» (tray.rs:349-355) = тихая: под
+   GUI-подсистемой (#226/#228) stderr = NULL — процесс жив, иконки нет,
+   причина невидима. Чин: лог-файл + MessageBox (`win::show_tray_failure`).
+3. Bind-отказ (порт занят) = `?` в main = exit без окна (не config-ветка) =
+   тихая смерть под GUI: переведён в refusal-контур (окно + лог + rc=2).
+4. GUID/второй экземпляр (кандидат ТЗ): ПЕРВИЧКА tray-icon-0.26.1
+   platform_impl/windows/mod.rs:164 — `NIM_ADD` при FALSE = НЕ отказ
+   (окно живёт, ждёт TaskbarCreated); отказ `build()` = `CreateWindowExW`
+   = null (per-process, GUID-коллизией не вызывается); `TrayIconId::new
+   ("fasad")` = логический id (tray_icon_id.rs), win-регистрация = GUID
+   (`NIF_GUID`). Второй процесс тихо не падает: bind-отказ = пункт 3.
+   Single-instance mutex = на полку (контра «второй запуск = окно «fasad
+   уже запущен»» не блокирует #244-чин).
+5. Payload-иконка (#229-подозрение): 32×32 RGBA, `CreateIcon`-контра
+   (windows/icon.rs:31-53) — легальна, вины не найдено.
+
+Чин: (1) win-контур трея = `TrayIconEvent::set_event_handler` (штатный
+встроенный контур крейта, lib.rs:885-898; первичка: обработчик вызывается
+НАПРЯМУЮ из wndproc'а = поток создателя окна = наш поток; канал обходится) +
+`pump_win`-цикл (MenuEvent-чтение + tooltip-тик + shutdown-флаг); mac-контур
+`poll_once` НЕ тронут. (2) log-файл `%APPDATA%\fasad\fasad-tray.log`
+(append, ротация 5 МБ + слой `.1`, env `FASAD_TRAY_LOG` = харнес-оверрайд):
+startup/warning/refuse/serve-fatal/трей-отказ — все тексты GUI-контура.
+(3) `show_tray_failure` = `MB_ICONWARNING|MB_TOPMOST|MB_OK` с причиной,
+адресом UI и путём лога; блокирует только поток трея (serve = рабочий поток,
+первичка main.rs). (4) bind/serve-смерть = окно. Зубы: unit-контра log-
+пути/формата/ротации (win.rs, на win-ноге CI), FASAD_WIN_NO_UI-контра
+headless-ноги, compile-гейт win = CI build-test/tray-check (ring/cc локально
+недостижим — урок #228). Полка v0.1.5-b: живая win-нога — иконка, лог,
+окно при отказе; второй экземпляр = bind-окно rc=2.

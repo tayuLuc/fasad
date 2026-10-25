@@ -341,28 +341,140 @@ pub static OPEN_CLICKS: AtomicU64 = AtomicU64::new(0);
 /// `NIM_DELETE` — первичка `platform_impl`).
 ///
 /// Отказ поднять иконку НЕ валит демон: трей = витрина, HTTP-контур = продукт
-/// (fail-closed относится к запросам). Причина — в stderr (текст ошибки
-/// крейта; `ПДн` в нём быть не может); serve на рабочем потоке жив, процесс ждёт
-/// сигнала выхода, как ждал бы цикла.
+/// (fail-closed относится к запросам). Причина видна ТРЕМЯ каналами (#244,
+/// контракт «запустил и забыл = видимые отказы»): stderr (console-контур),
+/// лог-файл `%APPDATA%\fasad\fasad-tray.log` (win: stderr под
+/// GUI-подсистемой = NULL, файл = след; путь — в README бандла), окно
+/// `MB_ICONWARNING|MB_TOPMOST` на win (`win::show_tray_failure`: вызов с
+/// трей-потока = модальность блокирует ТОЛЬКО поток трея — serving живёт на
+/// `fasad-serve`, первичка потоков main.rs; «ОК» = тихий park, UI уже
+/// открыт). serve на рабочем потоке жив, процесс ждёт сигнала выхода,
+/// как ждал бы цикла. `ПДн` в тексте быть не может: строка ошибки крейта.
 pub fn run(vault: &Arc<Inner>, stage: &'static str, port: u16, shutdown: &Shutdown) {
     let icon = match build_tray(vault, stage, port) {
         Ok(icon) => icon,
         Err(e) => {
-            eprintln!("fasad: трей недоступен: {e} (демон работает без иконки)");
+            let msg = format!("трей недоступен: {e} (демон работает без иконки)");
+            eprintln!("fasad: {msg}");
+            // #244: под GUI-подсистемой (win) eprintln = NULL: лог + окно
+            // обязательны — «процесс висит без иконки» обязан называть
+            // причину и путь чтения (контракт «видим при ВСЕХ отказах»).
+            #[cfg(target_os = "windows")]
+            {
+                win::append_log(&msg);
+                win::show_tray_failure(&e.to_string(), port, win::log_path().as_deref());
+            }
             park_forever(&shutdown.flag());
             return;
         }
     };
+    #[cfg(not(target_os = "windows"))]
     let mut last_tick = Instant::now();
-    loop {
-        if !poll_once(vault, stage, port, shutdown, &icon, &mut last_tick) {
-            break;
+    // #244 КОРЕНЬ-чин (win): первичка крейта (tray-icon-0.26.1 lib.rs
+    // «Platform-specific notes»:17, README:12) — «On Windows … an event loop
+    // must be running on the thread»: win-бэкенд не самодостаточен (KSNI-
+    // примечание того же дока — исключение только для Linux), событие
+    // обрабатывается wndproc'ом скрытого окна (tray_proc,
+    // platform_impl/windows/mod.rs:335+) в очереди Потока Создателя — ОС
+    // доставляет ему сообщения, а разбирает очередь ПОТОК. `poll_once` =
+    // recv_timeout на crossbeam-канале, НЕ разбор win-очереди: без pump'а
+    // сообщение лежит неразбранным = WM_TIMER leave-контра не идёт, Drop
+    // (DestroyWindow, первичка windows/mod.rs:320-331) маршаллится на
+    // мёртвую очередь, иконка не заводится/не живёт — «процесс висит».
+    // mac-полка #128 работала: cocoa-контур доставляет в канал сам, «main
+    // thread» = требование потока, а не pump.
+    // Чин по доке (п.в ТЗ #244): крейт даёт штатный встроенный контур
+    // `TrayIconEvent::set_event_handler` (первичка lib.rs:885-898: при
+    // установленном обработчике `send` вызывает ЕГО из wndproc'а, канал
+    // обходится) = события иконки обрабатываются НА потоке создателя окна;
+    // + цикл `pump_win` = tooltip-тик по шагу (тот же контракт, что
+    // `poll_once`-ветка mac) + чтение `MenuEvent`-канала (у мунды win-путь
+    // = `TrackPopupMenu` + subclass на окне трея, первичка muda
+    // platform_impl/windows/mod.rs:976-1010: WM_COMMAND приходит в
+    // subclass-процедуре НА тре-потоке, канал заполняется синхронно =
+    // try_recv-чтение не само-блокируется) + выход по `shutdown`-флагу.
+    // mac-контур (#128) НЕ тронут: канал + poll_once, как работал.
+    // `poll_once` = публичный API (юниты модуля зовут), win-цикл ниже =
+    // продуктовый путь win, mac-цикл = продуктовый путь mac.
+    #[cfg(target_os = "windows")]
+    {
+        tray_icon::TrayIconEvent::set_event_handler(Some(move |ev| {
+            on_tray_event(&ev, port);
+        }));
+        let mut last_tick_win = Instant::now();
+        loop {
+            if !pump_win(vault, stage, port, shutdown, &icon, &mut last_tick_win) {
+                break;
+            }
         }
-        if shutdown.triggered() {
-            break;
-        }
+        tray_icon::TrayIconEvent::set_event_handler(None::<fn(tray_icon::TrayIconEvent)>);
+        drop(icon);
+        return;
     }
-    drop(icon);
+    #[cfg(not(target_os = "windows"))]
+    {
+        loop {
+            if !poll_once(vault, stage, port, shutdown, &icon, &mut last_tick) {
+                break;
+            }
+            if shutdown.triggered() {
+                break;
+            }
+        }
+        drop(icon);
+    }
+}
+
+/// Обработчик win-событий иконки (#244): исполняется НА потоке создателя
+/// окна из wndproc'а крейта (контур `set_event_handler`). Клики = та же
+/// семантика, что в [`poll_once`] (левый release открывает UI, двойной = тот
+/// же смысл). События входа/выхода/движения = cosmetic, игнор
+/// (poll_once-контра `Ok(_) => {}`). Quit-событий у иконки нет (выход =
+/// меню, `MenuEvent`). Мишень = win (mac-контур читает канал в `poll_once`):
+/// cfg по месту определения = против `dead_code` на mac-ноге (host-гейт
+/// tray-check).
+#[cfg(target_os = "windows")]
+fn on_tray_event(ev: &TrayIconEvent, port: u16) {
+    match ev {
+        TrayIconEvent::Click {
+            button,
+            button_state,
+            ..
+        } => {
+            if click_opens_ui(*button, *button_state) {
+                open_ui(port);
+            }
+        }
+        TrayIconEvent::DoubleClick { .. } => open_ui(port),
+        _ => {}
+    }
+}
+
+/// Один шаг win-цикла (#244): канал `MenuEvent` (muda доставляет на наш поток
+/// синхронно, первичка windows/mod.rs:976-1010) + тик tooltip по шагу
+/// [`TICK_SECS`]; возврат `false` = shutdown поднят (цикл сворачивается).
+/// События иконки в КАНАЛ под win не приходят — их обрабатывает
+/// `set_event_handler` (первичка lib.rs:885-898), здесь канал не читаем
+/// (пустое чтение = ложная надежда на доставку). Мишень = win (mac =
+/// `poll_once`): cfg = против `dead_code` на mac-ноге (host-гейт tray-check).
+#[cfg(target_os = "windows")]
+pub fn pump_win(
+    vault: &Arc<Inner>,
+    stage: &'static str,
+    port: u16,
+    shutdown: &Shutdown,
+    icon: &TrayIcon,
+    last_tick: &mut Instant,
+) -> bool {
+    while let Ok(ev) = MenuEvent::receiver().try_recv() {
+        let _ = handle_menu_event(&ev, port, shutdown);
+    }
+    if last_tick.elapsed() >= Duration::from_secs(TICK_SECS) {
+        *last_tick = Instant::now();
+        refresh_icon(vault, stage, port, icon);
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    !shutdown.triggered()
 }
 
 /// Разбор `MenuEvent`: открыть UI или поднять `Shutdown`. Чистая функция — тест

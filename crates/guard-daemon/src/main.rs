@@ -123,6 +123,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     for warning in &loaded.warnings {
         eprintln!("fasad: {warning}");
+        // #244: под GUI-подсистемой (#226/#228) stderr = NULL: warning,
+        // который никто не печатает, = та же ложь нулём, что молча
+        // проигнорированная строка (док-контра этого места, #219).
+        win_log(warning);
     }
     let loaded_file_used = loaded.file_used;
     let cfg = loaded.config;
@@ -222,7 +226,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         guard_daemon::http::AppState::with_pending(cfg.clone(), schema, health, vault, pending);
     let app = guard_daemon::http::router(state.clone());
 
-    let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
+    // Bind-отказ (#244): порт занят/нельзя биндиться = НЕ config-ветка, и
+    // прежний `?` = тихая смерть под GUI-подсистемой (stderr = NULL,
+    // MessageBox только на refuse_startup = диагноз #244, полка оператора
+    // v0.1.5). Bind-ошибка = отказ старта = refusal-контур: окно + лог +
+    // rc=2 (тот же канал, что конфиг/схема/веса: контракт «видим при ВСЕХ
+    // startup-отказах», родительский коммент 6399041556).
+    let listener = match tokio::net::TcpListener::bind(cfg.addr).await {
+        Ok(listener) => listener,
+        Err(e) => refuse_startup(&std::io::Error::new(
+            e.kind(),
+            format!("порт {} занят или недоступен: {e}", cfg.addr),
+        )),
+    };
     // Порт в баннере — фактически занятый, а не запрошенный: `FASAD_PORT=0`
     // означает «дай свободный», и без `local_addr` оператор (и e2e-тест
     // `tests/wire_e2e.rs`, который поднимает этот бинарь) увидел бы в баннере
@@ -329,8 +345,13 @@ fn serve_on_worker(
             Err(e) => {
                 // Serving не поднялся = продукта нет: это не cosmetic-сбой, а
                 // отказ (причина в stderr, ненулевой код — systemd/супервизор
-                // видят смерть, молчаливой витрины без HTTP нет).
+                // видят смерть, молчаливой витрины без HTTP нет). #244: под
+                // GUI-подсистемой stderr = NULL, а `process::exit` убивает и
+                // поток трея — окно обязано показать причину ДО выхода
+                // (модалка блокирует ЭТОТ поток; трей-поток с ним не связан,
+                // primary потоков: serve = рабочий, трей = main).
                 eprintln!("fasad: рантайм serving не поднят: {e}");
+                win_fatal("рантайм serving не поднят", &e.to_string());
                 std::process::exit(3);
             }
         };
@@ -351,6 +372,7 @@ fn serve_on_worker(
     });
     if let Err(e) = spawned {
         eprintln!("fasad: поток serving не поднят: {e}");
+        win_fatal("поток serving не поднят", &e.to_string());
         std::process::exit(3);
     }
 }
@@ -376,6 +398,43 @@ const WEIGHTS_HINT: &str = "веса: скачай через UI (http://127.0.0
 каталог по умолчанию: $HOME/.cache/fasad-models (win: %USERPROFILE%\\.cache\\fasad-models), \
 свой — FASAD_MODEL_DIR";
 
+/// Дубль текста в win-лог-файл (#244, win.rs `append_log`): GUI-подсистема
+/// (`fasad-tray.exe`) не имеет видимого stderr при запуске двойным кликом —
+/// startup-тексты обязаны оставлять след на диске. mac-контур = NOOP (mac-трей
+/// запускается из Terminal, консоль есть; решение ТЗ #244: файл — только
+/// Windows). Заголовок строки = момент жизни демона (startup/serve), текст =
+/// исходная строка stderr: две истины не плодим, каналы параллельны.
+#[cfg(all(feature = "tray", target_os = "windows"))]
+fn win_log(text: &str) {
+    guard_daemon::tray::win::append_log(text);
+}
+
+#[cfg(not(all(feature = "tray", target_os = "windows")))]
+fn win_log(_text: &str) {}
+
+/// Фатальный отказ ВНЕ refusal-контура (#244): serve-контур мёртв, процесс
+/// уходит с rc=3. Под GUI-подсистемой `eprintln` = NULL = тихая смерть
+/// (диагноз #244: видимы обязаны быть ВСЕ startup-отказы, не только
+/// config-ветки): лог + окно с причиной. mac/headless = NOOP-контур:
+/// консоль есть, окно не заводим (философия #190: окно = мишень win-трея).
+#[cfg(all(feature = "tray", target_os = "windows"))]
+fn win_fatal(what: &str, reason: &str) {
+    let msg = format!("fasad: {what}: {reason}");
+    guard_daemon::tray::win::append_log(&msg);
+    guard_daemon::tray::win::show_startup_failure("fasad — запуск не удался", &msg);
+}
+
+#[cfg(not(all(feature = "tray", target_os = "windows")))]
+fn win_fatal(_what: &str, _reason: &str) {
+    // mac/headless: текст уже в stderr (вызывающий печатает сам), окно =
+    // win-мишень; NOOP-контур = вызывающие компилируются на всех ногах.
+    // Единственный продуктовый вызов = serve-контур: на mac-трей-ноге он
+    // ЗОВЁТСЯ (serve_on_worker компилируется под mac тоже), на headless-
+    // бинаре = нет — `allow` (не `expect`: expectation = «нигде не зовётся»,
+    // что ложь на mac-трей-ноге = unfulfilled-красное, промер этой сессии).
+    #![allow(dead_code, reason = "NOOP-контра: продуктовый вызов = win-трей")]
+}
+
 fn refuse_startup(err: &dyn std::fmt::Display) -> ! {
     // #199: текст отказа обязан называть ПУТЬ ДОКАЧКИ, а не только причину:
     // оператор win-двойного-клика читает окно/консоль, а не docs. Канала два
@@ -384,7 +443,19 @@ fn refuse_startup(err: &dyn std::fmt::Display) -> ! {
     let msg = format!("fasad: старт невозможен: {err}");
     eprintln!("{msg}");
     eprintln!("fasad: {WEIGHTS_HINT}");
+    // #244: stderr под GUI-подсистемой = NULL — отказ обязан оставлять след на
+    // диске (путь в README бандла и в окне), обе строки = один лог-контур.
+    win_log(&msg);
+    win_log(&format!("fasad: {WEIGHTS_HINT}"));
     #[cfg(all(feature = "tray", target_os = "windows"))]
-    guard_daemon::tray::win::show_startup_failure("fasad — запуск не удался", &msg);
+    {
+        // Окно #244 += путь лога: «где читать» = ровно то, где пишет
+        // `append_log` (контра README бандла + окно + файл = одна истина).
+        let win_msg = match guard_daemon::tray::win::log_path() {
+            Some(p) => format!("{msg}\nfasad: {WEIGHTS_HINT}\n\nЛог: {}", p.display()),
+            None => format!("{msg}\nfasad: {WEIGHTS_HINT}"),
+        };
+        guard_daemon::tray::win::show_startup_failure("fasad — запуск не удался", &win_msg);
+    }
     std::process::exit(EXIT_BAD_CONFIG);
 }
