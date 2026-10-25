@@ -51,7 +51,7 @@ const GOLD_CHECKSUM_SPANS: usize = 230;
 /// Сколько из них email (#222): base64-обход email не закрывает (prefilter
 /// `scan_base64` требует ASCII-цифру в декоде, addr-spec = не цифры;
 /// «SUPPORT@CORP-VEKTOR.EXAMPLE» и т.п. декодируются в байты без
-/// цифр). Промер по датасету: 49 email-спанов recall (40 v1.3 + 9 #222).
+/// цифр). Промер по датасету: 49 email-спанов recall (40 v1.0–v1.3 + 9 v1.5).
 const GOLD_EMAIL_SPANS: usize = 49;
 
 fn golden_path() -> PathBuf {
