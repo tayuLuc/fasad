@@ -690,6 +690,10 @@ const CFG_NUMERIC = {
   FASAD_TAU_LOW: { min: 0, max: 1, step: 0.01 },
   FASAD_TAU_HIGH: { min: 0, max: 1, step: 0.01 },
   FASAD_ARBITER_ALPHA: { min: 0, max: 1, step: 0.01 },
+  // #246: рычаг каркасного веса (серверный диапазон (0.5, 1] =
+  // validate_value config.rs: нижняя граница ОТКРЫТА, number-поле шагает
+  // от 0.51 = минимальный шаг сетки 0.01, над 0.5; max 1 = вето-потолок).
+  FASAD_FRAME_MIN: { min: 0.51, max: 1, step: 0.01 },
 };
 
 function settingsStatus(text, kind) {

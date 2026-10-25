@@ -1418,7 +1418,7 @@ impl Config {
                 if !(v > 0.5 && v <= 1.0) {
                     return Err(ConfigError::BadValue {
                         var: "FASAD_FRAME_MIN",
-                        reason: "вне (0.5, 1]: выше 1.0 = подделка вето 1.0,                                 ниже 0.5 = каркасный класс тонет под модельными скорами"
+                        reason: "вне (0.5, 1]: выше 1.0 = подделка вето 1.0, ниже 0.5 = каркасный класс тонет под модельными скорами (#238)"
                             .to_owned(),
                     });
                 }
@@ -2710,6 +2710,72 @@ mod tests {
 
     /// Инвариант порогов при записи: 422-контур (#219 §D) меряется против
     /// ЭФФЕКТИВНЫХ значений, а не дефолтов.
+    /// #252-дочистка (#238/#224-класс): тексты отказов конфигурации не
+    /// несут run пробелов. Механика рецидива = перенос длинного
+    /// строкового литерала с отступом: `\` (continuation) съедал перевод
+    /// строки, отступ продолжения (>=2 пробелов) въедался в текст.
+    /// Контра решёточная: run-пробелов в prod-`reason`-литералах
+    /// config-скоупа = 0 (тестовые парсер-кейсы с намеренными пробелами
+    /// вне контура; #238-зуб pipeline-скоупа не дублируется).
+    #[test]
+    fn config_reason_texts_have_no_space_runs() {
+        let src = include_str!("./config.rs");
+        let mut checked = 0_usize;
+        let mut in_reason = false;
+        for (lineno, line) in src.lines().enumerate() {
+            let t = line.trim_start();
+            if t.starts_with("//") {
+                continue;
+            }
+            // continuation-строка (`\` в конце): пробелы отступа съедаются,
+            // safe по механике литерала
+            if t.ends_with('\\') {
+                continue;
+            }
+            in_reason = in_reason && !t.starts_with('}');
+            if t.starts_with("reason:") {
+                in_reason = true;
+            }
+            if !in_reason {
+                continue;
+            }
+            for lit in string_literals(line) {
+                checked += 1;
+                assert!(
+                    !lit.contains("  "),
+                    "run пробелов в reason-литерале (строка {}): {:?}",
+                    lineno + 1,
+                    lit
+                );
+            }
+        }
+        assert!(checked >= 8, "решётка нечего не проверила: {checked}");
+    }
+
+    /// Содержимое string-literals строки (грубый скан кавычек, экранные
+    /// пары пропускаем: контур = prod-тексты, не парсер строк).
+    fn string_literals(line: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '"' {
+                continue;
+            }
+            let mut lit = String::new();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => {
+                        chars.next();
+                    }
+                    '"' => break,
+                    other => lit.push(other),
+                }
+            }
+            out.push(lit);
+        }
+        out
+    }
+
     #[test]
     fn validate_value_checks_thresholds_against_effective() {
         let sane = Thresholds::default_working();
