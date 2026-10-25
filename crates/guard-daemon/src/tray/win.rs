@@ -397,6 +397,7 @@ fn open_instruction_url() {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // в тестах паника = красный CI, это канал ответа
 mod tests {
     use super::*;
 
@@ -475,29 +476,26 @@ mod tests {
             let big = std::fs::metadata(path).is_ok_and(|md| md.len() >= limit);
             if big {
                 let _ = std::fs::remove_file(sibling(path, ".1"));
-                std::fs::rename(path, sibling(path, ".1")).expect("rename-ротация проходит");
+                std::fs::rename(path, sibling(path, ".1")).unwrap();
             }
         }
         let dir = unique_log_dir("fasad-rot");
         let path = dir.join(LOG_FILE_NAME);
-        std::fs::write(&path, b"line-A").expect("файл пишется");
+        std::fs::write(&path, b"line-A").unwrap();
         // Порог 4 байта, файл 6 = ротация.
         rotate_at(&path, 4);
         assert!(!path.exists(), "живой файл освобождён");
-        assert_eq!(
-            std::fs::read(sibling(&path, ".1")).expect("слой .1 читается"),
-            b"line-A"
-        );
-        std::fs::write(&path, b"line-B").expect("файл пишется");
+        assert_eq!(std::fs::read(sibling(&path, ".1")).unwrap(), b"line-A");
+        std::fs::write(&path, b"line-B").unwrap();
         rotate_at(&path, 4);
         assert_eq!(
-            std::fs::read(sibling(&path, ".1")).expect("слой .1 читается"),
+            std::fs::read(sibling(&path, ".1")).unwrap(),
             b"line-B",
             "слой .1 = последний ротированный, НЕ колонна"
         );
         // Мета-контра: порог — живой файл, файл < порога не ротируется.
         rotate_at(&path, 4); // path сейчас не существует = NotFound-норма
-        std::fs::write(&path, b"ab").expect("файл пишется");
+        std::fs::write(&path, b"ab").unwrap();
         rotate_at(&path, 100);
         assert!(path.exists(), "файл меньше порога остаётся живым");
         let _ = std::fs::remove_dir_all(&dir);
@@ -515,7 +513,7 @@ mod tests {
         );
         let dir = unique_log_dir("fasad-rot-err");
         let file = dir.join("plain");
-        std::fs::write(&file, b"x").expect("файл пишется");
+        std::fs::write(&file, b"x").unwrap();
         // Ротация «файла-не-лога» с заведомо нулевым порогом: rename живого
         // файла в соседний слой обязан пройти (Ok) — негативных исходов на
         // tempdir-дереве не вымучиваем (права на CI неизвестны), контракт
@@ -541,14 +539,14 @@ mod tests {
         // Ok(false) без паники (молчание-норма «писать негде»).
         let dir = unique_log_dir("fasad-append");
         let path = dir.join(LOG_FILE_NAME);
-        assert!(append_log_at(Some(&path), "первая").expect("первая строка пишется"));
-        assert!(append_log_at(Some(&path), "вторая").expect("вторая строка пишется"));
-        let body = std::fs::read_to_string(&path).expect("лог читается");
+        assert!(append_log_at(Some(&path), "первая").unwrap());
+        assert!(append_log_at(Some(&path), "вторая").unwrap());
+        let body = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = body.lines().collect();
         assert_eq!(lines.len(), 2, "append, не затирание: {body}");
         assert!(lines[0].ends_with(" первая") && lines[1].ends_with(" вторая"));
         assert!(
-            !append_log_at(None, "нет пути").expect("None-путь = Ok без паники"),
+            !append_log_at(None, "нет пути").unwrap(),
             "None-путь = Ok(false)"
         );
         // Файл меньше порога НЕ ротируется (полоса зубa ротации выше):
