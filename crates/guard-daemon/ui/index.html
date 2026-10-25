@@ -117,6 +117,15 @@
       <section class="pane">
         <h2>Разбор (фон = уверенность, рамка = вердикт)</h2>
         <div id="painted" class="painted"></div>
+        <!-- #246: честная рамка таблицы. Таблица строится из analyze-ответа,
+             а analyze-ответ = порождённый срез (спаны ниже порога сервер не
+             возвращает, первичка pipeline::route_spans). Счётчик «снято» =
+             разница двух analyze-прогонов (базовый без порога / с порогом),
+             контрa ui_sandbox + node-зуб mask_dropped_runner.js. -->
+        <p id="maskLegend" class="hint">
+          в списке маскируемые; полный разбор = панель РАЗБОР выше; порог S
+          отсекает: снято <span id="spanDropped">0</span>
+        </p>
         <table class="spans">
           <thead>
             <tr>
