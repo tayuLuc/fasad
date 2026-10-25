@@ -1009,6 +1009,33 @@ def main():
     for t in V19_NEG:
         add(t, [], "negative", "synthetic-no-pii")
 
+    # ---------------- v1.10 (#258: каркасный CUT на 2-м ключе) -------------
+    # Первичка-FP #242/#258 «Серия 4508··455561 серия 4509··455562
+    # 4510··455563»: base = одинокий FP-мост «455562 4510» (вето-
+    # невосстановим, g0284 = negative-бейт). #258 чин (сканер-уровень):
+    # каркасный CUT на ВТОРОМ ключе даёт окно-хозяин «4509··455562»,
+    # occupying-вето гасит мост. Строка ПЕРЕВЕДЕНА из negative (g0284,
+    # v1.9) в RECALL: каноны-хозяева живут = 2 спана (SPAN-контра:
+    # мост НЕ спан, хозяева = законные 2 паспорта, #241-контра «двойной
+    # паспорт = 2 спана»), промер live-демоном PR #258: спаны (11,23)+
+    # (35,47). g0001–g0283 побайтово идентичны v1.9 (строки ниже g0284
+    # сдвигаются id-ом на перевод split; cmp префикса = гейт golden-verify).
+    V20_RECALL = [
+        # g0285 (бывш. g0284, v1.9 negative): первичка-FP #242, base = FP-
+        # мост «455562 4510» (вето-невосстановим). #258 чин: каркасный CUT
+        # на 2-м ключе → хозяева «4508··455561»+«4509··455562» живут (2
+        # спана, мост НЕ спан), перевод negative→recall.
+        ("Серия 4508  455561 серия 4509  455562 4510  455563 — сводка реестра.",
+         ["4508  455561", "4509  455562"]),
+        # g0286: цепь из ЧЕТЫРЁХ канонов через ключевые слова (CUT-контра,
+        # каждый ключ = новый каркас-окно; мостов между канонами нет).
+        ("Серия 4508  455561 серия 4509  455562 серия 4510  455563 серия 4511  455564 в акте.",
+         ["4508  455561", "4509  455562", "4510  455563", "4511  455564"]),
+    ]
+    for t, values in V20_RECALL:
+        spans = [span_at(t, v, "passport", v) for v in values]
+        add(t, spans, "recall", "synthetic-checksum")
+
     # ---------------- гейты ----------------
     total = len(rows)
     recall = sum(1 for r in rows if r["split"] == "recall")
@@ -1058,6 +1085,23 @@ def main():
 
     sys.stderr.write("TOTAL %d RECALL %d NEG %d SPANS %d\n"
                      % (total, recall, neg, sum(len(r["spans"]) for r in rows)))
+    # Живое число «грязных» спанов (README § «Счётчики v1»): регулярка README
+    # (разрыв цифры = пробел/дефис/thin-space) по спан-текстам числовых
+    # классов (#258: метрика = счёт генератора, не ручная цифра — memory law
+    # «a number typed by hand into a document is a claim»).
+    DIRTY_RE = re.compile(r"\d[ .\u2009\-\u202f\u00a0]+\d")
+    NUMERIC = {"inn", "snils", "ogrn", "ogrnip", "iban", "card_pan", "phone",
+               "passport", "bik", "bank_account"}
+    dirty = sum(
+        1
+        for r in rows
+        for s_ in r["spans"]
+        if s_["category"] in NUMERIC
+        and DIRTY_RE.search(r["text"][s_["start_char"]:s_["end_char"]]
+                             if "start_char" in s_ else
+                             r["text"].encode()[s_["start_byte"]:s_["end_byte"]].decode())
+    )
+    sys.stderr.write("DIRTY_SPANS %d\n" % dirty)
     sys.stderr.write("RECALL_CAT %s\n" % dict(sorted(recall_cat.items())))
     sys.stderr.write("NEG_CAT %s\n" % dict(sorted(neg_cat.items())))
 
