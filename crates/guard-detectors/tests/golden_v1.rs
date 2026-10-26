@@ -603,6 +603,74 @@ fn count_gap(b: &[u8], from: usize) -> usize {
         .unwrap_or(b.len() - from)
 }
 
+/// #101: цифры + разделители из перечня `NUMBER_SEPARATORS` (ASCII-дефис,
+/// U+2010..U+2014, U+2212, U+FF0D, пробел) = ровно `n` ASCII-цифр, разделитель
+/// только МЕЖДУ цифрами (ведущий/хвостовой/двойной = не форма).
+fn sep_digits_len(v: &str, n: usize) -> bool {
+    let mut digits = 0usize;
+    let mut prev_digit = false;
+    let mut first = true;
+    for ch in v.chars() {
+        if ch.is_ascii_digit() {
+            digits += 1;
+            prev_digit = true;
+            first = false;
+        } else if !first && is_number_sep(ch) && prev_digit {
+            prev_digit = false;
+        } else {
+            return false;
+        }
+    }
+    prev_digit && digits == n
+}
+
+/// Дефисные разделители номера = дефисная ПОДКОЛОДА сканерного перечня
+/// (`checksums::NUMBER_SEPARATORS`, #101: U+2013/2014/2212 в нём же) +
+/// пробел (позиция 0 перечня). Точка/косая черта (#131) в B4-формы
+/// номерных классов НЕ входят: «24.82.01.43.38» (#159) обязана оставаться
+/// вне формата класса; зуб `b4_separators_match_scanner` сверяет пересечение
+/// «B4-перечень ∩ дефисы = сканерные дефисы» (контура #131 «эталоны не
+/// разъехались»).
+fn is_number_sep(c: char) -> bool {
+    matches!(c, '-' | '\u{2010}'..='\u{2014}' | '\u{2212}' | '\u{FF0D}' | ' ')
+}
+
+/// #101: бумажная форма СНИЛС «3+3+3+2» с дефисами из перечня; последний
+/// разделитель = пробел (первичка бумажного формата g0152–g0154).
+fn snils_paper_ok(v: &str) -> bool {
+    let g: Vec<String> = {
+        let mut out: Vec<String> = Vec::new();
+        let mut cur = String::new();
+        let mut prev_space = false;
+        for ch in v.chars() {
+            if ch == ' ' {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                prev_space = true;
+            } else if ch.is_ascii_digit() {
+                cur.push(ch);
+                prev_space = false;
+            } else if is_number_sep(ch) && !prev_space {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            } else {
+                return false;
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+        out
+    };
+    g.len() == 4
+        && [3, 3, 3, 2]
+            .iter()
+            .zip(g.iter())
+            .all(|(w, x)| x.len() == *w && x.chars().all(|c| c.is_ascii_digit()))
+}
+
 fn value_source_format_ok(cat: &str, v: &str) -> bool {
     let all_digits = !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit());
     match cat {
@@ -622,10 +690,19 @@ fn value_source_format_ok(cat: &str, v: &str) -> bool {
                         && b[11] == b' '
                         && b[12..].iter().all(u8::is_ascii_digit)
                 }
+                // #101 (v1.11 g0288): бумажная форма с типографскими дефисами
+                // «XXX{U+2013/2014/2212}XXX{sep}XXX {CC}» = 3+3+3+2 цифры,
+                // разделители = ASCII-дефис ИЛИ U+2013/U+2014/U+2212 (тот же
+                // перечень `NUMBER_SEPARATORS`, что склеивает сканер — B4 и
+                // сканер обязаны сходиться, #131-контра «эталоны не
+                // разъехались» = зуб ниже).
+                || snils_paper_ok(v)
         }
         "ogrn" => all_digits && v.len() == 13,
         "ogrnip" => all_digits && v.len() == 15,
-        "card_pan" => all_digits && (14..=16).contains(&v.len()),
+        // #101 (v1.11 g0289): форма с типографскими дефисами = 16 цифр,
+        // разделители из перечня (4+4+4+4); чистые цифры = base-форма.
+        "card_pan" => (all_digits && (14..=16).contains(&v.len())) || sep_digits_len(v, 16),
         // B4 (issue #13 п.B3 «битый бейт становится валидным §7b → тест
         // зелёный; поймано порчей»): приманки `bik`/`bank_account` в negative-сплите
         // обязаны принадлежать классу — ровно 9 / 20 ASCII-цифр (только так
@@ -641,7 +718,7 @@ fn value_source_format_ok(cat: &str, v: &str) -> bool {
         "bank_account" => all_digits && (19..=20).contains(&v.len()),
         // TODO(golden-v1.1, issue #14): сузить до `v.len() == 9` / `== 20` и
         // снять #[ignore] у b4_bik_baits_are_in_class — см. комментарий выше.
-        "phone" => phone_e164_ok(v),
+        "phone" => phone_e164_ok(v) || sep_digits_len(v, 11), // #101 g0290 em-dash
         "passport" => {
             // Формат класса = 4 цифры серии + 6 цифр номера, разделённые
             // одиночными пробелами в любой разбивке групп («4508 455561»,
@@ -696,10 +773,46 @@ fn value_source_format_ok(cat: &str, v: &str) -> bool {
 /// E.164 для нашей зоны: 11 цифр, ведущих `7` (README: `7XXXXXXXXXX`), либо
 /// общий E.164 (`[1-9]` + 6..14 цифр).
 fn phone_e164_ok(v: &str) -> bool {
-    let all_digits = !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit());
-    all_digits
-        && (v.len() == 11 && v.starts_with('7')
-            || (7..=15).contains(&v.len()) && !v.starts_with('0'))
+    // #101 (v1.11): E.164 = КАНОН; форма с типографскими дефисами
+    // (U+2013/2014/2212, «8—916—123—45—67») канонизируется отсечением
+    // разделителей перечня (тот же, что склеивает сканер, #131-контра
+    // «эталоны не разъехались»): сепараторная форма обязана проходить
+    // `sep_digits_len` (разделитель только между цифрами), канон = цифры.
+    let canon: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+    let clean = canon.len() == v.len();
+    if !(clean || sep_digits_len(v, canon.len())) {
+        return false;
+    }
+    canon.len() == 11 && (canon.starts_with('7') || canon.starts_with('8'))
+        || (7..=15).contains(&canon.len()) && !canon.starts_with('0')
+}
+
+/// #101-контра: B4-гейт (`is_number_sep`) обязан сверять форму по ТОМУ ЖЕ
+/// перечню разделителей, что склеивает сканер (`checksums::NUMBER_SEPARATORS`)
+/// — два владельца одного перечня разъезжаются молча (#131 урок).
+#[test]
+fn b4_separators_match_scanner() {
+    for sep in guard_detectors::checksums::NUMBER_SEPARATORS {
+        let ch = std::str::from_utf8(sep)
+            .ok()
+            .and_then(|t| t.chars().next())
+            .unwrap_or_else(|| panic!("разделитель {:?} не один char", sep));
+        // Дефисная подколода сканерного перечня ⊆ B4; точка/слэш = не дефис
+        // (B4-формы строятся на дефисных/пробельных разделителях, #159).
+        if matches!(ch, '.' | '/') {
+            continue;
+        }
+        assert!(is_number_sep(ch), "NUMBER_SEPARATORS: {ch:?} вне B4-перечня");
+    }
+    // Обратное: B4 не шире сканера (пробел ∈ перечня на позиции 0).
+    for ch in ['-', '\u{2010}', '\u{2011}', '\u{2012}', '\u{2013}', '\u{2014}', '\u{2212}', '\u{FF0D}', ' '] {
+        assert!(
+            guard_detectors::checksums::NUMBER_SEPARATORS
+                .iter()
+                .any(|s| *s == ch.encode_utf8(&mut [0u8; 4]).as_bytes()),
+            "B4-перечень шире сканера: {ch:?}"
+        );
+    }
 }
 
 /// #222: B4 и валидатор каскада-0 = ОДИН код; зуб «эталоны формата не
@@ -941,7 +1054,15 @@ fn golden_v1_structural_gates() {
             // каркасом — контракт 0.95 (frame_invalid): recall-значение =
             // невалидный номер,.mask-контракт, не вето. Строки вне этого
             // диапазона обязаны быть валидны (гейт цел).
-            let frame234 = r.split == "recall" && r.id >= "g0263";
+            // Каркас_recall #234 = ровно g0263–g0267 (5 строк, невалидные
+            // номера с каркасом). Сравнение `id >= "g0263"` (строкой)
+            // захватывало бы ЛЮБУЮ более позднюю recall-строку с Валидным
+            // номером (v1.10 g0286–g0287, v1.11 g0288–g0291) = ложный
+            // negative-бренд (урок: выведенное множество по id-префиксу =
+            // claim). Ровный диапазон: #234-контра целая, поздние recall
+            // проверяются как нормальные.
+            let frame234 =
+                r.split == "recall" && ("g0263"..="g0267").contains(&&*r.id);
             if let Some(ok) = checksum_valid(s.category, s.value_source) {
                 if r.split == "recall" && !frame234 {
                     assert!(
