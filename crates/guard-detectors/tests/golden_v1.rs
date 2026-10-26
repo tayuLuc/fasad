@@ -585,8 +585,8 @@ const MATCH_SOURCES: [&str; 9] = [
     "doc-valid-vector",
     "foreign-bait",
     "synthetic-no-pii",
-    "synthetic-translit", // golden-v1.7 (#238): транслит-ФИО recall
-    "frame-invalid-vector",  // golden-v1.11 (#78): каркасные recall #234 (source-фенс B4)
+    "synthetic-translit",   // golden-v1.7 (#238): транслит-ФИО recall
+    "frame-invalid-vector", // golden-v1.11 (#78): каркасные recall #234 (source-фенс B4)
 ];
 
 /// B4: формат `value_source` по канону README § «поле `value_source`» (номерки —
