@@ -3721,8 +3721,15 @@ mod tests {
             ("", "Карта 888888888888"),
         ];
         const PIDN: &[&str] = &[
-            "snils", "card_pan", "phone", "inn", "ogrn", "ogrnip", "passport",
-            "bik", "bank_account",
+            "snils",
+            "card_pan",
+            "phone",
+            "inn",
+            "ogrn",
+            "ogrnip",
+            "passport",
+            "bik",
+            "bank_account",
         ];
         for (class, text) in table {
             let hits = scan(text, &sc);

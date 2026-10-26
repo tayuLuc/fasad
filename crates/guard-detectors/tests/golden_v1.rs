@@ -632,7 +632,10 @@ fn sep_digits_len(v: &str, n: usize) -> bool {
 /// «B4-перечень ∩ дефисы = сканерные дефисы» (контура #131 «эталоны не
 /// разъехались»).
 fn is_number_sep(c: char) -> bool {
-    matches!(c, '-' | '\u{2010}'..='\u{2014}' | '\u{2212}' | '\u{FF0D}' | ' ')
+    matches!(
+        c,
+        '-' | '\u{2010}'..='\u{2014}' | '\u{2212}' | '\u{FF0D}' | ' '
+    )
 }
 
 /// #101: бумажная форма СНИЛС «3+3+3+2» с дефисами из перечня; последний
@@ -802,10 +805,16 @@ fn b4_separators_match_scanner() {
         if matches!(ch, '.' | '/') {
             continue;
         }
-        assert!(is_number_sep(ch), "NUMBER_SEPARATORS: {ch:?} вне B4-перечня");
+        assert!(
+            is_number_sep(ch),
+            "NUMBER_SEPARATORS: {ch:?} вне B4-перечня"
+        );
     }
     // Обратное: B4 не шире сканера (пробел ∈ перечня на позиции 0).
-    for ch in ['-', '\u{2010}', '\u{2011}', '\u{2012}', '\u{2013}', '\u{2014}', '\u{2212}', '\u{FF0D}', ' '] {
+    for ch in [
+        '-', '\u{2010}', '\u{2011}', '\u{2012}', '\u{2013}', '\u{2014}', '\u{2212}', '\u{FF0D}',
+        ' ',
+    ] {
         assert!(
             guard_detectors::checksums::NUMBER_SEPARATORS
                 .iter()
@@ -1061,8 +1070,7 @@ fn golden_v1_structural_gates() {
             // negative-бренд (урок: выведенное множество по id-префиксу =
             // claim). Ровный диапазон: #234-контра целая, поздние recall
             // проверяются как нормальные.
-            let frame234 =
-                r.split == "recall" && ("g0263"..="g0267").contains(&&*r.id);
+            let frame234 = r.split == "recall" && ("g0263"..="g0267").contains(&&*r.id);
             if let Some(ok) = checksum_valid(s.category, s.value_source) {
                 if r.split == "recall" && !frame234 {
                     assert!(
