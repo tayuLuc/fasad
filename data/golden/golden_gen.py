@@ -906,7 +906,10 @@ def main():
     ]
     for t, value, cat in V16_RECALL:
         src = value.replace(" ", "").replace("-", "")
-        add(t, [span_at(t, value, cat, src)], "recall", "synthetic-checksum")
+        # source-фенс B4 #78/#101 (PR #281/#286): каркасные recall = id-фенс
+        # `id >= g0263` сломан на id-сдвигах; «frame-invalid-vector» =
+        # смысловой. Первая влитая сторона = база, вторая = ре-земя.
+        add(t, [span_at(t, value, cat, src)], "recall", "frame-invalid-vector")
     # #234 negative-бейты: та же форма БЕЗ каркасного слова = молчание
     # (каркас = единственный источник класса, правило 2 заголовка #200-A2).
     V16_NEG = [
@@ -1035,6 +1038,35 @@ def main():
     for t, values in V20_RECALL:
         spans = [span_at(t, v, "passport", v) for v in values]
         add(t, spans, "recall", "synthetic-checksum")
+
+    # ---------------- v1.11 (#101: типографские дефисы-разделители) ---------
+    # NUMBER_SEPARATORS += U+2013 (EN DASH) / U+2014 (EM DASH) / U+2212
+    # (MINUS) — автотипографика Word/PDF (EN DASH = дефолт автозамены
+    # «-», EM DASH = ru-типографика, U+2212 = юникод-выключки); нормализатор
+    # их в ASCII не сводит (#94 сводит только полнoширинные цифры FF10-FF19).
+    # Recall-формы = валидные номера с новыми разделителями (промер live
+    # демоном PR #101: snils (32,50), card (26,51), phone (15,38), passport
+    # (15,28)); бейты = годы/диапазоны — word-break-грань #138 + рамка
+    # ширины групп `sep_len_number` обязаны оставить молчать (FP-защита =
+    # контур применения, не перечень).
+    EN, EM = "\u2013", "\u2014"
+    V21_RECALL = [
+        ("snils", "СНИЛС пенсионера 123" + EM + "456" + EM + "789 64 в реестре.",
+         "123" + EM + "456" + EM + "789 64"),
+        ("card_pan", "Оплата картой 2204" + EN + "9947" + EN + "4132" + EN + "9761 прошла.",
+         "2204" + EN + "9947" + EN + "4132" + EN + "9761"),
+        ("phone", "Контакт 8" + EM + "916" + EM + "123" + EM + "45" + EM + "67 (рабочий).",
+         "8" + EM + "916" + EM + "123" + EM + "45" + EM + "67"),
+        ("passport", "Паспорт 4508" + EN + "455561 действителен.",
+         "4508" + EN + "455561"),
+    ]
+    for cat, t, v in V21_RECALL:
+        add(t, [span_at(t, v, cat, v)], "recall", "synthetic-checksum")
+    V21_NEG = [
+        "На собрании было 10" + EM + "15 человек без повестки.",
+    ]
+    for t in V21_NEG:
+        add(t, [], "negative", "synthetic-no-pii")
 
     # ---------------- гейты ----------------
     total = len(rows)

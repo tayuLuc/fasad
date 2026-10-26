@@ -260,11 +260,11 @@
 {"id":"g0260","text":"Не полный адрес: d.sokolov@ (обрезан в форме).","spans":[],"split":"negative","source":"synthetic-no-pii"}
 {"id":"g0261","text":"Служебное: support@ (пустое поле в заявке).","spans":[],"split":"negative","source":"synthetic-no-pii"}
 {"id":"g0262","text":"Локальное имя a@localhost (имя машины, не почта).","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0263","text":"СНИЛС заёмщика 112-233-455 95, сверка ПФР отклонена, дело в работе.","spans":[{"start_byte":28,"end_byte":42,"category":"snils","value_source":"11223345595"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0264","text":"Реквизиты контрагента: ИНН 5027196012 — заявление, сверка не пройдена.","spans":[{"start_byte":50,"end_byte":60,"category":"inn","value_source":"5027196012"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0265","text":"Заявка на проверку: ОГРН 1027739401110, запрос из реестра.","spans":[{"start_byte":45,"end_byte":58,"category":"ogrn","value_source":"1027739401110"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0266","text":"Поступило: ОГРНИП 304502700000001, запрос на выписку ЕГРИП.","spans":[{"start_byte":33,"end_byte":48,"category":"ogrnip","value_source":"304502700000001"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0267","text":"Два невалидных: СНИЛС 112-233-455 95 и ИНН 5027196012 в одном деле.","spans":[{"start_byte":40,"end_byte":54,"category":"snils","value_source":"11223345595"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0263","text":"СНИЛС заёмщика 112-233-455 95, сверка ПФР отклонена, дело в работе.","spans":[{"start_byte":28,"end_byte":42,"category":"snils","value_source":"11223345595"}],"split":"recall","source":"frame-invalid-vector"}
+{"id":"g0264","text":"Реквизиты контрагента: ИНН 5027196012 — заявление, сверка не пройдена.","spans":[{"start_byte":50,"end_byte":60,"category":"inn","value_source":"5027196012"}],"split":"recall","source":"frame-invalid-vector"}
+{"id":"g0265","text":"Заявка на проверку: ОГРН 1027739401110, запрос из реестра.","spans":[{"start_byte":45,"end_byte":58,"category":"ogrn","value_source":"1027739401110"}],"split":"recall","source":"frame-invalid-vector"}
+{"id":"g0266","text":"Поступило: ОГРНИП 304502700000001, запрос на выписку ЕГРИП.","spans":[{"start_byte":33,"end_byte":48,"category":"ogrnip","value_source":"304502700000001"}],"split":"recall","source":"frame-invalid-vector"}
+{"id":"g0267","text":"Два невалидных: СНИЛС 112-233-455 95 и ИНН 5027196012 в одном деле.","spans":[{"start_byte":40,"end_byte":54,"category":"snils","value_source":"11223345595"}],"split":"recall","source":"frame-invalid-vector"}
 {"id":"g0268","text":"Встреча 12.05 по 112-233-455 95 перенесена (без каркаса).","spans":[],"split":"negative","source":"synthetic-no-pii"}
 {"id":"g0269","text":"Курсор: 5027196012 (строка лога, без ключа).","spans":[],"split":"negative","source":"synthetic-no-pii"}
 {"id":"g0270","text":"Обновление пакета 1027739401110.1 установлено.","spans":[],"split":"negative","source":"synthetic-no-pii"}
@@ -285,3 +285,8 @@
 {"id":"g0285","text":"4508 серия 455561 серия 4509 серия 455562 серия 4510 серия 455563.","spans":[],"split":"negative","source":"synthetic-no-pii"}
 {"id":"g0286","text":"Серия 4508  455561 серия 4509  455562 4510  455563 — сводка реестра.","spans":[{"start_byte":11,"end_byte":23,"category":"passport","value_source":"4508  455561"},{"start_byte":35,"end_byte":47,"category":"passport","value_source":"4509  455562"}],"split":"recall","source":"synthetic-checksum"}
 {"id":"g0287","text":"Серия 4508  455561 серия 4509  455562 серия 4510  455563 серия 4511  455564 в акте.","spans":[{"start_byte":11,"end_byte":23,"category":"passport","value_source":"4508  455561"},{"start_byte":35,"end_byte":47,"category":"passport","value_source":"4509  455562"},{"start_byte":59,"end_byte":71,"category":"passport","value_source":"4510  455563"},{"start_byte":83,"end_byte":95,"category":"passport","value_source":"4511  455564"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0288","text":"СНИЛС пенсионера 123—456—789 64 в реестре.","spans":[{"start_byte":32,"end_byte":50,"category":"snils","value_source":"123—456—789 64"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0289","text":"Оплата картой 2204–9947–4132–9761 прошла.","spans":[{"start_byte":26,"end_byte":51,"category":"card_pan","value_source":"2204–9947–4132–9761"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0290","text":"Контакт 8—916—123—45—67 (рабочий).","spans":[{"start_byte":15,"end_byte":38,"category":"phone","value_source":"8—916—123—45—67"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0291","text":"Паспорт 4508–455561 действителен.","spans":[{"start_byte":15,"end_byte":28,"category":"passport","value_source":"4508–455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0292","text":"На собрании было 10—15 человек без повестки.","spans":[],"split":"negative","source":"synthetic-no-pii"}
