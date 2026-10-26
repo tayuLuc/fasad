@@ -52,7 +52,7 @@ const CLASSES: [&str; 7] = [
 // snils 37→38 (g0288), card_pan 32→33 (g0289), phone/passport = structural
 // (ниже), остальные целы.
 // #78 (PR #289, golden-v1.11-контур): перевод negative→recall +4 card_pan
-// +1 iban (doc-valid g0281–g0285; телефоны ∉ CLASSES) = 237→242 — ПЕРЕСНЯТО
+// +1 iban (doc-valid g0289–g0293; телефоны ∉ CLASSES) = 237→242 — ПЕРЕСНЯТО
 // живым прогоном C0GOLDEN на этом дереве (урок #240), не арифметика.
 const GOLD_CHECKSUM_SPANS: usize = 242;
 
@@ -254,7 +254,7 @@ fn c0_covers_structural_classes_of_recall_split() {
     // знаменатель `GOLD_CHECKSUM_SPANS` НЕ тронут: passport ∉ CLASSES).
     // #101 (v1.11): +1 passport (g0291 en-dash) 40→41, +1 phone (g0290
     // em-dash) 42→43 (промер structural-слоя #200-A2).
-    // #78 (PR #289): +3 phone (перевод g0220–g0222 → g0286–g0288,
+    // #78 (PR #289): +3 phone (перевод g0220–g0222 → g0294–g0296,
     // value_source 8-формой канона g0205) = промер 43→46; passport цел
     // (паспортный перевод g0286 = #258, на main уже в счётчике).
     assert_eq!(per[0].2, 41, "паспортных gold-спанов в recall уехало");
