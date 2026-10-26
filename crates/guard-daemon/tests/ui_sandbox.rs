@@ -746,8 +746,18 @@ fn ui_payload_is_inside_the_binary() {
 ///    ОДИНАКОВЫЙ html (wire-мера, не артефакт-греп).
 #[test]
 fn ui_bytes_identical_in_both_bundles() {
+    // Feature-мишень (тот же контракт, что wire-зуб/`start_bin_gui`):
+    // `fasad-tray` = required-features = ["tray"] (Cargo.toml:14-21) =
+    // на feature-off ноге CI bin НЕ строится = CARGO_BIN_EXE = пустая
+    // строка = NotFound (промер CI build-test #311). SKIPPED-строка =
+    // молчание запрещено (#232); win/mac-ноги = фича включена = зуб битый.
+    let exe_tray = env!("CARGO_BIN_EXE_fasad-tray");
+    if exe_tray.is_empty() || std::path::Path::new(exe_tray).metadata().is_err() {
+        println!("SKIP|ui_bytes_identical_in_both_bundles|fasad-tray не собран (feature-off/§16)");
+        return;
+    }
     let a = std::fs::read(env!("CARGO_BIN_EXE_fasad")).expect("fasad читается");
-    let b = std::fs::read(env!("CARGO_BIN_EXE_fasad-tray")).expect("fasad-tray читается");
+    let b = std::fs::read(exe_tray).expect("fasad-tray читается");
     for marker in [
         "fasad — песочница".as_bytes(),
         b"pendingPane",
