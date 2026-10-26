@@ -121,6 +121,28 @@ impl Daemon {
     }
 
     fn start(env: &[(&str, &str)]) -> Self {
+        Self::start_bin(env!("CARGO_BIN_EXE_fasad"), env)
+    }
+
+    /// #309: трей-бинарь бандла (`fasad-tray.exe` = та же web-полка, GUI-
+    /// подсистема: banner в stdout при GUI-подсистеме = NULL-канал,
+    /// ready-контра = сокет `wait_ready`, адрес = `FASAD_PORT` фиксированный
+    /// из env харнеса; `FASAD_WIN_NO_UI` = headless-контра win-ноги CI
+    /// (win.rs:99, зуб #203), `FASAD_TEST_TRAY_CONTOUR` = feature-мишень
+    /// main.rs:185 для не-win-платформ = тот же bin, то же web).
+    fn start_tray(env: &[(&str, &str)]) -> Self {
+        Self::start_bin(env!("CARGO_BIN_EXE_fasad-tray"), env)
+    }
+
+    fn start_bin(bin_path: &str, env: &[(&str, &str)]) -> Self {
+        // #309 wire-контра: трей-бинарь = GUI-подсистема win (stdout =
+        // NULL-поток, primary-findings main.rs:35 «баннер #224 деградирован
+        // в null-поток») = banner-readiness = слепой слот. Канон =
+        // фиксированный порт + `wait_ready` (сокет = готовность,
+        // первичка wait_ready-контракта).
+        if bin_path.ends_with("fasad-tray") || bin_path.ends_with("fasad-tray.exe") {
+            return Self::start_bin_gui(bin_path, env);
+        }
         // #185: full-бинарь (feature `ort-inference`) без весов не стартует —
         // live-контур файла (UI-протокол, каскад-0-ожидания, ревью #87) =
         // feature-off бинарь; на ort-контуре — явная SKIPPED-строка и rc=0
@@ -133,7 +155,7 @@ impl Daemon {
             );
             std::process::exit(0);
         }
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_fasad"));
+        let mut cmd = Command::new(bin_path);
         cmd.env("FASAD_BIND", "127.0.0.1")
             .env("FASAD_PORT", "0")
             // #192: на машине оператора дефолт `FASAD_MODEL_DIR`
@@ -228,6 +250,53 @@ impl Daemon {
             "демон не напечатал баннер за {:?}; stdout: {seen:?}",
             started.elapsed()
         );
+    }
+
+    /// Готовность по сокету (GUI-подсистема: stdout = NULL-канал, баннер
+    /// не читается; win-lesson #226-A: stdout-контракты на GUI-бинаре
+    /// = первичка харнесей = не читаются).
+    fn start_bin_gui(bin_path: &str, env: &[(&str, &str)]) -> Self {
+        use std::sync::atomic::{AtomicU16, Ordering as AtomicOrdering};
+        static NEXT_PORT: AtomicU16 = AtomicU16::new(39800);
+        let port = NEXT_PORT.fetch_add(1, AtomicOrdering::SeqCst);
+        let mut cmd = Command::new(bin_path);
+        cmd.env("FASAD_BIND", "127.0.0.1")
+            .env("FASAD_PORT", port.to_string())
+            .env("FASAD_TEST_CASCADE0", "1")
+            .env_remove("FASAD_TEST_TRAY_CONTOUR")
+            .env_remove("FASAD_THREADS")
+            .env_remove("FASAD_MODEL_DIR")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("FASAD_TIMEOUT_MS")
+            .env("FASAD_CONFIG", fasad_empty_config())
+            .env("FASAD_WIN_NO_UI", "1")
+            // main.rs:185: feature-мишень = cfg!(tray) ИЛИ env-флаг; на
+            // linux-ноге CI `fasad-tray` не компилируется (§16 compile_error
+            // = bin отсутствует = SKIPPED выше); win/mac-ноги = фича есть.
+            // Env-флаг НЕ ставим: web-контра меряет НАСТОЯЩИЙ контур bin.
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let mut child = cmd.spawn().expect("трей-бинарь запускается");
+        let log = stderr_log(&mut child);
+        let addr = format!("127.0.0.1:{port}");
+        Self::wait_ready(&mut child, &addr, "(GUI: stdout=null)", &log);
+        DAEMONS.lock().expect("реестр не отравлен").push((
+            addr.clone(),
+            child.id(),
+            true,
+            std::sync::Arc::clone(&log),
+        ));
+        Self {
+            child,
+            addr,
+            log,
+            _stdout_lines: std::sync::mpsc::channel().1,
+        }
     }
 }
 
@@ -358,6 +427,10 @@ fn daemon_diag(addr: &str) -> String {
         }
         None => "в реестре (этот процесс) не значится".to_string(),
     }
+}
+
+fn get_raw(addr: &str, path: &str) -> Vec<u8> {
+    call(addr, "GET", path, &[], &[]).body
 }
 
 fn call(addr: &str, method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]) -> Reply {
@@ -655,6 +728,103 @@ fn ui_payload_is_inside_the_binary() {
             exe.windows(marker.len()).any(|w| w == marker),
             "в бинаре нет куска статики «{}»: сборка отдаёт её с диска",
             String::from_utf8_lossy(marker)
+        );
+    }
+}
+
+/// #309: web = ОДИН артефакт для двух бинарей бандла (win-первичка
+/// бандла v0.1.8: bin/fasad.exe + bin/fasad-tray.exe, операторский
+/// live-report «UI консоли сломан, UI трея исправлен» = #261-класс
+/// «один UI, стадия разная», НЕ html-разница). Контра:
+/// 1. побайтовая: rust-embed `Asset` = feature-neutral источник
+///    (`ui/index.html` один `folder = "ui"`, `cfg(tray)`-разветвлений
+///    web-слоя = 0, grep-контра) => оба бинаря несут ОДИН html —
+///    побайтово равные слайсы маркеров (`pendingPane`/`btnFetchS` =
+///    маркеры #226-pane; win-lesson #263: strings-греп exe = UTF-16
+///    = не канон, здесь = побайтовый слайс).
+/// 2. живая: два демона (bin fasad + bin fasad-tray) отдают GET / =
+///    ОДИНАКОВЫЙ html (wire-мера, не артефакт-греп).
+#[test]
+fn ui_bytes_identical_in_both_bundles() {
+    // Feature-мишень (тот же контракт, что wire-зуб/`start_bin_gui`):
+    // `fasad-tray` = required-features = ["tray"] (Cargo.toml:14-21) =
+    // на feature-off ноге CI bin НЕ строится = CARGO_BIN_EXE = пустая
+    // строка = NotFound (промер CI build-test #311). SKIPPED-строка =
+    // молчание запрещено (#232); win/mac-ноги = фича включена = зуб битый.
+    let exe_tray = env!("CARGO_BIN_EXE_fasad-tray");
+    if exe_tray.is_empty() || std::path::Path::new(exe_tray).metadata().is_err() {
+        println!("SKIP|ui_bytes_identical_in_both_bundles|fasad-tray не собран (feature-off/§16)");
+        return;
+    }
+    let a = std::fs::read(env!("CARGO_BIN_EXE_fasad")).expect("fasad читается");
+    let b = std::fs::read(exe_tray).expect("fasad-tray читается");
+    for marker in [
+        "fasad — песочница".as_bytes(),
+        b"pendingPane",
+        b"btnFetchS",
+        b"settingsAddr",
+        b"btnCopyAddr",
+        b"GUARD_HEADERS",
+    ] {
+        let sa = a
+            .windows(marker.len())
+            .position(|w| w == marker)
+            .unwrap_or_else(|| {
+                panic!(
+                    "в bin/fasad нет маркера {}",
+                    String::from_utf8_lossy(marker)
+                )
+            });
+        let mut found = None;
+        for (i, w) in b.windows(marker.len()).enumerate() {
+            if w == marker {
+                found = Some(i);
+                break;
+            }
+        }
+        let sb = found.unwrap_or_else(|| {
+            panic!(
+                "в bin/fasad-tray нет маркера {}",
+                String::from_utf8_lossy(marker)
+            )
+        });
+        // Слайс = маркер + 4 KiB хвоста = кусок одного html: побайтовое
+        // равенство двух бинарей = единый web-ресурс (offset не канон:
+        // линковка разная = фичи разные; побайтовое СОДЕРЖИМОЕ = канон).
+        let wa = &a[sa..(sa + marker.len() + 4096).min(a.len())];
+        let wb = &b[sb..(sb + marker.len() + 4096).min(b.len())];
+        assert_eq!(
+            wa,
+            wb,
+            "web-контент расходится между bin/fasad и bin/fasad-tray (маркер {}): html обязан быть ОДНИМ артефактом (#309/#261)",
+            String::from_utf8_lossy(marker)
+        );
+    }
+}
+
+/// #309 wire-контра живая: ДВА демона бандла (bin/fasad console +
+/// bin/fasad-tray GUI) отдают ОДИН html. bin/fasad-tray на не-win/mac
+/// мишенях = `tray`-фича компилируется (win/mac) = фича-мишень CI-msvc/
+/// mac-ног; linux = `compile_error` фичи (§16) = SKIPPED-строка (не
+/// молчание).
+#[test]
+fn ui_wire_identical_across_binaries() {
+    let exe_tray = env!("CARGO_BIN_EXE_fasad-tray");
+    if std::path::Path::new(exe_tray).metadata().is_err() {
+        println!(
+            "SKIP|ui_wire_identical_across_binaries|fasad-tray не собран (linux = compile_error фичи §16)"
+        );
+        return;
+    }
+    let d1 = Daemon::start(&[]);
+    let d2 = Daemon::start_tray(&[]);
+    for path in ["/", "/ui", "/assets/app.js", "/assets/app.css"] {
+        let a = get_raw(&d1.addr, path);
+        let b = get_raw(&d2.addr, path);
+        assert!(!a.is_empty() && !b.is_empty(), "{path} = пустой ответ");
+        assert_eq!(
+            a, b,
+            "GET {path}: bin/fasad vs bin/fasad-tray = РАЗНЫЙ ответ (#309: web обязан быть ОДИН)"
         );
     }
 }
