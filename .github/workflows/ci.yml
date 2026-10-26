@@ -317,6 +317,27 @@ jobs:
           fi
           cargo test -p guard-daemon --features ort-inference \
             --test hot_mount_live -- --test-threads=1 --nocapture
+      - name: "Живая полка #318: tray_stage_live (трей-строка = live-чтение, mac)"
+        # #318 (ревью #317): трей-строка = статика старта = после hot-mount
+        # #316 врёт «models-pending» (#226). Чин = stage_reader-замыкание
+        # (тот же атом MOUNT_LIVE). Legs (первичка файла полки): linux = ∅
+        # (§16: tray-фича не компилируется, «красная строка linux» =
+        # дискриминатор), win = CI-msvc compile-контра (шаг tray-check, GUI
+        # = операторский приёмник #313), mac = ЭТА нога: фича + веса
+        # (CI-fetch шаг #255-паттерн). ЗУБ = stdout-пара (#240):
+        # TRAYSTAGE|models-pending->cascade-0+models.
+        if: matrix.os == 'macos-14'
+        env:
+          FASAD_REQUIRE_MODELS: "1"
+        run: |
+          set -euo pipefail
+          if [ -n "${ORT_DIR:-}" ] && [ -d "$ORT_DIR/lib" ]; then
+            export ORT_PREFER_DYNAMIC_LINK=1
+            export ORT_LIB_PATH="$ORT_DIR/lib"
+            echo "tray_stage_live: mac-контур dylib ($ORT_DIR/lib)"
+          fi
+          cargo test -p guard-daemon --features tray,ort-inference \
+            --test tray_stage_live -- --test-threads=1 --nocapture
       - name: "Живая полка #109: decide_budget_live (пер-чанковый бюджет Decide, mac/linux)"
         # #109: цена Decide-чанка 4.5–8.6 с (audit §I1 п.3) = факт живого
         # графа — unit-стенд хука (таблица в guard-onnx/cascades) фальсифицировать

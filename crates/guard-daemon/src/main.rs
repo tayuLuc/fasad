@@ -310,7 +310,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Serving стартует первым: к моменту первого клика по иконке порт уже
         // слушает (иначе «Открыть UI» открывал бы страницу отказа).
         serve_on_worker(listener, app, shutdown.clone());
-        guard_daemon::tray::run(&state.inner_arc(), tray_stage, port, &shutdown);
+        // #318: stage = ЖИВОЕ замыкание (тот же атом, что /health):
+        // hot-mount #316 = трей-строка flip-ается на тике, статика старта в вине не живёт.
+        guard_daemon::tray::run(&state.inner_arc(), state.stage_reader(), port, &shutdown);
         // Выход из цикла трея = Quit из меню: serve-контур уже сворачивается по
         // флагу (`with_graceful_shutdown`), остаётся завершить процесс.
         Ok(())

@@ -67,6 +67,22 @@ pub mod ui;
 pub mod vault;
 pub mod weights;
 
+/// Живой читатель стадии (#318): тип живёт ВНЕ `tray` (тот cfg-сьедает его
+/// на feature-off/linux, §16, а `http::AppState::stage_reader` — общий
+/// прод-контур всех мишеней). Трей-поток (win/mac) не видит `AppState`,
+/// а stage в tooltip/иконке обязан быть ЖИВЫМ (#226-контра видимости):
+/// после hot-mount #316 `/health` = `cascade-0+models`, а статика старта
+/// «models-pending» в иконке = враньё витрины (из ревью #317).
+/// Injectable-контра харнеса (#151): юнит подаёт замыкание-переключалку,
+/// прод = `AppState::stage_reader` (тот же атом `MOUNT_LIVE`, что `/health`).
+pub type StageFn = std::sync::Arc<dyn Fn() -> &'static str + Send + Sync>;
+
+/// Статика-адаптер для контуров без live-чита (харнес `tray_live`, тесты).
+#[must_use]
+pub fn static_stage(stage: &'static str) -> StageFn {
+    std::sync::Arc::new(move || stage)
+}
+
 /// Ответ `/health`: чем крутится демон и что в нём реально включено.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Health {

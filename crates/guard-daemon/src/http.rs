@@ -221,6 +221,32 @@ impl AppState {
         &self.inner.vault
     }
 
+    /// #318 (debug-харнес): состояние с ЯВНЫМ `start_pending` для трей-контры
+    /// `stage_reader` (прод-путь = `with_pending`, этот = конструктор тестов).
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    #[allow(
+        clippy::expect_used,
+        clippy::missing_panics_doc,
+        clippy::must_use_candidate
+    )] // тестовая фабрика (panic = красный CI)
+    pub fn harness_pending(stage: &'static str) -> Self {
+        let cfg = Config::from_lookup(|_| None).expect("дефолты sane");
+        let health = crate::Health {
+            version: env!("CARGO_PKG_VERSION"),
+            stage,
+            mode: cfg.vault_mode.as_str(),
+        };
+        let vault = crate::vault::Vault::startup(cfg.vault_mode, cfg.mlock).expect("хранилище");
+        Self::with_pending(
+            cfg,
+            crate::schema::Schema::embedded().expect("канон"),
+            health,
+            vault,
+            true,
+        )
+    }
+
     /// Общее владение состоянием роутера — для **главного потока трея** (#128
     /// фаза 2).
     ///
@@ -228,9 +254,41 @@ impl AppState {
     /// счётчики, что `/health` (`vault()`), и обязан видеть тот же объект —
     /// две копии сошлись бы враньём в tooltip. Публичного `Arc`-доступа к
     /// роутеру это не открывает: поле `inner` приватно, accessor `pub(crate)`.
+    ///
+    /// #318: трей строит ЗАМЫКАНИЕ живого stage над этим `Arc` (замыкает
+    /// `AppState::live_stage`-выражение), поэтому tooltip/иконка = тот же
+    /// атом `MOUNT_LIVE`, что `/health` (#316): hot-mount = трей-строка
+    /// flip-ается на следующем тике, статика старта в вине не остаётся.
     #[must_use]
     pub fn inner_arc(&self) -> Arc<Inner> {
         Arc::clone(&self.inner)
+    }
+
+    /// Живой stage ЗАМЫКАНИЕМ для трея (#318): трей-контур (win/mac, §16)
+    /// не видит `AppState` (главный поток = `Arc<Inner>`), но обязан читать
+    /// stage ЖИВО, иначе после hot-mount #316 tooltip врёт «models-pending»
+    /// при смонтированных каскадах (#226-контра видимости). Фолбэк =
+    /// статика `base` (харнеси/контуры без ожидающего старта: live = base).
+    #[must_use]
+    pub fn stage_reader(&self) -> crate::StageFn {
+        let st = self.clone();
+        std::sync::Arc::new(move || st.live_stage())
+    }
+
+    /// #318 (debug-харнес): тот же reader для `Arc<Inner>` (трей-тесты
+    /// держат `Arc<Inner>`, как прод-`main`).
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    #[allow(clippy::must_use_candidate)]
+    pub fn stage_reader_of(inner: &std::sync::Arc<Inner>) -> crate::StageFn {
+        let inner = std::sync::Arc::clone(inner);
+        std::sync::Arc::new(move || {
+            if inner.start_pending && crate::cascades::mounted_live() {
+                crate::cascades::STAGE_MOUNTED
+            } else {
+                inner.health.stage
+            }
+        })
     }
 
     /// Пул клиентов прокси (`/v1/chat/completions`).
@@ -1219,8 +1277,39 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// Харнес-конструктор `Arc<Inner>` для трей-тестов (#318): трей читает тот же
+/// объект, что роутер, а поле `inner` приватно. Тестовая фабрика (panic =
+/// красный CI), debug-only; `-D clippy::expect_used` обходит
+/// тестово-харнесной блок (тот же канал, что `#![allow(expect_used)]` в
+/// интеграционных файлах).
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+#[allow(
+    clippy::expect_used,
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate
+)]
+pub fn new_tray_harness_state() -> std::sync::Arc<Inner> {
+    let cfg = Config::from_lookup(|_| None).expect("дефолты sane");
+    let stage = cfg.stage();
+    let health = crate::Health {
+        version: env!("CARGO_PKG_VERSION"),
+        stage,
+        mode: cfg.vault_mode.as_str(),
+    };
+    let vault = crate::vault::Vault::startup(cfg.vault_mode, cfg.mlock).expect("хранилище");
+    AppState::new(
+        cfg,
+        crate::schema::Schema::embedded().expect("канон"),
+        health,
+        vault,
+    )
+    .inner_arc()
+}
+
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)] // в тестах паника = красный CI, это канал ответа
+// в тестах паника = красный CI, это канал ответа
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
 
     /// P1: таблица заголовков в доке обязана совпадать с тем, что мы реально

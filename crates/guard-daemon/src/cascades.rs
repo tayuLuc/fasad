@@ -822,15 +822,34 @@ fn spawn_mount_poll_from_config(cfg: &Config) {
     spawn_mount_poll(cfg, dir);
 }
 
-/// Замок сериализации тестов, трогающих live-слот (процесс-global MOUNT +
-/// `MOUNT_LIVE`): integration-тесты http-контура держат его на всё время
-/// запроса (паттерн `MOUNT_LOCK` в `tests/cascade_http.rs`). Тестовый контур,
-/// debug-only.
+/// Замок СЕРИАЛИЗАЦИИ всех тестов, трогающих live-слот (процесс-global
+/// MOUNT + `MOUNT_LIVE`): integration-тесты http-контура держат его на всё
+/// время запроса (паттерн `MOUNT_LOCK` в `tests/cascade_http.rs`), unit-тесты
+/// lib-модулей (`cascades::tests::live_mount_*`, `http::tests::hot_mount_*`,
+/// `tray::tests::stage_reader_*`) — на всю решётку (lib-тесты гонятся
+/// параллельно: `--test-threads=2` = взаимные сбросы live-флага = красный
+/// flake, промер CI ubuntu run 40377147921: `live_mount_second_swap` упал
+/// чужим `reset_test_live_mount`). ВНИМАНИЕ: `#[tokio::test]` (single-thread
+/// runtime) НЕ держит std-блокирующий мьютекс через `.await` — только
+/// `tokio::sync::Mutex`; синхронным unit-тестам — `live_mount_lock_sync()`.
+/// Тестовый контур, debug-only.
 #[cfg(debug_assertions)]
 pub async fn live_mount_lock() -> tokio::sync::MutexGuard<'static, ()> {
-    static L: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    L.lock().await
+    // `lock()` = async-очередь (FIFO); `blocking_lock()` у синхронной пары
+    // может проскочить вперёд — единица сериализации = ЗАМОК, порядок
+    // ожидания = не контракт (контракта = взаимногоисключения, промер flake'а).
+    LIVE_MOUNT_TEST_LOCK.lock().await
 }
+
+/// Синхронная пара того же замка (обычные `#[test]` в lib-контуре).
+#[cfg(debug_assertions)]
+#[allow(clippy::missing_panics_doc)] // контракт теста: poison = чужая паника = пере-запуск решётки, не прод
+pub fn live_mount_lock_sync() -> tokio::sync::MutexGuard<'static, ()> {
+    LIVE_MOUNT_TEST_LOCK.blocking_lock()
+}
+
+#[cfg(debug_assertions)]
+static LIVE_MOUNT_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Чистая функция решения poll-потока (#316): что делать на этом тике.
 /// Вынесена из `thread::spawn`-тела, чтобы решётка жила в unit-CI без
@@ -2214,6 +2233,7 @@ mod tests {
     /// live = false = маршруты остаются 503 = fail-closed).
     #[test]
     fn live_mount_swap_contract_and_broken_weights_keep_pending() {
+        let _g = live_mount_lock_sync();
         reset_test_live_mount();
         assert!(!mounted_live(), "чистый слот = не live");
         assert_eq!(mount_last_error(), None, "чистый слот = без причины");
@@ -2240,6 +2260,7 @@ mod tests {
     /// ДО загрузки; на мок-слое проверяем сам контракт флага.
     #[test]
     fn live_mount_second_swap_is_noop_flag_contract() {
+        let _g = live_mount_lock_sync();
         reset_test_live_mount();
         install_test_live_mount(Some(Arc::new(FakeCascade12::fixed())), None);
         let first = mounted_live();
@@ -2254,6 +2275,7 @@ mod tests {
     #[cfg(not(feature = "ort-inference"))]
     #[test]
     fn live_mount_without_inference_refuses_and_keeps_slot() {
+        let _g = live_mount_lock_sync();
         reset_test_live_mount();
         let cfg = crate::config::Config::from_lookup(|_| None).expect("дефолты sane");
         let e = live_mount(&cfg, std::path::Path::new("/nonexistent-316"))
