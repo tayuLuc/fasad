@@ -335,7 +335,7 @@ jobs:
             export ORT_LIB_PATH="$ORT_DIR/lib"
             echo "win_simu: mac-контур dylib ($ORT_DIR/lib)"
           fi
-          cargo test -p guard-daemon --features tray,ort-inference \
+          cargo test -p guard-daemon --features ort-inference \
             --test wire_e2e win_simu -- --test-threads=1 --nocapture
       - name: "Живая полка #318: tray_stage_live (трей-строка = live-чтение, mac)"
         # #318 (ревью #317): трей-строка = статика старта = после hot-mount
