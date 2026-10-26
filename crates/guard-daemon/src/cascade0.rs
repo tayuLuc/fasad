@@ -2095,6 +2095,21 @@ fn gap_is_key_word(bytes: &[u8], l: usize, r: usize) -> bool {
     })
 }
 
+/// Гэп = граница строки/колонка таблицы (`\n`, `\t`, с факультативными
+/// пробелами): Excel-колонка «серия/номер», копипаст = каждое значение в
+/// своей ячейке. Мост [`passport_bridge`] её легитимирует (#212 g0230,
+/// #216 (d) таб-ячейка), и #258-CUT обязан резать на ней ЗАМКНУТЫЙ канон:
+/// иначе «серия 4508 455561\nсерия 4508 455561» склеивается в 20-значный
+/// прогон, verdict-отшив молчит, и N−1 паспортов таблицы теряются
+/// (FN-класс issue #279; inline-зеркало с гэпом « серия » режется и живёт).
+fn gap_is_row_break(bytes: &[u8], l: usize, r: usize) -> bool {
+    l < r
+        && bytes[l..r]
+            .iter()
+            .all(|&b| matches!(b, b'\n' | b'\t' | b' '))
+        && bytes[l..r].iter().any(|&b| matches!(b, b'\n' | b'\t'))
+}
+
 fn passport_frame_windows(bytes: &[u8]) -> Vec<(usize, usize)> {
     let n = bytes.len();
     let mut out = Vec::new();
@@ -2176,7 +2191,13 @@ fn passport_frame_windows(bytes: &[u8]) -> Vec<(usize, usize)> {
             // конца группы).
             if groups == 2
                 && j > end
-                && gap_is_key_word(bytes, end, j)
+                && (gap_is_key_word(bytes, end, j)
+                    // #279: граница строки/колонка таблицы = второй ключ,
+                    // зеркало « серия »-разреза (первичка: «серия 4508
+                    // 455561\nсерия 4508 455561» inline-версия режется и
+                    // живёт 2 спана, построчная = 20-прогон = verdict-отшив
+                    // = N−1 потерь).
+                    || gap_is_row_break(bytes, end, j))
                 && passport_key_before(bytes, start)
                 && canon_all_digits(bytes, start, end).len() == PASSPORT_SPEC.max
             {
@@ -5732,6 +5753,57 @@ mod tests {
             w,
             vec![(11, 20), (11, 23), (41, 52)],
             "общий старт = грани не гасятся, порядок (start,end) детерминирован"
+        );
+    }
+
+    /// #279: Excel-колонка («серия\tnoмер» копипастом) = каркасный CUT на
+    /// таб-гэпе: повторяющийся канон ×N даёт N паспортов (до фикса 20-прогон
+    /// = verdict-отшив = 1 спан). `\n`-повтор одного канона = g0281-контра
+    /// (одинOccupied-диапазон), таб-колонка = разные ячейки = N канонов.
+    #[test]
+    fn c0_passport_tab_column_repeat_survives() {
+        for n in [2usize, 5, 30] {
+            let text = vec!["серия 4508 455561"; n].join("\t");
+            let hits = scan(&text, &schema());
+            let p: Vec<&str> = hits
+                .iter()
+                .filter(|h| h.class.as_str() == "passport")
+                .map(|h| &text[h.span.start..h.span.end])
+                .collect();
+            assert_eq!(p.len(), n, "таб-колонка ×{n}: {p:?}");
+            assert!(p.iter().all(|s| *s == "4508 455561"), "{p:?}");
+        }
+        // Разные серии через таб = тот же N (первичка таблицы промера).
+        let text = (0..10)
+            .map(|i| format!("серия {} {}", 4508 + i, 455_561 + i))
+            .collect::<Vec<_>>()
+            .join("\t");
+        let hits = scan(&text, &schema());
+        assert_eq!(
+            hits.iter()
+                .filter(|h| h.class.as_str() == "passport")
+                .count(),
+            10
+        );
+        // Word-gap-грань (g0281 #215, первичка промера): повтор одного
+        // канона через перевод строки = ОДИН occupied-диапазон (word-gap-мост,
+        // CUT на слово не срабатывает — «\nсерия» = гэп с буквами) = граница
+        // контура, НЕ чин #279 (Excel-колонка = таб = разные ячейки = CUT).
+        let hits = scan("серия 4508 455561\nсерия 4508 455561", &schema());
+        assert_eq!(
+            hits.iter()
+                .filter(|h| h.class.as_str() == "passport")
+                .count(),
+            1,
+            "\\n-повтор одного канона = word-gap-мост #215 = 1 (граница)"
+        );
+        // Бейт-грань: таб = граница колонки: «4508\t455561» без
+        // ведущего ключа молчит (#216 (d)-контра живёт).
+        let hits = scan("4508\t455561", &schema());
+        assert!(
+            hits.iter().all(|h| h.class.as_str() != "passport"),
+            "таб без ключа зажёгся: {:?}",
+            classes(&hits)
         );
     }
 
