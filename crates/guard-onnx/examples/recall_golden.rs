@@ -317,9 +317,11 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
     // `check_splice`-вето живого пути (данные вне доверия) здесь осознанно
     // не дублируется — это ОФЛАЙН-измерение качества; вместо него счётчик
     // `unk_rows`. Инвентарь UNK-литер recall-строк golden = ровно `№`
-    // (промер 4b-3C: Spiber `'№'` → [507, UNK]); перед прогоном `№` -> пробел
-    // (промер: после замены 0 UNK-строк; row-level метрике байтовые координаты
-    // не нужны, присутствие литеры в «да»-вероятности не содержательно).
+    // (промер 4b-3C, словарем назван неверно — правка #87/PR#88: это Decide
+    // Unigram, `№` → [507, UNK]; у rubert id 248 в словаре); перед прогоном
+    // канон #88 `№` -> `Nо` (тот же канон, что в продукте, // scan-lang:allow
+    // `canonicalize_decide_input`; промер: после канона 0 UNK-строк;
+    // row-level метрике байтовые координаты не нужны).
     let adir = cache.join("onnx-community/GLiNER2.5-Decide-ONNX");
     let amodel = adir.join("onnx/model_q4f16.onnx");
     require(&amodel)?;
@@ -344,7 +346,12 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
     // в B-замере харнес шёл по сырому тексту, повторяем).
     let mut unk_rows = 0u32;
     for r in &rows {
-        let state = DecideArbiter::sanitize_state(&r.text.replace('№', " "));
+        // #88: канон входа = общий с продуктом (`canonicalize_decide_input`:
+        // `№` → `Nо` (ASCII N + кириллическая о), байт-сохраняющий). Прежняя ad-hoc замена `№`→пробел // scan-lang:allow
+        // меряла харнесу ДРУГОЙ вход, чем демон; с общим каноном пара
+        // харнес↔продукт сходится и на номерных строках.
+        let state =
+            DecideArbiter::sanitize_state(&guard_onnx::decide::canonicalize_decide_input(&r.text));
         let whole = format!("{block} {state}");
         let ids: Vec<u32> = atok
             .encode(whole.as_str(), false)
