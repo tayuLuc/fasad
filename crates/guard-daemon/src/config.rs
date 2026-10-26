@@ -104,6 +104,12 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 3_000;
 /// fail-open в диагностике).
 pub const DEFAULT_READ_TIMEOUT_MS: u64 = 30_000;
 
+/// Интервал опроса «появились ли веса» для горячего монтажа (#316), мс.
+/// `layout_complete` = дешёвый stat по пяти файлам (weights.rs), поэтому
+/// частый poll не грузит диск; 4000 мс = компромисс «докачал — подхвачено»
+/// vs шум stat. 0 = контур выключен (poll-поток не поднимается).
+pub const DEFAULT_MOUNT_POLL_MS: u64 = 4_000;
+
 /// Режимы хранилища, наружу которых выставляет `/v1/*` (SPEC §3, #56 п.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VaultMode {
@@ -601,6 +607,11 @@ pub const FILE_ALLOWED_KEYS: &[FileKey] = &[
         ui_editable: true,
     },
     FileKey {
+        key: "FASAD_MOUNT_POLL_MS",
+        label: "Интервал горячего монтажа весов, мс (0 = выключен, #316)",
+        ui_editable: true,
+    },
+    FileKey {
         key: "FASAD_MAX_BODY_BYTES",
         label: "Лимит тела запроса, байт",
         ui_editable: true,
@@ -792,6 +803,8 @@ pub struct Config {
     /// Бюджет тишины между кусками входящего тела, мс
     /// (`FASAD_READ_TIMEOUT_MS`).
     pub read_timeout_ms: u64,
+    /// Интервал горячего монтажа весов (#316), мс; 0 = выключен.
+    pub mount_poll_ms: u64,
     /// Разрешённые upstream'ы прокси (`FASAD_UPSTREAM_ALLOWLIST`, SPEC §8:
     /// «никаких сетевых вызовов кроме явного `X-Upstream-URL`»). Пустой список
     /// — прокси выключен: каждый запрос на `/v1/chat/completions` получает 403
@@ -1462,6 +1475,18 @@ impl Config {
                 "FASAD_READ_TIMEOUT_MS",
                 DEFAULT_READ_TIMEOUT_MS,
             )?,
+            // `u64_or`/`positive` = канон «> 0» (общий валидатор Budget-ключей),
+            // а 0 = легальный выключатель наблюдателя (#316): свой разбор,
+            // не ослабление общего валидатора.
+            mount_poll_ms: lookup("FASAD_MOUNT_POLL_MS").map_or(
+                Ok(DEFAULT_MOUNT_POLL_MS),
+                |v| {
+                    v.trim().parse::<u64>().map_err(|_| ConfigError::BadNumber {
+                        var: "FASAD_MOUNT_POLL_MS",
+                        value: v,
+                    })
+                },
+            )?,
             upstream_allowlist: parse_allowlist(lookup("FASAD_UPSTREAM_ALLOWLIST").as_deref())?,
             proxy_loopback_http: bool_or(&mut lookup, "FASAD_PROXY_LOOPBACK_HTTP", false)?,
             // Срез ключей файла ставит `with_file_origin` на границе загрузки;
@@ -1528,6 +1553,7 @@ impl Config {
             "FASAD_THREADS" => self.threads.to_string(),
             "FASAD_TIMEOUT_MS" => self.timeout_ms.to_string(),
             "FASAD_READ_TIMEOUT_MS" => self.read_timeout_ms.to_string(),
+            "FASAD_MOUNT_POLL_MS" => self.mount_poll_ms.to_string(),
             "FASAD_MAX_BODY_BYTES" => self.max_body_bytes.to_string(),
             "FASAD_VAULT_MODE" => self.vault_mode.as_str().to_owned(),
             "FASAD_GRAY_LO" => self.thresholds.gray_lo.to_string(),
@@ -2810,7 +2836,7 @@ mod tests {
         // публичный контракт UI/README, молчаливое расхождение = ложь таблицы.
         assert_eq!(
             FILE_ALLOWED_KEYS.len(),
-            18,
+            19,
             "реестр ключей изменился: синхронизируй README §Файл конфигурации, docs/release.md §Запуск и CFG_NUMERIC в ui/app.js"
         );
         for k in FILE_ALLOWED_KEYS {

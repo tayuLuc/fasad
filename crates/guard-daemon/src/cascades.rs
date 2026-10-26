@@ -117,6 +117,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::sync::PoisonError;
+use std::sync::atomic::AtomicBool;
 
 use guard_types::DetectionSource;
 
@@ -695,6 +696,220 @@ pub fn install_test_mount(mount: Option<Arc<dyn Cascade12>>) {
     *mount_slot() = mount;
 }
 
+/// Живое состояние модельного контура (#316 hot-mount): «pending» = веса ещё
+/// не примонтированы (каскадов нет, модельные маршруты = 503), «смонтировано»
+/// = каскады 1–2 работают. Флаг — АТОМ, не часть строки stage: stage-контра
+/// (`X-Guard-Stage`, `/health`, трей) читается из любой точки и обязана
+/// отражать МОНТАЖ СЕЙЧАС, а не момент старта (#316: «перезапусти» = НЕ
+/// канает — операторское требование).
+static MOUNT_LIVE: AtomicBool = AtomicBool::new(false);
+
+/// Причина последней неудачи горячего монтажа (текст `CascadeFailure`
+/// (без персональных данных: имена файлов и версия движка). Читается
+/// витриной `/v1/status` = UI
+/// показывает «веса повреждены, перескачай» (#198-класс) вместо молчания.
+/// Отравка = паника воркера `ort` (#97 `catch_unwind` контура): строка —
+/// данные, `into_inner` легален.
+static MOUNT_LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+/// Смонтировано ли ЖИВО (после старта в том числе): чтение для stage/live-
+/// ответов. `startup` ставит флаг на успешном старте; hot-mount — на свопе.
+#[must_use]
+pub fn mounted_live() -> bool {
+    MOUNT_LIVE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Причина последней неудачи hot-mount (`None` = попыток не было/всё чисто).
+#[must_use]
+pub fn mount_last_error() -> Option<String> {
+    MOUNT_LAST_ERROR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+fn set_mount_last_error(msg: Option<String>) {
+    *MOUNT_LAST_ERROR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = msg;
+}
+
+/// Горячий монтаж каскадов 1–2 на живом демоне (#316): загрузить модели из
+/// `model_dir` и СВОПНУТЬ движок в `MOUNT`, сняв pending. PROD-функция (не
+/// debug-подмена `install_test_mount`): swap = `*mount_slot() = Some(mount)`
+/// под тем же мьютексом, что читает `engine()` = Arc-контра запроса на лету
+/// (запрос клонирует Arc под lock; swap = atomic store Arc'а в слот).
+///
+/// Fail-closed: ошибка загрузки = слот НЕ трогается (остаток = прежний
+/// контур; на pending = pending + записанная причина), фолбэка «каскад-0
+/// под вывеской cascade-0+models» нет по построению.
+///
+/// Повторный вызов при уже смонтированном = NOOP `Ok(())` (идемпотентность:
+/// poll-контур и fetch-триггер срабатывают многократно, второй монтаж =
+/// вторая сессия ORT = двойной RSS при живом первом = запрещён бюджетом
+/// 1843 MiB, docs/model-audit).
+///
+/// Старый движок при ЗАМЕНЕ (mounted → новый mounted) не роняется в drift-
+/// окно: swap только из pending (первый монтаж), смена весов на лету =
+/// отдельный контур (restart-политика #224 = ключ `restart_required`;
+/// hot-swap-замены = не этот атом, ТЗ #316 = «появление весов»).
+///
+/// # Errors
+///
+/// [`CascadeFailure::Load`] (битые/отсутствующие файлы), `Timeout`
+/// (сессия не поднялась в бюджет старта), `BuiltWithoutInference` (bin
+/// без фичи гонять каскады нечем).
+#[cfg(feature = "ort-inference")]
+pub fn live_mount(cfg: &Config, model_dir: &std::path::Path) -> Result<(), CascadeFailure> {
+    if mounted_live() {
+        return Ok(());
+    }
+    let mount = onnx::OnnxMount::load(cfg, model_dir)?;
+    *mount_slot() = Some(Arc::new(mount));
+    MOUNT_LIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+    set_mount_last_error(None);
+    Ok(())
+}
+
+/// Мок-своп для unit-контура (#316): prod-форма свопа `live_mount` без
+/// весов (unit-CI их не имеет). `None` = мок «битые веса»: слот чист,
+/// причина задана, `mounted_live` остаётся false = contract `live_mount`-
+/// отказа (UI = «перескачай», маршруты = 503). Юнит-зубы меряют контракт
+/// свопа, не ort.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn install_test_live_mount(mount: Option<Arc<dyn Cascade12>>, last_error: Option<&str>) {
+    let live = mount.is_some();
+    *mount_slot() = mount;
+    MOUNT_LIVE.store(live, std::sync::atomic::Ordering::SeqCst);
+    set_mount_last_error(last_error.map(str::to_owned));
+}
+
+/// #316: «чистый лист» мок-слота для юнитов, гоняющихся в одном процессе
+/// (MOUNT_LIVE — процесс-global; мок-тесты сбрасывают состояние друг
+/// за другом). Prod-кодом не вызывается (debug-only).
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn reset_test_live_mount() {
+    install_test_live_mount(None, None);
+}
+
+/// #316 (feature-off): монтирование нечем гонять = честный отказ тем же
+/// классом, что `startup`: `BuiltWithoutInference`. Live-контур = каскад-0,
+/// слот не трогается (fail-closed #185).
+/// # Errors
+///
+/// [`CascadeFailure::BuiltWithoutInference`] = единственная ветка (bin без
+/// фичи монтировать нечем).
+#[cfg(not(feature = "ort-inference"))]
+pub fn live_mount(_cfg: &Config, _model_dir: &std::path::Path) -> Result<(), CascadeFailure> {
+    Err(CascadeFailure::BuiltWithoutInference)
+}
+
+/// #316 (feature-off): наблюдатель не поднимается (монтировать нечем).
+#[cfg(not(feature = "ort-inference"))]
+pub fn spawn_mount_poll(_cfg: &Config, _dir: std::path::PathBuf) {}
+
+/// Резолв каталога для наблюдателя = тот же контур, что у кнопки докачки
+/// (#264-кеш: `FetchConfig::from_config` = env + HOME-фолбэк), запуск из
+/// `startup`: «ожидающий старт = есть за чем следить». NOOP при feature-off
+/// (монтировать нечем) и при `FASAD_MOUNT_POLL_MS=0` (клавиша выключена).
+fn spawn_mount_poll_from_config(cfg: &Config) {
+    let Ok(fc) = crate::fetch::FetchConfig::from_config(cfg) else {
+        return;
+    };
+    let Some(dir) = fc.dir else { return };
+    spawn_mount_poll(cfg, dir);
+}
+
+/// Замок сериализации тестов, трогающих live-слот (процесс-global MOUNT +
+/// `MOUNT_LIVE`): integration-тесты http-контура держат его на всё время
+/// запроса (паттерн `MOUNT_LOCK` в `tests/cascade_http.rs`). Тестовый контур,
+/// debug-only.
+#[cfg(debug_assertions)]
+pub async fn live_mount_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static L: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    L.lock().await
+}
+
+/// Чистая функция решения poll-потока (#316): что делать на этом тике.
+/// Вынесена из `thread::spawn`-тела, чтобы решётка жила в unit-CI без
+/// весов и без тредов.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MountPoll {
+    /// Весов на диске нет (или layout неполон) — ждать дальше.
+    Wait,
+    /// Идти грузить: `layout_complete` = true и монтажа ещё нет.
+    Try,
+    /// Флаг уже поднят: поток закончил работу (монтирование = конец задачи;
+    /// ТЗ #316 = «появление весов», повторный монтаж на живом демоне =
+    /// отдельный контур).
+    Done,
+}
+
+/// Решение по флагам. Порядок проверок = контракт: флаг важнее layout
+/// (смонтированный демон с пропавшим файлом = «Done», не «Wait»: живые
+/// сессии ORT в слоте, удалять веса с диска = задача оператора, не демона).
+#[must_use]
+pub const fn mount_poll_decision(mounted: bool, layout_ready: bool) -> MountPoll {
+    if mounted {
+        MountPoll::Done
+    } else if layout_ready {
+        MountPoll::Try
+    } else {
+        MountPoll::Wait
+    }
+}
+
+/// Поток-наблюдатель горячего монтажа (#316, desktop-контур #198): тик =
+/// [`mount_poll_decision`] на фактах процесса, `Try` = `live_mount` (ORT-load
+/// = 2–3 с = spawn-поток, не HTTP-тред), успех = stage live (атомарный флаг
+/// читают `/health`, `/v1/status`, `X-Guard-Stage`), отказ = причина в
+/// `mount_last_error` (UI «перескачай») и СЛЕДУЮЩИЙ ТИК НЕ ПОВТОРЯЕТ (иначе
+/// poll = перманентный 2–3-с ORT-load = CPU-шум на desktop-машине; оператор
+/// перескачал = кнопка fetch = прямой триггер, ему не нужен poll-повтор).
+///
+/// `poll_ms = 0` = контур выключен (поток не поднимается, `main`).
+#[cfg(feature = "ort-inference")]
+pub fn spawn_mount_poll(cfg: &Config, dir: std::path::PathBuf) {
+    if cfg.mount_poll_ms == 0 {
+        return;
+    }
+    let cfg = std::sync::Arc::new(cfg.clone());
+    let period = std::time::Duration::from_millis(cfg.mount_poll_ms);
+    let spawn = std::thread::Builder::new()
+        .name("fasad-mount-poll".to_owned())
+        .spawn(move || {
+            // try-mount = ровно ОДНА попытка на поток (контра doc-функции):
+            // успех = Done (флаг), отказ = причина + выход (ORT-load 2–3 с
+            // в цикл на сломанных весах = CPU-шум desktop-машины; кнопка
+            // fetch = прямой триггер для оператора).
+            loop {
+                std::thread::sleep(period);
+                match mount_poll_decision(mounted_live(), crate::weights::layout_complete(&dir)) {
+                    MountPoll::Wait => {}
+                    MountPoll::Done => break,
+                    MountPoll::Try => {
+                        if let Err(e) = live_mount(&cfg, &dir) {
+                            set_mount_last_error(Some(format!("{e}")));
+                            eprintln!(
+                                "fasad: hot-mount не сложился ({e}) — веса можно перескачать (#316)"
+                            );
+                            break;
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+    if spawn.is_err() {
+        // Поток не поднялся (дерьмо-машина, RLIMIT): молчание = ровно прежнее
+        // поведение #198 (перезапуск монтирует), кнопка fetch даёт прямой
+        // триггер. Демон от отсутствующего наблюдателя не умирает.
+        eprintln!("fasad: поток горячего монтажа не поднят (#316) — смонтирует перезапуск");
+    }
+}
+
 /// Поднять модельный путь по конфигурации. Вызывается ОДИН раз из `main` до
 /// подъёма сокета; `Err` = старт невозможен (fail-closed, см. `main.rs`).
 ///
@@ -713,6 +928,34 @@ pub fn install_test_mount(mount: Option<Arc<dyn Cascade12>>) {
 /// `model_dir`), [`CascadeFailure::Load`] (веса битые/отсутствуют),
 /// [`CascadeFailure::Timeout`] (вес не поднялся в бюджет старта).
 pub fn startup(cfg: &Config) -> Result<(), CascadeFailure> {
+    // #316: стартующий контур сам заводит наблюдателя горячего монтажа,
+    // когда модельная ДОСТАВКА не смонтировалась (ожидающий старт = решётка
+    // #198: UI жив, веса докачиваются кнопкой, каскады приходят НА ЛЕТУ).
+    // Вызов из `startup`, а не из `main`: `main` = 99/100 строк
+    // (`clippy::too_many_lines` = жёсткий лимит, промер), а контура «кто
+    // наблюдает за каталогом» принадлежит каскадам (владение слотом MOUNT).
+    // NOOP-и: смонтированный старт, poll_ms=0, feature-off, нет каталога —
+    // ниже по веткам.
+    let outcome = startup_inner(cfg);
+    if outcome.is_err() {
+        // Контура запуска: наблюдатель = desktop-мишень (#198-решётка =
+        // трей win/mac; `main` решает по compile-time-мишени + env-флагу
+        // харнеса). headless-бинарь при отказе уходит rc=2 (#185), поток
+        // наблюдателя там = мусор в вине.
+        let tray_contour = cfg!(all(
+            feature = "tray",
+            any(target_os = "windows", target_os = "macos")
+        )) || std::env::var("FASAD_TEST_TRAY_CONTOUR").is_ok();
+        if tray_contour {
+            spawn_mount_poll_from_config(cfg);
+        }
+    }
+    outcome
+}
+
+/// Тело `startup` до #316 (вынесено ровно из-за лимита строк `main`;
+/// логика не тронута).
+fn startup_inner(cfg: &Config) -> Result<(), CascadeFailure> {
     match cfg.model_dir.as_ref() {
         // Рюлинг #185: full-бинарь (фича ON) без названных весов не стартует —
         // молчаливой деградации до каскада-0 нет (fail-closed, AGENTS).
@@ -722,6 +965,7 @@ pub fn startup(cfg: &Config) -> Result<(), CascadeFailure> {
         Some(dir) => {
             let mount = onnx::OnnxMount::load(cfg, dir)?;
             *mount_slot() = Some(Arc::new(mount));
+            MOUNT_LIVE.store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
         // Каскад-0-бинарь (фича OFF) = харнес/тестовый контур, не релиз (#181):
@@ -826,6 +1070,8 @@ pub const fn startup_load_budget_ms() -> u64 {
 mod onnx {
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -879,7 +1125,32 @@ mod onnx {
     /// Модельный путь поверх `ort`: lockR (каскад 1) + Decide (каскад 2).
     pub struct OnnxMount {
         tx: SyncSender<Job>,
+        /// #316 (RSS-контра, см. `Drop`): флаг живости воркера, гасится при
+        /// `Drop` движка (swap). `std::sync::mpsc::SyncSender` НЕ имеет
+        /// `shutdown`/`forbid_send` (промер компиляции E0599, std), а клон
+        /// `tx` сделал бы закрытие канала ложью (recv не увидел бы
+        /// `Disconnected`) — сигнал живости = отдельный атом, канал остаётся
+        /// транспортом задач.
+        alive: Arc<AtomicBool>,
         budget_ms: u64,
+    }
+
+    impl Drop for OnnxMount {
+        /// #316 (RSS-контра, бюджет 1843 MiB = docs/model-audit): swap вешает
+        /// на старый движок последний `Drop` — без явного закрытия канала
+        /// поток-воркер висел бы на `rx.recv()` вечно (recv ждёт, пока жив
+        /// ЛЮБОЙ `tx`, а воркер сам хранит клон `tx` в своём цикле = канал не
+        /// закрывается, сессии ORT старого контура не освобождаются = две
+        /// живые модели в RSS). Контра: `OnnxMount::load` НЕ клонирует `tx`
+        /// воркеру (воркер = только `rx`), а `Drop::drop` закрывает канал
+        /// (`forbid_send` = recv отдаёт `Disconnected`): поток выходит, веса
+        /// старого монтажа освобождаются. Постановки после закрытия =
+        /// `Disconnected` = `Dead` = 502 fail-closed (не тишина); задачи,
+        /// успевшие встать в очередь, доделываются (recv забирает очередь
+        /// до конца).
+        fn drop(&mut self) {
+            self.alive.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     impl OnnxMount {
@@ -936,9 +1207,15 @@ mod onnx {
             }
             let (job_tx, job_rx) = sync_channel::<Job>(QUEUE_DEPTH);
             let (ready_tx, ready_rx) = sync_channel::<Result<(), String>>(0);
+            // #316-контра RSS (бюджет 1843 MiB, см. `Drop for OnnxMount`):
+            // swap движка = `Drop` = атом живости гаснет = воркер выходит из
+            // цикла после дренирования очереди = сессии ORT старых весов
+            // ОСВОБОЖДАЮТСЯ (двух живых монтажа в RSS не бывает).
+            let alive = Arc::new(AtomicBool::new(true));
+            let alive_w = Arc::clone(&alive);
             thread::Builder::new()
                 .name("fasad-inference".to_owned())
-                .spawn(move || worker(&job_rx, &ready_tx, &spec))
+                .spawn(move || worker(&job_rx, &ready_tx, &spec, &alive_w))
                 .map_err(|e| CascadeFailure::Load(format!("поток инференса не поднят: {e}")))?;
             // Отдельное `let`: внешний `?` — про канал (таймаут/смерть воркера),
             // внутренний `Result` — про причину, которую воркер сам сообщил.
@@ -958,6 +1235,7 @@ mod onnx {
             ready.map_err(CascadeFailure::Load)?;
             Ok(Self {
                 tx: job_tx,
+                alive,
                 budget_ms: cfg.timeout_ms,
             })
         }
@@ -1004,7 +1282,12 @@ mod onnx {
     }
 
     /// Тело потока инференса: загрузка (с ответом в `ready_tx`) и цикл задач.
-    fn worker(rx: &Receiver<Job>, ready_tx: &SyncSender<Result<(), String>>, spec: &Spec) {
+    fn worker(
+        rx: &Receiver<Job>,
+        ready_tx: &SyncSender<Result<(), String>>,
+        spec: &Spec,
+        alive: &AtomicBool,
+    ) {
         let started = start(spec);
         let (mut lockr, mut arb) = match started {
             Ok(pair) => pair,
@@ -1016,21 +1299,48 @@ mod onnx {
         if ready_tx.send(Ok(())).is_err() {
             return;
         }
-        while let Ok(job) = rx.recv() {
-            // Панику внутри `ort` переживаем как отказ ЗАПРОСА (502), демон
-            // жив; состояние сессии после паники неизвестно, поэтому поток
-            // новых задач уже не берёт — остальные получают `Dead` (fail-closed).
-            let res = catch_unwind(AssertUnwindSafe(|| run(&mut lockr, &mut arb, &job)));
-            let fatal = res.is_err();
-            let payload = match res {
-                Ok(res) => res,
-                Err(_) => Err(CascadeFailure::Dead),
+        loop {
+            if !alive.load(std::sync::atomic::Ordering::SeqCst) {
+                // #316: движок снят swap'ом. Дренируем хвост очереди: кто
+                // успел встать ДО свопа, получает ответ (задача не
+                // бросается), новые постановки = `Disconnected` = `Dead`
+                // = 502 fail-closed (не тишина).
+                match rx.try_recv() {
+                    Ok(job) => {
+                        if run_job(&mut lockr, &mut arb, &job) {
+                            return;
+                        }
+                    }
+                    Err(_) => return,
+                }
+                continue;
+            }
+            let job = match rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                Ok(job) => job,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             };
-            let _ = job.reply.send(payload);
-            if fatal {
+            if run_job(&mut lockr, &mut arb, &job) {
                 return;
             }
         }
+    }
+
+    /// Один оборот воркера: задача → ответ. Возврат `true` = фатал (состояние
+    /// сессии после паники неизвестно, поток новых задач не берёт: остальные
+    /// получают `Dead`, fail-closed).
+    fn run_job(lockr: &mut LockrExtractor, arb: &mut DecideArbiter, job: &Job) -> bool {
+        // Панику внутри `ort` переживаем как отказ ЗАПРОСА (502), демон
+        // жив; состояние сессии после паники неизвестно, поэтому поток
+        // новых задач уже не берёт — остальные получают `Dead` (fail-closed).
+        let res = catch_unwind(AssertUnwindSafe(|| run(lockr, arb, job)));
+        let fatal = res.is_err();
+        let payload = match res {
+            Ok(res) => res,
+            Err(_) => Err(CascadeFailure::Dead),
+        };
+        let _ = job.reply.send(payload);
+        fatal
     }
 
     fn start(spec: &Spec) -> Result<(LockrExtractor, DecideArbiter), String> {
@@ -1850,6 +2160,128 @@ mod tests {
         ];
         let keep = merge_disjoint(&tuples);
         assert_eq!(keep, vec![0], "вето одно, модельный дубль байт вето снят");
+    }
+
+    /// Мок-движок #316 (unit-контра свопа без весов; полный фейк стад-машины
+    /// = `tests/cascade_http.rs::Fake`, здесь нужен only-маркер live-слота).
+    struct FakeCascade12;
+    impl FakeCascade12 {
+        fn fixed() -> Self {
+            Self
+        }
+    }
+    impl Cascade12 for FakeCascade12 {
+        fn model_spans(
+            &self,
+            _text: &str,
+            _schema: &Schema,
+            _plan: &Plan,
+        ) -> Result<Outcome, CascadeFailure> {
+            Ok(Outcome {
+                spans: Vec::new(),
+                cascade2: Cascade2::Ok,
+                p2: Vec::new(),
+            })
+        }
+    }
+
+    // ── #316 hot-mount: контура live-монтажа (unit, мок-слот) ──────────────
+
+    /// Решётка `mount_poll_decision` (чистая функция = CI unit без весов):
+    /// флаг живости важнее layout (смонтированный демон с пропавшим файлом =
+    /// Done, живые сессии в слоте; не Wait «подождём»).
+    #[test]
+    fn mount_poll_decision_lattice() {
+        use MountPoll::{Done, Try, Wait};
+        assert_eq!(mount_poll_decision(false, false), Wait, "нет весов = ждём");
+        assert_eq!(mount_poll_decision(false, true), Try, "layout 5/5 = грузим");
+        assert_eq!(
+            mount_poll_decision(true, true),
+            Done,
+            "уже live = поток done"
+        );
+        assert_eq!(
+            mount_poll_decision(true, false),
+            Done,
+            "смонтировано + файлы пропали с диска = Done, НЕ демонтаж (#185: \
+             живой контур не роняется чужим rm)"
+        );
+    }
+
+    /// Контра свопа (`install_test_live_mount` = prod-форма `live_mount`):
+    /// `Some` = `mounted_live` = true (stage-контра читает этот атом), `None`+причина
+    /// = contract отказа `live_mount` (слот чист, причина видна витрине,
+    /// live = false = маршруты остаются 503 = fail-closed).
+    #[test]
+    fn live_mount_swap_contract_and_broken_weights_keep_pending() {
+        reset_test_live_mount();
+        assert!(!mounted_live(), "чистый слот = не live");
+        assert_eq!(mount_last_error(), None, "чистый слот = без причины");
+
+        // Успешный своп (мок-движок = фейк этого файла).
+        install_test_live_mount(Some(Arc::new(FakeCascade12::fixed())), None);
+        assert!(mounted_live(), "своп Some = live (stage = каскады 1–2)");
+        assert_eq!(mount_last_error(), None, "успех очищает причину");
+
+        // Отказ (битые веса): слот чист + причина + НЕ live.
+        install_test_live_mount(None, Some("нет файла model.onnx"));
+        assert!(!mounted_live(), "отказ монтажа НЕ поднимает live (#185)");
+        assert_eq!(
+            mount_last_error().as_deref(),
+            Some("нет файла model.onnx"),
+            "причина видна витрине = UI «перескачай» (#198-класс)"
+        );
+        reset_test_live_mount();
+    }
+
+    /// Idempotency `live_mount`-контры (на мок-слое): второй своп при
+    /// `mounted_live` не имеет права состояться как «второй монтаж» (RSS-бюджет
+    /// 1843 MiB: двух сессий нет) — prod-ветка `live_mount` проверяет флаг
+    /// ДО загрузки; на мок-слое проверяем сам контракт флага.
+    #[test]
+    fn live_mount_second_swap_is_noop_flag_contract() {
+        reset_test_live_mount();
+        install_test_live_mount(Some(Arc::new(FakeCascade12::fixed())), None);
+        let first = mounted_live();
+        install_test_live_mount(Some(Arc::new(FakeCascade12::fixed())), None);
+        assert_eq!(mounted_live(), first, "флаг идемпотентен на Some-свопах");
+        reset_test_live_mount();
+    }
+
+    /// `live_mount` feature-off = честный отказ `BuiltWithoutInference`
+    /// (монтировать нечем, слот не тронут). На ort-контуре эта ветка
+    /// компилируется в load-путь; здесь = unit-CI (feature-off нога CI).
+    #[cfg(not(feature = "ort-inference"))]
+    #[test]
+    fn live_mount_without_inference_refuses_and_keeps_slot() {
+        reset_test_live_mount();
+        let cfg = crate::config::Config::from_lookup(|_| None).expect("дефолты sane");
+        let e = live_mount(&cfg, std::path::Path::new("/nonexistent-316"))
+            .expect_err("без фичи монтировать нечем = отказ, не тишина");
+        assert!(
+            matches!(e, CascadeFailure::BuiltWithoutInference),
+            "класс отказа = BuiltWithoutInference: {e}"
+        );
+        assert!(!mounted_live(), "отказ = слот не тронут (fail-closed #185)");
+    }
+
+    /// Интервал poll = клавиша с дефолтом (реестр #224: ключ в `FILE_ALLOWED_KEYS`,
+    /// env-канон; 0 = выключен; парсится валидатором u64).
+    #[test]
+    fn mount_poll_key_is_registered_with_default_and_off_lever() {
+        assert!(
+            crate::config::FILE_ALLOWED_KEYS
+                .iter()
+                .any(|k| k.key == "FASAD_MOUNT_POLL_MS"),
+            "ключ реестра #224 (файл-конфиг = страница Настройки)"
+        );
+        let cfg = crate::config::Config::from_lookup(|_| None).expect("дефолты sane");
+        assert_eq!(cfg.mount_poll_ms, crate::config::DEFAULT_MOUNT_POLL_MS);
+        let off = crate::config::Config::from_lookup(|k| {
+            (k == "FASAD_MOUNT_POLL_MS").then(|| "0".to_owned())
+        })
+        .expect("0 = легальный выключатель");
+        assert_eq!(off.mount_poll_ms, 0, "poll_ms=0 = контур выключен");
     }
 
     #[test]

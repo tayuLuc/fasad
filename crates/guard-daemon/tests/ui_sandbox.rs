@@ -1375,9 +1375,10 @@ fn mask_dropped_counter_island() {
 
 /// JS-зуб #252-дочистка: `CFG_NUMERIC` из ui/app.js += `FASAD_FRAME_MIN`
 /// (#221-контра: number-поле = README-обещание диапазона). Ожидается
-/// `[0.51, 1, 0.01, 11]`: нижняя граница 0.51 = шаговая сетка над ОТКРЫТОЙ
+/// `[0.51, 1, 0.01, 12]` (#316: += `FASAD_MOUNT_POLL_MS`, 11→12): нижняя
+/// граница 0.51 = шаговая сетка над ОТКРЫТОЙ
 /// 0.5 (первичка `validate_value`: `v > 0.5`, min 0.5 = UI-ловушка «приму
-/// и откажу»), max 1 = вето-потолок, счётчик ключей = 11 (мута-контра:
+/// и откажу»), max 1 = вето-потолок, счётчик ключей = 12 (мута-контра:
 /// молчаливое добавление/удаление ключа краснит зуб). Мутация
 /// диапазона/ключа = красный (тот же `run_js_fixture` #203).
 #[test]
@@ -1389,7 +1390,7 @@ fn cfg_numeric_frame_min_island() {
         eprintln!("SKIP cfg_numeric_frame_min: ни node, ни osascript недоступны");
         return;
     }
-    assert_eq!(out.trim(), "[0.51,1,0.01,11]", "CFG_NUMERIC: {out}");
+    assert_eq!(out.trim(), "[0.51,1,0.01,12]", "CFG_NUMERIC: {out}");
 }
 
 /// JS-зуб #225: шаблон-промпта «с задачей» + `labelForms` (обе формы метки,
@@ -1753,6 +1754,37 @@ fn ui_html_carries_steps_windows_and_pending_pane() {
             "app.js не знает про {id} (id-контракт разъехался)"
         );
     }
+}
+
+/// #316 UI-контра: «перезапусти» = заменяющее (оператор-требование).
+/// Pending-баннер/строка/текст done = «подхватятся на лету»,Рестарт-ритуал
+/// из pending-контура исчез (grep-запрет), «перескачай» = класс битых весов.
+#[test]
+fn ui_hot_mount_texts_replaced_restart_ritual() {
+    let html = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/index.html"))
+        .expect("index.html читается");
+    let js = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js"))
+        .expect("app.js читается");
+    assert!(
+        html.contains("подхватятся на лету"),
+        "#316: pending-баннер обязан обещать live-подхват"
+    );
+    assert!(
+        !html.contains("перезапусти fasad"),
+        "#316: «перезапусти fasad» вытеснен из pending-баннера (заменяющее)"
+    );
+    assert!(
+        js.contains("подхватятся на лету, перезапуск не нужен"),
+        "#316: fetch-done = live-текст (ТЗ #192-«перезапусти» = заменяющее)"
+    );
+    assert!(
+        js.contains("веса повреждены, перескачай"),
+        "#316: mount.last_error = честный класс «перескачай» (#198)"
+    );
+    assert!(
+        js.contains("каскады 1–2 примонтированы на лету"),
+        "#316: poll-страховка внешней докачки = live-строка"
+    );
 }
 
 // --- #220/#221: табы, страница настроек, GET/POST /v1/config ----------------

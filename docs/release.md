@@ -224,6 +224,7 @@ glibc-пол: SPEC §9 требовал сборки на 22.04 (glibc 2.35) р�
 | `FASAD_THREADS` | 8 | config.rs:76 |
 | `FASAD_TIMEOUT_MS` (исходящие) | 3000 | config.rs:81 |
 | `FASAD_READ_TIMEOUT_MS` (входящее тело) | 30000 | config.rs:93 |
+| `FASAD_MOUNT_POLL_MS` (интервал hot-mount, #316; 0 = выключен) | 4000 | config.rs `DEFAULT_MOUNT_POLL_MS`, cascades.rs `spawn_mount_poll` |
 | `FASAD_GRAY_LO` / `FASAD_GRAY_HI` | 0.22 / 0.80 | config.rs:59, :62 |
 | `FASAD_TAU_LOW` / `FASAD_TAU_HIGH` | 0.20 / 0.80 | guard-onnx/src/routing.rs:70, :74 |
 | `FASAD_VAULT_MODE` | stateless-контур; значения `2\|3\|session\|stateless` | config.rs:345 |

@@ -125,6 +125,7 @@ http = env-аффорданс).
 | `FASAD_PORT` | 8765 | да |
 | `FASAD_THREADS` | 8 | да |
 | `FASAD_TIMEOUT_MS` / `FASAD_READ_TIMEOUT_MS` | 3000 / 30000 | да |
+| `FASAD_MOUNT_POLL_MS` | 4000 (0 = выключен) | да; интервал горячего монтажа (#316) |
 | `FASAD_MAX_BODY_BYTES` | 1048576 | да |
 | `FASAD_VAULT_MODE` | stateless | да |
 | `FASAD_GRAY_LO` / `FASAD_GRAY_HI` / `FASAD_TAU_LOW` / `FASAD_TAU_HIGH` / `FASAD_ARBITER_ALPHA` | 0.22 / 0.80 / 0.20 / 0.80 / 0.5 | да (инвариант `low ≤ lo < hi ≤ high` проверяется общим отказом) |

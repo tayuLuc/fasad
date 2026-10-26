@@ -12,7 +12,7 @@
 | `X-Guard-Redacted-Count` | `analyze`, `anonymize`, `deanonymize`, `sessions`-DELETE | число подмен (на `analyze` — найденных спанов, на `deanonymize` — возвращённых токенов); `0` — осмысленный ноль |
 | `X-Guard-Max-Risk` | `analyze` | максимальный `score` |
 | `X-Guard-Latency-Ms` | все четыре POST/DELETE | миллисекунды, округление вниз |
-| `X-Guard-Stage` | все успешные ответы | `cascade-0-only` — стадия харнесов/тестов (каскад-0-бинарь без фичи; full-бинарь без весов не стартует, #185); `cascade-0+models` — продакшн: смонтированные каскады 1–2 (`FASAD_MODEL_DIR` + фича `ort-inference`) |
+| `X-Guard-Stage` | все успешные ответы | `cascade-0-only` — стадия харнесов/тестов (каскад-0-бинарь без фичи; full-бинарь без весов не стартует, #185); `cascade-0+models` — продакшн: смонтированные каскады 1–2 (`FASAD_MODEL_DIR` + фича `ort-inference`); стадия ЖИВАЯ (#316): desktop-ожидающий старт (`models-pending`) после горячего монтажа весов = `cascade-0+models` без перезапуска |
 | `X-Guard-Cascade2` | `analyze` и ответы прокси `chat/completions` | лег каскада 2 на ЭТОМ запросе: `ok` (отработал, включая short-circuit — серой зоны не было), `skipped` (лег был нужен и пропущен: контракт склейки нарушен на входе, `№` #88; серые спаны остались на `p1`), `absent` (каскада 2 в процессе нет); **наше расширение, вне транскрипта SPEC §8** |
 | `X-Guard-Policy-Applied` | ответ `analyze` | какая политика применена; **наше расширение, вне SPEC §8** |
 | `X-Guard-Score-Threshold` | ответ `analyze` | фактически применённый порог; **наше расширение, вне SPEC §8** |
