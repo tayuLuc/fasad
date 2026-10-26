@@ -47,7 +47,11 @@ const CLASSES: [&str; 7] = [
 /// прежде чем требовать покрытия: правка датасета обязана красить счётчик, а
 /// не молча уменьшать знаменатель. golden-v1.8 (#215): +5 passport = 235;
 /// golden-v1.9 (#242): +3 passport цепочки g0283 = 238 (промер C0GOLDEN).
-const GOLD_CHECKSUM_SPANS: usize = 235;
+// #101 (golden-v1.11): +2 чексуммных recall-спана (g0289 card_pan en-dash,
+// g0290 phone em-dash ∉ CLASSES? phone ∈ CLASSES) = промер 235→237:
+// snils 37→38 (g0288), card_pan 32→33 (g0289), phone/passport = structural
+// (ниже), остальные целы.
+const GOLD_CHECKSUM_SPANS: usize = 237;
 
 /// Сколько из них email (#222): base64-обход email не закрывает (prefilter
 /// `scan_base64` требует ASCII-цифру в декоде, addr-spec = не цифры;
@@ -242,8 +246,10 @@ fn c0_covers_structural_classes_of_recall_split() {
     // (первичка-FP recall: хозяева «4508··455561»+«4509··455562» = 2) +
     // g0287 (цепь-4 через ключи = 4) (промер RECALL_CAT: passport 34→40;
     // знаменатель `GOLD_CHECKSUM_SPANS` НЕ тронут: passport ∉ CLASSES).
-    assert_eq!(per[0].2, 40, "паспортных gold-спанов в recall уехало");
-    assert_eq!(per[1].2, 42, "телефонных gold-спанов в recall уехало");
+    // #101 (v1.11): +1 passport (g0291 en-dash) 40→41, +1 phone (g0290
+    // em-dash) 42→43 (промер structural-слоя #200-A2).
+    assert_eq!(per[0].2, 41, "паспортных gold-спанов в recall уехало");
+    assert_eq!(per[1].2, 43, "телефонных gold-спанов в recall уехало");
     assert!(
         miss.is_empty(),
         "структурный слой #200-A2 пропускает {} из {}:\n{}",
