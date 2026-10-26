@@ -2409,9 +2409,7 @@ fn passport_window_verdict(
         if b > a && g[b - 1] == b' ' {
             b -= 1;
         }
-        b - a == "серия".len()
-            || b - a == "номер".len()
-            || b - a == "\u{2116}".len()
+        b - a == "серия".len() || b - a == "номер".len() || b - a == "\u{2116}".len()
     });
     if all_key_word_gaps && digit_run_len_after(bytes, start) != 4 {
         return None;
