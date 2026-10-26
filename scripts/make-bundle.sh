@@ -547,17 +547,24 @@ if [ "$is_win" -eq 1 ]; then
 
 ## Быстрый старт (первый запуск)
 
-1. Веса (один раз, PowerShell из каталога бандла):
-
-        .\scripts\fetch-models.ps1
-        \$env:FASAD_MODEL_DIR = "\$env:USERPROFILE\.cache\fasad-models"
+1. Веса (один раз). Быстрый путь = без PowerShell: запуск шага 2 без весов
+   поднимает ожидающий UI — в карточке весов кнопка **«Скачать веса»** (#198),
+   демон качает сам (sha256-гейт, кеш \`\$env:USERPROFILE\\.cache\\fasad-models\`
+   = \`%USERPROFILE%\\.cache\\fasad-models\`, #264), после \`done\` —
+   «Перезапусти fasad» (#264: **env НЕ нужен**, кеш-дефолт резолвится и при
+   двойном клике). Ручная докачка PowerShell'ом: \`.\\scripts\\fetch-models.ps1\`
+   (тот же кеш). \`\$env:FASAD_MODEL_DIR = "\$env:USERPROFILE\\.cache\\fasad-models"\` —
+   **override для нетипичного пути** кеша (#264, заменяющее PowerShell-ритуал
+   #190/#182), не прервеквизит.
 
 2. Запуск: \`bin\fasad-tray.exe\` (иконка в трее; двойной клик/пункт меню
    «Открыть fasad UI» открывает браузер) — или консольный \`bin\fasad.exe\`.
    **Двойной клик без весов = карточка, не отказ (#198):** трей-бинарь
    поднимает ожидающий UI (stage \`models-pending\`), в карточке весов —
-   кнопка «Скачать веса» (демон качает сам, sha256-гейт), после \`done\` —
-   «Перезапусти fasad»: трей-меню → «Выход (graceful)», запуск заново.
+   кнопка «Скачать веса» (демон качает сам, sha256-гейт, кеш
+   \`%USERPROFILE%\\.cache\\fasad-models\` = #264, **env НЕ нужен**), после
+   \`done\` — «Перезапусти fasad» = запуск \`bin\\fasad-tray.exe\` заново
+   (трей-меню → «Выход (graceful)») = \`cascade-0+models\`.
    Консольный \`bin\fasad.exe\` без весов = прежний отказ rc=2 (#185,
    prod fail-closed) + текст с путём докачки (#199).
    Иконка не появилась, а процесс жив = она скрыта в свёрнутой области
@@ -584,10 +591,12 @@ if [ "$is_win" -eq 1 ]; then
 
 ## Модели (каскады 1–2)
 
-    .\scripts\fetch-models.ps1                        # sha256-гейт по манифесту
-    \$env:FASAD_MODEL_DIR = "\$env:USERPROFILE\.cache\fasad-models"
+    .\scripts\fetch-models.ps1   # sha256-гейт по манифесту; кеш =
+                                  # %USERPROFILE%\.cache\fasad-models (и трей
+                                  # качает туда же; env НЕ нужен #264)
 
-Git-Bash (Git for Windows) — альтернатива: \`./scripts/fetch-models.sh\` +
+Override нетипичного пути кеша (не прервеквизит, #264):
+\`\$env:FASAD_MODEL_DIR = "<свой путь>"\`. Git-Bash (Git for Windows) — альтернатива: \`./scripts/fetch-models.sh\` +
 \`export FASAD_MODEL_DIR="$HOME/.cache/fasad-models"\` (кеш тот же). Детали,
 раскладка, зеркало HF — \`models/README.md\`. Полный контур = бинарь + веса +
 \`FASAD_MODEL_DIR\`; без весов консольный продукт не стартует (#185, причина +
@@ -680,9 +689,12 @@ if [ "$is_win" -eq 1 ] || [ "$os" = "Darwin" ]; then
 - Лог трея: \`\${XDG_CONFIG_HOME:-~/.config}/fasad/fasad-tray.log\` (#263,
   ротация 5 МБ): при «запустил и забыл» читать ЕГО.
 - Трей и консоль = ОДИН UI, стадия разная (#264): desktop-витрина против
-  headless; env-контракт и \`/health\` идентичны.
+  headless; env-контракт и \`/health\` идентичны. win: трей
+  \`bin\fasad-tray.exe\` (pending + кнопка «Скачать веса») против
+  \`bin\fasad.exe\` (#185).
 - win-полка = верхний блок того же контура (PowerShell-первенство #190:
-  кеш \`%USERPROFILE%\\.cache\\fasad-models\`, лог \`%APPDATA%\\fasad\`).
+  кеш \`%USERPROFILE%\\.cache\\fasad-models\`, лог \`%APPDATA%\\fasad\`,
+  \$env:FASAD_MODEL_DIR = override).
 EOF
 else
     cat >>"$stage/README.md" <<'EOF'
