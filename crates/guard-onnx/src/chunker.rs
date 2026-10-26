@@ -1114,8 +1114,9 @@ mod tests {
             .collect();
         assert_eq!(
             rows.len(),
-            297,
-            "golden-v1 — 297 строк (v1.12 #160; N≥150, AGENTS §4)"
+            296,
+            "golden-v1 — 296 строк (v1.12 #160 + #78/PR #289: вырезан \
+             forgotten-дубликат V19_NEG #258 = −1 строка; N≥150, AGENTS §4)"
         );
         assert!(rows.iter().all(|r| !r.is_empty()));
         rows

@@ -168,130 +168,129 @@
 {"id":"g0168","text":"В платежке БИК 04452522 — восемь цифр, банк вернул документ.","spans":[{"start_byte":27,"end_byte":35,"category":"bik","value_source":"04452522"}],"split":"negative","source":"primary-invalid-vector"}
 {"id":"g0169","text":"Лондон вернул GB82WEST12345698765433: контрольная пара не бьётся.","spans":[{"start_byte":26,"end_byte":48,"category":"iban","value_source":"GB82WEST12345698765433"}],"split":"negative","source":"primary-invalid-vector"}
 {"id":"g0170","text":"Предапробление карты 2200000000000000 не прошло Луна-чек.","spans":[{"start_byte":40,"end_byte":56,"category":"card_pan","value_source":"2200000000000000"}],"split":"negative","source":"primary-invalid-vector"}
-{"id":"g0171","text":"Номер карты клиента из бэкапа 2019: 2200000000000004 — архив, не трогать.","spans":[],"split":"negative","source":"doc-valid-vector"}
-{"id":"g0172","text":"Эталонный счёт для интеграционного теста: DE89370400440532013000.","spans":[],"split":"negative","source":"doc-valid-vector"}
-{"id":"g0173","text":"Старый тестовый CVC-заглухиш 5555555555554444 остался в фикстурах.","spans":[],"split":"negative","source":"doc-valid-vector"}
-{"id":"g0174","text":"Амекс-фикстура 378282246310005 лежит в моках с прошлой команды.","spans":[],"split":"negative","source":"doc-valid-vector"}
-{"id":"g0175","text":"Динерс-тест 30569309025904 мигрировал из старой базы вместе с дампом.","spans":[],"split":"negative","source":"doc-valid-vector"}
-{"id":"g0176","text":"SSN-формат в переписке с подрядчиком из США: 123-45-6789.","spans":[],"split":"negative","source":"foreign-bait"}
-{"id":"g0177","text":"US phone +1 415 555 0132 в CRM-заметке.","spans":[],"split":"negative","source":"foreign-bait"}
-{"id":"g0178","text":"Форма дат US-команды: 04/21/2024, дедлайн 11/02/2024.","spans":[],"split":"negative","source":"foreign-bait"}
-{"id":"g0179","text":"Планерка в 15:28 перенесена на 2 октября, кабинет 230.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0180","text":"Планерка в 18:08 перенесена на 3 октября, кабинет 279.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0181","text":"Планерка в 10:02 перенесена на 18 октября, кабинет 287.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0182","text":"Латентность каскада 0 вышла на 851 мс при бюджете 1000 мс.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0183","text":"Дозвониться в поддержку не удалось: 42 минут в очереди.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0184","text":"Дозвониться в поддержку не удалось: 25 минут в очереди.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0185","text":"Пароль от стенда лежит в менеджере секретов, проект «Кристалл».","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0186","text":"Релиз 0.8.20 выкатываем в пятницу, фича-фриз со вторника.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0187","text":"Тонер в принтере #47 на исходе, заказано 7 пачек.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0188","text":"Пароль от стенда лежит в менеджере секретов, проект «Вектор».","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0189","text":"Счёт за облачную инфраструктуру: 194 руб. 49 коп., оплатить до конца месяца.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0190","text":"Обновите подписку на сервис: истекает через 19 дней.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0191","text":"Латентность каскада 0 вышла на 213 мс при бюджете 1000 мс.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0192","text":"Планерка в 09:25 перенесена на 17 октября, кабинет 160.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0193","text":"Латентность каскада 0 вышла на 790 мс при бюджете 1000 мс.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0194","text":"Релиз 0.5.11 выкатываем в пятницу, фича-фриз со вторника.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0195","text":"Латентность каскада 0 вышла на 840 мс при бюджете 1000 мс.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0196","text":"Обновите подписку на сервис: истекает через 8 дней.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0197","text":"Планерка в 15:22 перенесена на 11 октября, кабинет 258.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0198","text":"Дозвониться в поддержку не удалось: 56 минут в очереди.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0199","text":"Релиз 0.5.13 выкатываем в пятницу, фича-фриз со вторника.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0200","text":"Обновите подписку на сервис: истекает через 3 дней.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0201","text":"Запрос выписки по контрагенту ИНН 5065049620796 (ЕГРЮЛ, active).","spans":[{"start_byte":63,"end_byte":76,"category":"ogrn","value_source":"5065049620796"}],"split":"recall","source":"primary-valid-vector"}
-{"id":"g0202","text":"СНИЛС заёмщика из анкеты 38405134670 — сверка ПФР пройдена.","spans":[{"start_byte":46,"end_byte":57,"category":"snils","value_source":"38405134670"}],"split":"recall","source":"primary-valid-vector"}
-{"id":"g0203","text":"Возврат по реквизитам: FR14 2004 1010 0505 0001 3M02 606.","spans":[{"start_byte":42,"end_byte":75,"category":"iban","value_source":"FR1420041010050500013M02606"}],"split":"recall","source":"primary-valid-vector"}
-{"id":"g0204","text":"ОГРНИП ИП Громова 302500000000001 внесён в реестр.","spans":[{"start_byte":33,"end_byte":48,"category":"ogrnip","value_source":"302500000000001"}],"split":"recall","source":"primary-valid-vector"}
-{"id":"g0205","text":"Анкета заёмщика\n Паспорт 4508 455561 выдан 15.04.2015\nСтатус: в работе.","spans":[{"start_byte":46,"end_byte":57,"category":"passport","value_source":"4508 455561"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0206","text":"Служебная записка\n Паспорт гражданина РФ 45 08 455561, выдан МВД.","spans":[{"start_byte":76,"end_byte":88,"category":"passport","value_source":"45 08 455561"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0207","text":"Договор оказания услуг\n Реквизиты: паспорт 58 53 808531, выдан ОВД\nПодписал оператор.","spans":[{"start_byte":79,"end_byte":91,"category":"passport","value_source":"58 53 808531"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0208","text":"SMS-уведомление\n Контакт: тел. +7 916 123-45-67,\nПодготовил оператор.","spans":[{"start_byte":52,"end_byte":68,"category":"phone","value_source":"79161234567"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0209","text":"Тикет SUP-20451\n Контакт: +79161234567\nСтатус: в работе.","spans":[{"start_byte":38,"end_byte":50,"category":"phone","value_source":"79161234567"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0210","text":"Анкета заёмщика\n Телефон: 8 (916) 123-45-67\nСтатус: в работе.","spans":[{"start_byte":47,"end_byte":64,"category":"phone","value_source":"89161234567"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0211","text":"Заявка на возврат\n Контакт: 7 (916) 123-45-67, ждём звонок.\nКомментарий: срочно.","spans":[{"start_byte":50,"end_byte":67,"category":"phone","value_source":"79161234567"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0212","text":"Карточка контрагента\n Тел.: 79055552528\nСтатус: в работе.","spans":[{"start_byte":50,"end_byte":61,"category":"phone","value_source":"79055552528"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0213","text":"Тикет TCK-31102\n моб. +7 916 123-45-67\nПодготовил оператор.","spans":[{"start_byte":30,"end_byte":46,"category":"phone","value_source":"79161234567"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0214","text":"Договор оказания услуг\n Контрагент: ООО «Оникс», ИНН 9253382406\nСтатус: в работе.","spans":[{"start_byte":96,"end_byte":106,"category":"inn","value_source":"9253382406"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0215","text":"Карточка контрагента\n Реквизиты: ИНН 9279540801\nПодготовил оператор, смена Б.","spans":[{"start_byte":68,"end_byte":78,"category":"inn","value_source":"9279540801"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0216","text":"Анкета заёмщика\n ИНН 9398646980, СНИЛС 12345678901\nСтатус: в работе.","spans":[{"start_byte":38,"end_byte":48,"category":"inn","value_source":"9398646980"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0217","text":"Отчёт за квартал: 4508.2015 переслан в архив, дедлайн 2.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0218","text":"Выпуск 2015 года, тираж 4508 экземпляров, подписка не продлена.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0219","text":"Платёж 4508 2015 прошёл эквайринг, чек отправлен на почту.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0220","text":"Городской отдел продаж: +7 495 123-45-67, приём с 9 до 18.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0221","text":"Внутренний добавочный 8 (495) 123-45-67, звонок через АТС.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0222","text":"Справочная колл-центра 8-800-555-35-35, звонок бесплатный.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0223","text":"Регламент: заполните поле 4508 и приложение 455561 до пятницы.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0224","text":"Паспорт выдан 15.04.2015, срок действия до 15.04.2030.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0225","text":"Клиент 916 123 45 68 не дозвонился, оператор проверил номер.","spans":[{"start_byte":13,"end_byte":26,"category":"inn","value_source":"9161234568"}],"split":"negative","source":"primary-invalid-vector"}
-{"id":"g0226","text":"Оплата 4508455562 проведена по терминалу кассы №3.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0227","text":"Анкета заёмщика\n Серия 4508 номер 455561, выдан ОВД\nСтатус: в работе.","spans":[{"start_byte":42,"end_byte":64,"category":"passport","value_source":"4508 номер 455561"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0228","text":"Кадровый учёт\n Серия 4508, 455561, дата 12.04.2015\nПодготовил оператор.","spans":[{"start_byte":38,"end_byte":50,"category":"passport","value_source":"4508, 455561"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0229","text":"Заявление\n Серия 4508 | 455561 | ОВД района\nКомментарий: срочно.","spans":[{"start_byte":31,"end_byte":44,"category":"passport","value_source":"4508 | 455561"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0230","text":"Карточка сотрудника\n Серия 4508\n455561\nСтатус: в работе.","spans":[{"start_byte":50,"end_byte":61,"category":"passport","value_source":"4508\n455561"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0231","text":"Уведомление\n Серия 4508 и 455561 приняты в работу\nПодписал оператор.","spans":[{"start_byte":35,"end_byte":49,"category":"passport","value_source":"4508 и 455561"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0232","text":"Реестр\n СЕРИЯ 4508 НОМЕР 455561\nСмена Б.","spans":[{"start_byte":25,"end_byte":47,"category":"passport","value_source":"4508 НОМЕР 455561"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0233","text":"Форма приёма\n Серия 4508 (455561), принят 12.04.2015\nСтатус: закрыт.","spans":[{"start_byte":36,"end_byte":48,"category":"passport","value_source":"4508 (455561"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0234","text":"4508 серия 455561 указаны в двух полях формы.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0235","text":"ИНН 4508 номер 455561 не проходит проверку.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0236","text":"Серия 4508, 455561, 12.04.2015 — три поля формы.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0237","text":"Отчёт за квартал: 4508 | 455561 переслан в архив, дедлайн 2.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0238","text":"Платёж 4508 и 2015 прошёл эквайринг, чек отправлен на почту.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0239","text":"СНИЛС работника 586-595-917 80, СНИЛС супруга 611-357-865 80,\nСНИЛС ребёнка 151-981-910 82. Приём заявлений окончен.","spans":[{"start_byte":30,"end_byte":44,"category":"snils","value_source":"58659591780"},{"start_byte":72,"end_byte":86,"category":"snils","value_source":"61135786580"},{"start_byte":114,"end_byte":128,"category":"snils","value_source":"15198191082"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0240","text":"Реестр застрахованных: 384-051-346 70, 358-168-076 09, 134-940-005 39 (СНИЛС подтверждены ПФР).","spans":[{"start_byte":43,"end_byte":57,"category":"snils","value_source":"38405134670"},{"start_byte":59,"end_byte":73,"category":"snils","value_source":"35816807609"},{"start_byte":75,"end_byte":89,"category":"snils","value_source":"13494000539"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0241","text":"Реквизиты контрагента: оплата картой по ОГРНИП 313132804400022.","spans":[{"start_byte":87,"end_byte":102,"category":"ogrnip","value_source":"313132804400022"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0242","text":"Клиент просил оплату картой, платёж прошёл по ОГРНИП 314220119000137.","spans":[{"start_byte":97,"end_byte":112,"category":"ogrnip","value_source":"314220119000137"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0243","text":"СНИЛС 112-233-455 95 не подтверждён, сверка в ПФР отклонена.","spans":[{"start_byte":11,"end_byte":25,"category":"snils","value_source":"11223345595"}],"split":"negative","source":"primary-invalid-vector"}
-{"id":"g0244","text":"СНИЛС 112-233-455 95 112-233-455 96 — сверка, оба отклонены.","spans":[{"start_byte":11,"end_byte":25,"category":"snils","value_source":"11223345595"},{"start_byte":26,"end_byte":40,"category":"snils","value_source":"11223345596"}],"split":"negative","source":"primary-invalid-vector"}
-{"id":"g0245","text":"ОГРНИП 304502700000001 числится недействительным (ЕГРИП, запись снята).","spans":[{"start_byte":13,"end_byte":28,"category":"ogrnip","value_source":"304502700000001"}],"split":"negative","source":"primary-invalid-vector"}
-{"id":"g0246","text":"Реквизиты: ОГРН 1027739401110 в выписке не найдено.","spans":[{"start_byte":29,"end_byte":42,"category":"ogrn","value_source":"1027739401110"}],"split":"negative","source":"primary-invalid-vector"}
-{"id":"g0247","text":"СНИЛС 308-320-228 29 из карточки клиента не найден.","spans":[{"start_byte":11,"end_byte":25,"category":"snils","value_source":"30832022829"}],"split":"negative","source":"primary-invalid-vector"}
-{"id":"g0248","text":"Запрос от support@cloud.i-o.example по тарифу.","spans":[{"start_byte":18,"end_byte":43,"category":"email","value_source":"support@cloud.i-o.example"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0249","text":"Отдел кадров: HR.Team+2026@corp-vektor.example, ждём ответ.","spans":[{"start_byte":25,"end_byte":57,"category":"email","value_source":"HR.Team+2026@corp-vektor.example"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0250","text":"В письме «d.sokolov@romashka.example» адрес для связи.","spans":[{"start_byte":18,"end_byte":44,"category":"email","value_source":"d.sokolov@romashka.example"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0251","text":"Срочно: nikitin76@breeze.example; копия reestr@romashka.example.","spans":[{"start_byte":14,"end_byte":38,"category":"email","value_source":"nikitin76@breeze.example"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0252","text":"Смена: A.B.C.D@sub.mailforge.example (три уровня домена).","spans":[{"start_byte":12,"end_byte":41,"category":"email","value_source":"A.B.C.D@sub.mailforge.example"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0253","text":"Архив: archive-2024@xn--80ak6aa92e.test — письмо вернулось.","spans":[{"start_byte":12,"end_byte":44,"category":"email","value_source":"archive-2024@xn--80ak6aa92e.test"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0254","text":"Служебка: u$r!name@corp-vektor.example = служебный ящик.","spans":[{"start_byte":18,"end_byte":46,"category":"email","value_source":"u$r!name@corp-vektor.example"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0255","text":"Регистр: SUPPORT@CORP-VEKTOR.EXAMPLE в заголовке.","spans":[{"start_byte":16,"end_byte":43,"category":"email","value_source":"SUPPORT@CORP-VEKTOR.EXAMPLE"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0256","text":"Обращение: d.sokolov@romashka.example,тел. +7 905 552-52-86.","spans":[{"start_byte":20,"end_byte":46,"category":"email","value_source":"d.sokolov@romashka.example"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0257","text":"В коде: author@commit 7f0ce0a (git-стиль, не адрес).","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0258","text":"ftp://files@ftp.example/resource — путь протокола.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0259","text":"a@b@cd.example — двойная вставка при копировании.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0260","text":"Не полный адрес: d.sokolov@ (обрезан в форме).","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0261","text":"Служебное: support@ (пустое поле в заявке).","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0262","text":"Локальное имя a@localhost (имя машины, не почта).","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0263","text":"СНИЛС заёмщика 112-233-455 95, сверка ПФР отклонена, дело в работе.","spans":[{"start_byte":28,"end_byte":42,"category":"snils","value_source":"11223345595"}],"split":"recall","source":"frame-invalid-vector"}
-{"id":"g0264","text":"Реквизиты контрагента: ИНН 5027196012 — заявление, сверка не пройдена.","spans":[{"start_byte":50,"end_byte":60,"category":"inn","value_source":"5027196012"}],"split":"recall","source":"frame-invalid-vector"}
-{"id":"g0265","text":"Заявка на проверку: ОГРН 1027739401110, запрос из реестра.","spans":[{"start_byte":45,"end_byte":58,"category":"ogrn","value_source":"1027739401110"}],"split":"recall","source":"frame-invalid-vector"}
-{"id":"g0266","text":"Поступило: ОГРНИП 304502700000001, запрос на выписку ЕГРИП.","spans":[{"start_byte":33,"end_byte":48,"category":"ogrnip","value_source":"304502700000001"}],"split":"recall","source":"frame-invalid-vector"}
-{"id":"g0267","text":"Два невалидных: СНИЛС 112-233-455 95 и ИНН 5027196012 в одном деле.","spans":[{"start_byte":40,"end_byte":54,"category":"snils","value_source":"11223345595"}],"split":"recall","source":"frame-invalid-vector"}
-{"id":"g0268","text":"Встреча 12.05 по 112-233-455 95 перенесена (без каркаса).","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0269","text":"Курсор: 5027196012 (строка лога, без ключа).","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0270","text":"Обновление пакета 1027739401110.1 установлено.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0271","text":"Реестр контрагента: Ushakov Petr Sergeevich, Sokolov Denis, ИНН 825082492964 и СНИЛС 105-325-268 49 в карточке.","spans":[{"start_byte":37,"end_byte":60,"category":"person_name","value_source":"Ushakov Petr Sergeevich"},{"start_byte":62,"end_byte":75,"category":"person_name","value_source":"Sokolov Denis"}],"split":"recall","source":"synthetic-translit"}
-{"id":"g0272","text":"Претензия должнику: Petr Sergeevich Ushakov (транслит в реестре), Ушаков Тимофей Сергеевич (кириллица).","spans":[{"start_byte":37,"end_byte":60,"category":"person_name","value_source":"Petr Sergeevich Ushakov"},{"start_byte":99,"end_byte":145,"category":"person_name","value_source":"Ушаков Тимофей Сергеевич"}],"split":"recall","source":"synthetic-translit"}
-{"id":"g0273","text":"Comcast Corporation отчиталась за квартал.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0274","text":"Согласование адреса: New York City, 12 Broadway.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0275","text":"Отгрузка в Moscow Region, склад временного хранения.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0276","text":"Консалтинг: Boston Consulting Group подготовил отчёт.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0277","text":"Плейлист конференции: The Beatles, 1969 год.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0278","text":"Meeting in New York City, January 15.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0279","text":"Сводка: паспорт 4508  455561, второй паспорт 4509  455562 приняты.","spans":[{"start_byte":29,"end_byte":41,"category":"passport","value_source":"4508  455561"},{"start_byte":71,"end_byte":83,"category":"passport","value_source":"4509  455562"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0280","text":"Паспорт 4508  455561 паспорт 4509  455562 паспорт 4510  455563 в реестре.","spans":[{"start_byte":15,"end_byte":27,"category":"passport","value_source":"4508  455561"},{"start_byte":43,"end_byte":55,"category":"passport","value_source":"4509  455562"},{"start_byte":71,"end_byte":83,"category":"passport","value_source":"4510  455563"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0281","text":"Серия 4508  455561 серия 4508  455561 — повтор поля в форме.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0282","text":"4508 серия 455561 серия 4508 серия 455561 — сводка полей.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0283","text":"Сводка: серия 4508  455561, серия 4509  455562, серия 4510  455563 приняты.","spans":[{"start_byte":25,"end_byte":37,"category":"passport","value_source":"4508  455561"},{"start_byte":50,"end_byte":62,"category":"passport","value_source":"4509  455562"},{"start_byte":75,"end_byte":87,"category":"passport","value_source":"4510  455563"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0284","text":"Серия 4508  455561 серия 4509  455562 4510  455563 — сводка реестра.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0285","text":"4508 серия 455561 серия 4509 серия 455562 серия 4510 серия 455563.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0286","text":"Серия 4508  455561 серия 4509  455562 4510  455563 — сводка реестра.","spans":[{"start_byte":11,"end_byte":23,"category":"passport","value_source":"4508  455561"},{"start_byte":35,"end_byte":47,"category":"passport","value_source":"4509  455562"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0287","text":"Серия 4508  455561 серия 4509  455562 серия 4510  455563 серия 4511  455564 в акте.","spans":[{"start_byte":11,"end_byte":23,"category":"passport","value_source":"4508  455561"},{"start_byte":35,"end_byte":47,"category":"passport","value_source":"4509  455562"},{"start_byte":59,"end_byte":71,"category":"passport","value_source":"4510  455563"},{"start_byte":83,"end_byte":95,"category":"passport","value_source":"4511  455564"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0288","text":"СНИЛС пенсионера 123—456—789 64 в реестре.","spans":[{"start_byte":32,"end_byte":50,"category":"snils","value_source":"123—456—789 64"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0289","text":"Оплата картой 2204–9947–4132–9761 прошла.","spans":[{"start_byte":26,"end_byte":51,"category":"card_pan","value_source":"2204–9947–4132–9761"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0290","text":"Контакт 8—916—123—45—67 (рабочий).","spans":[{"start_byte":15,"end_byte":38,"category":"phone","value_source":"8—916—123—45—67"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0291","text":"Паспорт 4508–455561 действителен.","spans":[{"start_byte":15,"end_byte":28,"category":"passport","value_source":"4508–455561"}],"split":"recall","source":"synthetic-checksum"}
-{"id":"g0292","text":"На собрании было 10—15 человек без повестки.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0293","text":"Кредитный договор: заёмщик Иванов-Иванов Иван Петрович, ИНН 7710140614, телефон +7 916 1002030.","spans":[{"start_byte":50,"end_byte":101,"category":"person_name","value_source":"Иванов-Иванов Иван Петрович"}],"split":"recall","source":"synthetic-translit"}
-{"id":"g0294","text":"Акт выполненных работ: подрядчик Петрова-Водкина Анна Сергеевна, СНИЛС 112-233-455 95 (проверка формы дефисного ФИО).","spans":[{"start_byte":61,"end_byte":118,"category":"person_name","value_source":"Петрова-Водкина Анна Сергеевна"}],"split":"recall","source":"synthetic-translit"}
-{"id":"g0295","text":"Отгрузка со склада: Санкт-Петербург, Невский проспект 1953 год выпуска партии.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0296","text":"Маршрут доставки: Усть-Илимск, Иркутская область, партия № 5 принята складом.","spans":[],"split":"negative","source":"synthetic-no-pii"}
-{"id":"g0297","text":"Экспедиция: Ростов-на-Дону, таможня оформила декларацию грузополучателя.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0171","text":"SSN-формат в переписке с подрядчиком из США: 123-45-6789.","spans":[],"split":"negative","source":"foreign-bait"}
+{"id":"g0172","text":"US phone +1 415 555 0132 в CRM-заметке.","spans":[],"split":"negative","source":"foreign-bait"}
+{"id":"g0173","text":"Форма дат US-команды: 04/21/2024, дедлайн 11/02/2024.","spans":[],"split":"negative","source":"foreign-bait"}
+{"id":"g0174","text":"Планерка в 15:28 перенесена на 2 октября, кабинет 230.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0175","text":"Планерка в 18:08 перенесена на 3 октября, кабинет 279.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0176","text":"Планерка в 10:02 перенесена на 18 октября, кабинет 287.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0177","text":"Латентность каскада 0 вышла на 851 мс при бюджете 1000 мс.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0178","text":"Дозвониться в поддержку не удалось: 42 минут в очереди.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0179","text":"Дозвониться в поддержку не удалось: 25 минут в очереди.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0180","text":"Пароль от стенда лежит в менеджере секретов, проект «Кристалл».","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0181","text":"Релиз 0.8.20 выкатываем в пятницу, фича-фриз со вторника.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0182","text":"Тонер в принтере #47 на исходе, заказано 7 пачек.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0183","text":"Пароль от стенда лежит в менеджере секретов, проект «Вектор».","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0184","text":"Счёт за облачную инфраструктуру: 194 руб. 49 коп., оплатить до конца месяца.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0185","text":"Обновите подписку на сервис: истекает через 19 дней.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0186","text":"Латентность каскада 0 вышла на 213 мс при бюджете 1000 мс.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0187","text":"Планерка в 09:25 перенесена на 17 октября, кабинет 160.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0188","text":"Латентность каскада 0 вышла на 790 мс при бюджете 1000 мс.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0189","text":"Релиз 0.5.11 выкатываем в пятницу, фича-фриз со вторника.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0190","text":"Латентность каскада 0 вышла на 840 мс при бюджете 1000 мс.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0191","text":"Обновите подписку на сервис: истекает через 8 дней.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0192","text":"Планерка в 15:22 перенесена на 11 октября, кабинет 258.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0193","text":"Дозвониться в поддержку не удалось: 56 минут в очереди.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0194","text":"Релиз 0.5.13 выкатываем в пятницу, фича-фриз со вторника.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0195","text":"Обновите подписку на сервис: истекает через 3 дней.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0196","text":"Запрос выписки по контрагенту ИНН 5065049620796 (ЕГРЮЛ, active).","spans":[{"start_byte":63,"end_byte":76,"category":"ogrn","value_source":"5065049620796"}],"split":"recall","source":"primary-valid-vector"}
+{"id":"g0197","text":"СНИЛС заёмщика из анкеты 38405134670 — сверка ПФР пройдена.","spans":[{"start_byte":46,"end_byte":57,"category":"snils","value_source":"38405134670"}],"split":"recall","source":"primary-valid-vector"}
+{"id":"g0198","text":"Возврат по реквизитам: FR14 2004 1010 0505 0001 3M02 606.","spans":[{"start_byte":42,"end_byte":75,"category":"iban","value_source":"FR1420041010050500013M02606"}],"split":"recall","source":"primary-valid-vector"}
+{"id":"g0199","text":"ОГРНИП ИП Громова 302500000000001 внесён в реестр.","spans":[{"start_byte":33,"end_byte":48,"category":"ogrnip","value_source":"302500000000001"}],"split":"recall","source":"primary-valid-vector"}
+{"id":"g0200","text":"Анкета заёмщика\n Паспорт 4508 455561 выдан 15.04.2015\nСтатус: в работе.","spans":[{"start_byte":46,"end_byte":57,"category":"passport","value_source":"4508 455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0201","text":"Служебная записка\n Паспорт гражданина РФ 45 08 455561, выдан МВД.","spans":[{"start_byte":76,"end_byte":88,"category":"passport","value_source":"45 08 455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0202","text":"Договор оказания услуг\n Реквизиты: паспорт 58 53 808531, выдан ОВД\nПодписал оператор.","spans":[{"start_byte":79,"end_byte":91,"category":"passport","value_source":"58 53 808531"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0203","text":"SMS-уведомление\n Контакт: тел. +7 916 123-45-67,\nПодготовил оператор.","spans":[{"start_byte":52,"end_byte":68,"category":"phone","value_source":"79161234567"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0204","text":"Тикет SUP-20451\n Контакт: +79161234567\nСтатус: в работе.","spans":[{"start_byte":38,"end_byte":50,"category":"phone","value_source":"79161234567"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0205","text":"Анкета заёмщика\n Телефон: 8 (916) 123-45-67\nСтатус: в работе.","spans":[{"start_byte":47,"end_byte":64,"category":"phone","value_source":"89161234567"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0206","text":"Заявка на возврат\n Контакт: 7 (916) 123-45-67, ждём звонок.\nКомментарий: срочно.","spans":[{"start_byte":50,"end_byte":67,"category":"phone","value_source":"79161234567"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0207","text":"Карточка контрагента\n Тел.: 79055552528\nСтатус: в работе.","spans":[{"start_byte":50,"end_byte":61,"category":"phone","value_source":"79055552528"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0208","text":"Тикет TCK-31102\n моб. +7 916 123-45-67\nПодготовил оператор.","spans":[{"start_byte":30,"end_byte":46,"category":"phone","value_source":"79161234567"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0209","text":"Договор оказания услуг\n Контрагент: ООО «Оникс», ИНН 9253382406\nСтатус: в работе.","spans":[{"start_byte":96,"end_byte":106,"category":"inn","value_source":"9253382406"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0210","text":"Карточка контрагента\n Реквизиты: ИНН 9279540801\nПодготовил оператор, смена Б.","spans":[{"start_byte":68,"end_byte":78,"category":"inn","value_source":"9279540801"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0211","text":"Анкета заёмщика\n ИНН 9398646980, СНИЛС 12345678901\nСтатус: в работе.","spans":[{"start_byte":38,"end_byte":48,"category":"inn","value_source":"9398646980"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0212","text":"Отчёт за квартал: 4508.2015 переслан в архив, дедлайн 2.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0213","text":"Выпуск 2015 года, тираж 4508 экземпляров, подписка не продлена.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0214","text":"Платёж 4508 2015 прошёл эквайринг, чек отправлен на почту.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0215","text":"Регламент: заполните поле 4508 и приложение 455561 до пятницы.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0216","text":"Паспорт выдан 15.04.2015, срок действия до 15.04.2030.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0217","text":"Клиент 916 123 45 68 не дозвонился, оператор проверил номер.","spans":[{"start_byte":13,"end_byte":26,"category":"inn","value_source":"9161234568"}],"split":"negative","source":"primary-invalid-vector"}
+{"id":"g0218","text":"Оплата 4508455562 проведена по терминалу кассы №3.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0219","text":"Анкета заёмщика\n Серия 4508 номер 455561, выдан ОВД\nСтатус: в работе.","spans":[{"start_byte":42,"end_byte":64,"category":"passport","value_source":"4508 номер 455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0220","text":"Кадровый учёт\n Серия 4508, 455561, дата 12.04.2015\nПодготовил оператор.","spans":[{"start_byte":38,"end_byte":50,"category":"passport","value_source":"4508, 455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0221","text":"Заявление\n Серия 4508 | 455561 | ОВД района\nКомментарий: срочно.","spans":[{"start_byte":31,"end_byte":44,"category":"passport","value_source":"4508 | 455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0222","text":"Карточка сотрудника\n Серия 4508\n455561\nСтатус: в работе.","spans":[{"start_byte":50,"end_byte":61,"category":"passport","value_source":"4508\n455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0223","text":"Уведомление\n Серия 4508 и 455561 приняты в работу\nПодписал оператор.","spans":[{"start_byte":35,"end_byte":49,"category":"passport","value_source":"4508 и 455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0224","text":"Реестр\n СЕРИЯ 4508 НОМЕР 455561\nСмена Б.","spans":[{"start_byte":25,"end_byte":47,"category":"passport","value_source":"4508 НОМЕР 455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0225","text":"Форма приёма\n Серия 4508 (455561), принят 12.04.2015\nСтатус: закрыт.","spans":[{"start_byte":36,"end_byte":48,"category":"passport","value_source":"4508 (455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0226","text":"4508 серия 455561 указаны в двух полях формы.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0227","text":"ИНН 4508 номер 455561 не проходит проверку.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0228","text":"Серия 4508, 455561, 12.04.2015 — три поля формы.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0229","text":"Отчёт за квартал: 4508 | 455561 переслан в архив, дедлайн 2.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0230","text":"Платёж 4508 и 2015 прошёл эквайринг, чек отправлен на почту.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0231","text":"СНИЛС работника 586-595-917 80, СНИЛС супруга 611-357-865 80,\nСНИЛС ребёнка 151-981-910 82. Приём заявлений окончен.","spans":[{"start_byte":30,"end_byte":44,"category":"snils","value_source":"58659591780"},{"start_byte":72,"end_byte":86,"category":"snils","value_source":"61135786580"},{"start_byte":114,"end_byte":128,"category":"snils","value_source":"15198191082"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0232","text":"Реестр застрахованных: 384-051-346 70, 358-168-076 09, 134-940-005 39 (СНИЛС подтверждены ПФР).","spans":[{"start_byte":43,"end_byte":57,"category":"snils","value_source":"38405134670"},{"start_byte":59,"end_byte":73,"category":"snils","value_source":"35816807609"},{"start_byte":75,"end_byte":89,"category":"snils","value_source":"13494000539"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0233","text":"Реквизиты контрагента: оплата картой по ОГРНИП 313132804400022.","spans":[{"start_byte":87,"end_byte":102,"category":"ogrnip","value_source":"313132804400022"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0234","text":"Клиент просил оплату картой, платёж прошёл по ОГРНИП 314220119000137.","spans":[{"start_byte":97,"end_byte":112,"category":"ogrnip","value_source":"314220119000137"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0235","text":"СНИЛС 112-233-455 95 не подтверждён, сверка в ПФР отклонена.","spans":[{"start_byte":11,"end_byte":25,"category":"snils","value_source":"11223345595"}],"split":"negative","source":"primary-invalid-vector"}
+{"id":"g0236","text":"СНИЛС 112-233-455 95 112-233-455 96 — сверка, оба отклонены.","spans":[{"start_byte":11,"end_byte":25,"category":"snils","value_source":"11223345595"},{"start_byte":26,"end_byte":40,"category":"snils","value_source":"11223345596"}],"split":"negative","source":"primary-invalid-vector"}
+{"id":"g0237","text":"ОГРНИП 304502700000001 числится недействительным (ЕГРИП, запись снята).","spans":[{"start_byte":13,"end_byte":28,"category":"ogrnip","value_source":"304502700000001"}],"split":"negative","source":"primary-invalid-vector"}
+{"id":"g0238","text":"Реквизиты: ОГРН 1027739401110 в выписке не найдено.","spans":[{"start_byte":29,"end_byte":42,"category":"ogrn","value_source":"1027739401110"}],"split":"negative","source":"primary-invalid-vector"}
+{"id":"g0239","text":"СНИЛС 308-320-228 29 из карточки клиента не найден.","spans":[{"start_byte":11,"end_byte":25,"category":"snils","value_source":"30832022829"}],"split":"negative","source":"primary-invalid-vector"}
+{"id":"g0240","text":"Запрос от support@cloud.i-o.example по тарифу.","spans":[{"start_byte":18,"end_byte":43,"category":"email","value_source":"support@cloud.i-o.example"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0241","text":"Отдел кадров: HR.Team+2026@corp-vektor.example, ждём ответ.","spans":[{"start_byte":25,"end_byte":57,"category":"email","value_source":"HR.Team+2026@corp-vektor.example"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0242","text":"В письме «d.sokolov@romashka.example» адрес для связи.","spans":[{"start_byte":18,"end_byte":44,"category":"email","value_source":"d.sokolov@romashka.example"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0243","text":"Срочно: nikitin76@breeze.example; копия reestr@romashka.example.","spans":[{"start_byte":14,"end_byte":38,"category":"email","value_source":"nikitin76@breeze.example"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0244","text":"Смена: A.B.C.D@sub.mailforge.example (три уровня домена).","spans":[{"start_byte":12,"end_byte":41,"category":"email","value_source":"A.B.C.D@sub.mailforge.example"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0245","text":"Архив: archive-2024@xn--80ak6aa92e.test — письмо вернулось.","spans":[{"start_byte":12,"end_byte":44,"category":"email","value_source":"archive-2024@xn--80ak6aa92e.test"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0246","text":"Служебка: u$r!name@corp-vektor.example = служебный ящик.","spans":[{"start_byte":18,"end_byte":46,"category":"email","value_source":"u$r!name@corp-vektor.example"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0247","text":"Регистр: SUPPORT@CORP-VEKTOR.EXAMPLE в заголовке.","spans":[{"start_byte":16,"end_byte":43,"category":"email","value_source":"SUPPORT@CORP-VEKTOR.EXAMPLE"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0248","text":"Обращение: d.sokolov@romashka.example,тел. +7 905 552-52-86.","spans":[{"start_byte":20,"end_byte":46,"category":"email","value_source":"d.sokolov@romashka.example"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0249","text":"В коде: author@commit 7f0ce0a (git-стиль, не адрес).","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0250","text":"ftp://files@ftp.example/resource — путь протокола.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0251","text":"a@b@cd.example — двойная вставка при копировании.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0252","text":"Не полный адрес: d.sokolov@ (обрезан в форме).","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0253","text":"Служебное: support@ (пустое поле в заявке).","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0254","text":"Локальное имя a@localhost (имя машины, не почта).","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0255","text":"СНИЛС заёмщика 112-233-455 95, сверка ПФР отклонена, дело в работе.","spans":[{"start_byte":28,"end_byte":42,"category":"snils","value_source":"11223345595"}],"split":"recall","source":"frame-invalid-vector"}
+{"id":"g0256","text":"Реквизиты контрагента: ИНН 5027196012 — заявление, сверка не пройдена.","spans":[{"start_byte":50,"end_byte":60,"category":"inn","value_source":"5027196012"}],"split":"recall","source":"frame-invalid-vector"}
+{"id":"g0257","text":"Заявка на проверку: ОГРН 1027739401110, запрос из реестра.","spans":[{"start_byte":45,"end_byte":58,"category":"ogrn","value_source":"1027739401110"}],"split":"recall","source":"frame-invalid-vector"}
+{"id":"g0258","text":"Поступило: ОГРНИП 304502700000001, запрос на выписку ЕГРИП.","spans":[{"start_byte":33,"end_byte":48,"category":"ogrnip","value_source":"304502700000001"}],"split":"recall","source":"frame-invalid-vector"}
+{"id":"g0259","text":"Два невалидных: СНИЛС 112-233-455 95 и ИНН 5027196012 в одном деле.","spans":[{"start_byte":40,"end_byte":54,"category":"snils","value_source":"11223345595"}],"split":"recall","source":"frame-invalid-vector"}
+{"id":"g0260","text":"Встреча 12.05 по 112-233-455 95 перенесена (без каркаса).","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0261","text":"Курсор: 5027196012 (строка лога, без ключа).","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0262","text":"Обновление пакета 1027739401110.1 установлено.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0263","text":"Реестр контрагента: Ushakov Petr Sergeevich, Sokolov Denis, ИНН 825082492964 и СНИЛС 105-325-268 49 в карточке.","spans":[{"start_byte":37,"end_byte":60,"category":"person_name","value_source":"Ushakov Petr Sergeevich"},{"start_byte":62,"end_byte":75,"category":"person_name","value_source":"Sokolov Denis"}],"split":"recall","source":"synthetic-translit"}
+{"id":"g0264","text":"Претензия должнику: Petr Sergeevich Ushakov (транслит в реестре), Ушаков Тимофей Сергеевич (кириллица).","spans":[{"start_byte":37,"end_byte":60,"category":"person_name","value_source":"Petr Sergeevich Ushakov"},{"start_byte":99,"end_byte":145,"category":"person_name","value_source":"Ушаков Тимофей Сергеевич"}],"split":"recall","source":"synthetic-translit"}
+{"id":"g0265","text":"Comcast Corporation отчиталась за квартал.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0266","text":"Согласование адреса: New York City, 12 Broadway.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0267","text":"Отгрузка в Moscow Region, склад временного хранения.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0268","text":"Консалтинг: Boston Consulting Group подготовил отчёт.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0269","text":"Плейлист конференции: The Beatles, 1969 год.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0270","text":"Meeting in New York City, January 15.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0271","text":"Сводка: паспорт 4508  455561, второй паспорт 4509  455562 приняты.","spans":[{"start_byte":29,"end_byte":41,"category":"passport","value_source":"4508  455561"},{"start_byte":71,"end_byte":83,"category":"passport","value_source":"4509  455562"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0272","text":"Паспорт 4508  455561 паспорт 4509  455562 паспорт 4510  455563 в реестре.","spans":[{"start_byte":15,"end_byte":27,"category":"passport","value_source":"4508  455561"},{"start_byte":43,"end_byte":55,"category":"passport","value_source":"4509  455562"},{"start_byte":71,"end_byte":83,"category":"passport","value_source":"4510  455563"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0273","text":"Серия 4508  455561 серия 4508  455561 — повтор поля в форме.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0274","text":"4508 серия 455561 серия 4508 серия 455561 — сводка полей.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0275","text":"Сводка: серия 4508  455561, серия 4509  455562, серия 4510  455563 приняты.","spans":[{"start_byte":25,"end_byte":37,"category":"passport","value_source":"4508  455561"},{"start_byte":50,"end_byte":62,"category":"passport","value_source":"4509  455562"},{"start_byte":75,"end_byte":87,"category":"passport","value_source":"4510  455563"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0276","text":"4508 серия 455561 серия 4509 серия 455562 серия 4510 серия 455563.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0277","text":"Серия 4508  455561 серия 4509  455562 4510  455563 — сводка реестра.","spans":[{"start_byte":11,"end_byte":23,"category":"passport","value_source":"4508  455561"},{"start_byte":35,"end_byte":47,"category":"passport","value_source":"4509  455562"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0278","text":"Серия 4508  455561 серия 4509  455562 серия 4510  455563 серия 4511  455564 в акте.","spans":[{"start_byte":11,"end_byte":23,"category":"passport","value_source":"4508  455561"},{"start_byte":35,"end_byte":47,"category":"passport","value_source":"4509  455562"},{"start_byte":59,"end_byte":71,"category":"passport","value_source":"4510  455563"},{"start_byte":83,"end_byte":95,"category":"passport","value_source":"4511  455564"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0279","text":"СНИЛС пенсионера 123—456—789 64 в реестре.","spans":[{"start_byte":32,"end_byte":50,"category":"snils","value_source":"123—456—789 64"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0280","text":"Оплата картой 2204–9947–4132–9761 прошла.","spans":[{"start_byte":26,"end_byte":51,"category":"card_pan","value_source":"2204–9947–4132–9761"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0281","text":"Контакт 8—916—123—45—67 (рабочий).","spans":[{"start_byte":15,"end_byte":38,"category":"phone","value_source":"8—916—123—45—67"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0282","text":"Паспорт 4508–455561 действителен.","spans":[{"start_byte":15,"end_byte":28,"category":"passport","value_source":"4508–455561"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0283","text":"На собрании было 10—15 человек без повестки.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0284","text":"Кредитный договор: заёмщик Иванов-Иванов Иван Петрович, ИНН 7710140614, телефон +7 916 1002030.","spans":[{"start_byte":50,"end_byte":101,"category":"person_name","value_source":"Иванов-Иванов Иван Петрович"}],"split":"recall","source":"synthetic-translit"}
+{"id":"g0285","text":"Акт выполненных работ: подрядчик Петрова-Водкина Анна Сергеевна, СНИЛС 112-233-455 95 (проверка формы дефисного ФИО).","spans":[{"start_byte":61,"end_byte":118,"category":"person_name","value_source":"Петрова-Водкина Анна Сергеевна"}],"split":"recall","source":"synthetic-translit"}
+{"id":"g0286","text":"Отгрузка со склада: Санкт-Петербург, Невский проспект 1953 год выпуска партии.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0287","text":"Маршрут доставки: Усть-Илимск, Иркутская область, партия № 5 принята складом.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0288","text":"Экспедиция: Ростов-на-Дону, таможня оформила декларацию грузополучателя.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0289","text":"Номер карты клиента из бэкапа 2019: 2200000000000004 — архив, не трогать.","spans":[{"start_byte":61,"end_byte":77,"category":"card_pan","value_source":"2200000000000004"}],"split":"recall","source":"doc-valid-vector"}
+{"id":"g0290","text":"Эталонный счёт для интеграционного теста: DE89370400440532013000.","spans":[{"start_byte":78,"end_byte":100,"category":"iban","value_source":"DE89370400440532013000"}],"split":"recall","source":"doc-valid-vector"}
+{"id":"g0291","text":"Старый тестовый CVC-заглухиш 5555555555554444 остался в фикстурах.","spans":[{"start_byte":51,"end_byte":67,"category":"card_pan","value_source":"5555555555554444"}],"split":"recall","source":"doc-valid-vector"}
+{"id":"g0292","text":"Амекс-фикстура 378282246310005 лежит в моках с прошлой команды.","spans":[{"start_byte":28,"end_byte":43,"category":"card_pan","value_source":"378282246310005"}],"split":"recall","source":"doc-valid-vector"}
+{"id":"g0293","text":"Динерс-тест 30569309025904 мигрировал из старой базы вместе с дампом.","spans":[{"start_byte":22,"end_byte":36,"category":"card_pan","value_source":"30569309025904"}],"split":"recall","source":"doc-valid-vector"}
+{"id":"g0294","text":"Городской отдел продаж: +7 495 123-45-67, приём с 9 до 18.","spans":[{"start_byte":44,"end_byte":60,"category":"phone","value_source":"74951234567"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0295","text":"Внутренний добавочный 8 (495) 123-45-67, звонок через АТС.","spans":[{"start_byte":42,"end_byte":59,"category":"phone","value_source":"84951234567"}],"split":"recall","source":"synthetic-checksum"}
+{"id":"g0296","text":"Справочная колл-центра 8-800-555-35-35, звонок бесплатный.","spans":[{"start_byte":43,"end_byte":58,"category":"phone","value_source":"88005553535"}],"split":"recall","source":"synthetic-checksum"}
