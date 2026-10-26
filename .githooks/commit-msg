@@ -1,0 +1,46 @@
+#!/bin/sh
+# #180: гейт авторства коммита (инцидент authorship-trailers, vault
+# process/authorship-trailers; шаг 1 жил в .git/hooks, шаг 2 = версионируемый
+# контур: `git config core.hooksPath .githooks` (рецепт `just hooks-install`),
+# решёточный тест `just hooks-test`).
+#
+# Мишень (первичка инцидента + ТЗ #180):
+#   (а) Co-authored-by-трейлеры, НАВЕШАННЫЕ СРЕДОЙ: внешний домен
+#       (anthropic), мусорные локальные (@local, @fasad.local), пустой уголк
+#       <>, пустое имя (строка трейлера вида `Co-authored-by: <a@b>`).
+#       Человек-трейлер = именованный нормальный адрес = проходит
+#       («Jane Doe <jane@users.noreply.github.com>» rc=0, решёточный кейс).
+#   (б) пустой email АВТОРА КОММИТА (первичка git hook-контракта: commit-msg
+#       вызывается с готовым сообщением, автор уже зафиксирован; hook
+#       читает автора из буфера `git var GIT_AUTHOR_IDENT`, а НЕ из живого
+#       `git config` — иначе проверка зависит от глобального конфига среды
+#       и краснеет на валидном коммите, CI-провен самопроверки 26.10).
+#       Автор «user <>» = нерезолвящийся слой графа (промер main: 40/148
+#       коммитов) — чинится конфигом репо, коммит обязан краситься здесь.
+#
+# Границы контура (док): `git commit --no-verify` обходит hook (git-семантика;
+# fixup!/amend проходят hook, --no-verify = обход); CI-чекауты hooks НЕ
+# исполняют (enforce = локальный hook + `just hooks-test` в CI `just check`).
+f="$1"
+
+# (а) трейлеры: нормализуем CRLF (win-склейка, кейс 8 решётки), скан только
+# строк-трейлеров (не тела).
+if sed -e 's/\r$//' "$f" \
+   | grep -qiE 'Co-authored-by:[[:space:]]*(<[^>]*@[^>]*>|[^<]*<>)|Co-authored-by:.*@local|Co-authored-by:.*@fasad\.local|Co-authored-by:.*anthropic'; then
+  echo "commit-msg: ЗАПРЕЩЕНО — внешний/мусорный co-author-трейлер (#180, vault process/authorship-trailers: трейлеры навешивает среда, не человек)" >&2
+  exit 1
+fi
+
+# (б) автор коммита: git var = первичка идентичности ЭТОГО коммита.
+ident="$(git var GIT_AUTHOR_IDENT 2>/dev/null)" || {
+  echo "commit-msg: ЗАПРЕЩЕНО — git var GIT_AUTHOR_IDENT не разобрался (нет author identity? #180)" >&2
+  exit 1
+}
+case "$ident" in
+  *"<>"*)
+    echo "commit-msg: ЗАПРЕЩЕНО — пустой email автора ('user <>' = слой анонимов в графе, #180): git config user.email <адрес>" >&2
+    exit 1
+    ;;
+esac
+
+exit 0

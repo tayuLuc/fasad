@@ -246,9 +246,11 @@ while IFS= read -r line || [ -n "$line" ]; do
     mkdir -p "$(dirname -- "$dest")"
 
     tmp="${dest}.part"
+    from_cache=0
     if [ -f "$dest" ] && [ "$want_sha" != "TBD" ]; then
         # Кеш валидируется пересчётом, а не доверием к существованию файла.
         log "$role: кеш-хит $dest — пересчёт sha256"
+        from_cache=1
     else
         if [ -f "$tmp" ]; then
             log "$role: докачка ${tmp##*/} с $(file_size "$tmp") Б (обрыв сети — resume)"
@@ -292,6 +294,14 @@ while IFS= read -r line || [ -n "$line" ]; do
             rewrite_manifest_row "$role" "$rev" "$got_sha" "$got_size"
         fi
     elif [ "$want_sha" != "$got_sha" ]; then
+        # #194 нить 2 (UX-строка, паритет .ps1): красная ветка на кеш-хите —
+        # файл чужой (битый/подмена), скрипт его НЕ сносит (не наш);
+        # оператору — явное действие.
+        if [ "$from_cache" -eq 1 ]; then
+            printf 'fetch-models: ОШИБКА: %s: кеш-повреждён: sha256 %s не совпал с манифестом (факт: %s) — снеси файл и повтори: rm -f "%s"\n' \
+                "$role" "$dest" "$got_sha" "$dest" >&2
+            exit 1
+        fi
         printf 'fetch-models: ОШИБКА: %s: sha256 рассинхронизация\n  манифест: %s\n  факт:    %s\n  файл:    %s\n' \
             "$role" "$want_sha" "$got_sha" "$dest" >&2
         exit 1

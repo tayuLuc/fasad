@@ -27,7 +27,7 @@ CPU_CALM := "CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2 nice -n 10"
 # рабочая): значение = одна строка, в bash-массиве раскрывается полным
 # списком слов (промер: 7 аргументов из 7, «!ls» префиксом в ls — glob живой,
 # ls бегает рантаймом shell при каждом вызове).
-SHELL_SOURCES := "!ls scripts/*.sh tools/verify/*.sh"
+SHELL_SOURCES := "!ls scripts/*.sh tools/verify/*.sh .githooks/commit-msg .githooks/tests/*.sh"
 
 # Расхождение списков (промер ls vs lint.yml): в дереве 7 скриптов —
 # scripts/fetch-models.sh, make-bundle.sh, measure-daemon-rss.sh, measure-rss.sh,
@@ -61,7 +61,21 @@ SHELL_SOURCES := "!ls scripts/*.sh tools/verify/*.sh"
 # `restore-integrity` (#60 п.3) — локальная нога по образцу union-recall: поднимает
 # живой демон на recall-сплите, в CI не монтируется (там модели 879 МБ вне git и
 # union-recall не смонтирован — grep `.github/` union-recall, ноль).
-check: lint shellcheck python-lint lang-scan golden-verify test net-audit deny restore-integrity
+check: lint shellcheck python-lint lang-scan golden-verify test net-audit deny restore-integrity hooks-test
+
+# #180: локальная установка хуков авторства (git config core.hooksPath =
+# ЛОКАЛЬНАЯ настройка репо, НЕ глобальная; идемпотентна; fresh-клон/worktree
+# = первый шаг после clone). Enforcement = hooks-test (решётка на реальном
+# git-контейнере; хуки CI-чекаутом НЕ исполняются = test-контра).
+hooks-install:
+    git config core.hooksPath .githooks
+    @echo "hooks-install ok: core.hooksPath=.githooks (локально, этот репозиторий)"
+
+# #180: решёточный тест .githooks/commit-msg (8 кейсов: чистый/человек-
+# трейлер (github noreply) = rc 0; anthropic/пустой угол/`@local`/пустой
+# email автора/CRLF = rc 1; `--no-verify` = git-обход, контракт-граница).
+hooks-test:
+    TMPDIR=${TMPDIR:-/tmp} bash .githooks/tests/commit-msg.t.sh
 
 # Гейт «демон не тащит сеть» (#56 п.5). Исполняется как обычный интеграционный
 # тест `crates/guard-daemon/tests/net_audit.rs`, а не grep-рецептом: `just` на

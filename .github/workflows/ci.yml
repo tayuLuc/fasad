@@ -497,6 +497,24 @@ jobs:
           if (-not ($tailStr -cmatch 'sha256')) {
               throw "red leg rc=$redRc without sha256-verdict file: gate reason missing"
           }
+          # #194 thread 1 (BOM manifest): same mock line written WITH a
+          # UTF-8 BOM (Set-Content -Encoding UTF8 on PS 5.1 = native BOM
+          # producer): without the fix (-Encoding UTF8 + explicit strip) the
+          # role field parses as '<ufeff>mock' and the run dies on
+          # source='hf <BOM>' (review #193 thread 1; ASCII comment above
+          # records the original symptom).
+          $mpBom = Join-Path $root 'bom.tsv'
+          $cacheBom = Join-Path $root 'cache-bom'
+          Set-Content -LiteralPath $mpBom -Value $m -Encoding UTF8
+          $prevEAP = $ErrorActionPreference
+          try {
+              $ErrorActionPreference = 'Continue'
+              & scripts\fetch-models.ps1 -Manifest $mpBom -Cache $cacheBom
+              $bomRc = $LASTEXITCODE
+          } finally {
+              $ErrorActionPreference = $prevEAP
+          }
+          if ($bomRc -ne 0) { throw "BOM manifest red (rc=$bomRc): #194-1 fix dead (role field dirty)" }
           # repeat = offline (cache hit): sinkhole HF in hosts (runner is an
           # admin context; reverted in finally)
           $hostsBak = 'C:\Windows\System32\drivers\etc\hosts'
@@ -507,7 +525,7 @@ jobs:
           } finally {
               (Get-Content -LiteralPath $hostsBak) | Where-Object { $_ -notmatch 'huggingface.co' } | Set-Content -LiteralPath $hostsBak
           }
-          Write-Output "ps1 ok: -List + mock sha256 + red-control (corrupt sha rc=$redRc) + offline repeat"
+          Write-Output "ps1 ok: -List + mock sha256 + red-control (corrupt sha rc=$redRc) + BOM manifest (#194-1) + offline repeat"
 
   python-golden:
     # Python-тулинг (gutter, рулинг 19.10: AGENTS п.6): uv-locked линт +
