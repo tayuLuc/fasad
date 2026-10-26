@@ -2068,30 +2068,49 @@ fn gap_has_frame_word(gap: &[u8]) -> bool {
 /// `passport_frame_word` у правой границы: «серия» = последний член списка,
 /// список фиксированной ширины, правый край = `we` + пробел(ы) = `r`.
 fn gap_is_key_word(bytes: &[u8], l: usize, r: usize) -> bool {
+    // Гэп `[l, r)` = каркасное слово с факультативными одиночными пробелами
+    // (#258-геометрия, единый предикат #308: CUT сканера и word-gap-рамка
+    // вердикта #288 вызывают ОДНУ функцию = дрейф-контра решёткой
+    // `c0_key_word_gap_helper_lattice_308`).
+    is_key_word_gap(&bytes[l..r])
+}
+
+/// Ядро [`gap_is_key_word`]: срез гэпа (байты МЕЖДУ группами) = каркасное
+/// слово? Рамка вердикта (#288) держала собственное определение по
+/// ДЛИНЕ байт (`10/10/3`) = (1) дрейф-контра #258-геометрии и (2) ложные
+/// классы (первичка PR #308: кириллица-4 = 4 байта ≠ «№»-3, 10 байт =
+/// ложные «серия/номер» = опечатки лезли в рамку). Теперь = СЛОВАРЬ
+/// `PASSPORT_FRAME_WORDS` + word-break-грани (#258-геометрия), один
+/// источник; предикат = точный (word-break «серии»/«сериа» = false).
+fn is_key_word_gap(gap: &[u8]) -> bool {
     // Слово = весь гэп между факультативными одиночными пробелами.
-    let mut a = l;
-    let mut b = r;
-    if bytes.get(a) == Some(&b' ') {
-        a += 1;
+    let mut a = 0usize;
+    let mut b = gap.len();
+    if gap.first() == Some(&b' ') {
+        a = 1;
     }
-    if b > a && bytes.get(b - 1) == Some(&b' ') {
+    if b > a && gap[b - 1] == b' ' {
         b -= 1;
     }
-    if a >= b || b - a > PASSPORT_FRAME_WORD_MAX || a > bytes.len() {
+    if a >= b || b - a > PASSPORT_FRAME_WORD_MAX {
         return false;
     }
-    // Слово на word-break-границе: слева — пробел (a>l) или не-буква.
-    if a == l && a > 0 && is_word_byte(bytes[a - 1]) {
+    // Слово в гэпе ОБЯЗАНО быть обрамлённым пробельной гранью: гэп =
+    // цифра|…|цифра, leading/trailing = факультативные ПРОБЕЛЬНЫЕ байты
+    // (#258-геометрия, word-break по цифрам). Таб/пунктуация у грани =
+    // НЕ word-gap (таб-колонка #279 «\tсерия » = разделитель колонок,
+    // легальный канон соседней ячейки), голое слово = не каркас
+    // (склейки «сери4508» word-break не имеет).
+    let space = |i: usize| matches!(gap.get(i), Some(b' '));
+    let lead_ok = a == 1 && space(0);
+    let trail_ok = b + 1 == gap.len() && space(b);
+    if !(lead_ok || trail_ok) {
         return false;
     }
-    // Правый край гэпа = граница слова: пробел(ы) уже срезаны, дальше `r`
-    // = цифра/граница; внутри гэпа слово обязано быть полным (word-break
-    // «номера» ≠ «номер»: правый сосед за словом = пробел = OK).
     PASSPORT_FRAME_WORDS.iter().any(|w| {
         w.len() == b - a
-            && fold_kbd_lower(&bytes[a..b]) == fold_kbd_lower(w)
-            && (b >= bytes.len()
-                || !(bytes[b].is_ascii_alphabetic() || bytes[b] == 0xD0 || bytes[b] == 0xD1))
+            && fold_kbd_lower(&gap[a..b]) == fold_kbd_lower(w)
+            && (b == gap.len() || !is_word_byte(gap[b]))
     })
 }
 
@@ -2400,17 +2419,9 @@ fn passport_window_verdict(
     // PR): «4508 серия 455561», g0219 «4508 номер 455561» = 4+6 =
     // живёт; «455561 серия 4508» (6+4) = молчит; #258-цепь с ведущим
     // ключом = хозяева 4+6 (ведущие 4 цифры) = интактны.
-    let all_key_word_gaps = gaps_of(bytes, start, end).into_iter().all(|g| {
-        let mut a = 0usize;
-        let mut b = g.len();
-        if g.first() == Some(&b' ') {
-            a = 1;
-        }
-        if b > a && g[b - 1] == b' ' {
-            b -= 1;
-        }
-        b - a == "серия".len() || b - a == "номер".len() || b - a == "\u{2116}".len()
-    });
+    let all_key_word_gaps = gaps_of(bytes, start, end)
+        .into_iter()
+        .all(is_key_word_gap);
     if all_key_word_gaps && digit_run_len_after(bytes, start) != 4 {
         return None;
     }
