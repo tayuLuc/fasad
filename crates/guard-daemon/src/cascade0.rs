@@ -2107,11 +2107,14 @@ fn is_key_word_gap(gap: &[u8]) -> bool {
     if !(lead_ok || trail_ok) {
         return false;
     }
-    PASSPORT_FRAME_WORDS.iter().any(|w| {
-        w.len() == b - a
-            && fold_kbd_lower(&gap[a..b]) == fold_kbd_lower(w)
-            && (b == gap.len() || !is_word_byte(gap[b]))
-    })
+    let word = PASSPORT_FRAME_WORDS
+        .iter()
+        .any(|w| w.len() == b - a && fold_kbd_lower(&gap[a..b]) == fold_kbd_lower(w));
+    // Правый край = граница слова (#258-геометрия: «номера» ≠ «номер»;
+    // после trim хвостовой ячейки за словом — пробел или конец гэпа =
+    // цифровая граница, буква = word-break-промах).
+    let right_edge = b == gap.len() || gap[b] == b' ';
+    word && right_edge
 }
 
 /// Гэп = граница строки/колонка таблицы (`\n`, `\t`, с факультативными
@@ -2419,9 +2422,7 @@ fn passport_window_verdict(
     // PR): «4508 серия 455561», g0219 «4508 номер 455561» = 4+6 =
     // живёт; «455561 серия 4508» (6+4) = молчит; #258-цепь с ведущим
     // ключом = хозяева 4+6 (ведущие 4 цифры) = интактны.
-    let all_key_word_gaps = gaps_of(bytes, start, end)
-        .into_iter()
-        .all(is_key_word_gap);
+    let all_key_word_gaps = gaps_of(bytes, start, end).into_iter().all(is_key_word_gap);
     if all_key_word_gaps && digit_run_len_after(bytes, start) != 4 {
         return None;
     }
@@ -5743,26 +5744,56 @@ mod tests {
         // все три каркасных слова = key-word гэп = рамка активна.
         for w in ["серия", "номер", "\u{2116}"] {
             let gap = format!(" {w} ");
-            assert!(is_key_word_gap(gap.as_bytes()), "каркасное слово {w:?} выпало из предиката");
+            assert!(
+                is_key_word_gap(gap.as_bytes()),
+                "каркасное слово {w:?} выпало из предиката"
+            );
         }
         // Грани #258-геометрии (gap = цифра|…|цифра, leading/trailing =
         // факультативный ОДИНОЧНЫЙ пробел): голое слово = не каркас,
         // одиночный пробел с одной стороны = word-gap, двойной = нет.
-        assert!(!is_key_word_gap("серия".as_bytes()), "голое слово = не word-gap");
-        assert!(is_key_word_gap(" серия".as_bytes()), "ведущий пробел = word-gap");
-        assert!(is_key_word_gap("серия ".as_bytes()), "хвостовой пробел = word-gap");
-        assert!(is_key_word_gap(" серия ".as_bytes()), "обрамление = word-gap");
-        assert!(!is_key_word_gap("  серия ".as_bytes()), "двойной leading = не одиночная ячейка (#258)");
-        assert!(!is_key_word_gap("\tсерия ".as_bytes()), "tab-колонка #279 = не word-gap");
+        assert!(
+            !is_key_word_gap("серия".as_bytes()),
+            "голое слово = не word-gap"
+        );
+        assert!(
+            is_key_word_gap(" серия".as_bytes()),
+            "ведущий пробел = word-gap"
+        );
+        assert!(
+            is_key_word_gap("серия ".as_bytes()),
+            "хвостовой пробел = word-gap"
+        );
+        assert!(
+            is_key_word_gap(" серия ".as_bytes()),
+            "обрамление = word-gap"
+        );
+        assert!(
+            !is_key_word_gap("  серия ".as_bytes()),
+            "двойной leading = не одиночная ячейка (#258)"
+        );
+        assert!(
+            !is_key_word_gap("\tсерия ".as_bytes()),
+            "tab-колонка #279 = не word-gap"
+        );
         // Опечатки = НЕ словарь = НЕ word-gap (рамка не активна = контракт
         // молчания g0223: live-промер «455561 сериа 4508» = []).
-        assert!(!is_key_word_gap(" сериа ".as_bytes()), "опечатка «сериа» = не каркасное слово");
+        assert!(
+            !is_key_word_gap(" сериа ".as_bytes()),
+            "опечатка «сериа» = не каркасное слово"
+        );
         assert!(!is_key_word_gap(" номар ".as_bytes()));
         // Первичка PR: ложный класс ДЛИНЫ — кириллица-4 байта (например
         // «пасп» = префикс «паспорт», вне каркасного списка) = НЕ «№»
         // (3 байта = «№», не 4) и НЕ PASSPORT_KEYS-слово = молчит.
-        assert!(!is_key_word_gap(" пасп ".as_bytes()), "кириллица-4 != No (длина-рамка #288 ложный класс закрыт)");
-        assert!(!is_key_word_gap(" телефон ".as_bytes()), "чужое слово = не word-gap");
+        assert!(
+            !is_key_word_gap(" пасп ".as_bytes()),
+            "кириллица-4 != No (длина-рамка #288 ложный класс закрыт)"
+        );
+        assert!(
+            !is_key_word_gap(" телефон ".as_bytes()),
+            "чужое слово = не word-gap"
+        );
         // Склейка-рамка #258-CUT: обёртка `gap_is_key_word` = то же ядро
         // (вызов на живых байтах, срез [l,r)).
         let text = "4508 серия 455561";
@@ -5773,6 +5804,18 @@ mod tests {
         let text2 = "4508  455561";
         let b2 = text2.as_bytes();
         assert!(!gap_is_key_word(b2, 4, 6), "двойной пробел = не word-gap");
+        // Мута-дискриминант (обёртка на substring-предикат =
+        // `gap_has_frame_word` краснеет на этих формах): гэп с табом +
+        // словом = НЕ word-gap (#279-геометрия: m0411-разрез на ней
+        // запрещён, CUT режет только точные « серия »).
+        let text3 = "455561\tсерия 4508";
+        let b3 = text3.as_bytes();
+        let l3 = text3.find("\tсерия").unwrap();
+        let r3 = text3[l3 + 1..].find('4').map(|x| l3 + 1 + x).unwrap();
+        assert!(
+            !gap_is_key_word(b3, l3, r3),
+            "tab + слово = не точный key-word гэп (#279)"
+        );
     }
 
     /// #308 словарь-контра (ПЕРВИЧКА: каркасные слова `PASSPORT_FRAME_WORDS`
@@ -5792,18 +5835,28 @@ mod tests {
         // Канонический словарь каркаса (первичка `PASSPORT_FRAME_WORDS`).
         assert_eq!(
             PASSPORT_FRAME_WORDS,
-            &["серия".as_bytes(), "номер".as_bytes(), "\u{2116}".as_bytes()],
+            &[
+                "серия".as_bytes(),
+                "номер".as_bytes(),
+                "\u{2116}".as_bytes()
+            ],
             "словарь каркасных слов уехал = решётка #308 переснимается"
         );
         // Регистронезависимость предиката: верхний регистр канона = тот же
         // word-gap (`fold_kbd_lower` сходимость).
         for w in ["СЕРИЯ", "Номер", "СЕРИЯ"] {
-            assert!(is_key_word_gap(format!(" {w} ").as_bytes()), "регистр {w:?}");
+            assert!(
+                is_key_word_gap(format!(" {w} ").as_bytes()),
+                "регистр {w:?}"
+            );
         }
         // Предикат не шире словаря: слово = frame-слово + хвост = молчит
         // (word-break: «серии», «серия2» = не слово-форма).
         for w in [" серии ", " серия2 ", " сери ", "сериа "] {
-            assert!(!is_key_word_gap(w.as_bytes()), "нечёткая форма {w:?} в предикате");
+            assert!(
+                !is_key_word_gap(w.as_bytes()),
+                "нечёткая форма {w:?} в предикате"
+            );
         }
     }
 
