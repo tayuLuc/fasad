@@ -74,6 +74,8 @@ hooks-install:
 # #180: решёточный тест .githooks/commit-msg (8 кейсов: чистый/человек-
 # трейлер (github noreply) = rc 0; anthropic/пустой угол/`@local`/пустой
 # email автора/CRLF = rc 1; `--no-verify` = git-обход, контракт-граница).
+# Mounted-носитель в CI = шаг build-test-матрицы (ревью #276: «just check»
+# в CI не исполняется; live-git тест = переносим).
 hooks-test:
     TMPDIR=${TMPDIR:-/tmp} bash .githooks/tests/commit-msg.t.sh
 

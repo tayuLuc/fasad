@@ -57,6 +57,14 @@ jobs:
         with:
           tool: cargo-deny
       - run: just lint
+      # #180-косметика ревью 5b26e980: enforce-контра «проверено = смонтировано
+      # в исполняемой ноге» (реестр false-green: `just check` в CI никогда не
+      # исполнялся = заявление без монтажа). hooks-test = решёточный тест
+      # .githooks/commit-msg на live-git (temp-репо: git = все 3 ОС, shell =
+      # bash defaults, TMPDIR раннерный); хуки чекаутами НЕ исполняются,
+      # поэтому тест = ЕДИНСТВЕННЫЙ живой носитель гейта в CI.
+      - name: "just hooks-test (гейт авторства #180)"
+        run: just hooks-test
       # Spike с фичей орта линтится здесь же (review #9 B5): без этого шага
       # example-код с фичей живёт вне CI-гейта.
       - run: cargo clippy -p guard-onnx --all-targets --features ort-inference -- -D warnings -D clippy::unwrap_used
