@@ -5,7 +5,7 @@
 
 ### Added
 
-- Пусто (следующий цикл).
+- #314 win-simu-полка (ORT-нога CI, mac/linux): wire_e2e `win_simu_userprofile_mount_starts_the_tray_contour` = двойной клик win (HOME∅ + USERPROFILE=кеш 5/5, трей-мишень env-симуляцией #198) стартует МОНТИРОВАННЫМ `cascade-0+models` = env-граница #198-ветки читает USERPROFILE через `default_home_dir` #264 (расход v0.1.9 «UI 5/5 + stage pending» закрыт #316 poll + #318 live-строка); feature-off/debug-нога = слепая (stage-константа #185) = SKIP-строка; CI-шаг ort-build = CI-fetch полка #255-паттерна, `FASAD_REQUIRE_MODELS` = провен #87. Ref #314 (#198 #264 #316 #318 #255 #87).
 
 ## v0.1.9 (2026-10-26)
 ### Added
