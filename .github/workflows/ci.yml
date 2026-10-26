@@ -297,6 +297,26 @@ jobs:
           fi
           cargo test -p guard-daemon --features ort-inference \
             --test translit_live -- --test-threads=1 --nocapture
+      - name: "Живая полка #316: hot_mount_live (своп каскадов на живом процессе, mac/linux)"
+        # #316: «перезапусти» = заменяющее (оператор-требование). ЗУБ = своп
+        # `live_mount` + живой analyze БЕЗ рестарта процесса (prod-функция,
+        # не debug-подмена); фейк-полка layout-гейта (size vs манифест) =
+        # второй тест файла. #255-прецедент: кеш весов шага выше,
+        # FASAD_REQUIRE_MODELS = провен монтирования (#87-паттерн).
+        # Артефакт = строки HOTMOUNT|… (урок #232: время монтажа = промер,
+        # не пин).
+        if: matrix.os != 'windows-2022'
+        env:
+          FASAD_REQUIRE_MODELS: "1"
+        run: |
+          set -euo pipefail
+          if [ -n "${ORT_DIR:-}" ] && [ -d "$ORT_DIR/lib" ]; then
+            export ORT_PREFER_DYNAMIC_LINK=1
+            export ORT_LIB_PATH="$ORT_DIR/lib"
+            echo "hot_mount_live: mac-контур dylib ($ORT_DIR/lib)"
+          fi
+          cargo test -p guard-daemon --features ort-inference \
+            --test hot_mount_live -- --test-threads=1 --nocapture
       - name: "Живая полка #109: decide_budget_live (пер-чанковый бюджет Decide, mac/linux)"
         # #109: цена Decide-чанка 4.5–8.6 с (audit §I1 п.3) = факт живого
         # графа — unit-стенд хука (таблица в guard-onnx/cascades) фальсифицировать

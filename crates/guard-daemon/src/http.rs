@@ -89,13 +89,14 @@ pub struct Inner {
     /// `Err` хранится, а не роняет старт: плохой `FASAD_HF_HOST` ломает
     /// кнопку, а не демон (`/health` остаётся жив, отказ — кодом endpoint).
     fetch: Result<crate::fetch::FetchConfig, crate::fetch::FetchError>,
-    /// Ожидающий старт (#198): трей-бинарь без весов поднял HTTP, каскадов
-    /// нет. Не выводится из `health().stage` намеренно: юнит-роутеры
-    /// (`cascade_http`, харнесы) живут со `stage="cascade-0+models"` и
-    /// фейковым mount; провайдер отказа обязан быть одним на четыре
-    /// маршрута (analyze/anonymize/deanonymize/chat) и заведомо `false` у
-    /// них, а не зависеть от строки, которую пишут тесты.
-    pending: bool,
+    /// Старт В РЕЖИМЕ ОЖИДАНИЯ (#198): трей-бинарь без весов поднял HTTP,
+    /// каскадов нет. #316: это НАЧАЛЬНОЕ состояние доставки, а не приговор:
+    /// горячий монтаж (`cascades::live_mount` = swap + атомарный флаг)
+    /// снимает режим на лету, «перезапусти» = заменяющее (оператор-требование
+    /// #316). Живое чтение — [`AppState::pending`]; юнит-роутеры живут с
+    /// флагом `false` и фейковым mount, провайдер отказа = один на четыре
+    /// маршрута (analyze/anonymize/deanonymize/chat).
+    start_pending: bool,
 }
 
 impl Inner {
@@ -138,7 +139,7 @@ impl AppState {
                 vault,
                 client,
                 fetch,
-                pending,
+                start_pending: pending,
             }),
         }
     }
@@ -161,11 +162,14 @@ impl AppState {
         self.inner.health.clone()
     }
 
-    /// Ожидающий старт (#198): true = веса не примонтированы, демон поднял
-    /// UI в режиме доставки (model-маршруты = 503 `models_pending`).
+    /// Ожидающий старт (#198) В ЖИВОМ ЧТЕНИИ (#316): true = веса ещё не
+    /// примонтированы (model-маршруты = 503 `models_pending`). Флаг =
+    /// стартовое «режим доставки» И НЕ смонтированность сейчас
+    /// (`cascades::mounted_live`): hot-mount swap переводит все четыре
+    /// маршрута с 503 на 200 без единого перезапуска.
     #[must_use]
     pub fn pending(&self) -> bool {
-        self.inner.pending
+        self.inner.start_pending && !crate::cascades::mounted_live()
     }
 
     /// Отказ модельного контура (#198): единый провайдер для четырёх
@@ -175,13 +179,40 @@ impl AppState {
     /// отказ, а не частичная защита).
     #[must_use]
     pub fn model_refusal(&self) -> Option<ApiError> {
-        self.inner.pending.then(|| {
+        self.pending().then(|| {
             ApiError::new(
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
                 "models_pending",
-                "модельный контур не смонтирован: веса не скачаны (UI: «Скачать веса», затем перезапуск fasad)",
+                "модельный контур не смонтирован: веса не скачаны (UI: «Скачать веса» — \
+                 каскады подхватятся на лету, #316)",
             )
         })
+    }
+
+    /// Живой stage (#316): старт-строка, а на desktop-контуре ожидавшего
+    /// старта — `cascade-0+models` сразу после hot-mount. Один источник для
+    /// `/health`, `X-Guard-Stage`, `/v1/status` (tray читает `status_of` =
+    /// тот же). Не «каскад-0 под вывеской»: `mounted_live`=true = смонтировано
+    /// по-настоящему (fail-closed #185 цел: флаг ставит только успешный
+    /// `OnnxMount::load`).
+    #[must_use]
+    pub fn live_stage(&self) -> &'static str {
+        if self.inner.start_pending && crate::cascades::mounted_live() {
+            crate::cascades::STAGE_MOUNTED
+        } else {
+            self.inner.health.stage
+        }
+    }
+
+    /// Живой `Health` (#316): stage = live-чтение; поля копируемые дешёво
+    /// (`&'static str`), «`health()` = cheap» контракта держится.
+    #[must_use]
+    pub fn live_health(&self) -> crate::Health {
+        crate::Health {
+            version: self.inner.health.version,
+            stage: self.live_stage(),
+            mode: self.inner.health.mode,
+        }
     }
 
     /// Хранилище обратимых подмен.
@@ -287,7 +318,8 @@ async fn health_handler(State(st): State<AppState>) -> axum::Json<HealthReply> {
     // весь разбор завершается на 127.0.0.1 до первой сокет-операции).
     let vault = st.vault();
     axum::Json(HealthReply {
-        health: st.health(),
+        // #316: stage = живое чтение (hot-mount = stage без перезапуска).
+        health: st.live_health(),
         vault: VaultCounters {
             surrogate_fallbacks: vault.surrogate_fallbacks(),
             unrestored_mismatch: vault.unrestored_mismatch(),
@@ -398,7 +430,7 @@ fn config_reply_of(st: &AppState) -> axum::Json<ConfigReply> {
         })
         .collect();
     axum::Json(ConfigReply {
-        health: st.health(),
+        health: st.live_health(),
         file,
         entries,
         vault_key: crate::config::secret_present(std::env::var("FASAD_VAULT_KEY").ok().as_deref()),
@@ -552,7 +584,17 @@ struct StatusReply {
     vault: VaultCounters,
     weights: WeightsStatus,
     fetch: crate::weights::FetchState,
+    mount: MountStatus,
     model: ModelInfo,
+}
+
+/// Горячий монтаж (#316): `live` = каскады 1–2 работают СЕЙЧАС;
+/// `last_error` = причина последней неудачи (UI = «веса повреждены,
+/// перескачай» = #198-класс, pending честный, HTTP жив).
+#[derive(Debug, serde::Serialize)]
+struct MountStatus {
+    live: bool,
+    last_error: Option<String>,
 }
 
 /// Каталог + раскладка. `dir` — РАЗРЕШЁННЫЙ путь (env или дефолт #192);
@@ -634,7 +676,8 @@ fn status_reply_of(st: &AppState) -> axum::Json<StatusReply> {
     let arb = crate::weights::entry_by_role(&entries, crate::weights::ROLE_ARB_WEIGHTS)
         .map(|e| e.revision.clone());
     axum::Json(StatusReply {
-        health: st.health(),
+        // #316: stage = живое чтение (hot-mount = смена stage без перезапуска).
+        health: st.live_health(),
         vault: VaultCounters {
             surrogate_fallbacks: vault.surrogate_fallbacks(),
             unrestored_mismatch: vault.unrestored_mismatch(),
@@ -645,6 +688,10 @@ fn status_reply_of(st: &AppState) -> axum::Json<StatusReply> {
             present,
         },
         fetch: st.fetch_state(),
+        mount: MountStatus {
+            live: crate::cascades::mounted_live(),
+            last_error: crate::cascades::mount_last_error(),
+        },
         model: ModelInfo {
             lockr_revision: lockr,
             arbiter_revision: arb,
@@ -709,8 +756,27 @@ async fn fetch_models_handler(State(st): State<AppState>) -> Response {
             phase: crate::weights::Phase::Download,
         },
     });
+    // #316: детерминированный триггер горячего монтажа = УСПЕХ fetch (не
+    // poll-only): после Done-состояния, ОФОШНУВ пул-тред (ORT-load 2–3 с =
+    // НЕ HTTP-тред), live_mount из того же каталога, что скачали. Кнопка
+    // «Скачать веса» = кончается качание = монтирование; poll-поток = страховка
+    // для ВНЕШНЕЙ докачки (cli/scp). Idempotency = `live_mount` (второй =
+    // NOOP при mounted_live; после Load-отказа poll-контур не перетриггерит).
+    let mount_cfg = st.config().clone();
+    let mount_dir = fc.dir.clone();
     let spawn = tokio::task::spawn_blocking(move || {
         crate::fetch::run_fetch(fc, entries);
+        let done = crate::weights::fetch_slot()
+            .lock()
+            .is_ok_and(|g| matches!(*g, crate::weights::FetchState::Done { .. }));
+        // Fail-closed: неудача = причина в `mount_last_error` (UI
+        // «перескачай»), слот не тронут, HTTP жив (#198-решётка).
+        if done
+            && let Some(dir) = mount_dir
+            && let Err(e) = crate::cascades::live_mount(&mount_cfg, &dir)
+        {
+            eprintln!("fasad: hot-mount после докачки не сложился ({e}) (#316)");
+        }
     });
     if spawn.is_finished() {
         // Пул задач лёг мгновенно (дерьмо-машина): честный отказ, не «running
@@ -897,7 +963,7 @@ async fn anonymize_handler(State(st): State<AppState>, req: Request) -> Response
             .anonymize(session, &req.text, &req.spans, st.schema())
             .map_err(|ref err| ApiError::from_vault(err))?;
         let count = anon.items.len();
-        let stage = st.health().stage;
+        let stage = st.live_stage(); // #316 live
         let mut resp = axum::Json(anon).into_response();
         guard_headers(
             resp.headers_mut(),
@@ -937,7 +1003,7 @@ async fn deanonymize_handler(State(st): State<AppState>, req: Request) -> Respon
             .deanonymize(session, &req.text)
             .map_err(|ref err| ApiError::from_vault(err))?;
         let count = done.substituted;
-        let stage = st.health().stage;
+        let stage = st.live_stage(); // #316 live
         let mut resp = axum::Json(done).into_response();
         guard_headers(
             resp.headers_mut(),
@@ -957,7 +1023,7 @@ async fn invalidate_handler(
     let started = Instant::now();
     guarded(move || {
         let dropped = st.vault().invalidate(&id);
-        let stage = st.health().stage;
+        let stage = st.live_stage(); // #316 live
         let mut resp = (
             StatusCode::OK,
             axum::Json(serde_json::json!({ "deleted": dropped })),
@@ -1370,6 +1436,132 @@ mod tests {
         assert_eq!(r.status(), 200, "витрина веса живёт в pending");
     }
 
+    /// #316 ГЛАВНЫЙ ЗУБ (unit, мок-слот): горячий монтаж на живом роутере
+    /// без единого перезапуска = тот же `AppState`: 503 `models_pending` →
+    /// (swap = `install_test_live_mount(Some)`) → analyze 200, stage
+    /// `cascade-0+models` в `/health` И в заголовке `X-Guard-Stage`,
+    /// `mount.live=true` в `/v1/status`. Мок-слот = prod-форма `live_mount`
+    /// (unit-CI без весов; prod-swap = `cascades::live_mount`, CI-полка
+    /// `hot_mount_live` = живой монтажный контур).
+    #[tokio::test]
+    async fn hot_mount_flips_503_to_200_without_restart() {
+        let _g = crate::cascades::live_mount_lock().await;
+        crate::cascades::reset_test_live_mount();
+        let cfg = Config::from_lookup(|_| None).expect("дефолты sane");
+        let health = Health {
+            version: env!("CARGO_PKG_VERSION"),
+            stage: crate::cascades::STAGE_PENDING,
+            mode: cfg.vault_mode.as_str(),
+        };
+        let vault = Vault::startup(cfg.vault_mode, cfg.mlock).expect("хранилище");
+        let st =
+            AppState::with_pending(cfg, Schema::embedded().expect("канон"), health, vault, true);
+        let app = router(st.clone());
+
+        let r = app
+            .clone()
+            .oneshot(analyze_req(r#"{"text":"ИНН 2482014338"}"#, None))
+            .await
+            .expect("анализ идёт");
+        assert_eq!(r.status(), 503, "до монтажа = pending 503");
+
+        crate::cascades::install_test_live_mount(Some(std::sync::Arc::new(Cascade0OnlyStub)), None);
+
+        let r = app
+            .clone()
+            .oneshot(analyze_req(r#"{"text":"ИНН 2482014338"}"#, None))
+            .await
+            .expect("анализ идёт");
+        assert_eq!(
+            r.status(),
+            200,
+            "swap без рестарта = 200 (оператор-требование #316: «перезапусти» = НЕ канает)"
+        );
+        let stage = r
+            .headers()
+            .get(h::STAGE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        assert_eq!(
+            stage,
+            crate::cascades::STAGE_MOUNTED,
+            "X-Guard-Stage = live после swaps (первичка #314: заголовок = live)"
+        );
+
+        let r = app
+            .clone()
+            .oneshot(
+                Request::get("/health")
+                    .body(Body::empty())
+                    .expect("запрос строится"),
+            )
+            .await
+            .expect("health идёт");
+        let j = json_of(r).await;
+        assert_eq!(
+            j["stage"],
+            crate::cascades::STAGE_MOUNTED,
+            "/health stage = live (#316: stage без перезапуска)"
+        );
+
+        let r = app
+            .oneshot(
+                Request::get("/v1/status")
+                    .body(Body::empty())
+                    .expect("запрос строится"),
+            )
+            .await
+            .expect("status идёт");
+        let j = json_of(r).await;
+        assert_eq!(j["mount"]["live"], true, "/v1/status mount.live = live");
+
+        crate::cascades::reset_test_live_mount();
+    }
+
+    /// #316 отказ живого монтажа = pending ЧЕСТНЫЙ: swap с причиной (битые
+    /// веса) = 503 остаётся, причина видна витрине (UI «перескачай»), stage
+    /// не лжёт (#185 fail-closed: каскад-0 под вывеской cascade-0+models).
+    #[tokio::test]
+    async fn failed_live_mount_keeps_honest_pending() {
+        let _g = crate::cascades::live_mount_lock().await;
+        crate::cascades::reset_test_live_mount();
+        let cfg = Config::from_lookup(|_| None).expect("дефолты sane");
+        let health = Health {
+            version: env!("CARGO_PKG_VERSION"),
+            stage: crate::cascades::STAGE_PENDING,
+            mode: cfg.vault_mode.as_str(),
+        };
+        let vault = Vault::startup(cfg.vault_mode, cfg.mlock).expect("хранилище");
+        let st =
+            AppState::with_pending(cfg, Schema::embedded().expect("канон"), health, vault, true);
+        crate::cascades::install_test_live_mount(None, Some("нет файла model.onnx"));
+        let app = router(st.clone());
+        let r = app
+            .clone()
+            .oneshot(analyze_req(r#"{"text":"ИНН 2482014338"}"#, None))
+            .await
+            .expect("анализ идёт");
+        assert_eq!(r.status(), 503, "отказ монтажа ≠ выпуск конвейера (#185)");
+        let r = app
+            .oneshot(
+                Request::get("/v1/status")
+                    .body(Body::empty())
+                    .expect("запрос строится"),
+            )
+            .await
+            .expect("status идёт");
+        let j = json_of(r).await;
+        assert_eq!(j["mount"]["live"], false, "live = false при отказе");
+        assert!(
+            j["mount"]["last_error"]
+                .as_str()
+                .is_some_and(|e| e.contains("model.onnx")),
+            "причина доходит до UI: {j}"
+        );
+        crate::cascades::reset_test_live_mount();
+    }
+
     /// Дискриминатор конструктора: обычный роутер (pending=false) НЕ даёт
     /// `models_pending` (else-ветка флага = зелёный путь прежний).
     #[tokio::test]
@@ -1384,6 +1576,23 @@ mod tests {
             serde_json::json!("models_pending"),
             "{j}"
         );
+    }
+
+    /// Мок каскадов 1–2 для live-зуба (unit-CI без весов).
+    struct Cascade0OnlyStub;
+    impl crate::cascades::Cascade12 for Cascade0OnlyStub {
+        fn model_spans(
+            &self,
+            _text: &str,
+            _schema: &Schema,
+            _plan: &crate::cascades::Plan,
+        ) -> Result<crate::cascades::Outcome, crate::cascades::CascadeFailure> {
+            Ok(crate::cascades::Outcome {
+                spans: Vec::new(),
+                cascade2: crate::cascades::Cascade2::Ok,
+                p2: Vec::new(),
+            })
+        }
     }
 
     fn analyze_req(body: &str, policy: Option<&str>) -> Request<Body> {

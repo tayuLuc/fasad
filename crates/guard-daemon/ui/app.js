@@ -81,16 +81,16 @@ function refreshButtons() {
       ? "копирует задачу без списка меток (меток не найдено)"
       : "masked + задача + список меток (" + uniqueLabels(lastLabels).length + ")";
   an.disabled = modelRefused;
-  an.title = modelRefused ? "нужны веса: «Скачать веса» выше, затем перезапуск" : "";
+  an.title = modelRefused ? "нужны веса: «Скачать веса» выше — подхвачены на лету (#316)" : "";
   ao.disabled = modelRefused || spans.length === 0;
   ao.title = modelRefused
-    ? "нужны веса: «Скачать веса» выше, затем перезапуск"
+    ? "нужны веса: «Скачать веса» выше — подхвачены на лету (#316)"
     : spans.length === 0
       ? "сначала «Разобрать»"
       : "";
   de.disabled = modelRefused || masked === "";
   de.title = modelRefused
-    ? "нужны веса: «Скачать веса» выше, затем перезапуск"
+    ? "нужны веса: «Скачать веса» выше — подхвачены на лету (#316)"
     : masked === ""
       ? "сначала «Обезличить»"
       : "";
@@ -100,7 +100,7 @@ function refreshButtons() {
   const ch = $("btnChat");
   ch.disabled = modelRefused || masked === "";
   ch.title = modelRefused
-    ? "нужны веса: «Скачать веса» выше, затем перезапуск"
+    ? "нужны веса: «Скачать веса» выше — подхвачены на лету (#316)"
     : masked === ""
       ? "сначала «Обезличить»"
       : "";
@@ -784,8 +784,8 @@ function applyStage(stage) {
 /* --- карточка веса (#192): GET /v1/status + кнопка POST /v1/models/fetch ---
    Полл: setInterval 1 с ТОЛЬКО во время running; без загрузки = один GET на
    загрузку страницы. Прогресс = байты текущего файла; результат done =
-   перечитать статус + подсказка перезапуска (каскады монтируются на старте,
-   «Скачал — перезапусти демона», ТЗ #192). */
+   перечитать статус: #316 = каскады подхватываются НА ЛЕТУ (mount.live),
+   «Скачал — перезапусти демона» (ТЗ #192) = заменяющее. */
 
 let weightsTimer = null;
 
@@ -827,10 +827,10 @@ async function loadWeights() {
     "lockR rev " + (m.lockr_revision || "—") +
     " · Decide rev " + (m.arbiter_revision || "—") +
     " · этап " + d.stage;
-  renderFetch(d.fetch);
+  renderFetch(d.fetch, d);
 }
 
-function renderFetch(fr) {
+function renderFetch(fr, d) {
   const bar = $("fetchBarS");
   const msg = $("fetchMsgS");
   const btn = $("btnFetchS");
@@ -856,8 +856,13 @@ function renderFetch(fr) {
   bar.hidden = true;
   phase.textContent = "";
   if (fr.state === "done") {
-    msg.textContent = "веса скачаны: перезапусти демона, чтобы каскады 1–2 смонтировались";
+    // #316: «перезапусти» = заменяющее. После Done монтаж идёт сам
+    // (прямой триггер fetch + poll-страховка); UI перечитывает /health
+    // ниже — stageFlip подхвачен (loadHealth ставит строку статуса).
+    msg.textContent = "веса скачаны — каскады 1–2 подхватятся на лету, перезапуск не нужен";
     msg.dataset.kind = "";
+    setTimeout(loadHealth, 3500);
+    setTimeout(loadHealth, 9000);
     return;
   }
   if (fr.state === "failed") {
@@ -865,7 +870,19 @@ function renderFetch(fr) {
     msg.dataset.kind = "err";
     return;
   }
-  msg.textContent = "";
+  // #316: смонтировано live = каскады работают СЕЙЧАС (poll-страховка
+  // внешней докачки = cli/scp: stage flip без единого перезапуска).
+  if (fr.state === "idle" && d && d.mount && d.mount.live && !$("pendingPane").hidden) {
+    msg.textContent = "каскады 1–2 примонтированы на лету (#316)";
+    msg.dataset.kind = "";
+  }
+  // #316: hot-mount пытался и упал (битые веса) = честный «перескачай»,
+  // pending остаётся (fail-closed #185: слот не тронут, маршруты = 503).
+  if (d && d.mount && d.mount.last_error) {
+    msg.textContent = "веса повреждены, перескачай: " + d.mount.last_error;
+    msg.dataset.kind = "err";
+  }
+  msg.textContent = msg.textContent || "";
 }
 
 function startPoll() {
@@ -949,6 +966,7 @@ const CFG_NUMERIC = {
   FASAD_THREADS: { min: 1, max: 256, step: 1 },
   FASAD_TIMEOUT_MS: { min: 1, max: 3600000, step: 1 },
   FASAD_READ_TIMEOUT_MS: { min: 1, max: 3600000, step: 1 },
+  FASAD_MOUNT_POLL_MS: { min: 0, max: 3600000, step: 1000 }, // #316: 0 = выключен
   FASAD_MAX_BODY_BYTES: { min: 1, max: 104857600, step: 1 },
   FASAD_GRAY_LO: { min: 0, max: 1, step: 0.01 },
   FASAD_GRAY_HI: { min: 0, max: 1, step: 0.01 },
