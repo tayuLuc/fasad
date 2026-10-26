@@ -1,16 +1,22 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["python-docx", "openpyxl", "python-pptx", "striprtf"]
+# dependencies = ["python-docx", "openpyxl", "python-pptx", "striprtf",
+#   "pikepdf", "pdfplumber", "pypdf", "reportlab"]
 # ///
-"""Зубы обёртки fasad-file.py (#297 этап-1 CI-полка; НЕ golden-контур).
+"""Зубы обёртки fasad-file.py (#297 этап-1 + #302 pdf CI-полка; НЕ golden).
 
 Контур: живой демон (FASAD_TEST_CASCADE0=1 харнес, как R&D f620296e) +
 uv-окружение. Запуск (из корня репозитория):
   FASAD_BIN=target/debug/fasad uv run scripts/test-fasad-file.py
 Зубы:
   1 roundtrip docx/xlsx/txt = побайтовый/текстовый возврат через
-    deanonymize + ledger (маска → restore → сравнение с оригиналом);
+    deanonymize + ledger; pdf = побайтовая каноничность DECODED
+    content-потоков (pikepdf) + текст-канон (zip-байты = не канон:
+    pypdf-FlateDecode = R&D/#302-первички; в stream = overlay-графика
+    маски = ожидаемый артефакт, текст-канон её не читает);
   2 leak-scan: повторное извлечение masked-файла = PII-строк нет;
+  2b PDF_BLACK: black-контра = побайтовый скан PII 0 + restore = честный
+    отказ (необратимость = контракт);
   3 fail-closed: битый/шифрованный docx (PackageNotFoundError) = rc!=0.
 Известный FN-класс (документирован в README fasad-file.py, НЕ зуб-проверка):
 паспорт рядом с ИНН-ключом = inn-доминанта каскада-0 (зуб реестра
@@ -96,6 +102,60 @@ def make_samples(td: Path):
     )
     # битый docx: zip-магик + мусор = PackageNotFoundError (первичка R&D)
     (td / "broken.docx").write_bytes(b"PK\x03\x04\x00\x00\x00\x00garbage-not-a-package")
+    # битый pdf = PdfminerException = fail-closed (первичка #302)
+    (td / "broken.pdf").write_bytes(b"%PDF-1.4\nbroken-no-xref")
+    # текстовый PDF (reportlab = Helvetica-ANSI, PII = ASCII = канон
+    # этапа-2; кириллица-потоки = Hex/CID = этап 3 = вне фикстуры):
+    # PII в строках с контекстом (ctx-анкор + слияние соседних pad-ранов
+    # = #302 restore-контра).
+    from reportlab.pdfgen import canvas
+    c = canvas.Canvas(str(td / "s.pdf"), pagesize=(595, 842))
+    c.setFont("Helvetica", 12)
+    c.drawString(60, 790, "Zapros na postavku oborudovaniya.")
+    c.drawString(60, 770, "Kontakt: 89161234567, INN 7707083893.")
+    c.drawString(60, 750, "SNILS 112-233-445 95. Data 28.09.2026.")
+    c.showPage()
+    # страница 2 = MULTI-OCCURRENCE (#302-зуб): СНИЛС ДВАЖДЫ с РАЗНЫМ
+    # левым контекстом (промер-яд rep3: 1 анкор = 1 возврат = второе
+    # вхождение молча не восстановлено = fail-open; промер-яд fixed-
+    # fixture: телефон-повтор на page-2 = phone-доминанта демона =
+    # один span = зуб меряется snils-парой, детектируется обеими).
+    c.setFont("Helvetica", 12)
+    c.drawString(60, 790, "Arhiv 112-233-445 95 skan")
+    c.drawString(60, 770, "Kopiya 112-233-445 95 vtoroy")
+    c.showPage()
+    c.save()
+
+
+def _pdf_content_bytes(path: Path) -> list:
+    """Побайтовый текст-канон = Tj-показания с НОРМАЛИЗАЦИЕЙ пробелов
+    (первички #302: DECODED-байты потока = не канон = pypdf-merge q/n-
+    обёртки; zip-байты = не канон = FlateDecode; Tj-строки ДО маски
+    каноничны, но restore-вставка PII в pad-ран съедает разделительный
+    пробел = «Kontakt:PII ,» при «Kontakt: PII,» = Tj- Equality =
+    промер-яд DRIFT. Мера = PII-байты на месте + весь remainder
+    побайтово: Tj-строки → b" ".join(split()) collapse = pad-пробелы
+    канонизируются (pad-яд = PII-байты в каноне НЕ появляется))."""
+    import re
+
+    import pikepdf
+    out = []
+    with pikepdf.open(path) as pdf:
+        for page in pdf.pages:
+            c = page.get("/Contents")
+            streams = [c] if not isinstance(c, pikepdf.Array) else list(c)
+            raw = b"".join(s.read_bytes() for s in streams
+                           if b" Tf" in s.read_bytes())
+            # Tj-показания страницы СЛИВАЮТСЯ в один канон-блок:
+            # restore-вставка PII склеивает Tj-строку с pad-раном
+            # («DrugoyPII fax» при «Drugoy PII fax», Tj-concatenation =
+            # R&D-первичка) = per-string-сравнение = ложный DRIFT
+            # (промер); collapse-пробелы = pad-норма, PII-байты на месте
+            # = канон побайтовый.
+            t = b" ".join(m.group(1) for m in
+                          re.finditer(rb"\((.*?)\) Tj", raw))
+            out.append(b" ".join(t.split()))
+    return out
 
 
 PII = [
@@ -124,6 +184,10 @@ def extract_all(path: Path) -> str:
             t += "".join(p.text for p in sec.header.paragraphs)
             t += "".join(p.text for p in sec.footer.paragraphs)
         return t
+    if ext == ".pdf":
+        import pdfplumber
+        with pdfplumber.open(path) as pdf:
+            return "".join(p.extract_text() or "" for p in pdf.pages)
     if ext == ".xlsx":
         import openpyxl
         wb = openpyxl.load_workbook(path)
@@ -139,7 +203,7 @@ def extract_all(path: Path) -> str:
 
 def test_roundtrip_and_leaks(td: Path, daemon_proc) -> int:
     fails = 0
-    for name in ("s.docx", "s.xlsx", "s.txt"):
+    for name in ("s.docx", "s.xlsx", "s.txt", "s.pdf"):
         src = td / name
         masked = td / f"m-{name}"
         back = td / f"r-{name}"
@@ -160,11 +224,73 @@ def test_roundtrip_and_leaks(td: Path, daemon_proc) -> int:
         # каноничны: python-docx переписывает zip), txt = побайтовая.
         if name.endswith(".txt"):
             ok = back.read_bytes() == src.read_bytes()
+        elif name.endswith(".pdf"):
+            # Возврат = extract (whitespace-collapsed = норма: pad-ран
+            # = 1+ пробелов, Tj-concatenation = R&D-первичка) + PII-
+            # счётчики (multi-occurrence-зуб: 89161234567 = 3 (2 на
+            # стр.2), 7707083893 = 2) + побайтовый Tj-канон
+            # (_pdf_content_bytes = PII-байты на местах).
+            def _ws(x):
+                return " ".join(x.split())
+            m1 = _ws(extract_all(back)) == _ws(extract_all(src))
+            # multi-occurrence-зуб: snils = 2 возврата (2 вхождения на
+            # page-2 = разные ctx-анкоры, промер-яд rep3).
+            # multi-occurrence-зуб: snils = 3 в каноне (1 на стр.1 + 2
+            # на стр.2; extract-счётчик = layout-хрупкий: межстраничная
+            # вставка «\n» рвёт «95. Data»/«95 skan» = 2 при верном
+            # потоке, промер-яд меры; Tj-канон = побайтовый).
+            _cb = _pdf_content_bytes(back)
+            _cs = _pdf_content_bytes(src)
+            m2 = b"".join(_cb).count(b"112-233-445 95") == 3
+            m3 = b"".join(_cb).count(b"89161234567") == 1
+            m4 = _cb == _cs
+            ok = m1 and m2 and m3 and m4
+            if not ok:
+                print(f"DRIFT-PROBE|ws={m1}|snils3={m2}|ph1={m3}|tj={m4}")
+                print("BACK:", repr(extract_all(back)))
         else:
             ok = extract_all(back) == extract_all(src)
+        if name.endswith(".pdf"):
+            # Мута-промер меры (anti-false-green): инвертированный байт
+            # PII в restored-потоке = каноны краснеют (Tj-канон +
+            # extract+счётчики).
+            import pikepdf as _pp
+            with _pp.open(back) as _pdf:
+                _c = _pdf.pages[0].get("/Contents")
+                _st = [_c] if not isinstance(_c, _pp.Array) else list(_c)
+                _r = _st[0].read_bytes().replace(b"89161234567", b"89161234566", 1)
+                _st[0].write(_r)
+                _pdf.save(str(td / "mut.pdf"))
+            mut_ok = _pdf_content_bytes(td / "mut.pdf") != _pdf_content_bytes(src) \
+                and " ".join(extract_all(td / "mut.pdf").split()) != \
+                " ".join(extract_all(src).split())
+            print(f"MUTA|pdf|caught={mut_ok}")
+            ok = ok and mut_ok
         print(f"ROUNDTRIP|{name}|{'ok' if ok else 'DRIFT'}")
         fails += 0 if ok else 1
     return fails
+
+
+def test_pdf_black(td: Path) -> int:
+    """Black-контра #302: побайтовый скан = PII 0 + restore = честный
+    отказ (необратимость = контракт black, ledger без orig)."""
+    out = td / "b.pdf"
+    led = td / "b-ledger.json"
+    run("mask", str(td / "s.pdf"), "t300blk", "--out", str(out),
+        "--ledger", str(led), "--mode", "black")
+    raw = out.read_bytes()
+    clean = all(p.encode() not in raw for p in PII + ["4511 123456"])
+    r = subprocess.run(
+        [sys.executable, str(HERE / "fasad-file.py"), "--url", URL,
+         "restore", str(out), "t300blk", "--ledger", str(led),
+         "--out", str(td / "b-back.pdf")],
+        capture_output=True, text=True,
+    )
+    ok = clean and r.returncode != 0 and "необратим" in r.stderr \
+        and not (td / "b-back.pdf").exists()
+    print(f"PDF_BLACK|byte-clean={clean}|restore-refuse-rc={r.returncode}|"
+          f"{'ok' if ok else 'PROBLEM'}")
+    return 0 if ok else 1
 
 
 def test_failclosed(td: Path) -> int:
@@ -176,7 +302,16 @@ def test_failclosed(td: Path) -> int:
     )
     ok = r.returncode != 0 and "PackageNotFoundError" in r.stderr and not out.exists()
     print(f"FAILCLOSED|broken.docx|rc={r.returncode}|{'ok' if ok else 'PROBLEM'}")
-    return 0 if ok else 1
+    fails = 0 if ok else 1
+    out2 = td / "never.pdf"
+    r2 = subprocess.run(
+        [sys.executable, str(HERE / "fasad-file.py"), "--url", URL,
+         "mask", str(td / "broken.pdf"), "s", "--out", str(out2)],
+        capture_output=True, text=True,
+    )
+    ok2 = r2.returncode != 0 and "не разобрался" in r2.stderr and not out2.exists()
+    print(f"FAILCLOSED|broken.pdf|rc={r2.returncode}|{'ok' if ok2 else 'PROBLEM'}")
+    return fails + (0 if ok2 else 1)
 
 
 def test_cyrillic_teeth(td: Path) -> int:
@@ -312,6 +447,7 @@ def main():
     try:
         make_samples(td)
         fails = test_roundtrip_and_leaks(td, proc)
+        fails += test_pdf_black(td)
         fails += test_failclosed(td)
         fails += test_cyrillic_teeth(td)
         fails += test_xlsx_mode_filter()
