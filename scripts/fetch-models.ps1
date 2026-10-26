@@ -144,7 +144,12 @@ New-Item -ItemType Directory -Force -Path $Cache | Out-Null
 $ProgressPreference = 'SilentlyContinue'
 
 $processed = 0
-$lines = Get-Content -LiteralPath $Manifest
+# -Encoding UTF8 (#194 нить 1, ревью #193): на PS 5.1 Get-Content без
+# -Encoding декодирует байты как ANSI и BOM (EF BB BF) первой строки
+# прилипает к полю role: «\ufeffextractor1b» не матчится ни с чем =
+# fail-closed на валидном BOM-манифесте (редактор оператора). ASCII-манифест
+# релиза = зелёно и так; PS7 utf8 = BOM-стриппинг, 5.1 = требует явно.
+$lines = Get-Content -LiteralPath $Manifest -Encoding UTF8
 foreach ($line in $lines) {
     $line = $line.TrimEnd([char]13)   # CR режем defensively (файл LF; .sh — то же)
     if ($line -eq '') { continue }
@@ -153,6 +158,13 @@ foreach ($line in $lines) {
     $fields = $line -split "`t"
     if ($fields.Count -lt 7) {
         Write-Fail "строка манифеста короче 7 полей: $line"
+    }
+    # #194 нить 1 (BOM double-belt): явный срез BOM первой строки закрывает
+    # и PS-разницу кодировок, и ANSI-шум чужих редакторов. Без этой строки
+    # BOM-манифест краснеет на «source='hf <BOM>'» (первичка ТЗ, CI-провен
+    # #190-шага: ASCII-контур выбран именно из-за этой симptom-строки).
+    if ($fields.Count -eq 7 -and $fields[0].Length -gt 0 -and $fields[0][0] -eq [char]0xFEFF) {
+        $fields[0] = $fields[0].Substring(1)
     }
     $role = $fields[0]
     $repo = $fields[1]
@@ -231,6 +243,12 @@ foreach ($line in $lines) {
     }
     if ($wantSha -ne $gotSha) {
         if (-not $fromCache) { Remove-Item -LiteralPath $dest -Force }
+        if ($fromCache) {
+            # #194 нить 2 (UX-строка ревью #193): красная ветка на КЕШЕ —
+            # файл чужой (битый/подмена), скрипт его НЕ сносит (не наш);
+            # оператору — явное действие.
+            Write-Fail "$role`: кеш-повреждён: sha256 $dest не совпал с манифестом (факт $gotSha) — снеси файл и повтори: Remove-Item '$dest'"
+        }
         Write-Fail "$role`: sha256 рассинхронизация (манифест $wantSha, факт $gotSha, файл $dest)"
     }
     Write-Log "$role`: sha256 совпал ($gotSha)"

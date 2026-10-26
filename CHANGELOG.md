@@ -1,6 +1,10 @@
 ## Unreleased
+### Added
+- Гейт авторства коммита (#180, шаг 2): `.githooks/commit-msg` в дереве (версионируемый контур вместо летучего `.git/hooks`) + `just hooks-install` (core.hooksPath = ЛОКАЛЬНАЯ настройка, идемпотент; AGENTS §Порядок работы п.0 = шаг после clone/worktree) + `just hooks-test` в `check`: live-решётка (temp-репо + реальные коммиты, 8 кейсов: чистый и человек-трейлер github-noreply = 0; anthropic / пустой угол `<>` / `@local` / пустой email автора (первичка hook-контракта: hook = `git var GIT_AUTHOR_IDENT`, автор коммита, НЕ живой git config среды — CI-провен самопроверки 26.10: live-global конфиг красил валидный коммит) / CRLF-трейлер = 1; `--no-verify` = 0 = git-контракт-граница, задокументирована в hook). Хуки CI-чекаутами НЕ исполняются = mounted-гейт CI: шаг `just hooks-test` в build-test-матрице (ревью #276 5b26e980: «just check» в CI не исполнялся никогда = заявление без монтажа, реестр false-green; тест = live-git, переносим на 3 ОС); shellcheck-скоуп += `.githooks/**`.
+
 ### Fixed
 - #26 закрыт промером (PR #277): решётка маркер×чексумма 5 классов × 4 формы (валидный без слова = 1.0, каркас-невалид = 0.95, карточный каркас = контракт молчания #234) = вечный зуб `checksum_marker_lattice_closes_issue_26` (wire_e2e); C0GOLDEN 235/235 (промер, снимок прогона); ревью-косметика: README-ссылка на таблицу/живой stdout + #80=PR/#234=issue.
+- ps1-нити ревью #193 (#194): (1) `fetch-models.ps1` манифест = `Get-Content -Encoding UTF8` + явный срез BOM первой строки (double-belt; PS 5.1 ANSI-декод = «\ufeffextractor1b» = fail-closed на BOM-манифесте оператора, ASCII-манифест CI зелёно и так) + win-CI лег += BOM-манифест (`Set-Content -Encoding UTF8` = нативный BOM-продюсер 5.1; красен = чин мёртв); (2) UX-строка «кеш-повреждён» = red-ветка на кеш-хите (файл чужой = НЕ сносим; явный `rm -f`/`Remove-Item` путь в тексте отказа) в ps1 + sh-паритете (`from_cache`-флаг); (3) нить-3 = win-стенд оператора (первичка коммента родителя: вне PR-скоупа).
 
 ## v0.1.8 (2026-10-26)
 ### Fixed

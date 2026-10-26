@@ -35,6 +35,10 @@
 
 ## Порядок работы агента
 
+0. Сразу после clone/worktree: `just hooks-install` (git config
+   core.hooksPath=.githooks, локально) — гейт авторства #180: коммиты со
+   средовыми co-author-трейлерами (anthropic/`@local`/пустой угол) и
+   пустым email автора краснеют; решётка = `just hooks-test` (в `just check`).
 1. Шаги сборки — строго по §10 SPEC, один шаг = один PR, зелёный CI всех трёх ОС.
 2. Шаг 2 (model-fetch spike) — до написания рантайма: скачать модели по
    `docs/quant-policy.md`, пересчитать sha256, прогнать parity-гейт (fp32 vs квант,
