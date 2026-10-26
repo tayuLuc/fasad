@@ -12,22 +12,32 @@
 //! PR-комменте, не пин). ЗУБ = инварианты, не хрупкие пины:
 //!
 //! 1. **Deadline-контра:** отказ от бюджета приходит ЗА бюджет с маржой
-//!    (queue-recv = бюджет, воркер отвечает после чанка → маржа = один чанк,
-//!    влезавший в бюджет). «24 × 4.5 с = 100+ с при бюджете 3 с» (первичка
-//!    #109) на этом зубе красный по построению.
-//! 2. **Fail-closed (#185-инвариант):** исход = 502-класс `Cascade(Timeout)`,
-//!    причина называет стадию `decide` и бюджет; маска НЕ выдана; PII из
-//!    тела запроса в причину не просочилась.
-//! 3. **Контроль живости контура** (реестр ложно-зелёных, «function covered
-//!    ≠ called on the request path»): на ТОМ ЖЕ конфиге короткий серый вход
-//!    обязан завершаться `Cascade2::Ok` = Decide на этом раннере живой.
-//!    Без контроля зелёный «таймаут» мог бы значить «Decide вообще не
-//!    работает», а не «бюджет сработал».
+//!    (queue-recv = бюджет, воркер отвечает после чанка, влезавшего в бюджет
+//!    → верхняя граница ~2×бюджет). «24 × 4.5 с = 100+ с при бюджете 3 с»
+//!    (первичка #109) на этом зубе красный по построению.
+//! 2. **Fail-closed (#185-инвариант):** исход = `Cascade(Timeout{decide})`
+//!    (502-класс), причина называет стадию и бюджет; PII запроса в причине нет.
+//! 3. **Контроль живости КОНТУРА:** короткий вход проходит с `cascade2: ok`
+//!    = Decide на этом раннере живой.
+//! 4. **Контроль живости ВХОДА (lesson прогона 40251111755):** длинный вход
+//!    с БОЛЬШИМ бюджетом обязан дать `cascade2: ok` = на нём Decide реально
+//!    ЗВОНЯТСЯ. Первый промер полки поймал ровно это: Ushakov-фикстура #238
+//!    дала 200 за 280–3231 мс при бюджете 4500 = short-circuit (серой зоны у
+//!    живого lockR на транслите НЕТ, Decide не звонился): «прошёл бюджет»
+//!    без этой проверки = ложно-зелёный тест мёртвого контура (реестр
+//!    ложно-зелёных, «function covered ≠ called on the request path»).
+//!    Фикстура = golden-строки с адресом (read-only, `data/golden/` НЕ
+//!    правится: #109 = runtime-контур, метрики не трогаем): адресные спаны
+//!    живого lockR ниже 0.8 (промер §I1: минимум НЕ адресного класса =
+//!    0.8022), `address` = контекстно-зависимый класс схемы → серая зона
+//!    `[0.22; 0.80)` = законный зов Decide; повтор строк = несколько
+//!    Decide-чанков (окно state 456 токенов ≈ 1.6–2.1 КБ текста).
 //!
-//! Порядок = БЮДЖЕТ ДО `startup`: бюджет запроса печатается в `Job` из
-//! `OnnxMount::load` (`cfg.timeout_ms`), mounted-контур гоняется через
-//! `analyze`/глобальный слот — `startup` с малым бюджетом ставится ОДИН раз
-//! и им же обслуживаются обе проверки (дешёвая даёт Ok, дорогая — Timeout).
+//! Порядок = БЮДЖЕТ ДО `startup`: бюджет печатается в `Job` из
+//! `OnnxMount::load` (`cfg.timeout_ms`); `startup` вызывается несколько раз
+//! (малый/большой бюджет), воркер предыдущего монтажа живёт до конца
+//! процесса (слот = Arc, drain не предусмотрен) — в тестовом процессе это
+//! поток с weight-mmap на раннере, не продукт.
 //! Без весов = `SKIP|…`-строка + падение при `FASAD_REQUIRE_MODELS`
 //! (#87/#237-паттерн).
 
@@ -43,21 +53,19 @@ use guard_daemon::pipeline::{AnalyzeError, AnalyzeRequest, Policy, analyze};
 use guard_daemon::schema::Schema;
 use zeroize::Zeroizing;
 
-/// Бюджет смонтированного монтаже этой полки, мс. Меньше ОДНОГО живого
-/// Decide-чанка (4.5–8.6 с, §I1 п.3) и больше lockR-фазы 5 КБ (~1.5 с при
-/// 329–373 мс/чанк, §I1 п.3) + короткого прогона: значит короткий серый
-/// вход успевает дойти до Decide и вернуть Ok, а длинный — упёрся в хук
-/// между чанками Decide.
+/// Бюджет бюджетного прогона, мс. Меньше ОДНОГО живого Decide-чанка
+/// (4.5–8.6 с, §I1 п.3) и больше lockR-фазы фикстуры (~5 чанков × 0.3–0.4 с):
+/// lockR доходит, Decide зовётся, второй чанк Decide не стартует.
 const BUDGET_MS: u64 = 4_500;
 
-/// Серый якорь (тот же, что `translit_live`: формальный кандидат `person_name`
-/// по эвристике #238 → спан серой зоны → Decide зовётся).
-const GREY: &str = "Контрагент: Ushakov Petr Sergeevich, ИНН 7707083893\n";
+/// Контроль живости входа = полный прогон: ~12 чанков Decide × 8 с
+/// (формула #110) + lockR ≈ 96 с, с запасом 120 с.
+const FULL_BUDGET_MS: u64 = 120_000;
 
-/// Чанки Decide ≈ 456 токенов state ≈ 1.6–2.1 КБ текста (промер §W2.6):
-/// ~5 КБ = НЕСКОЛЬКО чанков Decide.
-const PAD_SENTENCE: &str = "Отдел кадров уведомляет о плановой сверке документов. ";
-const TARGET_BYTES: usize = 5_000;
+/// Бюджет короткого контроля = 30 с (тот же, что parity-полки).
+const SHORT_BUDGET_MS: u64 = 30_000;
+
+const GOLDEN: &str = include_str!("../../../data/golden/golden-v1.jsonl");
 
 fn model_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("FASAD_MODEL_DIR") {
@@ -82,21 +90,48 @@ fn cfg_with(dir: &std::path::Path, timeout_ms: u64) -> Config {
     .expect("конфиг с весами sane")
 }
 
-/// Текст: серый якорь + детерминированная pad-набивка до `TARGET_BYTES`.
-fn long_grey_text() -> String {
-    let mut text = String::from(GREY);
-    while text.len() < TARGET_BYTES {
-        text.push_str(PAD_SENTENCE);
-    }
-    text
-}
-
 fn req(text: &str) -> AnalyzeRequest {
     AnalyzeRequest {
         text: Zeroizing::new(text.to_owned()),
         entities: None,
         score_threshold: None,
     }
+}
+
+/// Золотые строки С АДРЕСОМ (тексты read-only).
+fn address_rows() -> Vec<String> {
+    GOLDEN
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter(|l| l.contains("\"address\""))
+        .filter_map(|l| {
+            serde_json::from_str::<serde_json::Value>(l)
+                .ok()
+                .and_then(|v| v["text"].as_str().map(str::to_owned))
+        })
+        .collect()
+}
+
+/// Фикстура = адресные golden-строки, повторённые до `min_bytes`.
+fn grey_fixture(min_bytes: usize) -> String {
+    let rows = address_rows();
+    assert!(!rows.is_empty(), "golden с адресом обязана быть");
+    let mut text = String::new();
+    let mut i = 0usize;
+    while text.len() < min_bytes {
+        text.push_str(&rows[i % rows.len()]);
+        text.push('\n');
+        i += 1;
+    }
+    text
+}
+
+fn mount(dir: &std::path::Path, budget_ms: u64) -> Config {
+    let cfg = cfg_with(dir, budget_ms);
+    if let Err(e) = startup(&cfg) {
+        panic!("startup с бюджетом {budget_ms} отказал: {e}");
+    }
+    cfg
 }
 
 #[test]
@@ -112,45 +147,72 @@ fn decide_budget_stops_before_the_next_chunk() {
         return;
     };
     let schema = Schema::embedded().expect("канон");
-    let cfg = cfg_with(&dir, BUDGET_MS);
-    if let Err(e) = startup(&cfg) {
-        panic!("веса есть ({dir:?}), а старт каскадов отказал: {e}");
-    }
 
-    // (3) КОНТРОЛЬ ЖИВОСТИ: короткий серый вход на ТОМ ЖЕ бюджете проходит
-    // весь конвейер с каскадом 2 = Decide на этом раннере зовётся и живой.
+    // (3) КОНТРОЛЬ ЖИВОСТИ КОНТУРА: короткий серый вход = Ok + cascade2 ok.
+    let text_short = grey_fixture(1);
+    let cfg_short = mount(&dir, SHORT_BUDGET_MS);
     let t = Instant::now();
-    let short = analyze(&req(GREY), &schema, &cfg, Policy::Mask);
+    let short = analyze(&req(&text_short), &schema, &cfg_short, Policy::Mask);
     let short_ms = i64::try_from(t.elapsed().as_millis()).unwrap_or(i64::MAX);
     match &short {
         Ok(a) => println!("CHUNK_BUDGET|short|ok|{short_ms}|cascade2|{}", a.cascade2),
         Err(e) => println!("CHUNK_BUDGET|short|err|{short_ms}|{e}"),
     }
-    let a = short.expect("контроль: короткий серый вход обязан проходить при бюджете полки");
+    let a = short.expect("контроль: короткий серый вход обязан проходить");
     assert_eq!(
         a.cascade2,
         Cascade2::Ok.as_header(),
-        "контроль живости: каскад 2 обязан зваться (иначе бюджет-зуб зелёный вручил бы \
-         контрольная точка мёртвого контура = реестр ложно-зелёных)"
+        "Decide на этом раннере не звонился вообще = бюджет-зуб проверял бы мёртвый контур"
     );
 
-    // (1)+(2) БЮДЖЕТНЫЙ ЗУБ: длинный вход при бюджете < одного Decide-чанка.
-    let text = long_grey_text();
+    // (4) КОНТРОЛЬ ЖИВОСТИ ВХОДА (lesson 40251111755): на фикстуре с
+    // БОЛЬШИМ бюджетом Decide обязан ЗВАТЬСЯ (cascade2 ok), иначе «отказ по
+    // бюджету» на ней = отказ иной стадии, а не зуб #109.
+    let cfg_full = mount(&dir, FULL_BUDGET_MS);
+    let text = grey_fixture(5_000);
     let t = Instant::now();
-    let r = analyze(&req(&text), &schema, &cfg, Policy::Mask);
+    let full = analyze(&req(&text), &schema, &cfg_full, Policy::Mask);
+    let full_ms = i64::try_from(t.elapsed().as_millis()).unwrap_or(i64::MAX);
+    match &full {
+        Ok(a) => println!(
+            "CHUNK_BUDGET|full|ok|{full_ms}|cascade2|{}|bytes|{}",
+            a.cascade2,
+            text.len()
+        ),
+        Err(e) => println!("CHUNK_BUDGET|full|err|{full_ms}|bytes|{}|{e}", text.len()),
+    }
+    let a = full.expect("контроль: полный прогон фикстуры обязан дойти (бюджет 120 с)");
+    assert_eq!(
+        a.cascade2,
+        Cascade2::Ok.as_header(),
+        "фикстура без зова Decide (short-circuit) = мёртвый бюджет-тест; \
+         lesson прогона 40251111755: Ushakov-фикстура = 200/3231 мс, Decide не звонился"
+    );
+    assert!(
+        full_ms > 2_000,
+        "промер full = {full_ms} мс: полный прогон обязан включать Decide-фазу \
+         (lockR одной ≈1.5 с на 5 КБ, §I1)"
+    );
+
+    // (1)+(2) БЮДЖЕТНЫЙ ЗУБ: та же фикстура при бюджете < Decide-фазы.
+    let cfg_small = mount(&dir, BUDGET_MS);
+    let t = Instant::now();
+    let r = analyze(&req(&text), &schema, &cfg_small, Policy::Mask);
     let ms = i64::try_from(t.elapsed().as_millis()).unwrap_or(i64::MAX);
     match r {
         Err(AnalyzeError::Cascade(CascadeFailure::Timeout {
             budget_ms: b,
             stage,
         })) => {
-            println!("CHUNK_BUDGET|decide|timeout|{ms}|budget|{b}|stage|{stage}");
+            println!("CHUNK_BUDGET|decide|timeout|{ms}|budget|{b}|stage|{stage}|full_ms|{full_ms}");
             assert_eq!(b, BUDGET_MS, "отказ обязан назвать бюджет вызывающего");
-            assert_eq!(stage, "decide", "стадия отказа = каскад 2, не lockR");
+            assert_eq!(
+                stage, "decide",
+                "стадия отказа = каскад 2 (lockR-хук #84 = другой зуб): {stage}"
+            );
             // Deadline-контра (не вечный прогон): outer recv_timeout = бюджет
-            // срабатывает НЕ ПОЗЖЕ бюджета; inner-ответ (воркер отвечает
-            // сразу после чанка, влезавшего в бюджет) даёт верхнюю границу
-            // ~2×бюджет. 20 % на планирование/нагрузку раннера.
+            // срабатывает НЕ ПОЗЖЕ бюджета; inner-ответ даёт верхнюю границу
+            // ~2×бюджет + планирование раннера.
             assert!(
                 ms <= i64::try_from(BUDGET_MS * 2 + 2_000).unwrap_or(i64::MAX),
                 "отказ от бюджета за {ms} мс при бюджете {BUDGET_MS}: хук не работал \
@@ -161,28 +223,24 @@ fn decide_budget_stops_before_the_next_chunk() {
             // операторский выбор #110, здесь её нет намеренно).
             let reason = format!("{r:?}");
             assert!(
-                reason.contains("decide"),
-                "стадия в причине отказа: {reason}"
-            );
-            assert!(
-                !text.contains("Ushakov") || !reason.contains("Ushakov"),
+                !reason.contains("Ушакова") && !reason.contains("825082492964"),
                 "причина отказа протекла текстом запроса: {reason}"
             );
-            println!("CHUNK_BUDGET|text_bytes|{}|short_ms|{short_ms}", text.len());
         }
         Ok(a) => panic!(
-            "бюджет {BUDGET_MS} мс выпустил 200 с замаскированным ответом \
-             (spans={}, latency={ms}) = #109 НЕ закрыт: досчитали молча",
-            a.spans.len()
+            "бюджет {BUDGET_MS} мс выпустил 200 (spans={}, latency={ms}, cascade2={}) \
+             = #109 НЕ закрыт: досчитали молча",
+            a.spans.len(),
+            a.cascade2
         ),
         Err(e) => panic!("ожидался Timeout{{decide}}, получен: {e}"),
     }
 }
 
-/// Unit-контра полки (без весов, живёт в CI любой ноги этой же файловой
-/// полки): геометрия хука на табличной сетке = та же, что в
-/// `arbitrate::tests::budget_…`; здесь повторяется как контракт ПОЛКИ
-/// (файл = стенд целиком, паттерн `translit_live::shelf_invariant_…`).
+/// Unit-контра полки (без весов; живёт в CI этой же ort-ноги): геометрия
+/// хука на табличной сетке = та же, что в `arbitrate::tests::budget_…`;
+/// здесь повторяется как контракт ПОЛКИ (файл = стенд целиком, паттерн
+/// `translit_live::shelf_invariant_…`).
 #[test]
 fn shelf_invariant_budget_never_starts_an_unaffordable_chunk() {
     // (чанки, цена, бюджет, стартапов) — сетка ТЗ #109.
