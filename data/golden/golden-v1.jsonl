@@ -290,3 +290,8 @@
 {"id":"g0290","text":"Контакт 8—916—123—45—67 (рабочий).","spans":[{"start_byte":15,"end_byte":38,"category":"phone","value_source":"8—916—123—45—67"}],"split":"recall","source":"synthetic-checksum"}
 {"id":"g0291","text":"Паспорт 4508–455561 действителен.","spans":[{"start_byte":15,"end_byte":28,"category":"passport","value_source":"4508–455561"}],"split":"recall","source":"synthetic-checksum"}
 {"id":"g0292","text":"На собрании было 10—15 человек без повестки.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0293","text":"Кредитный договор: заёмщик Иванов-Иванов Иван Петрович, ИНН 7710140614, телефон +7 916 1002030.","spans":[{"start_byte":50,"end_byte":101,"category":"person_name","value_source":"Иванов-Иванов Иван Петрович"}],"split":"recall","source":"synthetic-translit"}
+{"id":"g0294","text":"Акт выполненных работ: подрядчик Петрова-Водкина Анна Сергеевна, СНИЛС 112-233-455 95 (проверка формы дефисного ФИО).","spans":[{"start_byte":61,"end_byte":118,"category":"person_name","value_source":"Петрова-Водкина Анна Сергеевна"}],"split":"recall","source":"synthetic-translit"}
+{"id":"g0295","text":"Отгрузка со склада: Санкт-Петербург, Невский проспект 1953 год выпуска партии.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0296","text":"Маршрут доставки: Усть-Илимск, Иркутская область, партия № 5 принята складом.","spans":[],"split":"negative","source":"synthetic-no-pii"}
+{"id":"g0297","text":"Экспедиция: Ростов-на-Дону, таможня оформила декларацию грузополучателя.","spans":[],"split":"negative","source":"synthetic-no-pii"}
