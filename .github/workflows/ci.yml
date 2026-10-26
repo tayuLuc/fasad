@@ -317,6 +317,28 @@ jobs:
           fi
           cargo test -p guard-daemon --features ort-inference \
             --test hot_mount_live -- --test-threads=1 --nocapture
+      - name: "Живая полка #314: win_simu (HOME∅ + USERPROFILE=5/5 = смонтированный старт, linux)"
+        # #314 (win-стенд v0.1.9: UI 5/5 + stage pending): env-контра
+        # `Config::from_env` (env-граница, config.rs) на win-форме
+        # HOME∅/USERPROFILE=кеш 5/5 = Some(кеш) на трей-мишени
+        # (env-симуляция `FASAD_TEST_TRAY_CONTOUR` main.rs:185) =
+        # `Config::win_simu_userprofile_shelf_mounts` (CI-полка =
+        # env-файлы: `cargo test --env` #255-паттерна; HOME=∅
+        # (CI_HOME_NULL), USERPROFILE=кеш шага fetch: #264-резолвер
+        # HOME→USERPROFILE, на win-раннере HOME не задан и
+        # USERPROFILE=дом раннера = кеш CI-fetch = ровно win-форма).
+        # mac-нога = ∅: HOME задан = клетка не собирается; live-контур
+        # = CI-msvc приёмник оператора (win v0.1.9-стенд); вешать
+        # full-бинарь-спавн на mac/linux CI = двойной ORT-контур =
+        # memory-exchange (провен run 40391897843: mac-нога краснела).
+        if: matrix.os == 'ubuntu-24.04'
+        env:
+          FASAD_REQUIRE_MODELS: "1"
+          CI_HOME_NULL: ""
+        run: |
+          set -euo pipefail
+          cargo test -p guard-daemon --lib -- win_simu -- --test-threads=1 --nocapture
+          cargo test -p guard-daemon --lib -- default_home_dir -- --test-threads=1
       - name: "Живая полка #318: tray_stage_live (трей-строка = live-чтение, mac)"
         # #318 (ревью #317): трей-строка = статика старта = после hot-mount
         # #316 врёт «models-pending» (#226). Чин = stage_reader-замыкание
