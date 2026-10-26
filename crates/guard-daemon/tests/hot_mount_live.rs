@@ -136,7 +136,7 @@ fn hot_mount_swaps_a_live_process_and_the_pipeline_answers() {
 
 /// Фейк-полка (без весов, unit-контра этой же ноги): `layout_complete` на
 /// фейк-файлах НЕ равна «4096-байтовый файлик прошёл»: гейт = РАЗМЕР vs
-/// манифест (первичка TЗ #316). Полка живого flip = выше (орт-нога); эта
+/// манифест (первичка ТЗ #316). Полка живого flip = выше (орт-нога); эта
 /// решётка = предикат триггера poll, CI-leg `ort-build` (этот же файл).
 #[test]
 fn shelf_invariant_layout_gate_is_size_not_existence() {

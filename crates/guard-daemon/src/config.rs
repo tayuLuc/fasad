@@ -1475,7 +1475,7 @@ impl Config {
                 "FASAD_READ_TIMEOUT_MS",
                 DEFAULT_READ_TIMEOUT_MS,
             )?,
-            // `u64_or`/`positive` = канон «> 0» (общий валидаторBudget-ключей),
+            // `u64_or`/`positive` = канон «> 0» (общий валидатор Budget-ключей),
             // а 0 = легальный выключатель наблюдателя (#316): свой разбор,
             // не ослабление общего валидатора.
             mount_poll_ms: lookup("FASAD_MOUNT_POLL_MS").map_or(
