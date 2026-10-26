@@ -28,6 +28,11 @@ DOCX-ограничения: (1)run'ы без текста (drawings) карта
 ячейкам — row-major = FN-класс первички f620296e), pptx (текстовые фреймы),
 txt/md/csv (байтовые срезы), rtf (striprtf + rfind-контур).
 
+Vault-режимы формы токена (#300 NIT-3, первичка vault.rs:883/1010 + live):
+  mode 3 stateless (дефолт): [[F0#<nonce>]] (суррогат [[S0#…]]),
+  mode 2 session (X-Session-ID): [КЛАСС_№_<nonce>], человекочитаемая метка.
+Фильтр «уже замазано» (_is_masked) = режим-агностик регуляркой обеих форм.
+
 Известный FN-класс ДЕТЕКТОРА (не обёртки, чин = каскад-0 issue, не здесь):
 паспорт в соседстве «ИНН <10 цифр>» = inn-доминанта гасит паспортную
 гипотезу (зуб реестра c0_inn_key_dominates_passport, cascade0.rs:337);
@@ -44,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -192,6 +198,11 @@ def set_pptx(prs, key, value):
 # Канон body-лимита демона (config.rs:34 DEFAULT_MAX_BODY_BYTES).
 MAX_BODY_BYTES = 1_048_576
 
+# Формы vault-токенов (#300 NIT-3, первичка vault.rs:883/1010 + live-промер):
+#   mode 3 (stateless, дефолт): [[F0#<nonce>]] / surrogate [[S0#<nonce>]]
+#   mode 2 (session):            [КЛАСС_№_<nonce>] (ASCII-класс)
+MASK_TOKEN_RE = re.compile(r"\[\[[FPS]0#|\[[A-Z]+_\d+_")
+
 
 def build_text(segs):
     """Склейка + байтовая карта сегментов [(key, b0, b1, text)].
@@ -335,10 +346,16 @@ def _mask_pass(segs, sess, url, setter):
             setter(key, texts[i])
             n += 1
     ledger = []
+    tb = text.encode("utf-8")
     for it in items:
         covered = [m for m in map_ if m[1] < it["byte_end"] and it["byte_start"] < m[2]]
+        # #300 NIT-1: orig = BYTE-slice (MaskItem = byte-координаты,
+        # char-end у них ∄; образец mask_text_like). До кириллических
+        # классов (address/name, каскад 1–2) char==byte для ASCII-цифр
+        # (промер 4/4), с кириллицей char-slice = порча orig.
+        orig = tb[it["byte_start"]:it["byte_end"]].decode("utf-8", "replace")
         ledger.append(
-            {"class": it["entity_type"], "orig": text[it["start"]:it["end"]],
+            {"class": it["entity_type"], "orig": orig,
              "ph": it["replacement"], "segs": len(covered)}
         )
     return len(items), ledger
@@ -379,6 +396,16 @@ def _extract_docx_tables_colmajor(d):
     return out
 
 
+def _is_masked(t: str) -> bool:
+    """#300 NIT-3: фильтр «ячейка уже замазана» = режим-агностик (таблица
+    форм vault в шапке файла: mode 3 = `[[F0#<nonce>]]`, mode 2 =
+    `[КЛАСС_№_nonce]` vault.rs:883/1010, live-первичка #300; surrogate
+    mode 2 = `[[S0#…]]` = вложенная скобка, `[S0#` перекрывает).
+    Прежний фильтр `[["F` = привязка к mode 3 = в mode 2 no-op = pass-2
+    пересканировал маскированные ячейки."""
+    return bool(MASK_TOKEN_RE.search(t))
+
+
 def _mask_xlsx(wb, sess, url, out):
     # Pass 1 = row-major. Pass 2 = col-major: первичка f620296e — row-major
     # сетка гасит паспорт под заголовком столбца (ключ не сосед); col-major
@@ -394,7 +421,8 @@ def _mask_xlsx(wb, sess, url, out):
     n, led = _mask_pass(segs, sess, url, lambda k, v: _set_xlsx(wb, k, v))
     total += n
     ledger += led
-    segs2 = [(k, t, b) for (k, t, b) in extract_xlsx(wb, col_major=True) if "[[F" not in t]
+    segs2 = [(k, t, b) for (k, t, b) in extract_xlsx(wb, col_major=True)
+             if not _is_masked(t)]
     if segs2:
         n2, led2 = _mask_pass(segs2, sess, url, lambda k, v: _set_xlsx(wb, k, v))
         ledger += led2
@@ -419,21 +447,28 @@ def _mask_rtf(args, src_text):
             for s in spans]},
         sess=args.session,
     )
-    out = src_text
+    out = src_text.encode("utf-8")
+    plain_b = plain.encode("utf-8")
     ledger = []
     for it in sorted(anon["items"], key=lambda x: -x["byte_start"]):
-        orig = plain[it["start"]:it["end"]]
+        # #300 NIT-2: ЕДИНАЯ координатная система = байты (MaskItem =
+        # byte-координаты; прежний char-slice plain[start:end] + byte rfind
+        # отменялись только на ASCII; кириллица = порча). orig/pos = byte-
+        # арифметика, src = utf-8-байты (RTF-носитель ASCII-скелет +
+        # кирилличные run'ы = поиск по байтам корректен).
+        b0, b1 = it["byte_start"], it["byte_end"]
+        orig = plain_b[b0:b1]
         pos = out.rfind(orig)
         if pos < 0:
             # rfind-контра f620296e: оригинал не найден в RTF-тексте =
             # расхождение извлечения = fail-closed, не «проглотили».
             die(f"rtf: оригинал {orig!r} не найден в исходнике (карта разошлась)")
-        out = out[:pos] + it["replacement"] + out[pos + len(orig):]
+        out = out[:pos] + it["replacement"].encode("utf-8") + out[pos + len(orig):]
         ledger.append(
-            {"class": it["entity_type"], "orig": orig, "ph": it["replacement"],
-             "segs": 1, "mode": "rfind"}
+            {"class": it["entity_type"], "orig": orig.decode("utf-8", "replace"),
+             "ph": it["replacement"], "segs": 1, "mode": "rfind"}
         )
-    open(args.out, "w", encoding="utf-8").write(out)
+    open(args.out, "wb").write(out)
     return len(ledger), ledger
 
 
@@ -477,14 +512,15 @@ def cmd_restore(args):
     if fmt == "rtf":
         # rfind-контра маски: возврат = те же позиции плейсхолдеров в
         # RTF-исходнике (демона для rfn-хода не нужен: ledger несёт orig).
-        src = open(args.file, encoding="utf-8").read()
-        out = src
+        # #300 NIT-2: байтовая система и на возврате (париток маски).
+        out = open(args.file, "rb").read()
         for ph, orig in ph_map.items():
-            pos = out.rfind(ph)
+            phb, ob = ph.encode("utf-8"), orig.encode("utf-8")
+            pos = out.rfind(phb)
             if pos < 0:
                 die(f"rtf: плейсхолдер {ph!r} не найден (карта разошлась)")
-            out = out[:pos] + orig + out[pos + len(ph):]
-        open(args.out, "w", encoding="utf-8").write(out)
+            out = out[:pos] + ob + out[pos + len(phb):]
+        open(args.out, "wb").write(out)
         print(f"RESTORED|rtf|{len(ph_map)}")
         return
     n = 0
