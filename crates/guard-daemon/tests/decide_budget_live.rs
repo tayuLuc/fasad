@@ -98,12 +98,17 @@ fn req(text: &str) -> AnalyzeRequest {
     }
 }
 
-/// Золотые строки С АДРЕСОМ (тексты read-only).
+/// Золотые строки С АДРЕСОМ БЕЗ `№` (тексты read-only). `№` = [UNK] в
+/// словаре Spiber (первичка #88, инвентарь 4b-3C) ⇒ на входе с `№` Decide
+/// деградирует в `Skipped` (splice-контракт) и до чанкового бюджета не
+/// доходит — lesson второго промера (run 40252828912: `skipped` на
+/// коротком входе = контроль живости красный, и это правильная краснота:
+/// фикстура обязана ЗВАТЬ арбитр, а не деградировать его).
 fn address_rows() -> Vec<String> {
     GOLDEN
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .filter(|l| l.contains("\"address\""))
+        .filter(|l| l.contains("\"address\"") && !l.contains('№'))
         .filter_map(|l| {
             serde_json::from_str::<serde_json::Value>(l)
                 .ok()
