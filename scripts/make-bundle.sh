@@ -320,6 +320,11 @@ cp "$LICENSES" "$stage/THIRD-PARTY-LICENSES.txt"
 # Скрипт копируется в бандл, а не ссылаемся на репозиторий: пользователь
 # бандла запускает его БЕЗ клона репозитория.
 mkdir -p "$stage/scripts" "$stage/models"
+# #292: пример config-файла = десктоп-полка «настройка без терминала» (мастер
+# contrib/fasad.env.example = единый носитель списка ключей; сюда кладётся
+# как config/fasad.env.example в win/mac-бандлы + linux = рядом с юнитом).
+mkdir -p "$stage/config"
+cp contrib/fasad.env.example "$stage/config/fasad.env.example"
 cp scripts/fetch-models.sh "$stage/scripts/fetch-models.sh"
 # win-доставка весов (#190): PowerShell-паритет .sh (нативный cmd/PowerShell,
 # Git-Bash = альтернатива). Едет во ВСЕ бандлы (файл безвреден на mac/linux,
@@ -602,6 +607,15 @@ Override нетипичного пути кеша (не прервеквизит
 \`FASAD_MODEL_DIR\`; без весов консольный продукт не стартует (#185, причина +
 путь докачки #199 — stderr, у трея окно с кнопкой «Открыть инструкцию» #198),
 а двойной клик по трею = ожидающий UI с кнопкой «Скачать веса» (#198).
+
+## Настройка файлом (без терминала) (#292)
+
+\`config\fasad.env.example\` — заготовки ключей (порт, веса, пороги).
+Копировать в \`%APPDATA%\fasad\config\` — демон читает этот путь
+АВТОМАТОМ, переменные окружения не нужны (приоритет: env > файл, UI-правка
+= запись в тот же файл, #224). Раскомментировать нужные строки.
+СЕКРЕТЫ В ФАЙЛЕ ЗАПРЕЩЕНЫ: \`FASAD_VAULT_KEY\` = только env (fail-closed —
+конфиг с ключом в файле не стартует).
 Лог трея (win): \`%APPDATA%\\fasad\\fasad-tray.log\` (#263; unix = XDG/HOME,
 паритет #269) — читать при «запустил и забыл» (stderr GUI-окна невидим #244).
 
@@ -617,6 +631,8 @@ Override нетипичного пути кеша (не прервеквизит
 - \`LICENSE\` — Apache-2.0 (текст лицензии продукта)
 - \`THIRD-PARTY-LICENSES.txt\` — сторонние лицензии (сгенерировано cargo-about)
 - \`schema.default.json\` — канон схемы классов (\`FASAD_SCHEMA\`)
+- \`config\fasad.env.example\` — пример файла настройки (#292, см. «Настройка
+  файлом»)
 - \`scripts\fetch-models.ps1\` (PowerShell, #190) + \`scripts/fetch-models.sh\`
   (Git-Bash) + \`models/manifest.tsv\` + \`models/README.md\` — скачивание
   весов каскадов 1–2 по sha256-манифесту
@@ -662,11 +678,23 @@ UI в браузере: \`http://127.0.0.1:8765/\` (кнопки «Разобр�
 бинарь + веса в кеше; без весов продукт не стартует (#185, причина отказа —
 в stderr, путь докачки в тексте #199).
 
+## Настройка файлом (без терминала) (#292)
+
+\`config/fasad.env.example\` — заготовки ключей (порт, веса, пороги).
+Копировать в \`\${XDG_CONFIG_HOME:-~/.config}/fasad/config\` (linux-юнит:
+\`/etc/default/fasad\`, юнит уже подключает его через EnvironmentFile) —
+демон читает этот путь АВТОМАТОМ, переменные окружения не нужны (приоритет:
+env > файл, UI-правка = запись в тот же файл, #224). Раскомментировать
+нужные строки. СЕКРЕТЫ В ФАЙЛЕ ЗАПРЕЩЕНЫ: \`FASAD_VAULT_KEY\` = только env
+(fail-closed — конфиг с ключом в файле не стартует).
+
 ## Файлы бандла
 
 - \`LICENSE\` — Apache-2.0 (текст лицензии продукта)
 - \`THIRD-PARTY-LICENSES.txt\` — сторонние лицензии (сгенерировано cargo-about)
 - \`schema.default.json\` — канон схемы классов (\`FASAD_SCHEMA\`)
+- \`config/fasad.env.example\` — пример файла настройки (#292, см.
+  «Настройка файлом»)
 - \`scripts/fetch-models.sh\` (паритет win: \`scripts/fetch-models.ps1\`, #190) +
   \`models/manifest.tsv\` + \`models/README.md\` — скачивание весов каскадов
   1–2 по sha256-манифесту
