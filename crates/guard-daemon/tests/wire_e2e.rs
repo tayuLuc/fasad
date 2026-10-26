@@ -901,14 +901,19 @@ fn win_simu_userprofile_mount_starts_the_tray_contour() {
         );
         return;
     }
-    let home_absent = std::env::temp_dir().join(format!("fasad314-nohome-{}", std::process::id()));
+    // HOME = СУЩЕСТВУЮЩИЙ каталог БЕЗ кеша (win-класс #264: Git-Bash/WSL
+    // ставят HOME, кеш ps1 пишет в USERPROFILE; резолвер default_home_dir =
+    // HOME-первичен). Несуществующий HOME = харнес-контра #185 (иглы в
+    // никуда = отказ старта).
+    let home = std::env::temp_dir().join(format!("fasad314-home-{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("HOME-изолят создаётся");
     let mut child = Command::new(env!("CARGO_BIN_EXE_fasad"))
         .env("FASAD_BIND", "127.0.0.1")
         .env("FASAD_PORT", "0")
         .env("FASAD_TEST_TRAY_CONTOUR", "1")
         // Win-форма «HOME∅»: несуществующий путь (default_home_dir =
         // trim-контра; пустая строка = unset, путь надёжнее).
-        .env("HOME", &home_absent)
+        .env("HOME", &home)
         .env("USERPROFILE", &cache)
         .env("FASAD_THREADS", "2")
         .env("FASAD_CONFIG", fasad_empty_config())
@@ -923,48 +928,67 @@ fn win_simu_userprofile_mount_starts_the_tray_contour() {
         .expect("бинарь запускается");
     let addr = banner_addr(&mut child);
     let h = call(&addr, "GET", "/health", &[], b"");
+    let mut err = String::new();
+    if let Some(mut se) = child.stderr.take() {
+        use std::io::Read as _;
+        let _ = se.read_to_string(&mut err);
+    }
     let _ = child.kill();
     let _ = child.wait();
-    assert_eq!(h.status, 200);
+    std::fs::remove_dir_all(&home).ok();
+    assert_eq!(h.status, 200, "stderr: {err}");
     assert_eq!(
         h.json()["stage"],
         "cascade-0+models",
         "#314: HOME∅ + USERPROFILE=5/5 + трей-мишень = монтированный старт \
-         (win-стенд v0.1.9: UI 5/5 и stage не pending)"
+         (win-стенд v0.1.9: UI 5/5 и stage не pending); stderr демона: {err}"
     );
 }
 
 /// Баннер-адрес демона: строка `listening on http://127.0.0.1:PORT/health`
 /// из stdout (`Daemon::start`-контра #224 R4: pipe = fully-buffered, flush
-/// в демоне есть; full-контур грузит веса = секунды, бюджет 60 с).
+/// в демоне есть). Читалка = ПОСТРОЧНАЯ (`BufReader::read_line`, харнес-
+/// канон `Daemon::start`: байтовый read чанками рвёт строку баннера по
+/// границе буфера = первичка mac-CI #314: игла не собралась за 60 с при
+/// живом демоне); full-контур грузит веса = секунды, бюджет 120 с.
 fn banner_addr(child: &mut std::process::Child) -> String {
-    use std::io::Read as _;
-    let mut stdout = child.stdout.take().expect("stdout перехвачен");
+    use std::io::BufRead as _;
+    let stdout = child.stdout.take().expect("stdout перехвачен");
+    let mut reader = std::io::BufReader::new(stdout);
     let started = Instant::now();
     let mut seen = String::new();
-    let mut buf = [0u8; 512];
     loop {
         if let Some(status) = child.try_wait().expect("статус читается") {
             panic!("демон умер до баннера (rc={status:?}): {seen:?}");
         }
         assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "баннер не пришёл за 60 с: {seen:?}"
+            started.elapsed() < Duration::from_secs(120),
+            "баннер не пришёл за 120 с: {seen:?}"
         );
-        match stdout.read(&mut buf) {
-            Ok(0) => std::thread::sleep(Duration::from_millis(20)),
-            Ok(n) => seen.push_str(&String::from_utf8_lossy(&buf[..n])),
-            Err(_) => break,
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => panic!("stdout закрылся без баннера: {seen:?}"),
+            Ok(_) => seen.push_str(&line),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => panic!("stdout читается: {e}"),
         }
         if let Some((_, rest)) = seen.split_once("listening on http://") {
-            return rest
+            let addr = rest
                 .split('/')
                 .next()
                 .expect("адрес заканчивается путём")
                 .to_owned();
+            let ready = Instant::now();
+            while TcpStream::connect(&addr).is_err() {
+                assert!(
+                    ready.elapsed() < Duration::from_secs(10),
+                    "порт {addr} не открылся"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            return addr;
         }
     }
-    panic!("stdout закрылся без баннера: {seen:?}");
 }
 
 /// #198 живая нога ожидающего старта (орт-контур `wire_e2e`): трей-решётка
