@@ -18,6 +18,10 @@
 //!   сканирует `src/` целиком и держит эту стену.
 //! - **Никаких `ПДн` в подписях.** Подсказка (`tooltip`) и заголовок несут только метрики
 //!   (тот же профиль, что `/health`: стадия, порт, счётчики деградации).
+//! - **Стадия = живое чтение (#318):** `tooltip`/иконка получают stage
+//!   ЗАМЫКАНИЕМ (`crate::StageFn`, прод = `AppState::stage_reader` = атом
+//!   `MOUNT_LIVE`): hot-mount #316 = трей-строка flip-ается на тике,
+//!   статика старта в вине = враньё витрины (#226, из ревью #317).
 //!
 //! # Нити (первичка docs крейта)
 //!
@@ -243,12 +247,13 @@ pub struct StatusInfo {
 
 impl StatusInfo {
     /// Снимок с живых счётчиков: vault-метрики — у хранилища и у пула
-    /// залоченной памяти, остальное — статика старта.
+    /// залоченной памяти, stage = ЖИВОЕ чтение (#318: замыкание, вызывается
+    /// на каждом тике `refresh_icon`, не один раз на старте).
     #[must_use]
-    pub fn snapshot(vault: &Arc<Inner>, stage: &'static str, port: u16) -> Self {
+    pub fn snapshot(vault: &Arc<Inner>, stage: &crate::StageFn, port: u16) -> Self {
         let pool = guard_vault::token::pool_state();
         Self {
-            stage,
+            stage: stage(),
             port,
             lock_failures: pool.lock_failures,
             busy_rejects: pool.busy_rejects,
@@ -360,8 +365,12 @@ pub static OPEN_CLICKS: AtomicU64 = AtomicU64::new(0);
 /// `fasad-serve`, первичка потоков main.rs; «ОК» = тихий park, UI уже
 /// открыт). serve на рабочем потоке жив, процесс ждёт сигнала выхода,
 /// как ждал бы цикла. `ПДн` в тексте быть не может: строка ошибки крейта.
-pub fn run(vault: &Arc<Inner>, stage: &'static str, port: u16, shutdown: &Shutdown) {
-    let icon = match build_tray(vault, stage, port) {
+/// Stage = ВЛАДЕНИЕ (владение = контракт #318): main двигает живой reader,
+/// харнес — статику; цикл трея хранит замыкание на всю жизнь потока, поэтому
+/// аргумент по значению (clippy-контра: аргумент не конструируется, а двигается).
+#[allow(clippy::needless_pass_by_value)] // владение-контра вызова (см. doc выше)
+pub fn run(vault: &Arc<Inner>, stage: crate::StageFn, port: u16, shutdown: &Shutdown) {
+    let icon = match build_tray(vault, &stage, port) {
         Ok(icon) => icon,
         Err(e) => {
             let msg = format!("трей недоступен: {e} (демон работает без иконки)");
@@ -414,19 +423,19 @@ pub fn run(vault: &Arc<Inner>, stage: &'static str, port: u16, shutdown: &Shutdo
         }));
         let mut last_tick_win = Instant::now();
         loop {
-            if !pump_win(vault, stage, port, shutdown, &icon, &mut last_tick_win) {
+            if !pump_win(vault, &stage, port, shutdown, &icon, &mut last_tick_win) {
                 break;
             }
         }
         tray_icon::TrayIconEvent::set_event_handler(None::<fn(tray_icon::TrayIconEvent)>);
         drop(icon);
     }
-    // mac-полка: `poll_once`-контра целa (win-блок выше = ветка win-ноги;
+    // mac-полка: `poll_once`-контра цела (win-блок выше = ветка win-ноги;
     // needless_return = win-нога CI, локальный host его не видит).
     #[cfg(not(target_os = "windows"))]
     {
         loop {
-            if !poll_once(vault, stage, port, shutdown, &icon, &mut last_tick) {
+            if !poll_once(vault, &stage, port, shutdown, &icon, &mut last_tick) {
                 break;
             }
             if shutdown.triggered() {
@@ -472,7 +481,7 @@ fn on_tray_event(ev: &TrayIconEvent, port: u16) {
 #[cfg(target_os = "windows")]
 pub fn pump_win(
     vault: &Arc<Inner>,
-    stage: &'static str,
+    stage: &crate::StageFn,
     port: u16,
     shutdown: &Shutdown,
     icon: &TrayIcon,
@@ -513,7 +522,7 @@ fn handle_menu_event(ev: &MenuEvent, port: u16, shutdown: &Shutdown) -> bool {
 /// (процесс уходит, цикл не нужен) — вызывающий завершает [`run`].
 pub fn poll_once(
     vault: &Arc<Inner>,
-    stage: &'static str,
+    stage: &crate::StageFn,
     port: u16,
     shutdown: &Shutdown,
     icon: &TrayIcon,
@@ -577,7 +586,7 @@ pub fn menu_items(port: u16) -> Vec<(&'static str, String, bool)> {
 /// Поднять иконку, контекстное меню и подписать tooltip/заголовок.
 fn build_tray(
     vault: &Arc<Inner>,
-    stage: &'static str,
+    stage: &crate::StageFn,
     port: u16,
 ) -> Result<TrayIcon, Box<dyn std::error::Error + Send + Sync>> {
     let status = StatusInfo::snapshot(vault, stage, port);
@@ -616,7 +625,7 @@ fn build_tray(
 ///
 /// Ошибки крейта (ОС отозвала слот) игнорируются намеренно: cosmetic-канал,
 /// продукт на него не завязан; события продолжают приходить.
-fn refresh_icon(vault: &Arc<Inner>, stage: &'static str, port: u16, icon: &TrayIcon) {
+fn refresh_icon(vault: &Arc<Inner>, stage: &crate::StageFn, port: u16, icon: &TrayIcon) {
     let status = StatusInfo::snapshot(vault, stage, port);
     let _ = icon.set_tooltip(Some(status.tooltip()));
     icon.set_title(Some(status.title()));
@@ -656,6 +665,119 @@ mod tests {
             busy_rejects: 0,
             surrogate_fallbacks: 0,
             unrestored_mismatch: 0,
+        }
+    }
+
+    /// #318 ЗУБ: трей-строка = ЖИВОЕ чтение. `StatusInfo::snapshot` читает
+    /// stage ЗАМЫКАНИЕМ на каждом тике; мок-переключалка (#151-инъект,
+    /// харнес-контра) = pending→mounted flip: tooltip/иконка меняются БЕЗ
+    /// пересоздания трея (прод-контур `main` = `state.stage_reader()` = тот
+    /// же атом `MOUNT_LIVE`, что `/health`; ревью #317: статика старта =
+    /// враньё витрины после hot-mount #316).
+    #[test]
+    fn snapshot_reads_stage_live_on_every_tick() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let live = std::sync::Arc::new(AtomicBool::new(false));
+        let reader_live = std::sync::Arc::clone(&live);
+        let reader: crate::StageFn = std::sync::Arc::new(move || {
+            if reader_live.load(Ordering::SeqCst) {
+                "cascade-0+models"
+            } else {
+                guard_daemon_stage_pending()
+            }
+        });
+        let vault = crate::http::new_tray_harness_state();
+        let s1 = StatusInfo::snapshot(&vault, &reader, 8765);
+        assert_eq!(s1.stage, "models-pending", "до монтажа = честный pending");
+        assert!(
+            s1.tooltip().ends_with("/ models-pending"),
+            "{:?}",
+            s1.tooltip()
+        );
+        // Hot-mount #316 = атом поднялся (мок = та же семантика, что
+        // `cascades::mounted_live`).
+        live.store(true, Ordering::SeqCst);
+        let s2 = StatusInfo::snapshot(&vault, &reader, 8765);
+        assert_eq!(
+            s2.stage, "cascade-0+models",
+            "после swap = live (трей не статика)"
+        );
+        assert!(
+            s2.tooltip().ends_with("/ cascade-0+models"),
+            "tooltip-флип = витрина не врёт (#226): {:?}",
+            s2.tooltip()
+        );
+    }
+
+    /// #318-пара: статика-адаптер (харнес `tray_live`) = константный читатель,
+    /// контракт `static_stage` (никакого live-чита там, где его нет намеренно).
+    #[test]
+    fn static_stage_adapter_is_constant() {
+        let reader = crate::static_stage("cascade-0-only");
+        assert_eq!(reader(), "cascade-0-only");
+        assert_eq!(reader(), "cascade-0-only", "статика = стабильна");
+    }
+
+    fn guard_daemon_stage_pending() -> &'static str {
+        crate::cascades::STAGE_PENDING
+    }
+
+    /// #318 КОНТРА ПРОДА (unit, headless): живой конвейер `main` →
+    /// `state.stage_reader()` = замыкание на `live_stage` = на ЧИСТОМ
+    /// слоте (не ожидающий старт) обязано отдавать СТАРТОВУЮ строку —
+    /// mounted-контур не обязан кричать «pending», харнес-контур = stage
+    /// конфига. Дискриминатор «reader = не константа-заглушка»:
+    /// `live_stage`-контра = `(start_pending && mounted_live) ?
+    /// STAGE_MOUNTED : health.stage`, читается в тесте ниже через
+    /// http-пару (тот же конструктор, что `main`).
+    #[tokio::test]
+    async fn stage_reader_of_state_follows_the_live_atom() {
+        // (1) старт НЕ pending (харнес/монтированный) = статика-health,
+        // монтаж флагом не меняет строку харнеса (#203 §2.1: stage-зуб).
+        let st = crate::http::new_tray_harness_state();
+        let reader = crate::http::AppState::stage_reader_of(&st);
+        assert_eq!(
+            reader(),
+            "cascade-0-only",
+            "не-pending = старт-строка харнеса"
+        );
+
+        // (2) ожидающий старт (#316-контра `AppState::live_stage`): старт =
+        // pending-строка, мок-своп = flip БЕЗ пересоздания reader (тот же
+        // StageFn-объект живёт весь цикл `run` = трей-контра).
+        let pend = crate::http::AppState::harness_pending(crate::cascades::STAGE_PENDING);
+        let reader2 = pend.stage_reader();
+        assert_eq!(
+            reader2(),
+            crate::cascades::STAGE_PENDING,
+            "pending до монтажа"
+        );
+        let _g = crate::cascades::live_mount_lock().await;
+        crate::cascades::install_test_live_mount(
+            Some(std::sync::Arc::new(Cascade0OnlyTrayStub)),
+            None,
+        );
+        assert_eq!(
+            reader2(),
+            crate::cascades::STAGE_MOUNTED,
+            "трей-контра = flip без пересоздания (тот же StageFn-объект)"
+        );
+        crate::cascades::reset_test_live_mount();
+    }
+
+    struct Cascade0OnlyTrayStub;
+    impl crate::cascades::Cascade12 for Cascade0OnlyTrayStub {
+        fn model_spans(
+            &self,
+            _text: &str,
+            _schema: &crate::schema::Schema,
+            _plan: &crate::cascades::Plan,
+        ) -> Result<crate::cascades::Outcome, crate::cascades::CascadeFailure> {
+            Ok(crate::cascades::Outcome {
+                spans: Vec::new(),
+                cascade2: crate::cascades::Cascade2::Ok,
+                p2: Vec::new(),
+            })
         }
     }
 

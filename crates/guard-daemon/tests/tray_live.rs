@@ -65,7 +65,12 @@ fn tray_lives_and_quit_ends_it() {
         });
     }
     // Главный поток = цикл трея (требование крейта, docs модуля `tray`).
-    guard_daemon::tray::run(&state, "cascade-0-only", port, &shutdown);
+    guard_daemon::tray::run(
+        &state,
+        guard_daemon::static_stage("cascade-0-only"),
+        port,
+        &shutdown,
+    );
     assert!(shutdown.triggered(), "цикл вышел по quit-флагу");
     assert!(
         guard_daemon::tray::OPEN_CLICKS.load(std::sync::atomic::Ordering::Relaxed) == 0,
