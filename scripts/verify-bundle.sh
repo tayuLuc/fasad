@@ -249,7 +249,7 @@ fi
 
 # 1. Состав бандла.
 for f in bin/fasad bin/fasad.exe LICENSE README.md schema.default.json \
-    THIRD-PARTY-LICENSES.txt SHA256SUMS.txt; do
+    THIRD-PARTY-LICENSES.txt SHA256SUMS.txt config/fasad.env.example; do
     if [ -f "$stage/$f" ]; then
         printf 'FILE|ok|%s\n' "$f"
     elif printf '%s\n' "$f" | grep -q '\.exe$'; then

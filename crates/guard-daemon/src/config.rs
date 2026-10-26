@@ -2704,6 +2704,104 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// #292 (а): полка config-файла = авто-чтение на всех трёх ОС (первичка
+    /// `config_file_path_from` + `Config::load_config` = production-путь
+    /// `main`/трея). Таблица «читается ли АВТОМАТОМ»: unix =
+    /// `$XDG_CONFIG_HOME/fasad/config` (дефолт `$HOME/.config/fasad/config`),
+    /// windows = `%APPDATA%\fasad\config` (win-контур промерен на win-ноге CI,
+    /// unix-проверки gated `not(windows)` = существующая практика файла),
+    /// linux = unix-контур. Зуб промеряет unix-ногу + контракт origin.
+    #[cfg(not(windows))]
+    #[test]
+    fn desktop_bundles_read_config_file_automatically_292() {
+        let dir = unique_tmp_dir("fasad-cfg-292");
+        std::fs::create_dir_all(&dir).expect("каталог");
+        // Сегмент `fasad` ДО имени файла = контракт config_dir_from_env
+        // ($XDG_CONFIG_HOME/fasad/config, первичка :287).
+        let path = dir.join("fasad").join(CONFIG_FILE_NAME);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("fasad-каталог");
+        std::fs::write(&path, "FASAD_PORT=9411\n").expect("запись");
+        // unix-полка: XDG_CONFIG_HOME = корень-каталог = путь РЕЗОЛВНУТ (не
+        // ЯВНЫЙ): файла нет = дефолты, файл есть = авто-чтение (без env).
+        let found = config_file_path_from(&mut |k| match k {
+            "XDG_CONFIG_HOME" => Some(dir.display().to_string()),
+            _ => None,
+        })
+        .expect("XDG даёт путь");
+        assert_eq!(found.origin, ConfigPathOrigin::Resolved);
+        assert_eq!(found.path, path, "полка = <config-root>/config");
+        let loaded = Config::load_config_at(Some(&found)).expect("авто-читается");
+        assert_eq!(loaded.config.addr.port(), 9411, "полка применилась без env");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #292 (а, win): `%APPDATA%\fasad\config` = тот же Resolved-контур
+    /// (чистая функция, проверяется на любой ОС, как `config_dir_from_appdata`).
+    #[test]
+    fn windows_desktop_config_dir_292() {
+        let d = config_dir_from_appdata(Some("C:\\Users\\op\\AppData\\Roaming"))
+            .expect("APPDATA даёт каталог");
+        assert_eq!(
+            d.join(CONFIG_FILE_NAME),
+            std::path::Path::new("C:\\Users\\op\\AppData\\Roaming")
+                .join("fasad")
+                .join(CONFIG_FILE_NAME),
+            "win-полка = %APPDATA%\\fasad\\config"
+        );
+    }
+
+    /// #292 (б): бандловый пример `contrib/fasad.env.example` = валидный
+    /// вход config-парсера (раскомментированный = рабочий) + каждый ключ ∈
+    /// `FILE_ALLOWED_KEYS` + секретов нет (PII-safe #224: `FASAD_VAULT_KEY`
+    /// в файле = отказ парсера = зуб ловит регрессию «ключ просочился»).
+    #[test]
+    fn bundle_example_parses_and_keys_in_registry_292() {
+        let raw = include_str!("../../../contrib/fasad.env.example");
+        let parsed = parse_config_file(raw).expect("пример = валидный вход парсера");
+        assert!(
+            parsed.entries.is_empty() && parsed.warnings.is_empty(),
+            "пример закомментирован = ни записей, ни предупреждений (чистый старт)"
+        );
+        // Раскомментированная версия (строки `#КЛЮЧ=` → `КЛЮЧ=`) обязана
+        // парситься и НЕ иметь ни одного неизвестного/запрещённого ключа.
+        let uncommented: String = raw
+            .lines()
+            .map(|l| {
+                let t = l.trim_start();
+                if let Some(rest) = t.strip_prefix('#')
+                    && rest.contains('=')
+                    && rest.trim_start().starts_with("FASAD_")
+                {
+                    return rest.to_owned();
+                }
+                String::new()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let live = parse_config_file(&uncommented).expect("раскомментированный пример парсится");
+        assert!(
+            live.warnings.is_empty(),
+            "ключи примера вне реестра: {:?}",
+            live.warnings
+        );
+        assert!(
+            !live.entries.is_empty(),
+            "раскомментированный пример даёт записи"
+        );
+        for e in &live.entries {
+            assert!(
+                allowed_key(e.key).is_some(),
+                "ключ {:?} не в FILE_ALLOWED_KEYS",
+                e.key
+            );
+            assert!(
+                forbidden_file_key_reason(e.key).is_none(),
+                "секрет/запрет {}/файл просочился в пример (#224)",
+                e.key
+            );
+        }
+    }
+
     /// Таблица-реестр: каждый разрешённый ключ файла = существующая env-ручка,
     /// и ни один секрет/бинд в реестре не сидит.
     #[test]

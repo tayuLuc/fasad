@@ -23,6 +23,10 @@ ExecStart=/usr/local/bin/fasad
 # Один источник конфигурации: FASAD_*-переменные (первичка env-контракта —
 # crates/guard-daemon/src/config.rs; бинд строго loopback, §1 п.6). Файл
 # опционален: «-» = отсутствие не считается ошибкой старта.
+# Формат /etc/default/fasad = KV (#292): мастер заготовок =
+# contrib/fasad.env.example (copied into the linux bundle); systemd
+# EnvironmentFile = KV-парсер, НЕ shell (кавычки/экранирование не нужны,
+# значения с пробелами — литерально).
 EnvironmentFile=-/etc/default/fasad
 WorkingDirectory=/var/lib/fasad
 
