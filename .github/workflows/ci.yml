@@ -317,6 +317,26 @@ jobs:
           fi
           cargo test -p guard-daemon --features ort-inference \
             --test hot_mount_live -- --test-threads=1 --nocapture
+      - name: "Живая полка #314: win_simu (HOME∅ + USERPROFILE=5/5 = смонтированный старт, mac/linux)"
+        # #314 (win-стенд v0.1.9: UI «5/5 зелёные» + stage pending = расход
+        # env-клеток): env-граница #198-ветка на ТРЕЙ-мишени читает
+        # USERPROFILE (#264) и монтирует. Зуб = wire_e2e::win_simu на
+        # CI-fetch полке (#255-паттерн); win-нога = ∅ (wire_e2e-харнес GUI
+        # = не контур файла), linux = tray-контур симулируется env-флагом
+        # main.rs:185. FASAD_REQUIRE_MODELS = провен (#87): полка есть =
+        # зуб живой, молчаливого SKIP нет.
+        if: matrix.os != 'windows-2022'
+        env:
+          FASAD_REQUIRE_MODELS: "1"
+        run: |
+          set -euo pipefail
+          if [ -n "${ORT_DIR:-}" ] && [ -d "$ORT_DIR/lib" ]; then
+            export ORT_PREFER_DYNAMIC_LINK=1
+            export ORT_LIB_PATH="$ORT_DIR/lib"
+            echo "win_simu: mac-контур dylib ($ORT_DIR/lib)"
+          fi
+          cargo test -p guard-daemon --features tray,ort-inference \
+            --test wire_e2e win_simu -- --test-threads=1 --nocapture
       - name: "Живая полка #318: tray_stage_live (трей-строка = live-чтение, mac)"
         # #318 (ревью #317): трей-строка = статика старта = после hot-mount
         # #316 врёт «models-pending» (#226). Чин = stage_reader-замыкание

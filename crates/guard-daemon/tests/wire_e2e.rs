@@ -869,6 +869,104 @@ fn full_bin_without_model_dir_refuses_to_start_before_binding() {
     );
 }
 
+/// #314 win-simu-контра (ORT-нога, CI `ort-build` = mac/linux leg с
+/// CI-fetch полкой #255-паттерна): двойной клик win = HOME∅ +
+/// USERPROFILE=кеш 5/5 на ТРЕЙ-мишени (env-симуляция `FASAD_TEST_TRAY_
+/// CONTOUR` = main.rs:185 compile-time-мишени, НЕ решение) обязан
+/// стартовать МОНТИРОВАННЫМ: `cascade-0+models`, НЕ pending (win-стенд
+/// v0.1.9: UI «5/5 зелёные» + баннер pending = расход stages: env-граница
+/// #198-ветка уже читает USERPROFILE через `default_home_dir` #264 — зуб
+/// держит ветку живой на win-форме env; mac-simu = та же ветка, `layout_complete`
+/// 5/5 = настоящие веса CI-кеша (lesson ТЗ #316: size vs манифест, 4096-
+/// фейки `layout_complete` НЕ проходят = unit `shelf_invariant_…` #316)).
+/// Feature-off нога = слепая (debug-бинарь stage константа = lesson
+/// #185/#87 первички live-промера); SKIP-контра молчания = `FASAD_REQUIRE_MODELS`
+/// (провен #87, CI-leg ставит его на смонтированной полке).
+#[test]
+fn win_simu_userprofile_mount_starts_the_tray_contour() {
+    if !cfg!(feature = "ort-inference") {
+        eprintln!("SKIP|win_simu|нога = ort-контур монтирования (wire_e2e-контра)");
+        return;
+    }
+    let shelf = std::env::var("HOME").expect("HOME раннера");
+    let cache = std::path::PathBuf::from(shelf).join(".cache/fasad-models");
+    if !guard_daemon::weights::layout_complete(&cache) {
+        assert!(
+            std::env::var_os("FASAD_REQUIRE_MODELS").is_none(),
+            "FASAD_REQUIRE_MODELS стоит, а полки нет (#87-провен)"
+        );
+        eprintln!(
+            "SKIP|win_simu|кеш {} не смонтирован (нет шага fetch)",
+            cache.display()
+        );
+        return;
+    }
+    let home_absent = std::env::temp_dir().join(format!("fasad314-nohome-{}", std::process::id()));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fasad"))
+        .env("FASAD_BIND", "127.0.0.1")
+        .env("FASAD_PORT", "0")
+        .env("FASAD_TEST_TRAY_CONTOUR", "1")
+        // Win-форма «HOME∅»: несуществующий путь (default_home_dir =
+        // trim-контра; пустая строка = unset, путь надёжнее).
+        .env("HOME", &home_absent)
+        .env("USERPROFILE", &cache)
+        .env("FASAD_THREADS", "2")
+        .env("FASAD_CONFIG", fasad_empty_config())
+        .env_remove("FASAD_MODEL_DIR")
+        .env_remove("FASAD_TEST_CASCADE0")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("бинарь запускается");
+    let addr = banner_addr(&mut child);
+    let h = call(&addr, "GET", "/health", &[], b"");
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(h.status, 200);
+    assert_eq!(
+        h.json()["stage"],
+        "cascade-0+models",
+        "#314: HOME∅ + USERPROFILE=5/5 + трей-мишень = монтированный старт \
+         (win-стенд v0.1.9: UI 5/5 и stage не pending)"
+    );
+}
+
+/// Баннер-адрес демона: строка `listening on http://127.0.0.1:PORT/health`
+/// из stdout (`Daemon::start`-контра #224 R4: pipe = fully-buffered, flush
+/// в демоне есть; full-контур грузит веса = секунды, бюджет 60 с).
+fn banner_addr(child: &mut std::process::Child) -> String {
+    use std::io::Read as _;
+    let mut stdout = child.stdout.take().expect("stdout перехвачен");
+    let started = Instant::now();
+    let mut seen = String::new();
+    let mut buf = [0u8; 512];
+    loop {
+        if let Some(status) = child.try_wait().expect("статус читается") {
+            panic!("демон умер до баннера (rc={status:?}): {seen:?}");
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "баннер не пришёл за 60 с: {seen:?}"
+        );
+        match stdout.read(&mut buf) {
+            Ok(0) => std::thread::sleep(Duration::from_millis(20)),
+            Ok(n) => seen.push_str(&String::from_utf8_lossy(&buf[..n])),
+            Err(_) => break,
+        }
+        if let Some((_, rest)) = seen.split_once("listening on http://") {
+            return rest
+                .split('/')
+                .next()
+                .expect("адрес заканчивается путём")
+                .to_owned();
+        }
+    }
+    panic!("stdout закрылся без баннера: {seen:?}");
+}
+
 /// #198 живая нога ожидающего старта (орт-контур `wire_e2e`): трей-решётка
 /// смодулирована env-мишенью (`FASAD_TEST_TRAY_CONTOUR`, primary: main.rs —
 /// симуляция compile-time-мишени, НЕ решения; `tray`-сборка = tray-check/
