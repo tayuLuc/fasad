@@ -3682,12 +3682,23 @@ mod tests {
     /// «774358.417509» (6+6, #102) = НЕ склеиваются; печатная карта 4+4 через
     /// точку («4575.5035.9035.2993») = склеивается (`dot_glues_number` left==4).
     /// #162 (word-break канон-хвосты, живой firing-класс, НЕ zero-canon):
-    /// «код 1.2204.4132.9947» → card_pan хвост 12 (Луна от 220441329947),
+    /// «код 1.2204.4132.9947» → `card_pan` хвост 12 (Луна от 220441329947),
     /// «9.3005.0489.9258» → inn, dash-эквивалент «код 1–2204–4132–9947»
     /// (тот же leading-рамка #138 класс); repdigit «888888888888» (Луна✓) =
     /// zero-canon вето #158 = молчит.
     #[test]
     fn c0_window_separator_lattice_101_159_162() {
+        const PIDN: &[&str] = &[
+            "snils",
+            "card_pan",
+            "phone",
+            "inn",
+            "ogrn",
+            "ogrnip",
+            "passport",
+            "bik",
+            "bank_account",
+        ];
         let sc = schema();
         // (class, text) — class "" = обязана молчать (ни одного ПДн-класса).
         let table: &[(&str, &str)] = &[
@@ -3719,17 +3730,6 @@ mod tests {
             ("inn", "9.3005.0489.9258"),
             ("card_pan", "код 1\u{2013}2204\u{2013}4132\u{2013}9947"),
             ("", "Карта 888888888888"),
-        ];
-        const PIDN: &[&str] = &[
-            "snils",
-            "card_pan",
-            "phone",
-            "inn",
-            "ogrn",
-            "ogrnip",
-            "passport",
-            "bik",
-            "bank_account",
         ];
         for (class, text) in table {
             let hits = scan(text, &sc);

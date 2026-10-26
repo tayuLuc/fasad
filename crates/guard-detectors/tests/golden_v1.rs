@@ -781,7 +781,7 @@ fn phone_e164_ok(v: &str) -> bool {
     // разделителей перечня (тот же, что склеивает сканер, #131-контра
     // «эталоны не разъехались»): сепараторная форма обязана проходить
     // `sep_digits_len` (разделитель только между цифрами), канон = цифры.
-    let canon: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
+    let canon: String = v.chars().filter(char::is_ascii_digit).collect();
     let clean = canon.len() == v.len();
     if !(clean || sep_digits_len(v, canon.len())) {
         return false;
@@ -799,7 +799,7 @@ fn b4_separators_match_scanner() {
         let ch = std::str::from_utf8(sep)
             .ok()
             .and_then(|t| t.chars().next())
-            .unwrap_or_else(|| panic!("разделитель {:?} не один char", sep));
+            .unwrap_or_else(|| panic!("разделитель {sep:?} не один char"));
         // Дефисная подколода сканерного перечня ⊆ B4; точка/слэш = не дефис
         // (B4-формы строятся на дефисных/пробельных разделителях, #159).
         if matches!(ch, '.' | '/') {
@@ -1070,7 +1070,7 @@ fn golden_v1_structural_gates() {
             // negative-бренд (урок: выведенное множество по id-префиксу =
             // claim). Ровный диапазон: #234-контра целая, поздние recall
             // проверяются как нормальные.
-            let frame234 = r.split == "recall" && ("g0263"..="g0267").contains(&&*r.id);
+            let frame234 = r.split == "recall" && ("g0263"..="g0267").contains(&r.id);
             if let Some(ok) = checksum_valid(s.category, s.value_source) {
                 if r.split == "recall" && !frame234 {
                     assert!(
