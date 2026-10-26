@@ -1204,7 +1204,9 @@ fn arb_chunked_run(
     let mut res = None;
     for r in 0..5 {
         t = Instant::now();
-        let cd = arb.arbitrate_chunked(&state, &schema, cfg, 0.5)?;
+        // #109: хук бюджета в сигнатуре. Спайк = ПРОМЕР без дедлайна:
+        // `st = None` навечно (иначе латентность 24 чанков не измерить).
+        let cd = arb.arbitrate_chunked(&state, &schema, cfg, 0.5, &mut || None)?;
         let dt = ms(t);
         if r >= 1 {
             lat.push(dt); // warmup первого прогона (инициализация орт-пулов)

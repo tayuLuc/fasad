@@ -111,6 +111,15 @@ pub enum ArbError {
         /// Разрешённый максимум.
         limit: u32,
     },
+    /// [#109] Бюджет вызова исчерпан ДО старта следующего чанка. Зеркало
+    /// `ChunkFailure::OverBudget` каскада 1: хук бюджета вызывается перед
+    /// КАЖДЫМ чанком, вне бюджета — отказ, остаток чанков не досчитывается
+    /// (инкрементальной отдачи нет, fail-closed). Вызывающий из `budget_ms`
+    /// делает `Timeout`.
+    OverBudget {
+        /// Бюджет, мс (называет вызывающий: замыкает его `Instant`).
+        budget_ms: u64,
+    },
 }
 
 impl std::fmt::Display for ArbError {
@@ -133,6 +142,11 @@ impl std::fmt::Display for ArbError {
             } => write!(
                 f,
                 "чанк {chunk_tokens} токенов > лимита {limit} (бюджет входа Decide)"
+            ),
+            Self::OverBudget { budget_ms } => write!(
+                f,
+                "чанки Decide не уложились в бюджет {budget_ms} мс (#109): \
+                 следующий чанк не запускался"
             ),
         }
     }
@@ -460,22 +474,40 @@ impl DecideArbiter {
     ///
     /// Ошибка одного куска валит весь вызов (fail-closed).
     ///
+    /// Бюджет времени ([#109](https://github.com/tayuLuc/fasad/issues/109)):
+    /// `over_budget()` вызывается ПЕРЕД КАЖДЫМ чанком (зеркало
+    /// `extract_chunked`-хука каскада 1); вернувший `Some(budget_ms)` сигнал —
+    /// отказ [`ArbError::OverBudget`] с НАЗВАННЫМ бюджетом, следующий прогон не
+    /// стартует. Инкрементальной отдачи нет: частичные вердикты по первым
+    /// чанкам = молча недосмотренный хвост (AGENTS Fail-Closed). Без хука
+    /// 24 чанка × 4.5–8.6 с (audit §I1 п.3) перекрывали любой
+    /// `FASAD_TIMEOUT_MS`, а бюджет проверялся только ДО каскада 2 — между
+    /// чанками Decide его не было вовсе.
+    ///
     /// # Errors
     ///
-    /// [`ArbError::ChunkTooLong`] (перерасход бюджета), плюс ветки
-    /// [`Self::plan_for_chunk`] / [`Self::run_logits`] / [`Self::schema_block`].
+    /// [`ArbError::ChunkTooLong`] (перерасход бюджета),
+    /// [`ArbError::OverBudget`] (хук бюджета сработал до старта чанка), плюс
+    /// ветки [`Self::plan_for_chunk`] / [`Self::run_logits`] /
+    /// [`Self::schema_block`].
     pub fn arbitrate_chunked(
         &mut self,
         text: &str,
         schema: &[QuestionSchema<'_>],
         cfg: ChunkCfg,
         threshold: f32,
+        over_budget: &mut dyn FnMut() -> Option<u64>,
     ) -> Result<ChunkedDecision, ArbError> {
         let block = Self::schema_block(schema)?;
         let chunks: Vec<Chunk> = crate::chunker::chunk(text, cfg);
         let mut per_chunk = Vec::with_capacity(chunks.len());
         let mut hits: Vec<ArbHit> = Vec::new();
         for ch in chunks {
+            // Проверка ПЕРЕД стартом чанка — до `encode`/плана/рана: бюджет,
+            // истёкший между чанками, не оплачивается ещё одним прогоном.
+            if let Some(budget_ms) = over_budget() {
+                return Err(ArbError::OverBudget { budget_ms });
+            }
             let piece = ch.span.slice(text).unwrap_or("");
             let plan = self.plan_for_chunk(&block, piece, schema)?;
             let l = u32::try_from(plan.ids.len()).unwrap_or(u32::MAX);
@@ -1327,5 +1359,130 @@ mod tests {
         assert!(cleaned.contains("[P] [L]"), "доверенная голова цела");
         assert!(!cleaned.contains("[E]"), "хвостовой [E] вычищен");
         assert!(!cleaned.contains("[R]"), "хвостовой [R] вычищен");
+    }
+
+    // ── #109: пер-чанковый бюджет Decide ──────────────────────────────────
+    //
+    // СТЕНД = НАСТОЯЩИЕ ЧАНКИ + НАСТОЯЩИЙ ЗАКРЫТЫЙ ХУК. Живой
+    // `arbitrate_chunked` требует сессию `ort` (её нет в unit-CI — прецедент
+    // чанкинговых гейтов #84: логика на замыкаемом хуке, граф не нужен),
+    // поэтому стенд проигрывает ЦИКЛ метода на его же входе: `chunk()` по
+    // продуктивому `arb_chunk_cfg`, `budget_fn` = тот же чекло, что в цикле
+    // (спент-накопитель + фиксированная цена прогона). Таблица
+    // «чанки × цена → сколько стартовало» = unit-контра #109; живой промер =
+    // CI ort-build (`decide_budget_live`).
+
+    /// Тот же цикл, что у `arbitrate_chunked`, только `run` заменён ценой:
+    /// перед КАЖДЫМ чанком — `over_budget()`; Some = отказ (чанк не стартует,
+    /// «прогонов» = 0 с этого места). Возвращает кортеж
+    /// (число чанков, число прогонов, бюджет в отказе).
+    fn budget_stand(
+        text: &str,
+        cfg: ChunkCfg,
+        chunk_ms: u64,
+        budget_ms: u64,
+    ) -> (usize, usize, Option<u64>) {
+        let chunks = crate::chunker::chunk(text, cfg);
+        let mut spent = 0u64;
+        let mut runs = 0usize;
+        let mut over = None;
+        for _ch in &chunks {
+            // Продакшн-форма хука: замыкание ЧИТАЕТ счётчик вызывающего
+            // (`started.elapsed()`), пишет сам вызывающий после прогона —
+            // та же дисциплина заимствований, что в `decide_p2`.
+            if budget_fn(&spent, budget_ms)().is_some() {
+                over = Some(budget_ms);
+                break;
+            }
+            spent = spent.saturating_add(chunk_ms);
+            runs += 1;
+        }
+        (chunks.len(), runs, over)
+    }
+
+    /// Замыкание-хук ровно формы продакшн-замыкания `decide_p2`: elapsed
+    /// (накопленный «spent») против бюджета, `then_some(budget_ms)`.
+    fn budget_fn(spent: &u64, budget_ms: u64) -> impl Fn() -> Option<u64> + '_ {
+        move || (*spent > budget_ms).then_some(budget_ms)
+    }
+
+    /// Текст ровно на N чанков Decide: окно 384·4=1536 Б, шаг = окно−overlap
+    /// = 1408 Б (первичка `chunk()`: адванс от края окна, #111), предложения
+    /// по 100 Б. Инверсия `L ∈ [(N−1)·1408+128+1, N·1408+128]` (128 = overlap,
+    /// последний чанк дотягивает до конца текста): N=1..4, 24 → ровно 1..4, 24
+    /// (промер таблицы на python3 26.10, зуб `assert_eq!(n, nchunks)` ниже
+    /// держит её на живом чанкере).
+    fn text_of_chunks(n: usize) -> String {
+        let sentence = "Отдел кадров уведомляет о плановой сверке документов. ";
+        let stride = 1_408usize;
+        let sentences = ((n * stride - 128) / sentence.len()).max(1);
+        sentence.repeat(sentences)
+    }
+
+    #[test]
+    fn budget_hook_fires_before_the_chunk_that_does_not_fit() {
+        // Таблица ТЗ (24 чанка Decide на сером входе, prod-геометрия окна).
+        // Чекло: стартует чанк i только при spent = i·цена ≤ бюджета; исход =
+        // OverBudget с НАЗВАННЫМ бюджетом (тот же контракт, что
+        // `ChunkFailure::OverBudget` #84).
+        let cfg = arb_chunk_cfg(ChunkCfg::default(), SCHEMA_OVERHEAD_TOKENS)
+            .expect("prod-конфиг Decide легален");
+        let cases: [(usize, u64, u64, usize); 5] = [
+            // (чанков, цена, бюджет, ожидаемых прогонов)
+            (24, 4_500, 3_000, 1), // ТЗ-кейс: 24×4.5 с при дефолте 3 с — один прогон и отказ
+            (24, 4_500, 500, 1),   // бюджет меньше одного чанка: первый стартует всегда
+            (3, 200, 500, 3),      // 0/200/400 ≤ 500: все три влезли
+            (4, 200, 500, 3),      // 600 > 500: на четвёртом — отказ
+            (1, 4_500, 5_000, 1),  // один чанк в бюджете = Ok-путь
+        ];
+        for (nchunks, chunk_ms, budget_ms, want) in cases {
+            let (n, runs, over) = budget_stand(&text_of_chunks(nchunks), cfg, chunk_ms, budget_ms);
+            assert_eq!(n, nchunks, "фикстура обязана давать ровно {nchunks} чанков");
+            assert_eq!(
+                runs, want,
+                "чанков {n} × {chunk_ms} мс при бюджете {budget_ms}"
+            );
+            if want < n {
+                assert_eq!(over, Some(budget_ms), "отказ обязан назвать бюджет");
+            } else {
+                assert_eq!(over, None, "все чанки влезли — отказа нет");
+            }
+        }
+    }
+
+    #[test]
+    fn budget_never_runs_more_than_the_budget_allows() {
+        // Инвариант границы на ЛЮБОЙ сетке: последний стартовавший прогон
+        // начинался при spent ≤ бюджета; отказ — ровно на следующем.
+        // Инкрементальной отдачи нет: при отказе пер-чанковых вердиктов стенд
+        // не выдал ни одного (fail-closed = весь вызов, не половина).
+        let cfg = arb_chunk_cfg(ChunkCfg::default(), SCHEMA_OVERHEAD_TOKENS)
+            .expect("prod-конфиг Decide легален");
+        for chunk_ms in [1u64, 199, 200, 8_600] {
+            for budget_ms in [0u64, 1, 500, 3_000, 30_000] {
+                let (n, runs, over) = budget_stand(&text_of_chunks(24), cfg, chunk_ms, budget_ms);
+                let spent = u64::try_from(runs.saturating_sub(1)).unwrap_or(u64::MAX) * chunk_ms;
+                assert!(
+                    runs == 0 || spent <= budget_ms,
+                    "последний старт {spent} вне бюджета {budget_ms}"
+                );
+                if runs < n {
+                    assert_eq!(over, Some(budget_ms));
+                    let next = u64::try_from(runs).unwrap_or(u64::MAX) * chunk_ms;
+                    assert!(
+                        next > budget_ms,
+                        "отказ на вписывающемся чанке: {next} ≤ {budget_ms}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn over_budget_display_names_the_budget() {
+        // Истинная причина отказа (AGENTS): в тексте — и стадия, и бюджет.
+        let e = ArbError::OverBudget { budget_ms: 3_000 };
+        let s = e.to_string();
+        assert!(s.contains("3000") && s.contains("109"), "текст отказа: {s}");
     }
 }
