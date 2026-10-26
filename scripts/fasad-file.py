@@ -1,6 +1,7 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["python-docx", "openpyxl", "python-pptx", "striprtf"]
+# dependencies = ["python-docx", "openpyxl", "python-pptx", "striprtf",
+#   "pikepdf", "pdfplumber", "pypdf", "reportlab"]
 # ///
 """fasad-file: маска ПДн В ФАЙЛЕ через живой демон (#297, этап 1 R&D-полка).
 
@@ -33,6 +34,42 @@ Vault-режимы формы токена (#300 NIT-3, первичка vault.r
   mode 2 session (X-Session-ID): [КЛАСС_№_<nonce>], человекочитаемая метка.
 Фильтр «уже замазано» (_is_masked) = режим-агностик регуляркой обеих форм.
 
+PDF (этап 2, #302; R&D #294-первички + 7 первичек живого контура):
+извлечение = pdfplumber постранично (страница = естественный чанк;
+>1 MiB = _guard_body fail-closed = лимитация-док, чанкование = этап 3),
+мост byte-спан → char-index = позиция frag в concat(chars) (проверка
+согласованности; расхождение = fail-closed; multi-occurrence = все
+вхождения, flag orig_all). Маска ДВУХслойная: (1) pikepdf stream-surgery
+= побайтовый PAD (пробелы той же длины) в content stream = настоящая
+redaction (побайтовый скан = PII 0); pypdf overlay НЕ redaction (текст
+под rect читается = fail-open, R&D-промер) = (2) визуал: --mode black =
+чёрный rect; --mode placeholder = белый rect + рамка. Контур токена
+(первички #302): токен в content-поток НЕ пишется (78+ Б > PII-игла =
+побайтовый контракт невыполним; двойные вхождения ph = иголки жрали
+друг друга), overlay-тексты = яд restore (класс-метка «[phone]» = 7 Б =
+резала токен-иголки; чистка токенов из overlay = ломает PDF-числа),
+визуал = ГРАФИКА БЕЗ ТЕКСТОВ. Restore = pypdf-контра roundtrip.py
+(pikepdf-открытие НЕ видит pypdf-writer-потоки; pikepdf.save =
+FlateDecode = offsets маски = аудит-поле, не иголка): иголки = ctxs
+(per-hit анкоры: 24 Б не-пробельного хвоста + разделители до PII,
+пишет МАСКА) + ядро = ПЕРВЫЕ len(orig) пробелов после иголки (surgery-
+контрака = PII-блок = len пробелов на хит; слияние pad-ранов соседних
+PII = «Kontakt: <12sp>, INN <11sp>.» = ядро = первые len = промер-яд
+tf-snils: return-эвристика от конца = [6..17)+[13..17) = пересечение =
+двойная вставка = snils 3×); multi-occurrence = 1 запись на (page,
+frag) со всеми ctxs (запись-на-span = дубликаты chosen = overlap-die,
+кросс-страничный повтор = амбигюити «page=»); правки копятся в raws,
+запись в конце (первичка: последовательная запись = возврат PII-0
+съедал анкор PII-1).
+DEANONYIZE-ДЕМОНОМ pdf НЕ меряем: токена в text-layer нет = ledger-контур
+(как rtf). Black = ledger БЕЗ orig/ph = необратимость = restore-отказ
+(честный rc, ДО ph_map). Зашифрованный/битый = PdfminerException/
+PasswordError = rc 2 (тот же fail-closed, что PackageNotFoundError docx).
+Ограничения этапа-2: PII на стыке show-операторов (куски Tj) = fail-closed
+«нестандартная кодировка потока» (куски-слова = риск ложных pad =
+сознательно); кириллица в PDF-потоке = Hex/CID-кодировки = этап 3 (побайтовый
+ needle = ASCII-показание); скан-PDF (растр) = OCR = этап 3, НЕ здесь.
+
 Известный FN-класс ДЕТЕКТОРА (не обёртки, чин = каскад-0 issue, не здесь):
 паспорт в соседстве «ИНН <10 цифр>» = inn-доминанта гасит паспортную
 гипотезу (зуб реестра c0_inn_key_dominates_passport, cascade0.rs:337);
@@ -40,7 +77,7 @@ Vault-режимы формы токена (#300 NIT-3, первичка vault.r
 маски) = leak-scan осознанно исключает такой кейс, тест-полка документирует.
 
 Запуск (uv single-file, AGENTS §6 gutter — продукт НЕ Rust-обвязка):
-  uv run scripts/fasad-file.py mask  ФАЙЛ СЕССИЯ --out ФАЙЛ
+  uv run scripts/fasad-file.py mask  ФАЙЛ СЕССИЯ --out ФАЙЛ [--mode black|placeholder]
   uv run scripts/fasad-file.py restore ФАЙЛ СЕССИЯ --ledger ФАЙЛ --out ФАЙЛ
   (--url http://127.0.0.1:PORT, дефолт 8765)
 """
@@ -49,6 +86,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -281,6 +319,15 @@ def mask_text_like(src, dst, sess, url):
 
 def load_by_ext(src):
     ext = src.rsplit(".", 1)[-1].lower() if "." in src else ""
+    if ext == "pdf":
+        # Открываем pdfplumber-СРАЗУ (первичка #302: зашифрованный =
+        # PasswordError, битый = PdfminerException = fail-closed; тот же
+        # try/except, что PackageNotFoundError docx).
+        try:
+            import pdfplumber
+            return "pdf", pdfplumber.open(src)
+        except Exception as e:
+            die(f"{src}: не разобрался ({type(e).__name__}: {e})")
     try:
         if ext == "docx":
             from docx import Document
@@ -299,7 +346,7 @@ def load_by_ext(src):
         # Fail-closed первички f620296e: PackageNotFoundError (битый/шифрованный
         # docx) = ОТКАЗ, не тихая маска.
         die(f"{src}: не разобрался ({type(e).__name__}: {e})")
-    die(f"{src}: формат этапа 1 не поддержан (docx/xlsx/pptx/rtf/txt/md/csv)")
+    die(f"{src}: формат не поддержан (docx/xlsx/pptx/rtf/pdf/txt/md/csv)")
 
 
 def cmd_mask(args):
@@ -309,6 +356,9 @@ def cmd_mask(args):
         n, ledger = mask_text_like(args.file, args.out, sess, url)
     elif fmt == "rtf":
         n, ledger = _mask_rtf(args, obj)
+    elif fmt == "pdf":
+        obj.close()  # pdfplumber-ручка load-проверки; _mask_pdf = путь
+        n, ledger = _mask_pdf(args, args.file)
     elif fmt == "docx":
         segs = extract_docx(obj)
         n, ledger = _mask_runs(
@@ -322,6 +372,14 @@ def cmd_mask(args):
         n, ledger = _mask_runs(obj, segs, sess, url, lambda k, v: set_pptx(obj, k, v), args.out)
     else:
         n, ledger = _mask_xlsx(obj, sess, url, args.out)
+    if args.mode == "black":
+        # Disk-irreversibility (#302): orig/ph из ledger-ФАЙЛА изымаются
+        # = PII не сохраняется нигде на диске = restore-ход физически
+        # невозможен (контракт black). Оперативный ledger маски = полный
+        # (surgery-контракту нужен orig); диск = чистый (зуб: побайтовый
+        # скан ledger-файла = PII 0).
+        ledger = [{k: v for k, v in e.items() if k not in ("orig", "ph")}
+                  for e in ledger]
     json.dump(ledger, open(args.ledger, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"MASKED|{fmt}|{n}|{args.out}|{args.ledger}")
 
@@ -498,16 +556,486 @@ def _iter_texts(fmt, obj):
                             yield ("slide", si, shi, pi, ri), r
 
 
+def _pdf_pad_len_unused(frag: str, raw: bytes, repl: bytes):
+    """Сколько пробелов оставить рядом с токеном, чтобы суммарная длина
+    замены равной длине PII (побайтовая контра R&D: pad = len(needle) -
+    len(tok), tok длиннее = 0 и поток РАСТЁТ = restore урезает пробелы
+    до исходной длины). Возвращает (needle, tail, pad); whole/piece
+    порядок = канон _mask_pdf (иначе длины расходятся = restore fail)."""
+    needle = frag.encode("utf-8")
+    if needle in raw:
+        return needle, needle, max(0, len(needle) - len(repl))
+    pieces = [w.encode("utf-8") for w in frag.split() if w]
+    tail = pieces[-1]
+    return needle, tail, max(0, len(tail) - len(repl))
+
+
+def _pdf_page_boxes(src, sess, url):
+    """Мост #302: постранично (страница = чанк ≤1 MiB) extract_text →
+    analyze/anonymize → byte-спан → char-index → bbox.
+
+    Контра моста: concat(chars["text"]) обязан побайтово совпасть с
+    extract_text (проверка byte-префиксов); расхождение = fail-closed
+    «карта разошлась» (R&D NO-MAP-маркер усилен: тихого пропуска нет).
+    Возвращает [(page, frag, repl, x0, y0, x1, y1)] + ledger-строки."""
+    import pdfplumber
+    boxes = []
+    ledger = []
+    with pdfplumber.open(src) as pdf:
+        for pi, page in enumerate(pdf.pages):
+            text = page.extract_text() or ""
+            if not text.strip():
+                continue
+            _guard_body({"text": text, "spans": [{}] * 32})
+            spans = api(url, "/v1/analyze", {"text": text})
+            if not spans:
+                continue
+            anon = api(
+                url, "/v1/anonymize",
+                {"text": text, "spans": [
+                    {"entity_type": s["entity_type"],
+                     "byte_start": s["byte_start"], "byte_end": s["byte_end"]}
+                    for s in spans]},
+                sess=sess,
+            )
+            chars = page.chars
+            concat = "".join(c["text"] for c in chars)
+            tb = text.encode("utf-8")
+            # char-index мост = R&D-первичка #294: позиция frag ищется в
+            # concat(chars) (pdfplumber layout вставляет/убирает пробелы
+            # относительно extract_text = live-промер #302: byte-позиция
+            # текста ≠ индекс chars). Дискриминатор = единственный hit
+            # (несколько = карта неоднозначна = fail-closed, НЕ первый).
+            for it in anon["items"]:
+                b0, b1 = it["byte_start"], it["byte_end"]
+                frag = tb[b0:b1].decode("utf-8", "replace")
+                positions = []
+                c0 = concat.find(frag)
+                while c0 >= 0:
+                    positions.append(c0)
+                    c0 = concat.find(frag, c0 + 1)
+                if not positions:
+                    die(f"{src}: страница {pi}: фрагмент {frag!r} не найден "
+                        "в char-потоке страницы = карта разошлась, файл НЕ "
+                        "маскируется (fail-closed, R&D NO-MAP усилен)")
+                ph = page.height
+                # ЗАПИСЬ НА (page, frag): ключ в PDF-слое = страница +
+                #needle (multi-occurrence = список ctxs в ОДНОЙ записи =
+                # restore ищет все анкоры; промер-яд tf-snils: запись-
+                # на-span = 2 записи на 1 needle = дубликаты chosen =
+                # overlap-die; кросс-страничные повторы = амбигюити
+                # «page=» = 1 запись на страницу решают его честно).
+                bboxes = []
+                for _oi, c0 in enumerate(positions):
+                    c1 = c0 + len(frag)
+                    seg = chars[c0:c1]
+                    if not seg:
+                        die(f"{src}: страница {pi}: пустой char-сегмент у {frag!r}")
+                    boxes.append((pi, frag, it["replacement"],
+                                  seg[0]["x0"], min(ph - c["bottom"] for c in seg),
+                                  seg[-1]["x1"], max(ph - c["top"] for c in seg)))
+                    bboxes.append([round(seg[0]["x0"], 1),
+                                   round(min(ph - c["bottom"] for c in seg), 1),
+                                   round(seg[-1]["x1"], 1),
+                                   round(max(ph - c["top"] for c in seg), 1)])
+                if any(e["page"] == pi and e["orig"] == frag for e in ledger):
+                    continue  # ключ (page, frag) = 1 запись (мульти-occ
+                # позиции = stream-хиты surgery, не char-позиции)
+                ledger.append(
+                    {"class": it["entity_type"], "orig": frag,
+                     "ph": it["replacement"], "page": pi, "segs": len(positions),
+                     "bbox": bboxes[0], "bboxes": bboxes}
+                )
+    return boxes, ledger
+
+
+def _mask_pdf(args, src):
+    """Двухслойная маска (R&D #294): pikepdf stream-surgery (байты PII →
+    пробелы той же длины = побайтовый скан чист) + overlay (black rect /
+    белый rect + рамка + token-текст). Зашифрованный PDF = PasswordError →
+    fail-closed в load_by_ext."""
+    import io as _io
+
+    import pikepdf
+    boxes, ledger = _pdf_page_boxes(src, args.session, args.url)
+    if not boxes:
+        print("LEAKS|NONE (анализ пуст) | no-op")
+        sys.exit(0)
+    if args.mode == "black":
+        # Необратимость = контра black: PII не сохраняется НИГДЕ (ledger
+        # без orig = нет источника возврата; restore-ход pdf = ledger-
+        # подмена = физически невозможен, это и есть контракт black).
+        for e in ledger:
+            e.pop("ph", None)
+            # orig СОХРАНЯЕТСЯ в оперативке маски (= источник surgery-
+            # сопоставления фактов и pad-контракта «участок = len(orig)»);
+            # black-ledger на диске = ledger БЕЗ orig/ph (запись ниже);
+            # irreversibility = disk-факт: restore-отказ = die ДО
+            # ph_map-машинерии (контракт black).
+    # 1. stream-surgery.
+    pdf = pikepdf.open(src)
+    # surgery-план = (page, needle, replacement, whole): whole = единая
+    # подстрока (целый frag) или токен-вставка (placeholder, tail→токен).
+    plan = []
+    for pi, frag, repl, *_ in boxes:
+        needle = frag.encode("utf-8")
+        if args.mode == "placeholder":
+            tail = frag.split()[-1].encode("utf-8")
+            tok = repl.encode("utf-8")
+            # Канон #302 (первички 1–4): (1) «токен+пробелы = needle»
+            # невыполнима (токен 78+ Б > PII 10–14 Б); (2) токен В
+            # content-потоке = промер-яд: restore-иголки ph+pad жрали
+            # друг друга при pypdf-merge пересжатии (offsets плывут);
+            # (3) класс-метка в overlay = яд: 7-байтная «[phone]» =
+            # часть фразы = резала токен. КОНТУРА: content-поток =
+            # ЧИСТЫЙ побайтовый pad (токена в text-layer НЕТ =
+            # deanonymize-демоном pdf НЕ меряем = ledger-restore, как
+            # rtf); визуал токена = overlay-текст (nonce-уникален =
+            # ложных иголок нет); restore = overlay-токены побайтово
+            # вон + pad-участки → orig по ledger offsets (stream-индекс
+            # каноничен: merge_page дописывает overlay ПОСЛЕ).
+            _ = tail, tok
+            whole_rep = b" " * len(needle)
+            plan.append((pi, frag, needle, tail, whole_rep, "pad", tok))
+        else:
+            plan.append((pi, frag, needle, needle, b" " * len(needle), "pad", None))
+    facts = []  # (page, stream_index, [(off, len)], mode, ctx)
+    # посев = occ-номер ledger-записи (порядок ledger = boxes = positions);
+    # k-й хит needle в потоке = k-е вхождение PII на странице.
+    # ЗАПИСЬ НА NEEDLE (dedupe): surgery = replace-all = все вхождения
+    # закрываются одним pass'ом (mid-flight-мутация потока между
+    # occurrences = промер-яд rep3: план_i=1 видел write план_i=0).
+    seen_needles = set()
+    plan_dedup = []
+    for ent in plan:
+        key = (ent[0], ent[2])  # (page, needle)
+        if key in seen_needles:
+            continue
+        seen_needles.add(key)
+        plan_dedup.append(ent)
+    plan = plan_dedup
+    for pi, frag, needle, _probe, rep, _kind, _tok in plan:
+        c = pdf.pages[pi].get("/Contents")
+        streams = [c] if not isinstance(c, pikepdf.Array) else list(c)
+        # СНИМОК исходных байтов (промер-яд rep2: stream.write = пиринг,
+        # read_bytes после write = СЫРЫЕ байты незакомпрессированного
+        # объекта = needle не ищется = ложный «нестандартная кодировка»):
+        # ищем по снимку, пишем в stream, raws = канон для census.
+        raws = [st.read_bytes() for st in streams]
+        hit = False
+        for si, stream in enumerate(streams):
+            raw = raws[si]
+            if needle in raw:
+                # replace(needle, rep) = ALL-вхождения: один PII-фрагмент
+                # повторяется в потоке = все вхождения = pad-участки =
+                # restore кладёт orig во ВСЕ (побайтовый возврат каждого;
+                # ledger-флаг orig_all = count>1 = аудит-метка).
+                hits = [m for m in range(len(raw)) if raw.startswith(needle, m)]
+                offs = [(m, len(needle)) for m in hits]
+                # Анкор ctx = 24 Б НЕпробельного хвоста ДО PII +
+                # разделители до PII = единая иголка ctx+pad (промер-яд
+                # fk: смежные PII = pad-раны СЛИВАЮТСЯ). MULTI-occurrence
+                # = СПИСОК ctxs per-hit (промер-яд rep3: «Kontakt PII tel
+                # / Drugoy PII fax» = разные ctx = 1 анкор = 1 возврат =
+                # второе вхождение молча не восстановлено = fail-open;
+                # restore ищет КАЖДЫЙ ctx = все возвраты).
+                def _anchor(buf, hpos):
+                    k = hpos
+                    while k > 0 and buf[k - 1:k] == b" ":
+                        k -= 1
+                    return buf[max(0, k - 24):k] + buf[k:hpos]
+                ctxs = [_anchor(raw, h) for h in hits]
+                # SEGMENTATION (промер-яд tf-snils): return-эвристика
+                # «PAD+orig от конца» на ran 17 (11+1+4) = [6..17)+
+                # [13..17) = ПЕРЕСЕЧЕНИЕ = двойная вставка = snils 3×.
+                # Канон: pad-блок = (hit-позиция, len(needle)) = ровно
+                # то, что положил surgery (replace-all = PII-байты →
+                # len(needle) пробелов на КАЖДЫЙ хит).
+                pad_blocks = [(h, len(needle)) for h in hits]
+                stream.write(raw.replace(needle, rep))
+                hit = True
+                facts.append((pi, si, offs, "whole", ctxs, needle,
+                              pad_blocks))
+                break
+            # Токенизированный show: «89161234567, INN» не лежит единой
+            # подстрокой (Tj-строки делятся по словам/спейсингу). Контра =
+            # ТОКЕН-уровень: frag распадается на целые show-куски, каждый
+            # обязан быть в потоке дословно (побайтовый pad = R&D-контра,
+            # молчаливый пропуск = fail-open = запрещено).
+            pieces = [w.encode("utf-8") for w in frag.split() if w]
+            missing = [w.decode() for w in pieces if w not in raw]
+            if not missing:
+                offs = []
+                for w in pieces:
+                    # count=1: дубликат куска = fail-closed (кусок-слово
+                    # может жить в контексте страницы).
+                    if raw.count(w) > 1:
+                        die(f"{src}: страница {pi}: кусок {w.decode()!r} "
+                            "встречается в потоке >1 раза = неоднозначная "
+                            "карта, fail-closed")
+                    offs.append((raw.find(w), len(w)))
+                    raw = raw.replace(w, b" " * len(w), 1)
+                stream.write(raw)
+                hit = True
+                facts.append((pi, si, offs, "piece",
+                              [raw[max(0, offs[0][0] - 24):offs[0][0]]],
+                              needle, list(offs)))
+                break
+        if not hit:
+            pieces_dbg = [w.encode("utf-8") for w in frag.split() if w]
+            census = [sum(r.count(p) for p in pieces_dbg) for r in raws]
+            die(f"{src}: страница {pi}: байты {frag!r} (куски {census}) не "
+                "найдены в content stream (потоков: "
+                f"{len(streams)}) = нестандартная кодировка потока, "
+                "файл НЕ маскируется (fail-closed)")
+    # dlen (restore: сколько пробелов срезать справа от токена) =
+    # len(tok) - len(slot), slot = whole-needle или tail-piece (факт hit'а).
+    # offset-контра restore (pad = пробелы, неотличимы в потоке = возврат
+    # по позиции; R&D roundtrip.py-контра). facts = порядок plan-цикла =
+    # порядок boxes = порядок ledger (strict).
+    # Факт = 1 на UNIQUE needle (page+frag); ledger = 1 на item-page.
+    # Фолбэк-записи (needle=frag) уникальны на page (1 span на PII на
+    # страницу = daemon-контра); surgery-факты = план-порядок.
+    # Сопоставление = (page, frag) ключ (не zip: промер-яд tf-snils —
+    # multi-occurrence на page-2 = 1 факт на 2 ledger-записи = zip
+    # короткий).
+    # Факты одной (page, frag) = ОДИН PII на странице = ОБЪЕДИНЁННАЯ
+    # карта (multi-fact: tf — snils-2x на page-2 даёт ФАКТ whole-ветки
+    # с 2 ctxs; записи несут все ctxs + все offs; ctxs[0]-запись =
+    # ядро-1 = snils 3× = DRIFT-промер).
+    from collections import defaultdict
+    fmap = defaultdict(lambda: {"si": None, "offs": [], "ctxs": [],
+                                "pads": []})
+    for pi_, si, offs, _mode, ctxs, frag_b, pads in facts:
+        k = (pi_, frag_b)
+        fmap[k]["si"] = si
+        fmap[k]["offs"].extend(offs)
+        fmap[k]["ctxs"].extend(ctxs)
+        fmap[k]["pads"].extend(pads)
+    facts_merged = [(pi_, fb, v["si"], v["offs"], v["ctxs"], v["pads"])
+                    for (pi_, fb), v in fmap.items()]
+    used: set = set()
+    for pi_, frag_b, si, offs, ctxs, pads in facts_merged:
+        # Факт-на-needle = закрывает ВСЕ ledger-записи (page, frag):
+        # surgery = replace-all = все вхождения masked (промер-яд tf:
+        # zip-сопоставка = 1 запись = ctx без ctxs = вторая запись =
+        # «ledger без ctx-анкора» на верном файле = fail-open restore).
+        lis = [j for j, e in enumerate(ledger)
+               if j not in used and e["page"] == pi_
+               and e["orig"].encode("utf-8") == frag_b]
+        if not lis:
+            die(f"pdf: surgery-факт {frag_b!r} стр.{pi_} без ledger-записи"
+                " = карта разошлась (fail-closed)")
+        # Все записи (page, frag) = один и тот же факт: ctxs = ПОЛНЫЙ
+        # список (per-entry дедуп chosen = защита; промер-яд tf-snils:
+        # 2 ctx × 2 pad = 4 chosen на 2 pad = overlap-die на верном
+        # файле; merge-ctxs = canonical-представление = каждый pad
+        # найден ровно один раз).
+        for li in lis:
+            e = ledger[li]
+            e["stream"] = si
+            e["offsets"] = [[o, ln] for o, ln in offs]
+            e["ctx"] = ctxs[0].decode("utf-8", "replace")
+            e["ctxs"] = [c.decode("utf-8", "replace") for c in ctxs]
+            e["pads"] = [[o, ln] for o, ln in pads]
+            e["orig_all"] = True
+            e["segs"] = max(e.get("segs", 1), len(offs))
+        used.update(lis)
+    # Фолбэк-записи (нет surgery-факта = нет needle в потоке = char-only
+    # page) = без ctx: restore на них = fail-closed honest-отказ.
+    if len(used) < len(facts):
+        die("pdf: фактов больше, чем записей = карта разошлась")
+    assert len(boxes) >= len(facts)
+    tmp = args.out + ".surgery.tmp"
+    pdf.save(tmp)
+    # 2. overlay.
+    import pdfplumber
+    from pypdf import PdfReader, PdfWriter
+    from reportlab.lib.colors import black, white
+    from reportlab.pdfgen import canvas
+    with pdfplumber.open(src) as pl:
+        sizes = [(p.width, p.height) for p in pl.pages]
+    r = PdfReader(tmp)
+    w = PdfWriter()
+    w.append(r)
+    buf = _io.BytesIO()
+    # Побайтовый учёт pad-а (restore-контра #302: токен длиннее PII =
+    # поток растёт; restore урезает ровно pad_len пробелов вокруг токена
+    # = побайтовый возврат; без учёта surgery-контра «токен/оригинал
+    # разной длины» краснеет намеренно = fail-closed, не тихий дрейф).
+    by_page = {}
+    seen_bbox = set()
+    for b in boxes:
+        key = b[:2] + b[3:]
+        if key in seen_bbox:
+            continue  # multi-occurrence = один rect на вхождение
+        seen_bbox.add(key)
+        by_page.setdefault(b[0], []).append(b)
+    for pi, items in sorted(by_page.items()):
+        cc = canvas.Canvas(buf, pagesize=sizes[pi])
+        for (_p, _frag, _repl, x0, y0, x1, y1) in items:
+            if args.mode == "black":
+                cc.setFillColor(black)
+                cc.rect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2, fill=1, stroke=0)
+            else:
+                # #302-контра (первички 1–5): overlay = ГРАФИКА БЕЗ
+                # ТЕКСТОВ. Любой overlay-текст = яд: токен-визуал =
+                # pdfplumber читает его из text-layer = leak-scan
+                # флагает артефакт; класс-метка = 7-байтная фраза режет
+                # restore-иголки (промер-яд «c[AF0P#…»); restore-чистка
+                # токенов из overlay ломает PDF-числа склейками
+                # («106.3644 766…» = промер-5). Визуал = белый rect +
+                # чёрный rect поверх = black-out вида; обратимость =
+                # ledger+offsets (content-поток); deanonymize-демоном
+                # pdf НЕ меряем (токена в text-layer нет = ledger-контур,
+                # как rtf) = ДОК-лимитация в шапке.
+                cc.setFillColor(white)
+                cc.setStrokeColor(black)
+                cc.rect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2, fill=1, stroke=1)
+                cc.setFillColor(black)
+                cc.setStrokeColor(black)
+                cc.rect(x0, y0, x1 - x0, y1 - y0, fill=1, stroke=0)
+        cc.save()
+        buf.seek(0)
+        w.pages[pi].merge_page(PdfReader(buf).pages[0])
+        buf = _io.BytesIO()
+    with open(args.out, "wb") as f:
+        w.write(f)
+    os.unlink(tmp)
+    return len(boxes), ledger
+
+
 def cmd_restore(args):
+    ledger = json.load(open(args.ledger, encoding="utf-8"))
+    ext = args.file.rsplit(".", 1)[-1].lower() if "." in args.file else ""
+    if ext == "pdf" and all("orig" not in e for e in ledger):
+        # Black-return ДО любой ph-машинерии (первичка #302: black-
+        # ledger = без ph/orig = KeyError в ph_map = некрасивый краш;
+        # честный отказ = контракт black = необратимость). Файл НЕ
+        # открывается = pdf-библиотек для отказа не нужно.
+        die("pdf: black-режим необратим (ledger без orig = PII не "
+            "сохранялась) = возврат невозможен, это контракт black")
     fmt, obj = load_by_ext(args.file)
     url, sess = args.url, args.session
-    ledger = json.load(open(args.ledger, encoding="utf-8"))
-    ph_map = {e["ph"]: e["orig"] for e in ledger}
+    # pdf = ledger-контра без ph_map (токен в text-layer НЕ пишется =
+    # restore по ctx/pad; black-отказ = выше, ДО этого места).
+    ph_map = {e["ph"]: e["orig"] for e in ledger if fmt != "pdf"}
     if fmt in ("txt", "md", "csv"):
         raw = open(args.file, "rb").read().decode("utf-8")
         back = api(url, "/v1/deanonymize", {"text": raw}, sess=sess)
         open(args.out, "w", encoding="utf-8").write(back["text"])
         print(f"RESTORED|{fmt}|deanonymize")
+        return
+    if fmt == "pdf":
+        # Restore = pypdf-контра roundtrip.py (первички #302 1–7:
+        # pikepdf-открытие НЕ видит потоки после pypdf-writer =
+        # roundtrip писал/читал pypdf-ем; ledger-стрим-индексы НЕ канон:
+        # merge_page пересобирает /Contents = [overlay, content], промер
+        # fgm; pikepdf.save = FlateDecode = offsets маски = аудит-поле,
+        # не иголка). Обход = все content-потоки страницы, иголка =
+        # ctx-анкор (24 Б НЕпробельного контекста до PII, пишется
+        # МАСКОЙ) + pad-ран ровно len(orig) пробелов = fail-closed на
+        # ложном месте; правки НАКОПЛЯЮТСЯ в raws (чистая запись в
+        # объект = потеря иголок следующих PII, промер-яд gg).
+        # Deanonymize-демоном pdf НЕ меряем: токена в text-layer нет
+        # (graphics-only overlay) = ledger-контур, как rtf = ДОК-лимит.
+        from pypdf import PdfReader, PdfWriter
+        from pypdf.generic import ArrayObject
+        writer = PdfWriter(clone_from=PdfReader(args.file))
+        n = 0
+        by_page = {}
+        for e in ledger:
+            by_page.setdefault(e["page"], []).append(e)
+        for pi_, ents in sorted(by_page.items()):
+            page = writer.pages[pi_]
+            c = page.get("/Contents")
+            c = c.get_object() if hasattr(c, "get_object") else c
+            refs = list(c) if isinstance(c, ArrayObject) else [c]
+            streams = [r.get_object() if hasattr(r, "get_object") else r
+                       for r in refs]
+            raws = [bytes(st.get_data()) for st in streams]
+            # СБОР ВСЕХ pad-участков по всем записям (правки применяются
+            # ПОСЛЕ сканирования: промер-яд fh — возврат PII-0 съел ctx-
+            # анкор записи PII-1 = «карта разошлась» на верном файле).
+            all_chosen = []  # (si, off, ln, orig_bytes)
+            # Restore = ctx-иголки + SEGMENTATION (промер-яд tf-snils:
+            # return-эвристика от конца на ran 17 (11+1+4) = [6..17) +
+            # [13..17) = ПЕРЕСЕЧЕНИЕ = двойная вставка = snils 3×;
+            # pads-позиции маски = raw-координаты = FlateDecode-дрейф
+            # (первичка 1–6) = «pad-блок не pad» на верном файле =
+            # позиция НЕ канон). Канон: ядро = ПЕРВЫЙ len(orig) пробел
+            # анкор-иголки (surgery кладёт ровно len пробелов на хит);
+            # соседи = (1+pad) хвосты от конца; остальное = leading =
+            # не вставляем. Анкор-иголки = ledger ctxs (маска, rep3) =
+            # все позиции; «ctx» = фолбэк.
+            for e in ents:
+                orig = e["orig"].encode("utf-8")
+                needles = [c.encode("utf-8") for c in e.get("ctxs", [])]
+                needles = [x for x in needles if x] or [
+                    e.get("ctx", "").encode("utf-8")]
+                needles = [x for x in needles if x]
+                if not needles:
+                    die("pdf: ledger без ctx-анкора = маска не #302-формата "
+                        "= fail-closed")
+                chosen = []
+                for si, raw in enumerate(raws):
+                    for needle in needles:
+                        m = 0
+                        while True:
+                            j = raw.find(needle, m)
+                            if j < 0:
+                                break
+                            o = j + len(needle)
+                            # Pad-ран: len(orig)..∞ пробелов (ядро =
+                            # первые len; слияние соседей = хвост).
+                            k = o
+                            while k < len(raw) and raw[k:k + 1] == b" ":
+                                k += 1
+                            if k - o >= len(orig):
+                                # Ядро = первые len(orig) пробелов =
+                                # позиция PII (surgery-контрака =
+                                # PII-блок = len пробелов от хита).
+                                chosen.append((si, o, len(orig)))
+                            m = j + 1
+                chosen = sorted(set(chosen), reverse=True)
+                # Не-пересечение (multi = ран-слияние: ядро PII1 = [o1,
+                # o1+L1) = ядро PII2 = [o2, o2+L2) НЕ пересекаются по
+                # построению: surgery = раздельные хиты).
+                pairs = sorted((o, ln) for _si, o, ln in chosen)
+                for (o1, l1), (o2, _l2) in zip(pairs, pairs[1:], strict=False):
+                    if o1 + l1 > o2:
+                        die("pdf: ctx-ядра пересекаются = неоднозначная "
+                            "карта (fail-closed)")
+                if not chosen:
+                    die(f"pdf: анкор {needles[0][:24]!r}+pad({len(orig)}) не "
+                        "найден = карта разошлась (fail-closed)")
+                if len(chosen) > 1 and not e.get("orig_all"):
+                    die(f"pdf: анкор {needles[0][:24]!r} даёт {len(chosen)} "
+                        "pad-участков = неоднозначная карта, fail-closed")
+                for t in ((si, o, ln, orig) for si, o, ln in chosen):
+                    if t not in all_chosen:
+                        all_chosen.append(t)
+            # Побайтовые пересечения = fail-closed (pad-раны разных PII
+            # не должны перекрываться = маска даёт непересекающиеся).
+            by_stream = {}
+            for si, o, ln, orig in all_chosen:
+                by_stream.setdefault(si, []).append((o, ln, orig))
+            for si, spans in by_stream.items():
+                spans.sort()
+                for (o1, l1, _a), (o2, _l2, _b) in zip(spans, spans[1:], strict=False):
+                    if o1 + l1 > o2:
+                        die("pdf: pad-участки перекрываются = карта "
+                            "разошлась (fail-closed)")
+                for o, ln, orig in sorted(spans, reverse=True):
+                    raw = raws[si]
+                    raws[si] = raw[:o] + orig + raw[o + ln:]
+                    n += 1
+            for st, raw in zip(streams, raws, strict=True):
+                if bytes(st.get_data()) != raw:
+                    st.set_data(raw)
+        with open(args.out, "wb") as f:
+            writer.write(f)
+        print(f"RESTORED|pdf|{n}")
         return
     if fmt == "rtf":
         # rfind-контра маски: возврат = те же позиции плейсхолдеров в
@@ -560,6 +1088,8 @@ def main(argv=None):
     m.add_argument("session")
     m.add_argument("--out", required=True)
     m.add_argument("--ledger", default="ledger.json")
+    m.add_argument("--mode", choices=("black", "placeholder"), default="placeholder",
+                   help="pdf-режим (остальные форматы = placeholder-контур)")
     m.set_defaults(fn=cmd_mask)
     r = sub.add_parser("restore")
     r.add_argument("file")
