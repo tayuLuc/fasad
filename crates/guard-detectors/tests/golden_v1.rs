@@ -39,7 +39,7 @@ fn golden_path() -> PathBuf {
 // сверено в этом же заходе).
 // Правка датасета без пересчёта хэша ломает этот тест, а не проходит незамеченной
 // (обещание README «гейт привязан к SHA-256» из B2 становится машиной, не словами).
-const GOLDEN_V1_SHA256: &str = "d55602f8291443ad00c81eb875cf48b432c836194e8970b815dc37d923a6a0a1";
+const GOLDEN_V1_SHA256: &str = "fd8d3ce0a50f995840559a569aa8552e716865582b3df001e60165ab52467f28";
 
 /// B2: пересчитать SHA-256 файла и сверить с зашитой константой.
 ///
@@ -577,7 +577,7 @@ const SPAN_CATEGORIES: [&str; 13] = [
     "bik",
     "bank_account",
 ];
-const MATCH_SOURCES: [&str; 8] = [
+const MATCH_SOURCES: [&str; 9] = [
     "synthetic-checksum",
     "registry-example",
     "primary-invalid-vector",
@@ -586,6 +586,7 @@ const MATCH_SOURCES: [&str; 8] = [
     "foreign-bait",
     "synthetic-no-pii",
     "synthetic-translit", // golden-v1.7 (#238): транслит-ФИО recall
+    "frame-invalid-vector",  // golden-v1.11 (#78): каркасные recall #234 (source-фенс B4)
 ];
 
 /// B4: формат `value_source` по канону README § «поле `value_source`» (номерки —
@@ -1070,7 +1071,7 @@ fn golden_v1_structural_gates() {
             // negative-бренд (урок: выведенное множество по id-префиксу =
             // claim). Ровный диапазон: #234-контра целая, поздние recall
             // проверяются как нормальные.
-            let frame234 = r.split == "recall" && ("g0263"..="g0267").contains(&r.id);
+            let frame234 = r.split == "recall" && r.source == "frame-invalid-vector";
             if let Some(ok) = checksum_valid(s.category, s.value_source) {
                 if r.split == "recall" && !frame234 {
                     assert!(

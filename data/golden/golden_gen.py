@@ -906,7 +906,9 @@ def main():
     ]
     for t, value, cat in V16_RECALL:
         src = value.replace(" ", "").replace("-", "")
-        add(t, [span_at(t, value, cat, src)], "recall", "synthetic-checksum")
+        # #78-контра: source-фенс каркасных recall (#234) = «frame-invalid-vector»
+        # (id-фенс `id >= g0263` ломается на id-сдвигах, v1.11 finding #78).
+        add(t, [span_at(t, value, cat, src)], "recall", "frame-invalid-vector")
     # #234 negative-бейты: та же форма БЕЗ каркасного слова = молчание
     # (каркас = единственный источник класса, правило 2 заголовка #200-A2).
     V16_NEG = [
