@@ -199,9 +199,15 @@ fn decide_budget_stops_before_the_next_chunk() {
             );
             assert_eq!(b, BUDGET_MS, "отказ обязан назвать бюджет вызывающего");
             assert!(
-                stage == "decide" || stage == "lockR",
-                "стадия отказа = чанковый цикл модельного пути \
-                 (decide = зуб #109, lockR = зуб #84), получена {stage}"
+                matches!(stage, "decide" | "lockR" | "inference"),
+                "стадия отказа = чанковый цикл модельного пути: decide = зуб #109, \
+                 lockR = зуб #84 (per-chunk-хук воркера), inference = outer recv \
+                 (бюджет истёк, воркер отвечает сразу после чанка, влезавшего в \
+                 бюджет) — все три = 502 Timeout за ~бюджет; short-circuit/200 \
+                 дали бы не это. Стадия НЕ пинится на decide: промеры CI-ядер \
+                 (runs 40254332526/40254974200) = lockR/inference, lesson #232 \
+                 (пин = факт, не скорость машины). ARTEФAKТ строки stage = \
+                 что CI гоняет."
             );
             // Deadline-контра (не вечный прогон): outer recv_timeout = бюджет
             // срабатывает НЕ ПОЗЖЕ бюджета; inner-ответ даёт верхнюю границу
