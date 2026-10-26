@@ -20,9 +20,13 @@ hook="$root/.githooks/commit-msg"
 t="$(mktemp -d "${TMPDIR:-/tmp}/fasad-hooks-XXXX")"
 trap 'rm -rf "$t"' EXIT
 cd "$t" && git init -q r && cd r || exit 1
-# -c overrides = решёточный контракт НЕ зависит от global gitconfig
-# (машина оператора может нести user.email глобально; empty_email-кейс
-# обязан краснеть на любой машине)
+# Решёточный контракт НЕ зависит от global gitconfig: identity задаётся
+# ЛОКАЛЬНО в temp-репо (машина оператора может нести user.email глобально
+# = не канон; CI-раннеры = NO global identity, ubuntu-провен #276:
+# «Author identity unknown»), а empty_email-кейс перекрывает её env-override
+# автора = краснеет на любой машине.
+git config user.email lattice@example.com
+git config user.name lattice
 echo a > a && git add a
 fail=0
 check() { # $1 имя, $2 ожидаемый rc, $3 сообщение [, $4 "--no-verify"]
