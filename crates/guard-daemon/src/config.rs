@@ -2456,6 +2456,62 @@ mod tests {
         assert!(matches!(err, ConfigError::ThresholdsInsane(_)), "{err:?}");
     }
 
+    /// #314 win-simu-контра решёточной формой (env-клетка win-двойного-
+    /// клика: HOME = unset/пусто (Git-Bash win-класс: кейсы «HOME задан/
+    /// пустой» = решётка `default_home_dir_lattice_*` ниже) + USERPROFILE =
+    /// реальный кеш 5/5 (`layout_complete` = size vs манифест, 4096-фейки
+    /// НЕ проходят = #316-lesson) = Some(кеш): ровно тот резолвер
+    /// (`default_home_dir` → `default_model_dir_from_home`), что читает
+    /// #198-ветка env-границы `env_boundary_lookup` = `std::env::var`
+    /// (среда процесса; `set_var` = контракт модуля = запрещён; guards
+    /// `cfg!(tray)`/`FASAD_TEST_TRAY_CONTOUR` = compile-time/env-мишень
+    /// main.rs:185, покрыты wire_e2e-ногами #198/#316 на CI). Расход
+    /// v0.1.9 (UI 5/5 + banner pending, скрин 13:53) = клетка старта:
+    /// гейт #185 и карточка /v1/config читали РАЗНЫЕ резолверы; #198 +
+    /// #264 + hot-mount #316 закрыли контур (полка живая = #316-зубы на
+    /// CI-весах: mount + live-своп stage flip). Мута-контра: USERPROFILE-
+    /// фоллбэк убран = клетка красная (промер сессии #314). Live-промер
+    /// бинаря = CI-msvc приёмник (win-стенд оператора); linux/mac =
+    /// двойной ORT-контур = memory-exchange (провен CI run 40391897843) =
+    /// зуб НЕ бинарь-спавн. Машина без полки = SKIP-строка + assert
+    /// провена #87 (молчание запрещено #232).
+    #[test]
+    fn win_simu_userprofile_shelf_resolves_to_mounted_home() {
+        let home = std::env::var("HOME").expect("HOME раннера");
+        let shelf = std::path::Path::new(&home).join(DEFAULT_MODEL_DIR_SUFFIX);
+        if !crate::weights::layout_complete(&shelf) {
+            assert!(
+                std::env::var_os("FASAD_REQUIRE_MODELS").is_none(),
+                "FASAD_REQUIRE_MODELS стоит, а полки нет (#87-провен)"
+            );
+            eprintln!(
+                "SKIP|win_simu_boundary|кеш {} не смонтирован (нет fetch-шага)",
+                shelf.display()
+            );
+            return;
+        }
+        // Клетка win-двойного-клика: HOME = unset (win-нэйтив не гарантирует
+        // HOME), USERPROFILE = кеш 5/5 (машина оператора = HOME-кеш; CI-win
+        // = USERPROFILE=дом = кеш fetch-шага = ровно win-форма).
+        let cell = |k: &'static str| -> Option<String> {
+            if k == "USERPROFILE" {
+                Some(home.clone())
+            } else {
+                None
+            }
+        };
+        let resolved = default_home_dir(cell).and_then(|h| default_model_dir_from_home(h.to_str()));
+        assert_eq!(
+            resolved.as_deref(),
+            Some(std::path::Path::new(&shelf)),
+            "#314: HOME∅ + USERPROFILE=кеш 5/5 = резолвер карточки = Some(кеш)"
+        );
+        assert!(
+            crate::weights::layout_complete(resolved.as_deref().expect("полка")),
+            "полка 5/5 = guard #198-ветки истинен = Some(кеш) на трей-мишени"
+        );
+    }
+
     /// #264-решётка домашнего каталога кеша весов (`default_home_dir`,
     /// runtime env-lookup, чистая env-машина = меряется на любой ОС;
     /// win-двойной-клик = HOME unset/USERPROFILE set = ровно кейс 2):

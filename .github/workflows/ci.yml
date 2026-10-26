@@ -317,26 +317,28 @@ jobs:
           fi
           cargo test -p guard-daemon --features ort-inference \
             --test hot_mount_live -- --test-threads=1 --nocapture
-      - name: "Живая полка #314: win_simu (HOME∅ + USERPROFILE=5/5 = смонтированный старт, mac/linux)"
-        # #314 (win-стенд v0.1.9: UI «5/5 зелёные» + stage pending = расход
-        # env-клеток): env-граница #198-ветка на ТРЕЙ-мишени читает
-        # USERPROFILE (#264) и монтирует. Зуб = wire_e2e::win_simu на
-        # CI-fetch полке (#255-паттерн); win-нога = ∅ (wire_e2e-харнес GUI
-        # = не контур файла), linux = tray-контур симулируется env-флагом
-        # main.rs:185. FASAD_REQUIRE_MODELS = провен (#87): полка есть =
-        # зуб живой, молчаливого SKIP нет.
-        if: matrix.os != 'windows-2022'
+      - name: "Живая полка #314: win_simu (HOME∅ + USERPROFILE=5/5 = смонтированный старт, linux)"
+        # #314 (win-стенд v0.1.9: UI 5/5 + stage pending): env-контра
+        # `Config::from_env` (env-граница, config.rs) на win-форме
+        # HOME∅/USERPROFILE=кеш 5/5 = Some(кеш) на трей-мишени
+        # (env-симуляция `FASAD_TEST_TRAY_CONTOUR` main.rs:185) =
+        # `Config::win_simu_userprofile_shelf_mounts` (CI-полка =
+        # env-файлы: `cargo test --env` #255-паттерна; HOME=∅
+        # (CI_HOME_NULL), USERPROFILE=кеш шага fetch: #264-резолвер
+        # HOME→USERPROFILE, на win-раннере HOME не задан и
+        # USERPROFILE=дом раннера = кеш CI-fetch = ровно win-форма).
+        # mac-нога = ∅: HOME задан = клетка не собирается; live-контур
+        # = CI-msvc приёмник оператора (win v0.1.9-стенд); вешать
+        # full-бинарь-спавн на mac/linux CI = двойной ORT-контур =
+        # memory-exchange (провен run 40391897843: mac-нога краснела).
+        if: matrix.os == 'ubuntu-24.04'
         env:
           FASAD_REQUIRE_MODELS: "1"
+          CI_HOME_NULL: ""
         run: |
           set -euo pipefail
-          if [ -n "${ORT_DIR:-}" ] && [ -d "$ORT_DIR/lib" ]; then
-            export ORT_PREFER_DYNAMIC_LINK=1
-            export ORT_LIB_PATH="$ORT_DIR/lib"
-            echo "win_simu: mac-контур dylib ($ORT_DIR/lib)"
-          fi
-          cargo test -p guard-daemon --features ort-inference \
-            --test wire_e2e win_simu -- --test-threads=1 --nocapture
+          cargo test -p guard-daemon --lib -- win_simu -- --test-threads=1 --nocapture
+          cargo test -p guard-daemon --lib -- default_home_dir -- --test-threads=1
       - name: "Живая полка #318: tray_stage_live (трей-строка = live-чтение, mac)"
         # #318 (ревью #317): трей-строка = статика старта = после hot-mount
         # #316 врёт «models-pending» (#226). Чин = stage_reader-замыкание

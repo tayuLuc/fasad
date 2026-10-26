@@ -5,7 +5,7 @@
 
 ### Added
 
-- #314 win-simu-полка (ORT-нога CI, mac/linux): wire_e2e `win_simu_userprofile_mount_starts_the_tray_contour` = двойной клик win (HOME∅ + USERPROFILE=кеш 5/5, трей-мишень env-симуляцией #198) стартует МОНТИРОВАННЫМ `cascade-0+models` = env-граница #198-ветки читает USERPROFILE через `default_home_dir` #264 (расход v0.1.9 «UI 5/5 + stage pending» закрыт #316 poll + #318 live-строка); feature-off/debug-нога = слепая (stage-константа #185) = SKIP-строка; CI-шаг ort-build = CI-fetch полка #255-паттерна, `FASAD_REQUIRE_MODELS` = провен #87. Ref #314 (#198 #264 #316 #318 #255 #87).
+- #314 win-simu-клетка env-границы (unit `config::tests::win_simu_userprofile_shelf_resolves_to_mounted_home`, CI-шаг ubuntu `--lib` на fetch-полке #255, `FASAD_REQUIRE_MODELS` = провен #87): HOME∅ + USERPROFILE=кеш 5/5 = `default_home_dir` #264 → `default_model_dir_from_home` = Some(кеш) = резолвер, который читает #198-ветка `env_boundary_lookup` = старт-гейт и карточка /v1/config = ОДИН резолвер (расход v0.1.9 «UI 5/5 + banner pending» = разные резолверы: карточка = смонтированный mount, гейт = base-ветка до #198; закрыт #198-веткой + #264 + hot-mount #316 poll + #318 live-строка). Мута-контра: USERPROFILE-фоллбэк убран = клетка красная (промер сессии). Бинарь-спавн-зуб на linux/mac CI = НЕ годен: полный ORT-контур в тестовом процессе = memory-exchange (провен runs 40384977315/40391897843: ubuntu assert-pending, mac 30 с висяк) — live-промер win-формы = CI-msvc/операторский приёмник. Ref #314 (#198 #264 #316 #318 #255 #87 #232).
 
 ## v0.1.9 (2026-10-26)
 ### Added
