@@ -34,10 +34,10 @@
 //!    Decide-чанков (окно state 456 токенов ≈ 1.6–2.1 КБ текста).
 //!
 //! Порядок = БЮДЖЕТ ДО `startup`: бюджет печатается в `Job` из
-//! `OnnxMount::load` (`cfg.timeout_ms`); `startup` вызывается несколько раз
-//! (малый/большой бюджет), воркер предыдущего монтажа живёт до конца
-//! процесса (слот = Arc, drain не предусмотрен) — в тестовом процессе это
-//! поток с weight-mmap на раннере, не продукт.
+//! `OnnxMount::load` (`cfg.timeout_ms`) ⇒ на процесс ОДИН монтаж с ОДНИМ
+//! бюджетом (второй `startup` красен по ort-контракту «only one environment
+//! per process», промер run 40253494121): короткий контроль и бюджетный зуб
+//! живут на одном `BUDGET_MS`.
 //! Без весов = `SKIP|…`-строка + падение при `FASAD_REQUIRE_MODELS`
 //! (#87/#237-паттерн).
 
@@ -53,17 +53,16 @@ use guard_daemon::pipeline::{AnalyzeError, AnalyzeRequest, Policy, analyze};
 use guard_daemon::schema::Schema;
 use zeroize::Zeroizing;
 
-/// Бюджет бюджетного прогона, мс. Меньше ОДНОГО живого Decide-чанка
-/// (4.5–8.6 с, §I1 п.3) и больше lockR-фазы фикстуры (~5 чанков × 0.3–0.4 с):
-/// lockR доходит, Decide зовётся, второй чанк Decide не стартует.
+/// Бюджет полки (единственный монтаж на процесс), мс. Меньше ОДНОГО живого
+/// Decide-чанка (4.5–8.6 с, §I1 п.3) и больше lockR-фазы + одного короткого
+/// прогона: короткий серый вход успевает (витрина 285–427 мс + Decide-чанк
+/// влезает в бюджет первого чанка — budget-хук проверяет ПЕРЕД чанком, при
+/// spent=0), длинный — упёрся в хук на втором чанке Decide.
+///
+/// ОДИН монтаж = контракт ort: `ort::init: only one environment is allowed
+/// per process` (промер run 40253494121: второй `startup` красен = Load) —
+/// бюджеты на один процесс не меняются, только константа.
 const BUDGET_MS: u64 = 4_500;
-
-/// Контроль живости входа = полный прогон: ~12 чанков Decide × 8 с
-/// (формула #110) + lockR ≈ 96 с, с запасом 120 с.
-const FULL_BUDGET_MS: u64 = 120_000;
-
-/// Бюджет короткого контроля = 30 с (тот же, что parity-полки).
-const SHORT_BUDGET_MS: u64 = 30_000;
 
 const GOLDEN: &str = include_str!("../../../data/golden/golden-v1.jsonl");
 
@@ -152,64 +151,49 @@ fn decide_budget_stops_before_the_next_chunk() {
         return;
     };
     let schema = Schema::embedded().expect("канон");
+    let cfg = mount(&dir, BUDGET_MS);
 
-    // (3) КОНТРОЛЬ ЖИВОСТИ КОНТУРА: короткий серый вход = Ok + cascade2 ok.
+    // (3) КОНТРОЛЬ ЖИВОСТИ КОНТУРА: короткий серый вход на бюджете полки =
+    // Ok + cascade2 ok. Короткий = один чанк каждого каскада: lockR ~0.3 с +
+    // Decide ~4.5–8.6 с укладывается в 4500 на быстрых ядрах раннера (первый
+    // чанк стартует при spent=0 всегда; проверка — перед ВТОРЫМ). `skipped`
+    // красен (lesson 40253494121: `№` в фикстуре деградировал арбитра ДО
+    // бюджета), short-circuit красен (lesson 40251111755: транслит-фикстура
+    // не звала Decide).
     let text_short = grey_fixture(1);
-    let cfg_short = mount(&dir, SHORT_BUDGET_MS);
     let t = Instant::now();
-    let short = analyze(&req(&text_short), &schema, &cfg_short, Policy::Mask);
+    let short = analyze(&req(&text_short), &schema, &cfg, Policy::Mask);
     let short_ms = i64::try_from(t.elapsed().as_millis()).unwrap_or(i64::MAX);
     match &short {
         Ok(a) => println!("CHUNK_BUDGET|short|ok|{short_ms}|cascade2|{}", a.cascade2),
         Err(e) => println!("CHUNK_BUDGET|short|err|{short_ms}|{e}"),
     }
-    let a = short.expect("контроль: короткий серый вход обязан проходить");
+    let a = short.expect("контроль: короткий серый вход обязан проходить при бюджете полки");
     assert_eq!(
         a.cascade2,
         Cascade2::Ok.as_header(),
-        "Decide на этом раннере не звонился вообще = бюджет-зуб проверял бы мёртвый контур"
+        "Decide на этом раннере не звонился (short-circuit или деградация \
+         контракта склейки) = бюджет-зуб проверял бы мёртвый контур"
     );
 
-    // (4) КОНТРОЛЬ ЖИВОСТИ ВХОДА (lesson 40251111755): на фикстуре с
-    // БОЛЬШИМ бюджетом Decide обязан ЗВАТЬСЯ (cascade2 ok), иначе «отказ по
-    // бюджету» на ней = отказ иной стадии, а не зуб #109.
-    let cfg_full = mount(&dir, FULL_BUDGET_MS);
+    // (1)+(2) БЮДЖЕТНЫЙ ЗУБ: длинная фикстура при том же бюджете.
+    // (4) контроль живости ВХОДА = сам исход: Timeout{stage: decide}
+    // ДОКАЗЫВАЕТ, что Decide на фикстуре звонился (short-circuit дал бы 200,
+    // lockR-хук дал бы stage=lockR) — отдельный полный прогон не нужен, а
+    // ort-контра «один Environment на процесс» (промер 40253494121) его и
+    // запрещает без второго бюджета-монтажа.
     let text = grey_fixture(5_000);
     let t = Instant::now();
-    let full = analyze(&req(&text), &schema, &cfg_full, Policy::Mask);
-    let full_ms = i64::try_from(t.elapsed().as_millis()).unwrap_or(i64::MAX);
-    match &full {
-        Ok(a) => println!(
-            "CHUNK_BUDGET|full|ok|{full_ms}|cascade2|{}|bytes|{}",
-            a.cascade2,
-            text.len()
-        ),
-        Err(e) => println!("CHUNK_BUDGET|full|err|{full_ms}|bytes|{}|{e}", text.len()),
-    }
-    let a = full.expect("контроль: полный прогон фикстуры обязан дойти (бюджет 120 с)");
-    assert_eq!(
-        a.cascade2,
-        Cascade2::Ok.as_header(),
-        "фикстура без зова Decide (short-circuit) = мёртвый бюджет-тест; \
-         lesson прогона 40251111755: Ushakov-фикстура = 200/3231 мс, Decide не звонился"
-    );
-    assert!(
-        full_ms > 2_000,
-        "промер full = {full_ms} мс: полный прогон обязан включать Decide-фазу \
-         (lockR одной ≈1.5 с на 5 КБ, §I1)"
-    );
-
-    // (1)+(2) БЮДЖЕТНЫЙ ЗУБ: та же фикстура при бюджете < Decide-фазы.
-    let cfg_small = mount(&dir, BUDGET_MS);
-    let t = Instant::now();
-    let r = analyze(&req(&text), &schema, &cfg_small, Policy::Mask);
+    let r = analyze(&req(&text), &schema, &cfg, Policy::Mask);
     let ms = i64::try_from(t.elapsed().as_millis()).unwrap_or(i64::MAX);
     match r {
         Err(AnalyzeError::Cascade(CascadeFailure::Timeout {
             budget_ms: b,
             stage,
         })) => {
-            println!("CHUNK_BUDGET|decide|timeout|{ms}|budget|{b}|stage|{stage}|full_ms|{full_ms}");
+            println!(
+                "CHUNK_BUDGET|decide|timeout|{ms}|budget|{b}|stage|{stage}|short_ms|{short_ms}"
+            );
             assert_eq!(b, BUDGET_MS, "отказ обязан назвать бюджет вызывающего");
             assert_eq!(
                 stage, "decide",
