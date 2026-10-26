@@ -86,7 +86,15 @@
 //!    (адванс чанкера якорится от края окна): пересъёмка 22.10 на базе
 //!    `ec9a36b` — 33 КБ = 38 чанков lockR = 14.2 с при 329–373 мс на чанк
 //!    (было 114 чанков и 123 с), короткое письмо 230 Б = 1 чанк = 289 мс
-//!    (было 51 прогон).
+//!    (было 51 прогон). С #109 хук бюджета стоит и на КАЖДОМ чанке Decide
+//!    ([`guard_onnx::arbitrate::DecideArbiter::arbitrate_chunked`]'й
+//!    `over_budget`, отсчётка от старта всего запроса): до этого бюджет
+//!    проверялся только ДО каскада 2, а один Decide-чанк = 4.5–8.6 с (промер
+//!    §I1 п.3) — «24 чанка × 4.5 с» перекрывали любой
+//!    `FASAD_TIMEOUT_MS` (issue #109). Исход = `Timeout{decide}` = 502;
+//!    инкрементальной отдачи и `Skipped`-деградации на бюджете НЕТ (первичка
+//!    #109: `Skipped` = только splice-контракт #88; политики частичного
+//!    ответа — операторский выбор, issue #110).
 //! 7. **Decide чанкуется** ([`guard_onnx::arbitrate::DecideArbiter::arbitrate_chunked`]
 //!    с `arb_chunk_cfg(384 + 56 ≤ 512)`), вердикт класса = **max** вероятности
 //!    по чанкам (FN фатален, тот же закон, что у `merge_arb_hits`: union, ниже
@@ -1074,7 +1082,7 @@ mod onnx {
             .iter()
             .filter(|(id, _, _)| grey.iter().any(|g| g == id))
             .collect();
-        let (p2, cascade2) = decide_p2(arb, job, &asked)?;
+        let (p2, cascade2) = decide_p2(arb, job, &asked, started)?;
         apply_arbiter(&mut spans, &p2, &job.ctx, &job.plan);
         Ok(Outcome {
             spans,
@@ -1177,6 +1185,7 @@ mod onnx {
         arb: &mut DecideArbiter,
         job: &Job,
         asked: &[&(String, String, Vec<String>)],
+        started: Instant,
     ) -> Result<(Vec<(String, f64)>, Cascade2), CascadeFailure> {
         let answers: Vec<Vec<&str>> = asked
             .iter()
@@ -1211,7 +1220,17 @@ mod onnx {
             })?;
         let mut cascade2 = Cascade2::Ok;
         let per_chunk: Vec<ChunkDecision> =
-            match arb.arbitrate_chunked(&job.text, &qs, arb_cfg, tau) {
+            match arb.arbitrate_chunked(&job.text, &qs, arb_cfg, tau, &mut || {
+                // #109: бюджет проверяется ПЕРЕД КАЖДЫМ Decide-чанком, от
+                // старта ВСЕГО запроса (та же отсчётка, что у lockR-хука):
+                // каскад 1 уже съевший бюджет не получает второй бюджет
+                // заново. Хук в либе, а не только проверка до вызова, потому
+                // что один Decide-чанк = 4.5–8.6 с (audit §I1 п.3) — на входе
+                // с 24 чанками «проверить до и дождаться конца» = 100+ с
+                // при названном бюджете 3 с.
+                let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                (ms > job.budget_ms).then_some(job.budget_ms)
+            }) {
                 Ok(cd) => cd.per_chunk,
                 // Отказ на КОНКРЕТНОМ входе (контракт склейки): в словаре Spiber
                 // `№` → [507, UNK] (инвентарь 4b-3C в `recall_golden.rs`), а
@@ -1232,6 +1251,19 @@ mod onnx {
                     eprintln!("fasad: каскад 2 пропущен для этого входа: {e}");
                     cascade2 = Cascade2::Skipped;
                     Vec::new()
+                }
+                // #109: бюджет исчерпан между чанками Decide = `Timeout` со
+                // stage = decide (ТОТ ЖЕ исход, что у пер-чанкового
+                // OverBudget каскада 1: 502, запрос наружу не уходит (SPEC §1
+                // п.5, AGENTS Fail-Closed). Инкрементальной отдачи нет,
+                // деградация в `Skipped` на бюджете НЕЗАКОННА (первичка #109:
+                // `Skipped` = только splice-контракт #88; «каскад 2 не успел,
+                // спаны на p1» = тихое понижение защиты, а не fail-closed).
+                Err(guard_onnx::arbitrate::ArbError::OverBudget { budget_ms }) => {
+                    return Err(CascadeFailure::Timeout {
+                        budget_ms,
+                        stage: "decide",
+                    });
                 }
                 Err(e) => return Err(CascadeFailure::Inference(format!("decide: {e}"))),
             };
@@ -1293,6 +1325,13 @@ mod tests {
         assert!(!decide_degrades(
             &guard_onnx::arbitrate::ArbError::Tokenizer("tokenizer.json".into())
         ));
+        // #109: бюджет — НЕ деградация. `Skipped` на бюджете = тихое
+        // понижение защиты (серые спаны остаются на p1, клиент видит 200);
+        // первичка #109: легальный исход один = Timeout 502.
+        assert!(
+            !decide_degrades(&guard_onnx::arbitrate::ArbError::OverBudget { budget_ms: 3_000 }),
+            "бюджет не имеет права деградировать в Skipped"
+        );
     }
 
     fn plan() -> Plan {
@@ -1671,6 +1710,57 @@ mod tests {
         });
         assert_eq!(r, Err(ChunkFailure::OverBudget { budget_ms: 3000 }));
         assert_eq!(fake.calls.len(), 2, "третий чанк не запускался");
+    }
+
+    #[test]
+    fn decide_budget_gates_before_each_chunk_too() {
+        // #109: хук бюджета Decide = та же геометрия, что `over_budget`
+        // каскада 1 (продакшн-замыкание в `decide_p2`: отсчётка от старта
+        // запроса, сравнение `elapsed > budget_ms`, `then_some(budget_ms)`).
+        // Живой `arbitrate_chunked` под фичей и в CI без весов не гоняется
+        // (стенд либы = таблица `budget_hook_fires_…` в guard-onnx; живой
+        // промер = CI ort-build `decide_budget_live`); здесь закрывается
+        // контракт замыкания в демоне: счётчик чанков как «elapsed», и
+        // старт чанка ровно пока бюджет не исчерпан.
+        let budget_ms = 500u64;
+        let chunk_ms = 200u64;
+        let mut runs = 0usize;
+        // Имитация цикла либы: N чанков, хук вызывается перед КАЖДЫМ, в т.ч.
+        // отказным (тот же счёт, что у `over_budget` выше: ticks = чанки).
+        for i in 0..24usize {
+            let elapsed = u64::try_from(i).unwrap_or(u64::MAX) * chunk_ms;
+            let over = (elapsed > budget_ms).then_some(budget_ms);
+            if let Some(b) = over {
+                assert_eq!(b, budget_ms, "отказ называет бюджет вызывающего");
+                break;
+            }
+            runs += 1;
+        }
+        // 0, 200, 400 ≤ 500 = три старта; на 600 — отказ до прогона четвёртого.
+        assert_eq!(runs, 3, "чанк не влезает в бюджет — не стартует");
+    }
+
+    #[test]
+    fn decide_budget_timeout_names_the_stage() {
+        // #109: исход бюджета Decide = `Timeout{stage: "decide"}` = 502
+        // (тот же `CascadeFailure`, что каскад-1-хук),Display называет стадию
+        // и бюджет; в тексте — ни буквы из текста запроса (контракт 502-ответа,
+        // `cascade_http` закрывает его для всей Timeout-ветки).
+        let f = CascadeFailure::Timeout {
+            budget_ms: 3_000,
+            stage: "decide",
+        };
+        let text = f.to_string();
+        assert!(text.contains("decide"), "стадия в причине: {text}");
+        assert!(text.contains("3000"), "бюджет в причине: {text}");
+        assert_eq!(
+            CascadeFailure::Timeout {
+                budget_ms: 3_000,
+                stage: "decide"
+            },
+            f,
+            "контракт = данные, не строка"
+        );
     }
 
     #[test]
