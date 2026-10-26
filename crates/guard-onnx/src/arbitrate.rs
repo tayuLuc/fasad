@@ -38,6 +38,10 @@ use crate::chunker::{Chunk, ChunkCfg};
 use crate::decide::{self, SPECIALS};
 use guard_types::ByteSpan;
 
+// #88: канонизация входа Decide живёт в `decide` (feature-off: юниты гоняются,
+// не тяня onnxruntime); здесь — ре-экспорт: живой путь зовёт `arbitrate`.
+pub use crate::decide::{UNK_LITERA, UNK_REPLACEMENT, canonicalize_decide_input};
+
 /// Индекс `[SEP_STRUCT]` в таблице [`SPECIALS`] (разделитель схем).
 const SEP_STRUCT: usize = 0;
 /// Индекс `[SEP_TEXT]` в таблице [`SPECIALS`] (конец блока схем).
@@ -484,6 +488,11 @@ impl DecideArbiter {
     /// `FASAD_TIMEOUT_MS`, а бюджет проверялся только ДО каскада 2 — между
     /// чанками Decide его не было вовсе.
     ///
+    /// Текст канонизуется [`canonicalize_decide_input`] ДО чанковки (#88):
+    /// `Chunk::span` считаются по канонизированному тексту, длина которого
+    /// побайтово равна оригиналу (3 Б → 3 Б), — возвращаемые координаты
+    /// остаются координатами оригинала (инвариант `chunked_hits_have_original_coords`).
+    ///
     /// # Errors
     ///
     /// [`ArbError::ChunkTooLong`] (перерасход бюджета),
@@ -499,7 +508,8 @@ impl DecideArbiter {
         over_budget: &mut dyn FnMut() -> Option<u64>,
     ) -> Result<ChunkedDecision, ArbError> {
         let block = Self::schema_block(schema)?;
-        let chunks: Vec<Chunk> = crate::chunker::chunk(text, cfg);
+        let text = canonicalize_decide_input(text);
+        let chunks: Vec<Chunk> = crate::chunker::chunk(&text, cfg);
         let mut per_chunk = Vec::with_capacity(chunks.len());
         let mut hits: Vec<ArbHit> = Vec::new();
         for ch in chunks {
@@ -508,7 +518,7 @@ impl DecideArbiter {
             if let Some(budget_ms) = over_budget() {
                 return Err(ArbError::OverBudget { budget_ms });
             }
-            let piece = ch.span.slice(text).unwrap_or("");
+            let piece = ch.span.slice(&text).unwrap_or("");
             let plan = self.plan_for_chunk(&block, piece, schema)?;
             let l = u32::try_from(plan.ids.len()).unwrap_or(u32::MAX);
             if l > DECIDE_REL_MAX_DISTANCE {
