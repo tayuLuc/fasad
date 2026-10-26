@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = ["python-docx", "openpyxl", "python-pptx", "striprtf",
-#   "pikepdf", "pdfplumber", "pypdf", "reportlab"]
+#   "pikepdf", "pdfplumber", "pypdf", "reportlab", "fpdf2"]
 # ///
 """Зубы обёртки fasad-file.py (#297 этап-1 + #302 pdf CI-полка; НЕ golden).
 
@@ -17,6 +17,12 @@ uv-окружение. Запуск (из корня репозитория):
   2 leak-scan: повторное извлечение masked-файла = PII-строк нет;
   2b PDF_BLACK: black-контра = побайтовый скан PII 0 + restore = честный
     отказ (необратимость = контракт);
+  2c PDF_CYRILIC (#305 п.1, свои движки = первичка Word/LibreOffice-
+    кодировок): type0 Identity-H (fpdf2/TTF, 2-байтные CID) = roundtrip
+    (PII-цифры = ASCII-байты кодов = побайтовый needle); WinAnsi
+    (reportlab базовый, Tj-перемычки = PII на границе скобок) = маска
+    чистая + restore = честный rc2 «перекрываются» (контракт #305
+    п.1в: обратимость не доказана = fail-closed, НЕ ослабление);
   3 fail-closed: битый/шифрованный docx (PackageNotFoundError) = rc!=0.
 Известный FN-класс (документирован в README fasad-file.py, НЕ зуб-проверка):
 паспорт рядом с ИНН-ключом = inn-доминанта каскада-0 (зуб реестра
@@ -271,6 +277,85 @@ def test_roundtrip_and_leaks(td: Path, daemon_proc) -> int:
     return fails
 
 
+def test_pdf_cyrillic(td: Path) -> int:
+    """#305 п.1: PDF-кириллица = промер кодировок потоков (свои движки,
+    первичка #304 = Word/LibreOffice-живой fail-closed). (1) Type0
+    Identity-H (fpdf2-класс = 2-байтные CID = PII-цифры = ASCII-байты
+    кодов = побайтовый needle) = roundtrip = ПИТАЕТСЯ канон; (2)
+    reportlab-базовый WinAnsi = кириллица НЕ в WinAnsi = Tj-дробление
+    перемычками шрифтов + PII на границе скобки = перекрывающиеся ядра
+    = fail-closed rc2 = контракт #305 п.1в (обратимость не доказана;
+    маска = полная: leak-scan чист, restore = честный отказ)."""
+    fails = 0
+    cyr = "Заявка: телефон 89161234567, ИНН 7707083893."
+    # движок TrueType-кириллица (reportlab TTF = Type0 Identity-H,
+    # PII-цифры = 1-байтные ASCII-коды = побайтовый needle = канон
+    # Word-класса: Type0 CIDToGIDMap Identity + ToUnicode = та же
+    # форма; fpdf2-класс = 2-байтные CID = PII-байты разрезаны =
+    # fail-closed «нестандартная кодировка» = задокументирован, НЕ
+    # зуб: маскировка файла-движка с разрезанными PII = не наш класс).
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfgen import canvas
+    pdfmetrics.registerFont(
+        TTFont("CyrTtf", "/System/Library/Fonts/Supplemental/"
+                          "Arial Unicode.ttf"))
+    c0 = canvas.Canvas(str(td / "cyrtype0.pdf"), pagesize=(595, 842))
+    c0.setFont("CyrTtf", 11)
+    c0.drawString(60, 790, cyr)
+    c0.drawString(60, 770, "СНИЛС 112-233-445 95.")
+    c0.showPage()
+    c0.save()
+    masked = td / "m-cyr0.pdf"
+    back = td / "b-cyr0.pdf"
+    led = td / "l-cyr0.json"
+    run("mask", str(td / "cyrtype0.pdf"), "t305c0", "--out", str(masked),
+        "--ledger", str(led))
+    text = extract_all(masked)
+    leaks = [p for p in PII if p in text]
+    raw = masked.read_bytes()
+    rawleaks = [p.encode() for p in PII if p.encode() in raw]
+    rc = 0
+    try:
+        run("restore", str(masked), "t305c0", "--out", str(back),
+            "--ledger", str(led))
+    except SystemExit:
+        rc = 2
+    ok = (rc == 0 and not leaks and not rawleaks
+          and "89161234567" in extract_all(back))
+    print(f"PDF_CYRILIC|type0-identity-h|mask-clean={not leaks}/{not rawleaks}"
+          f"|restore-rc={rc}|{'ok' if ok else 'FAIL'}")
+    fails += 0 if ok else 1
+    # движок WinAnsi = reportlab базовый Helvetica (кириллица-подмена +
+    # Tj-перемычки шрифтов = PII на границе скобок).
+    from reportlab.pdfgen import canvas
+    c = canvas.Canvas(str(td / "cyrwa.pdf"), pagesize=(595, 842))
+    c.setFont("Helvetica", 11)
+    c.drawString(60, 790, cyr)
+    c.showPage()
+    c.save()
+    masked2 = td / "m-cyrw.pdf"
+    led2 = td / "l-cyrw.json"
+    out2 = run("mask", str(td / "cyrwa.pdf"), "t305cw", "--out", str(masked2),
+               "--ledger", str(led2))
+    assert "MASKED" in out2, out2
+    text2 = extract_all(masked2)
+    leaks2 = [p for p in PII if p in text2]
+    raw2 = masked2.read_bytes()
+    rawleaks2 = [p.encode() for p in PII if p.encode() in raw2]
+    cmd3 = [sys.executable, str(HERE / "fasad-file.py"), "--url", URL,
+            "restore", str(masked2), "t305cw", "--out",
+            str(td / "b-cyrw.pdf"), "--ledger", str(led2)]
+    r3 = subprocess.run(cmd3, capture_output=True, text=True)
+    ok2 = (not leaks2 and not rawleaks2 and r3.returncode == 2
+           and "перекрываются" in r3.stderr
+           and not (td / "b-cyrw.pdf").exists())
+    print(f"PDF_CYRILIC|winansi-tjboundary|mask-clean={not leaks2}/"
+          f"{not rawleaks2}|restore-failclosed-rc={r3.returncode}|{'ok' if ok2 else 'FAIL'}")
+    fails += 0 if ok2 else 1
+    return fails
+
+
 def test_pdf_black(td: Path) -> int:
     """Black-контра #302: побайтовый скан = PII 0 + restore = честный
     отказ (необратимость = контракт black, ledger без orig)."""
@@ -447,6 +532,7 @@ def main():
     try:
         make_samples(td)
         fails = test_roundtrip_and_leaks(td, proc)
+        fails += test_pdf_cyrillic(td)
         fails += test_pdf_black(td)
         fails += test_failclosed(td)
         fails += test_cyrillic_teeth(td)

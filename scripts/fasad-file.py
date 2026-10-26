@@ -67,14 +67,48 @@ DEANONYIZE-ДЕМОНОМ pdf НЕ меряем: токена в text-layer не
 PasswordError = rc 2 (тот же fail-closed, что PackageNotFoundError docx).
 Ограничения этапа-2: PII на стыке show-операторов (куски Tj) = fail-closed
 «нестандартная кодировка потока» (куски-слова = риск ложных pad =
-сознательно); кириллица в PDF-потоке = Hex/CID-кодировки = этап 3 (побайтовый
- needle = ASCII-показание); скан-PDF (растр) = OCR = этап 3, НЕ здесь.
+сознательно); PII на границе Tj-скобки = fail-closed «pad-участки
+перекрываются» (класс reportlab-базовый = WinAnsi-подмена кириллицы +
+дробление Tj по перемычкам шрифтов: phone [302..313) и inn [302..312) =
+shared-контекст «) Tj /F1 11 Tf 13.2 TL ( » = перекрывающиеся ядра =
+обратимость НЕ доказана = контракт #305 п.1в; маскировка = полная,
+leak-scan чист = PII 0, restore = честный rc 2, промер cyr-wa).
+КИРИЛЛИЦА В PDF = ПРОМЕРЕНА #305 (два движка, свои PDF): (1) Type0
+Identity-H (fpdf2/reportlab+TTF) = 2-байтные CID-индексы: PII-цифры =
+ASCII-байты 1-байтных кодов = побайтовый needle = КОНТУР РАБОТАЕТ
+(roundtrip cyr-rl = полный возврат); (2) WinAnsi cp1251-однобайтные =
+кириллица НЕ в WinAnsi = подмена = needle не нужен; (3) Word-экспорт =
+Type0 CIDToGIDMap Identity + ToUnicode = та же 1-байтная форма =
+контур; (4) Hex-строки <CIPF..> = reportlab/fpdf2/hetvfdf НЕ эмитируют
+(промер потоков = octal-escape в () = не Hex) = путь не встретился,
+побайтовый needle не канон = не чиним (этап 3 по факту появления).
+скан-PDF (растр) = OCR = этап 3, НЕ здесь.
 
-Известный FN-класс ДЕТЕКТОРА (не обёртки, чин = каскад-0 issue, не здесь):
-паспорт в соседстве «ИНН <10 цифр>» = inn-доминанта гасит паспортную
+Известные FN-классы ДЕТЕКТОРА (не обёртки, чин = каскад-0 issue, не здесь):
+1) паспорт в соседстве «ИНН <10 цифр>» = inn-доминанта гасит паспортную
 гипотезу (зуб реестра c0_inn_key_dominates_passport, cascade0.rs:337);
 промер обёртки: ни row-, ни col-major склейка его не достают (до и после
 маски) = leak-scan осознанно исключает такой кейс, тест-полка документирует.
+2) ПАСПОРТ-ФОРМЫ БЕЗ КЛЮЧА = контракт канона #212, НЕ баг (промер #305
+живым демоном 18804, таблица форм ниже). Ключевые слова-соседи =
+«паспорт/Паспорт/документ НЕ канон: «документ 45 10 123456» = 0 span;
+канон = «Паспорт <формы>» / «паспорт: <формы>» = ключ ДО номера,
+регистр первой буквы канонен):
+  «Паспорт 45 10 123456 выдан 01.01.2020» = span [8..20) hit
+  «паспорт: 4510 123456» = span [9..20) hit
+  «Паспорт 4510123456 выдан» = span [8..18) hit
+  «паспорт 45 10 123456» = hit (8..20)
+  «45 10 123456» (без ключа) = 0 span = контрактное молчание g0223-класса
+  «4510123456» / «4510 123456» / «серия 45 номер 10 123456» / «45-10-123456»
+    / «45/10/123456» = 0 span = вне канона (#212: ведущий ключ обязателен)
+  «45 10 123456 ИНН 7707083893» = inn-10 hit, паспорт = 0 (класс 1)
+  «ИНН 7707083893 и 45 10 123456» = inn-10 hit, паспорт = 0 (класс 1)
+Обёртка = мёртвая зона детектора (file-контур = прозрачен: что демон не
+увидел, то не замажет = leak-scan это же меряет = вторичный контракт).
+3) person_name = 0 hits на cascade-0-only (промер #305: ФИО в txt/pdf =
+ни span; ФИО = каскады 1–2, веса). file-контур × каскады 1/2 = CI-полка
+(ort-build: смонтированный фасад-стенд; локально debug-бинарь =
+cascade-0-only, ort-inference вне debug-сборки = AGENTS п.3: build = CI).
 
 Запуск (uv single-file, AGENTS §6 gutter — продукт НЕ Rust-обвязка):
   uv run scripts/fasad-file.py mask  ФАЙЛ СЕССИЯ --out ФАЙЛ [--mode black|placeholder]
@@ -958,6 +992,7 @@ def cmd_restore(args):
             # ПОСЛЕ сканирования: промер-яд fh — возврат PII-0 съел ctx-
             # анкор записи PII-1 = «карта разошлась» на верном файле).
             all_chosen = []  # (si, off, ln, orig_bytes)
+            _touched = []  # (si, o, ln, orig) = применённые вставки
             # Restore = ctx-иголки + SEGMENTATION (промер-яд tf-snils:
             # return-эвристика от конца на ran 17 (11+1+4) = [6..17) +
             # [13..17) = ПЕРЕСЕЧЕНИЕ = двойная вставка = snils 3×;
@@ -978,10 +1013,16 @@ def cmd_restore(args):
                     die("pdf: ledger без ctx-анкора = маска не #302-формата "
                         "= fail-closed")
                 chosen = []
-                for si, raw in enumerate(raws):
+                for si in range(len(raws)):
                     for needle in needles:
                         m = 0
                         while True:
+                            # fresh-read (первичка #305 cyr-wa:
+                            # enumerate-копия raw = stale: phone-вставка
+                            # = «89161234567, » = inn-иголка «  , \017…»
+                            # убита = scan=0 = die на ВЕРНОМ cyr-rl;
+                            # fresh = ядро-после-вставки видно).
+                            raw = raws[si]
                             j = raw.find(needle, m)
                             if j < 0:
                                 break
@@ -995,6 +1036,14 @@ def cmd_restore(args):
                                 # Ядро = первые len(orig) пробелов =
                                 # позиция PII (surgery-контрака =
                                 # PII-блок = len пробелов от хита).
+                                # Сдвиг = fresh-read (первичка #305
+                                # cyr-wa shared-контекст: ctx = общий
+                                # Tj-перемычки = иголка phone найдена
+                                # раньше инна = после phone-вставки
+                                # inn-иголка = на len(orig) правее =
+                                # инкремент = размер чужой вставки =
+                                # контракт: len(orig-чужого) = len
+                                # (pad-чужого) = сдвиг = len(orig).
                                 chosen.append((si, o, len(orig)))
                             m = j + 1
                 chosen = sorted(set(chosen), reverse=True)
@@ -1017,19 +1066,59 @@ def cmd_restore(args):
                         all_chosen.append(t)
             # Побайтовые пересечения = fail-closed (pad-раны разных PII
             # не должны перекрываться = маска даёт непересекающиеся).
+            # all_chosen = аудит (в global-порядке = «pad-участки
+            # перекрываются» = законные соседние ядра cyr-wa (302,11)+(302,10)
+            # = die на ВЕРНОМ файле = глобальная = не контракт).
+            # Применение = per-entry, chosen-порядок = reverse: ядро
+            # scan-ится ПОСЛЕ вставок предшественников (fresh-иголка =
+            # ядро за чужой вставкой = pad-контрака краснеет = honest-
+            # отказ; cyr-wa: phone [302..313) = fresh-иголка = [313..323)
+            # ∩ inn-ядро = die; cyr-rl: phone [109..120) = fresh-иголка
+            # = « 89161234567, » = die) = ПЕРВИЧКА-ИСХОД = fail-closed
+            # по классу shared-контекста (Tj-скобки/перемычки шрифтов).
+            # Контракт применения (#305): ядро = из scan-а исходного
+            # snapshot; применение = глобальный reverse-порядок =
+            # позиции левее инвариантны (длина вставки = длина pad =
+            # len(orig)); multi-occurrence = НЕСКОЛЬКО ядер одной
+            # записи (all_chosen = дедуп по кортежу = все позиции
+            # ctxs-иголок, первичка: 1 запись на (page,frag), все
+            # вхождения = все ctxs).
             by_stream = {}
             for si, o, ln, orig in all_chosen:
                 by_stream.setdefault(si, []).append((o, ln, orig))
             for si, spans in by_stream.items():
                 spans.sort()
-                for (o1, l1, _a), (o2, _l2, _b) in zip(spans, spans[1:], strict=False):
+                # Побайтовые пересечения = fail-closed (pad-раны разных
+                # PII не должны перекрываться = маска даёт
+                # непересекающиеся; соседние ядра cyr-wa = (302,11)+
+                # (302,10) = НЕ пересечение = законны (по построению
+                # surgery = раздельные хиты).
+                for (o1, l1, _a), (o2, _l2, _b) in zip(spans, spans[1:],
+                                                       strict=False):
                     if o1 + l1 > o2:
                         die("pdf: pad-участки перекрываются = карта "
                             "разошлась (fail-closed)")
                 for o, ln, orig in sorted(spans, reverse=True):
                     raw = raws[si]
+                    if raw[o:o + ln] != b" " * ln:
+                        die(f"pdf: ядро {o}+{ln} = {raw[o:o + 16]!r} не pad "
+                            "= карта разошлась (fail-closed)")
                     raws[si] = raw[:o] + orig + raw[o + ln:]
+                    _touched.append((si, o, ln, orig))
                     n += 1
+            # Post-контрака (первичка #305): ядро после вставки = orig
+            # = pad-блок на месте = контракт wa-порчи (wa-2: PII на
+            # границе Tj-скобки = вставка len(orig) = leading-пробел
+            # ВНЕ скобки = pad-блок ядра = не пробелы = die ДО вставки;
+            # ядро = после вставки = orig = die). PII-scan потоков =
+            # ЯД h1/s2f: shared-контекст = PII соседа в потоке =
+            # законно (его ядро = его запись), overlay = rect-числа =
+            # PII-цифры = ложное попадание; leak-scan = тест-полка
+            # (extract + побайтовый raw = канон #302).
+            for si, o, ln, orig in _touched:
+                if raws[si][o:o + ln] != orig:
+                    die("pdf: ядро после вставки != orig = карта разошлась "
+                        "(fail-closed)")
             for st, raw in zip(streams, raws, strict=True):
                 if bytes(st.get_data()) != raw:
                     st.set_data(raw)
