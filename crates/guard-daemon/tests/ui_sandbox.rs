@@ -2251,3 +2251,57 @@ fn ui_span_table_grouping_wiring() {
         "плоская span-таблица (фолбэк) перестала заполняться"
     );
 }
+
+// ============================ #336: README-полка make-bundle (иконка/консоль)
+
+/// Контра README-полки бандла (#336, семья #309/#311/#313: операторская
+/// первичка «иконка была, когда запускал консольный бинарь с окном» =
+/// README ∅-диагноза): GUI-подсистема с иконкой трея = `fasad-tray[.exe]`
+/// (#226: `windows_subsystem="windows"`, консоли нет), `fasad[.exe]` =
+/// консольный сервер без трея (#185-контра console = тексты в stderr).
+/// Полка = heredoc-и `scripts/make-bundle.sh` (README бандла генерится
+/// им, win/mac-секции = отдельные ветки), поэтому зуб = побайтовый grep
+/// источника генератора на сборочной ноге (ci `just test` = build-test
+/// 3 ОС = смонтировано, #180). Мута-контра: удалить строку-диагноз =
+/// соответствующий кейс краснеет.
+#[test]
+fn shelf_tray_icon_diagnosis() {
+    let src = include_str!("../../../scripts/make-bundle.sh");
+    // 1) win-секция (§2 Запуск ветки is_win): строка-диагноз = иконка в
+    //    трее у трей-бинаря + консольный fasad.exe = «иконки нет = не дефект».
+    let win = section(src, "2. Запуск: \\`bin\\fasad-tray.exe\\`");
+    assert!(
+        win.contains("Иконка в трее = \\`bin\\fasad-tray.exe\\`"),
+        "win README: строка «Иконка в трее = bin\\fasad-tray.exe» съехала (#336)"
+    );
+    assert!(
+        win.contains("иконки нет =") && win.contains("#336"),
+        "win README: fasad.exe-строка обязана нести диагноз «иконки нет = не дефект, #336» (#336)"
+    );
+    // 2) mac/desktop-полка: тот же диагноз на unix-путях.
+    assert!(
+        src.contains("Иконка в трее =\n  \\`bin/fasad-tray${ext}\\`")
+            || src.contains("Иконка в трее = \\`bin/fasad-tray${ext}\\`"),
+        "mac/desktop-полка README: диагноз-строка трей/консоль съехала (#336)"
+    );
+    assert!(
+        src.contains("\\`bin/fasad${ext}\\` = консольный сервер"),
+        "mac README: §Запуск обязан нести «fasad = консольный сервер» (#336)"
+    );
+    // 3) linux-бандл = headless (трея нет = stage-ится только win/mac,
+    //    :243-249; linux = systemd-юнит #140): диагноз-полка НЕ печатается
+    //    там (генераторский контур `is_win`/`Darwin` = первичка файла,
+    //    зуб-кейс 1/2 = её ветки).
+}
+
+/// Секция генератора: от маркера до `^EOF` (heredoc-граница, колонка 0).
+fn section<'a>(src: &'a str, marker: &str) -> &'a str {
+    let i = src
+        .find(marker)
+        .unwrap_or_else(|| panic!("маркер секции {marker:?} съехал"));
+    let rest = &src[i..];
+    let j = rest
+        .find("\nEOF")
+        .unwrap_or_else(|| panic!("heredoc-граница EOF не найдена за {marker:?}"));
+    &rest[..j]
+}
