@@ -1,4 +1,7 @@
 ## Unreleased
+### Fixed
+- #336 win-иконка «была с окном терминала» (операторская первичка 28.10, v0.1.10): запускавший console-бинарь `fasad.exe` (окно = stderr-тексты #185) ждал иконку, которую ставит `tray::run` только в GUI-подсистеме `fasad-tray.exe` (#226: `windows_subsystem="windows"`, консоли нет) = ∅-дефект продукта, дефект README-диагноза. Чин = заменяющая строка в README-полке: «иконка в трее = `bin\fasad-tray.exe`; `bin\fasad.exe` = консольный сервер (тексты в консоль, иконки нет = не дефект)» — make-bundle.sh §2 win + §Запуск mac + desktop-полка + README.md §win/mac-трей + docs/release.md §Полка #336. Зуб `ui_sandbox::shelf_tray_icon_diagnosis` = grep-контра heredoc-источника генератора (ветки is_win/Darwin; linux = headless systemd #140 = полка не печатается, стад-трея win/mac :243-249 = первичка), смонтирован ci `just test` build-test 3 ОС; мута-контра: строка удалена = кейс win краснеет (промер). Ветвь «запускал fasad-tray.exe» = диагностический зуб #244 (`%APPDATA%\fasad\fasad-tray.log`). Ref #336 (#309 #311 #313 #182 #226 #185 #244).
+
 - Пусто (следующий цикл)
 
 ## v0.1.10 (2026-10-27)
