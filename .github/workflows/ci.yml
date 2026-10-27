@@ -684,15 +684,30 @@ jobs:
           swiftc -O scripts/ocr.swift -o "$RUNNER_TEMP/ocr"
           echo "FASAD_OCR_BIN=$RUNNER_TEMP/ocr" >> "$GITHUB_ENV"
       - name: "Зубы file-контура (uv single-file, PEP-723 deps)"
-        # Первичка PyPI-колёс pikepdf (27.10): macosx_14_0_arm64 ряд =
-        # 10.8.0 cp310–cp314 (+abi3); macosx_15_0 = 10.17.0 cp311–cp315t.
-        # 3.13 = колесо в ОБА ряда → одна волна раннеров для всех трёх
-        # ног; macos-14 = SDK14 (провены file-shelf runs 40484144100…
-        # 40486796458: cp312/cp315 = sdist-компиляция qpdf = красное;
-        # cp313 = колесо). linux = manylinux cp313.
+        # Волновая геометрия колёс (первичка PyPI 27.10, промены runs
+        # 40484144100…40488888547 = четыре красных mac-проверки): pikepdf
+        # 10.17.0 = macosx_15_0_arm64 (SDK15-раннеры), 10.8.0 =
+        # macosx_14_0_arm64 cp310–cp314 (провен otool: LC_BUILD_VERSION
+        # minos 14.0). UV_PYTHON = волна mac-раннера: macos-14 = 3.13
+        # (колесо в обоих рядах) + пин pikepdf==10.8.0 (10.17 = sdist =
+        # qpdf-красное); macos-26 = 3.15 (10.17.0 cp315t macosx_15_0 =
+        # колесо на SDK15+ раннере); ubuntu = manylinux-колёса, канон
+        # .python-version. Миграция macos-14→26 = одна строка матрицы +
+        # две константы env-блоков (UV_PYTHON/PEP723_DEPS) = TODO ниже.
         env:
+          # ubuntu = 3.13: wheel-контра ЕДИНАЯ для всех ног (на 3.15
+          # manylinux-ряд pikepdf = cp314t/cp315t free-threaded = не волна;
+          # 3.13 = колёса обе ОС; mac-нога = первичка .venv ниже).
           UV_PYTHON: "3.13"
+          # TODO(macos-26): mac-нога = 3.15 + пин снять (SDK15 = колёса
+          # 10.17.0; первичка pikepdf 10.17.0 = macosx_15_0_arm64).
+          PEP723_DEPS: "${{ matrix.os == 'macos-14' && '--with pikepdf==10.8.0' || '' }}"
         run: |
           set -euo pipefail
-          uv run scripts/test-fasad-file.py --probe-only
-          FASAD_BIN=target/debug/fasad uv run scripts/test-fasad-file.py
+          # mac: PEP-723-дефолт (без пина = 10.17 = sdist на SDK14) >
+          # UV_PYTHON > .python-version (первичка precedence живым uv);
+          # env-пин deps = uv run --with (оверрайд дефолта) = волна колеса.
+          # shellcheck disable=SC2086
+          uv run $PEP723_DEPS scripts/test-fasad-file.py --probe-only
+          # shellcheck disable=SC2086
+          FASAD_BIN=target/debug/fasad uv run $PEP723_DEPS scripts/test-fasad-file.py
