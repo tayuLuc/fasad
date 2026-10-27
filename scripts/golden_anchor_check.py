@@ -119,6 +119,9 @@ EPOCHS = {
     # v1.14 (#299, HEAD) = артефакт: значения = reg/art; таблица не нужна.
     "v1.14": (299, 210, 89, 466),
 }
+# #333(3): поле-контра — имя ключа → позиция кортежа эпохи
+# (N,RECALL,NEGATIVE,SPANS): legality = ПОЛЕ, не множество кортежа.
+FIELDS = {"N": 0, "RECALL": 1, "NEGATIVE": 2, "SPANS": 3}
 REQUIRED_SECTIONS = (
     "## Счётчики v1",
     "## Формат JSONL",
@@ -305,8 +308,15 @@ def main() -> int:
         #   «v1.13 = 296» = GREEN (296 ∈ кортеж v1.13); «v1.13 = 297» = RED.
         # Порядок: раньше ERA-легализации (иначе адрес = дыра ревьюера).
         for ep, tup in EPOCHS.items():
-            epn = re.escape(ep)
+            # #333(1): эпора = ЦЕЛОЕ число версии: «v1.1» ≠ префикс «v1.12»
+            # (FP-класс ревью: легальная orient1 «v1.12 эпоха: N = 297»
+            # матчилась v1.1-паттерном = RED).
+            epn = r"(?<![\d.])" + re.escape(ep) + r"(?![\d])"
             legal = set(str(x) for x in tup)
+            # #333(3): поле-контра — имя ключа → ПОЗИЦИЯ в кортеже эпохи
+            # (N,RECALL,NEGATIVE,SPANS), legality = поле, НЕ множество
+            # («SPANS = 287 (v1.10)» = N-значение v1.10 в SPANS = RED).
+            legalf = {k: str(tup[i]) for k, i in FIELDS.items()}
             cur = str(art["N"])
             # окно = «от адреса эпохи до привязки»: «тексты v1.12, … N = 296»
             # = НЕ про v1.12 (N=296 привязан к своему «= v1.13»); «N = 296 =
@@ -319,49 +329,79 @@ def main() -> int:
             # цифра-в-окне = адрес PR# не значение (skip через lookahead).
             KW = (r"\b(N|RECALL|NEGATIVE|SPANS|RECALL_SPANS|NEGATIVE_SPANS)"
                   r" ?\*{0,2}= ?\*{0,2}(\d{2,4})")
+
+            def legal_kw(kw, num, legalf=legalf, tup=tup, legal=legal, cur=cur):
+                # поле-контра: RECALL_SPANS/NEGATIVE_SPANS = поле-суффикс
+                # (SPANS ← позиция 3 только для голого «SPANS»)
+                if kw in legalf:
+                    return num == legalf[kw] or num == cur
+                if kw == "RECALL_SPANS":
+                    return num == str(tup[3]) or num == str(art["RECALL_SPANS"])
+                if kw == "NEGATIVE_SPANS":
+                    return num == str(tup[3]) or num == str(art["NEGATIVE_SPANS"])
+                return num in legal and num != cur
+
             for mN in re.finditer(epn + r"((?:(?!#\d)[^\n]){0,36}?)" + KW, line):
                 win, kw, num = mN.group(1), mN.group(2), mN.group(3)
                 if re.search(r"= ?\*{0,2}" + epn + r"\b", win):
                     continue  # «= v1.13 … N = 296» = привязано
-                if num not in legal and num != cur:
+                if not legal_kw(kw, num):
                     fails += 1
-                    fail("EPOCH", "README:%d «%s … %s = %s» ∉ эпоха %s (первичка EPOCHS)"
+                    fail("EPOCH", "README:%d «%s … %s = %s» ∉ поле/эпоха %s (первичка EPOCHS)"
                          % (idx, ep, kw, num, ep))
             for mN2 in re.finditer(KW + r"[^\n]{0,24}?" + epn + r"\b", line):
                 kw, num = mN2.group(1), mN2.group(2)
-                if num not in legal:
+                if not legal_kw(kw, num):
                     fails += 1
-                    fail("EPOCH", "README:%d «%s = %s (%s …)» ∉ эпоха %s (привязка ПОСЛЕ значения)"
+                    fail("EPOCH", "README:%d «%s = %s (%s …)» ∉ поле/эпоха %s (привязка ПОСЛЕ значения)"
                          % (idx, kw, num, ep, ep))
-                if num not in legal and num != cur:
-                    fails += 1
-                    fail("EPOCH", "README:%d «%s … %s = %s» ∉ эпоха %s (первичка EPOCHS)"
-                         % (idx, ep, kw, num, ep))
-            for mS in re.finditer(epn + r" ?(=|—|:) ?(\d{3,4})/\d{2,3}\+\d{2,3}", line):
-                if mS.group(2) not in legal:
-                    fails += 1
-                    fail("EPOCH", "README:%d «%s = %s/…+…» ∉ эпоха %s"
-                         % (idx, ep, mS.group(2), ep))
+            # #333(2): PR#-адрес между эпохой и «=» = часть адреса события
+            # («golden-v1.12 #160 = 297/200+97» строка-8 истории).
+            for mS in re.finditer(
+                    epn + r" ?(#\d+ )?(=|—|:) ?(\d{2,4})/(\d{2,4})\+(\d{2,4})", line):
+                # #333(2) решётка E3/E4: ВСЕ ТРИ значения пары = поле-контра
+                # (N, RECALL, NEGATIVE кортежа эпохи), не только первое.
+                vals = dict(zip(("N", "RECALL", "NEGATIVE"),
+                                mS.groups()[2:5], strict=True))
+                for k, v in vals.items():
+                    if v != str(tup[FIELDS[k]]):
+                        fails += 1
+                        fail("EPOCH", "README:%d «%s %s= …%s… %s=%s» ∉ поле/эпоха %s"
+                             % (idx, ep, mS.group(1) or "", "…", k, v, ep))
         # #331 гранулярность ревью e889cd7d: «v1.13 … N = 296» = снимок ЭПОХИ
         # (легально iff 296 ∈ кортеж v1.13); «v1.13 … N = 297» = RED. Привязка
         # в обе стороны: «v1.NN … K = X» и «K = X (v1.NN …)». HEAD-эпоха
         # (v1.14) = артефакт; НЕизвестная v1.NN (будущая/мёртвая) со значением
         # = RED (снимок будущего = claim, первичка = git-веха при появлении).
-        cur_ep = "v1.14"
-        for mU in re.finditer(r"v1\.(\d{1,2})", line):
+        cur_ep = "v1.14"  # HEAD-эпоха = артефакт (EPOCHS["v1.14"] = текущий)
+        # #333(1): «v1.1» = НЕ префикс «v1.12» (word-boundary слева: без
+        # `(?<![\d.])` finditer «v1.1» матчил v1.10–13 = FP-класс ревью
+        # (легальная «v1.12 эпоха: N = 297» = RED).
+        for mU in re.finditer(r"(?<![\d.])v1\.(\d{1,2})(?![\d])", line):
             ep = "v1." + mU.group(1)
             tail = re.sub(r"^ ?#\d+", " ", line[mU.end():mU.end() + 24])
             tail = re.sub(r"\d?g\d{4}", " ", tail)
             head = line[max(0, mU.start() - 24):mU.start()]
             mh = re.search(r"(\d{3,4})[^\d=]{0,6}= ?$", head)
             if ep in EPOCHS:
-                legal = set(str(x) for x in EPOCHS[ep])
+                tup = EPOCHS[ep]
+                legal = set(str(x) for x in tup)
+                # #333(3) поле-контра: имя ключа → позиция кортежа эпохи
+                # (N,RECALL,NEGATIVE,SPANS); «SPANS = 287 (v1.10)» =
+                # N-значение v1.10 в SPANS = RED (legality = поле, не множество).
                 if ep == cur_ep:
                     legal |= set(str(v) for v in art.values())
-                mt = re.search(r"\b(N|RECALL|NEGATIVE|SPANS|RECALL_SPANS|NEGATIVE_SPANS)[^\d]{0,6}(\d{3,4})", tail)
-                if mt and mt.group(2) not in legal:
+
+                def okf(kw, num, tup=tup, legal=legal, FIELDS=FIELDS):
+                    if kw in FIELDS:
+                        return num == str(tup[FIELDS[kw]])
+                    return num in legal
+                mt = re.search(
+                    r"\b(N|RECALL|NEGATIVE|SPANS|RECALL_SPANS|NEGATIVE_SPANS)"
+                    r"[^\d]{0,6}(\d{3,4})", tail)
+                if mt and not okf(mt.group(1), mt.group(2)):
                     fails += 1
-                    fail("EPOCH", "README:%d «%s … %s=%s» ∉ эпоха (первичка EPOCHS)"
+                    fail("EPOCH", "README:%d «%s … %s=%s» ∉ поле/эпоха (первичка EPOCHS)"
                          % (idx, ep, mt.group(1), mt.group(2)))
                 if mh and mh.group(1) not in legal:
                     fails += 1
