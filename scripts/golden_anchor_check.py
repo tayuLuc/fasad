@@ -97,6 +97,28 @@ SIZE_QUANT = re.compile(
 )
 # Минимальный размер «якоря-числа» (счётчики датасета — трёхзначные и выше).
 MIN_ANCHOR = 100
+# ЭПОХИ ДАТАСЕТА (первичка = git-история golden-v1.jsonl, коммит-веха =
+# промер счётчиков каждой версии; #331: «v1.13 = 296» = легальный снимок
+# ЭПОХИ, «v1.13 = 297» = RED: адрес эпохи легитимирует только ЗНАЧЕНИЯ из
+# таблицы эпох, granulariy-контра ревью e889cd7d).
+EPOCHS = {
+    "v1.0": (200, 146, 54, 378),
+    "v1.1": (204, 150, 54, 382),
+    "v1.2": (226, 162, 64, 395),
+    "v1.3": (238, 169, 69, 402),
+    "v1.4": (247, 173, 74, 416),
+    "v1.5": (262, 182, 80, 425),
+    "v1.6": (270, 187, 83, 430),
+    "v1.7": (278, 189, 89, 434),
+    "v1.8": (282, 191, 91, 439),
+    "v1.9": (285, 192, 93, 442),
+    "v1.10": (287, 194, 93, 448),
+    "v1.11": (292, 198, 94, 452),
+    "v1.12": (297, 200, 97, 454),
+    "v1.13": (296, 208, 88, 462),
+    # v1.14 (#299, HEAD) = артефакт: значения = reg/art; таблица не нужна.
+    "v1.14": (299, 210, 89, 466),
+}
 REQUIRED_SECTIONS = (
     "## Счётчики v1",
     "## Формат JSONL",
@@ -277,6 +299,96 @@ def main() -> int:
         # скана: README:190/313/407). START = строка «GOLDEN-REGISTRY: …»
         # (= строка данных), END = HTML-комментарий маркер.
         stripped = line.strip()
+        # #331 гранулярность: реестровые КЛЮЧЕВЫЕ слова (N=/SPANS=/RECALL=/
+        # NEGATIVE=/PIN_/STRUCT_/GOLD_/B2_SHA) в prose = ПРОВЕРЯЮТСЯ ВСЕГДА,
+        # адрес эпохи легитимирует только значение-из-эпохи:
+        #   «v1.13 = 296» = GREEN (296 ∈ кортеж v1.13); «v1.13 = 297» = RED.
+        # Порядок: раньше ERA-легализации (иначе адрес = дыра ревьюера).
+        for ep, tup in EPOCHS.items():
+            epn = re.escape(ep)
+            legal = set(str(x) for x in tup)
+            cur = str(art["N"])
+            # окно = «от адреса эпохи до привязки»: «тексты v1.12, … N = 296»
+            # = НЕ про v1.12 (N=296 привязан к своему «= v1.13»); «N = 296 =
+            # v1.13» / «v1.13: N=296» = про v1.13.
+            # форма «v1.NN … N = 296» / «v1.NN … спанов 452» — ключевое
+            # слово-якорь ОБЯЗАТЕЛЬНО (N=/RECALL=/SPANS=); пары «292/198+94»
+            # = форма X/xx+yy. PR# в окне = адрес события, не значение.
+            # (нет этой ветки для НЕизвестных v1.NN — см. UNKNOWN-EPOCH ниже)
+            # обе ориентации: «v1.13 … N = 296» и «N = 296 (v1.13 #312)»;
+            # цифра-в-окне = адрес PR# не значение (skip через lookahead).
+            KW = (r"\b(N|RECALL|NEGATIVE|SPANS|RECALL_SPANS|NEGATIVE_SPANS)"
+                  r" ?\*{0,2}= ?\*{0,2}(\d{2,4})")
+            for mN in re.finditer(epn + r"((?:(?!#\d)[^\n]){0,36}?)" + KW, line):
+                win, kw, num = mN.group(1), mN.group(2), mN.group(3)
+                if re.search(r"= ?\*{0,2}" + epn + r"\b", win):
+                    continue  # «= v1.13 … N = 296» = привязано
+                if num not in legal and num != cur:
+                    fails += 1
+                    fail("EPOCH", "README:%d «%s … %s = %s» ∉ эпоха %s (первичка EPOCHS)"
+                         % (idx, ep, kw, num, ep))
+            for mN2 in re.finditer(KW + r"[^\n]{0,24}?" + epn + r"\b", line):
+                kw, num = mN2.group(1), mN2.group(2)
+                if num not in legal:
+                    fails += 1
+                    fail("EPOCH", "README:%d «%s = %s (%s …)» ∉ эпоха %s (привязка ПОСЛЕ значения)"
+                         % (idx, kw, num, ep, ep))
+                if num not in legal and num != cur:
+                    fails += 1
+                    fail("EPOCH", "README:%d «%s … %s = %s» ∉ эпоха %s (первичка EPOCHS)"
+                         % (idx, ep, kw, num, ep))
+            for mS in re.finditer(epn + r" ?(=|—|:) ?(\d{3,4})/\d{2,3}\+\d{2,3}", line):
+                if mS.group(2) not in legal:
+                    fails += 1
+                    fail("EPOCH", "README:%d «%s = %s/…+…» ∉ эпоха %s"
+                         % (idx, ep, mS.group(2), ep))
+        # #331 гранулярность ревью e889cd7d: «v1.13 … N = 296» = снимок ЭПОХИ
+        # (легально iff 296 ∈ кортеж v1.13); «v1.13 … N = 297» = RED. Привязка
+        # в обе стороны: «v1.NN … K = X» и «K = X (v1.NN …)». HEAD-эпоха
+        # (v1.14) = артефакт; НЕизвестная v1.NN (будущая/мёртвая) со значением
+        # = RED (снимок будущего = claim, первичка = git-веха при появлении).
+        cur_ep = "v1.14"
+        for mU in re.finditer(r"v1\.(\d{1,2})", line):
+            ep = "v1." + mU.group(1)
+            tail = re.sub(r"^ ?#\d+", " ", line[mU.end():mU.end() + 24])
+            tail = re.sub(r"\d?g\d{4}", " ", tail)
+            head = line[max(0, mU.start() - 24):mU.start()]
+            mh = re.search(r"(\d{3,4})[^\d=]{0,6}= ?$", head)
+            if ep in EPOCHS:
+                legal = set(str(x) for x in EPOCHS[ep])
+                if ep == cur_ep:
+                    legal |= set(str(v) for v in art.values())
+                mt = re.search(r"\b(N|RECALL|NEGATIVE|SPANS|RECALL_SPANS|NEGATIVE_SPANS)[^\d]{0,6}(\d{3,4})", tail)
+                if mt and mt.group(2) not in legal:
+                    fails += 1
+                    fail("EPOCH", "README:%d «%s … %s=%s» ∉ эпоха (первичка EPOCHS)"
+                         % (idx, ep, mt.group(1), mt.group(2)))
+                if mh and mh.group(1) not in legal:
+                    fails += 1
+                    fail("EPOCH", "README:%d «%s %s (v1.%s …)» ∉ эпоха"
+                         % (idx, mh.group(1), "=", ep))
+            else:
+                legal_cur = set(str(v) for v in art.values())
+                kw = re.search(
+                    r"(N|RECALL|NEGATIVE|SPANS|RECALL_SPANS|NEGATIVE_SPANS)"
+                    r" ?\*{0,2}= ?\*{0,2}(\d{2,4})[^\d=]{0,10}$", head)
+                mt = re.search(
+                    r"[^A-Za-z](N|RECALL|SPANS) ?\*{0,2}= ?\*{0,2}(\d{2,4})", tail)
+                for mm in ((kw, "head"), (mt, "tail")):
+                    if mm[0] and mm[0].group(2) not in legal_cur:
+                        fails += 1
+                        fail("UNKNOWN-EPOCH",
+                             "README:%d «%s (v1.%s …)» = эпора вне EPOCHS"
+                             % (idx, mm[0].group(2), mU.group(1)))
+                        break
+        # PIN_/STRUCT_/GOLD_ = реестровые имена: вне registry-блока prose-форма
+        # «PIN_CHUNKER_N = 250» (любой адрес) = проверятся против реестра.
+        mp = re.search(r"PIN_CHUNKER_N ?= ?(\d{2,4})", line)
+        if mp and not stripped.startswith("<!--") and "GOLDEN-REGISTRY:" not in line:
+            if mp.group(1) != str(art["N"]):
+                fails += 1
+                fail("EPOCH", "README:%d PIN_CHUNKER_N = %s ≠ артефакт %d (pin-имя = всегда сверка)"
+                     % (idx, mp.group(1), art["N"]))
         if stripped.startswith("<!--") and "GOLDEN-REGISTRY:END" in line:
             in_registry = False
             continue
