@@ -296,7 +296,7 @@ in-process промера: ни одного OFFSET). Клей #200-A1 к про
 ### 5.5 Вердикт по планке
 
 ```text
-UNION|verdict|meets-bar|thr|0.20|union|100.00|union_k|370|union_n|370|union_wilson_lo|98.97|strict|100.00|strict_wilson_lo|98.97|row|100.00|k_for_bar|368|deficit_spans|0|bar|98.0
+UNION|verdict|meets-bar|thr|0.20|union|100.00|union_k|370|union_n|370|union_wilson_lo|98.97|margin|+0.9724|strict|100.00|strict_wilson_lo|98.97|row|100.00|k_for_bar|368|deficit_spans|0|bar|98.0
 ```
 
 - union (τ = 0.20): **100.00 %** (k = 370 из
@@ -546,7 +546,7 @@ UNION|overall|thr|0.25|oracle|exact|agg|union_span|k|368|n|370|recall|99.46|wils
 UNION|overall|thr|0.25|oracle|exact|agg|strict_span|k|234|n|370|recall|63.24|wilson95_lo|58.22|wilson95_hi|68.00
 UNION|overall|thr|0.25|oracle|exact|agg|union_row|k|160|n|162|recall|98.77|wilson95_lo|95.61|wilson95_hi|99.66
 UNION|negative|thr|0.25|rows|64|rows_any_fired|26|spans_c0|29|spans_lockr|24|spans_union|53|bait_c0|11|bait_lockr|11
-UNION|verdict|meets-bar|thr|0.20|union|100.00|union_k|370|union_n|370|union_wilson_lo|98.97|strict|100.00|strict_wilson_lo|98.97|row|100.00|k_for_bar|368|deficit_spans|0|bar|98.0
+UNION|verdict|meets-bar|thr|0.20|union|100.00|union_k|370|union_n|370|union_wilson_lo|98.97|margin|+0.9724|strict|100.00|strict_wilson_lo|98.97|row|100.00|k_for_bar|368|deficit_spans|0|bar|98.0
 TIME|total|s|484.34|threads|2|daemon|on
 ```
 

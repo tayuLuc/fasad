@@ -83,6 +83,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 # Рюлинг оператора 21.10 (локальные прогоны не нагружают CPU ноутбука) + поправка
@@ -96,10 +97,14 @@ os.environ.setdefault("OMP_NUM_THREADS", "2")
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "verify"))
 
-import numpy as np  # noqa: E402
-import onnxruntime as rt  # noqa: E402
-import parity_golden as pg  # noqa: E402  # контракт декодера: один источник (см. docstring)
-from tokenizers import Tokenizer  # noqa: E402
+# #100: numpy/onnxruntime/parity_golden = ЛЕНИВЫЙ импорт в main() (см. ниже):
+# bar-селфтест (#100, stdlib) обязан запускаться в uv-полке CI без ort-весов
+# (рюлинг #81: тяжёлая среда = промерная нога, CI-зуб = чистые функции).
+# Имена np/rt/pg инжектируются в глобальное пространство модуля в main().
+np = None
+rt = None
+pg = None
+Tokenizer = None  # лениво, см. выше
 
 GOLDEN = ROOT / "data" / "golden" / "golden-v1.jsonl"
 MANIFEST = ROOT / "models" / "manifest.tsv"
@@ -111,19 +116,38 @@ N_MIN = 150  # SPEC §5: планка проверяема при N≥150
 
 GOLDEN_CLASSES = ["person_name", "inn", "snils", "ogrn", "ogrnip", "iban",
                   "address", "card_pan", "phone", "email", "passport"]
-DECIDE_CLASSES = list(pg.CLASS_LIST)  # порядок = контракт блока схем (issue #53)
-BIO_TO_GOLDEN = {tag: cls for cls, tags in pg.GOLDEN_TO_BIO.items() for tag in tags}
+def decide_classes() -> list[str]:
+    """Порядок = контракт блока схем (issue #53); лениво к pg (#100)."""
+    return list(pg.CLASS_LIST)
+
+
+def bio_to_golden() -> dict:
+    return {tag: cls for cls, tags in pg.GOLDEN_TO_BIO.items() for tag in tags}
+
+
+def wilson_pure(k: int, n: int) -> tuple[float, float]:
+    """95 % Wilson CI (чистая, stdlib-only) = ТОЙ ЖЕ формулы, что `wilson`.
+
+    #100: бар-контра (bar_selftest) обязана монтироваться в CI без
+    ort/numpy (uv-run полки, rюлинг #81: орт-зависимость = промерная нога);
+    идентичность с продуктовой функцией проверяется в main-прогоне
+    (`wilson` = обёртка над ней, один источник формулы).
+    """
+    if n == 0:
+        return (0.0, 0.0)
+    z = 1.959963984540054  # docs/dep-verify-algorithms.md §8 (= Z95)
+    p = k / n
+    denom = 1.0 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z / denom * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return (max(0.0, centre - half), min(1.0, centre + half))
 
 
 def wilson(k: int, n: int) -> tuple[float, float]:
     """95 % Wilson CI, доля (не %). Формула docs/dep-verify-algorithms.md §8."""
     if n == 0:
         return (0.0, 0.0)
-    p = k / n
-    denom = 1.0 + Z95 * Z95 / n
-    centre = (p + Z95 * Z95 / (2 * n)) / denom
-    half = Z95 / denom * math.sqrt(p * (1 - p) / n + Z95 * Z95 / (4 * n * n))
-    return (max(0.0, centre - half), min(1.0, centre + half))
+    return wilson_pure(k, n)  # один источник формулы (#100)
 
 
 def wilson_anchors() -> None:
@@ -167,7 +191,7 @@ def blend_lock(lock: dict, dec: dict, alpha: float,
         probs = dec.get(rid, {})
         blended = []
         for s in spans:
-            cls = BIO_TO_GOLDEN.get(s["cls"])
+            cls = bio_to_golden().get(s["cls"])
             conf = s["conf"]
             if cls in ctx and lo <= conf < hi and cls in probs:
                 t = dict(s)
@@ -225,6 +249,133 @@ def k_for_bar(n: int) -> int:
         if wilson(k, n)[0] * 100 >= BAR:
             return k
     return n + 1
+
+
+def k_for_bar_pure(n: int, bar: float, wilson_fn: Callable[[int, int], tuple[float, float]]) -> int:
+    """k_for_bar на чистой wilson (stdlib) = зеркало продуктовой (параметр =
+    BAR и wilson_fn = инъекция; контра идентичности в bar_selftest)."""
+    for k in range(n + 1):
+        if wilson_fn(k, n)[0] * 100 >= bar:
+            return k
+    return n + 1
+
+
+def _verdict_at(k: int, n: int, bar: float, wilson_fn) -> tuple[str, float]:
+    """#100: вердикт + маржа (lo_u − bar, знак включительно) = ЯДРО (чистая).
+
+    Gate на нулевом запасе (357/358: lo 98.4350 vs бар 98.00 = +0.44) был
+    НЕВИДИМ в логе: слово `meets-bar` без запаса = «зелёное = норм».
+    Строка вердикта обязана нести маржу; порог BAR = поле `bar|` рядом.
+    """
+    lo_u = 100 * wilson_fn(k, n)[0]
+    return ("meets-bar" if lo_u >= bar else "known-below-bar", lo_u - bar)
+
+
+def verdict_fields(k: int, n: int) -> tuple[str, float]:
+    """Продуктовая обёртка: ядро на BAR и продуктовой wilson (один источник)."""
+    return _verdict_at(k, n, BAR, wilson)
+
+
+def _verdict_pure(k: int, n: int, bar: float) -> tuple[str, float]:
+    """stdlib-зеркало продуктового verdict_fields для CI-полки (#100):
+    тот же ядр-код `_verdict_at` на wilson_pure. Равенство продуктовой
+    функции и зеркала на ε-клетках порога = контра идентичности."""
+    return _verdict_at(k, n, bar, wilson_pure)
+
+
+def _verdict_line(k: int, n: int, bar: float, thr: float, wilson_fn) -> str:
+    """#100: строка вердикта = чистая функция (тот же текст, что печатает
+    main-прогон); selftest проверяет ПЕЧАТНУЮ форму (dead-guard мута
+    `margin|`/`{verdict}` = краснит контроль, контракт «печатается = виден»).
+    Порядок полей = контракт парсера render_report (field=value, индекс
+    по имени) и README-примера: verdict|thr|union|union_k|union_n|
+    union_wilson_lo|margin|strict|strict_wilson_lo|row|k_for_bar|
+    deficit_spans|bar (union_k/n перед wilson_lo = исторический контракт,
+    new поля = в хвосте, перед bar)."""
+    v, m = _verdict_at(k, n, bar, wilson_fn)
+    lo = 100 * wilson_fn(k, n)[0]
+    return (f"UNION|verdict|{v}|thr|{thr:.2f}|union|{100.0 * k / n:.2f}"
+            f"|union_k|{k}|union_n|{n}|union_wilson_lo|{lo:.2f}|margin|{m:+.4f}")
+
+
+def _print_control(bar: float) -> None:
+    """Positive control ПЕЧАТИ (#100):capturing stdout бар-клетки: PASS-строка
+    содержит `verdict|meets-bar` и положительную маржу, FAIL-строка =
+    `known-below-bar` с отрицательной. Мёртвый margin-печать = RED."""
+    import io
+    from contextlib import redirect_stdout
+    n = 358
+    k = k_for_bar_pure(n, bar, wilson_pure)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print(_verdict_line(k, n, bar, 0.20, wilson_pure))          # PASS
+        print(_verdict_line(k - 1, n, bar, 0.20, wilson_pure))      # FAIL
+    out = buf.getvalue().splitlines()
+    if len(out) != 2:
+        sys.exit("FAIL bar print-control: строк != 2")
+    # полный контракт полей печати (LEAK_TOKENS render_report = парсер):
+    # ПОЛЕ + ЗНАЧЕНИЕ (контраст по вычисленному: мёртвая константа = RED).
+    for ln, kk in ((out[0], k), (out[1], k - 1)):
+        for f in ("union_k|", "union_n|", "union_wilson_lo|", "margin|", "bar|"):
+            if f not in ln:
+                sys.exit(f"FAIL bar print-control: поле {f[:-1]} вне печати")
+        if f"union_wilson_lo|{100 * wilson_pure(kk, n)[0]:.2f}" not in ln:
+            sys.exit(f"FAIL bar print-control: union_wilson_lo не = вычисленному: {ln[:80]}")
+        if f"union|{100.0 * kk / n:.2f}" not in ln:
+            sys.exit(f"FAIL bar print-control: union не = k/n: {ln[:80]}")
+        if f"union_k|{kk}|union_n|{n}" not in ln:
+            sys.exit(f"FAIL bar print-control: union_k/n не = клетке: {ln[:80]}")
+    hi, lo = out
+    # word-контра печати: порог МЕНЯЕТ слово (мёртвое «meets-bar» = RED here);
+    # маржа-контра: знак в печати (мёртвый margin = RED).
+    if "verdict|meets-bar" not in hi:
+        sys.exit(f"FAIL bar print-control: PASS-слово не печатается: {hi[:80]}")
+    if "verdict|known-below-bar" not in lo:
+        sys.exit(f"FAIL bar print-control: FAIL-слово не печатается (порог не меняет): {lo[:80]}")
+    if "|margin|+" not in hi:
+        sys.exit(f"FAIL bar print-control: PASS-строка без маржи: {hi[:80]}")
+    if "|margin|-" not in lo:
+        sys.exit(f"FAIL bar print-control: FAIL-строка без маржи: {lo[:80]}")
+    print("PRECHECK|bar|print-control|rows358|pass+fail|ok")
+
+
+def bar_selftest(bar: float = 98.0, n: int = 0) -> None:
+    """Positive control маржи #100: пороговая клетка bar±ε = смена слова.
+
+    Смонтирован в CI stdlib-путём (`--selftest-bar`: uv-run полки, без
+    ort/numpy — рюлинг #81/#100); в полном прогоне = тот же код через
+    продуктовые k_for_bar/wilson. Контра идентичности: чистая wilson_pure =
+    продуктовой wilson на точке порога (один источник формулы), иначе =
+    sys.exit (расхождение зеркал = красное).
+    """
+    # ε-клетки на ОБОИХ знаменателях гейта: spans 370 (исторический промер
+    # отчёта) и rows 358 (текущий артефакт #289+, первичка issue: 357/358 →
+    # lo 98.4350, маржа +0.4350 = нулевой запас).
+    for n_cell in (370, 358) if n == 0 else (n,):
+        _bar_selftest_cell(bar, n_cell)
+    _print_control(bar)
+
+
+def _bar_selftest_cell(bar: float, n: int) -> None:
+    """Клетка bar±ε: СЛОВО и МАРЖА читаем из выходов functions (verdict_pure и
+    продуктового verdict_fields), НЕ из локальной арифметики — иначе мута
+    знака маржи и мёртвый контроль GREEN (контра живости #100: проверка
+    обязана умирать вместе с проверяемым)."""
+    # #100: ε-клетки идут ЧЕРЕЗ ПРОДУКТОВУЮ _verdict_at с инъекцией
+    # (bar, wilson_pure) — мута ядра (сравнение/маржа) = краснит selftest,
+    # «мёртвый контроль» не прячется за локальной арифметикой.
+    # Эквивалентный класс (задокументирован в PR): Wilson-lo = иррационал,
+    # точного равенства bar у сетки k ∈ ℤ нет ⇒ мута «>= → >» эквивалентен.
+    k_pass = k_for_bar_pure(n, bar, wilson_pure)
+    v_hi, m_hi = _verdict_at(k_pass, n, bar, wilson_pure)
+    v_lo, m_lo = _verdict_at(k_pass - 1, n, bar, wilson_pure)
+    if (v_hi, v_lo) != ("meets-bar", "known-below-bar"):
+        sys.exit(f"FAIL bar selftest: порог {k_pass}/{n} не меняет слово: {v_hi}/{v_lo}")
+    # знак маржи = из выхода функции: PASS-клетка строго > 0, FAIL-клетка < 0
+    if not (m_hi > 0.0 > m_lo):
+        sys.exit(f"FAIL bar selftest: маржи {m_hi:+.4f}/{m_lo:+.4f} (пороговая клетка не видна)")
+    print(f"PRECHECK|bar|margin|k_for_bar|{k_pass}/{n}|pass_margin|{m_hi:+.4f}"
+          f"|fail_margin|{m_lo:+.4f}|bar|{bar}|ok")
 
 
 def load_rows() -> tuple[list[dict], list[dict]]:
@@ -430,7 +581,7 @@ def run_decide(rows: list[dict], threads: int) -> tuple[dict[str, dict[str, floa
         probs: dict[str, float] = {}
         off = 0
         for ci, g in enumerate(groups):
-            probs[DECIDE_CLASSES[ci]] = pg.softmax(flat[off:off + len(g)])[0]
+            probs[decide_classes()[ci]] = pg.softmax(flat[off:off + len(g)])[0]
             off += len(g)
         if off != len(flat):
             sys.exit(f"FAIL logits {r['id']}: {off} != {len(flat)}")
@@ -474,7 +625,7 @@ def count(rows: list[dict], c0: dict, lock: dict, dec: dict, thr: float,
             if cls not in per:
                 continue
             h0 = stage_hits(s0, cls, g0, g1, 0.0, oracle, lambda s: s["cls"])
-            hl = stage_hits(sl, cls, g0, g1, thr, oracle, lambda s: BIO_TO_GOLDEN.get(s["cls"]))
+            hl = stage_hits(sl, cls, g0, g1, thr, oracle, lambda s: bio_to_golden().get(s["cls"]))
             hd = cls in probs and probs[cls] >= thr
             d = per[cls]
             d["n"] += 1
@@ -508,7 +659,7 @@ def count_negative(neg: list[dict], c0: dict, lock: dict, thr: float) -> dict:
             f_c0 += 1
             bait_c0 += int(any(overlap(s["b0"], s["b1"], a0, a1) for a0, a1 in gold))
         for s in sl:
-            if BIO_TO_GOLDEN.get(s["cls"]) in GOLDEN_CLASSES:
+            if bio_to_golden().get(s["cls"]) in GOLDEN_CLASSES:
                 f_lk += 1
                 bait_lk += int(any(overlap(s["b0"], s["b1"], a0, a1) for a0, a1 in gold))
         rows_any += int(bool(s0 or sl))
@@ -527,7 +678,7 @@ def negative_fp_per_class(neg: list[dict], lock: dict, thr: float) -> dict[str, 
         for s in lock.get(r["id"], []):
             if s["conf"] < thr:
                 continue
-            cls = BIO_TO_GOLDEN.get(s["cls"])
+            cls = bio_to_golden().get(s["cls"])
             if cls in GOLDEN_CLASSES:
                 per[cls] = per.get(cls, 0) + 1
     return per
@@ -599,13 +750,25 @@ def main() -> None:
     ap.add_argument("--daemon", default=str(ROOT / "target" / "debug" / "fasad"))
     ap.add_argument("--no-daemon", action="store_true")
     ap.add_argument("--out", default="")
+    ap.add_argument("--selftest-bar", action="store_true",
+                    help="#100: stdlib-контра маржи вердикта и exit (uv-полка CI, без весов)")
     args = ap.parse_args()
+    if args.selftest_bar:
+        bar_selftest()
+        return
+    global np, rt, pg, Tokenizer  # #100: тяжёлые = ленивые (после stdlib-селфтестов)
+    import numpy  # noqa: PLC0415
+    import onnxruntime  # noqa: PLC0415
+    import parity_golden  # noqa: PLC0415
+    from tokenizers import Tokenizer as Tk  # noqa: PLC0415
+    np, rt, pg, Tokenizer = numpy, onnxruntime, parity_golden, Tk
 
     out_fh = open(args.out, "w", encoding="utf-8") if args.out else None  # noqa: SIM115
     if out_fh:
         sys.stdout = Tee(out_fh)
     t_start = time.time()
     wilson_anchors()
+    bar_selftest()  # #100: контроль маржи вердикта (чистые числа, до весов)
     alphas = [float(x) for x in args.alpha.split(",") if x.strip()]
     gray_vals = [float(x) for x in args.gray.split(",") if x.strip()]
     if len(gray_vals) != 2:
@@ -673,7 +836,7 @@ def main() -> None:
             zc: dict[str, dict[str, int]] = {}
             for spans in lk.values():
                 for s in spans:
-                    cls = BIO_TO_GOLDEN.get(s["cls"])
+                    cls = bio_to_golden().get(s["cls"])
                     if cls not in GOLDEN_CLASSES:
                         continue
                     d = zc.setdefault(cls, {"below": 0, "grey": 0, "above": 0})
@@ -741,12 +904,16 @@ def main() -> None:
     lo_u = 100 * wilson(agg["span_u"], agg["span_n"])[0]
     lo_s = 100 * wilson(agg["span_s"], agg["span_n"])[0]
     k_need = k_for_bar(agg["span_n"])
-    verdict = "meets-bar" if lo_u >= BAR else "known-below-bar"
-    print(f"UNION|verdict|{verdict}|thr|{thr:.2f}|union|{100.0 * agg['span_u'] / agg['span_n']:.2f}"
-          f"|union_k|{agg['span_u']}|union_n|{agg['span_n']}|union_wilson_lo|{lo_u:.2f}"
-          f"|strict|{100.0 * agg['span_s'] / agg['span_n']:.2f}|strict_wilson_lo|{lo_s:.2f}"
-          f"|row|{100.0 * agg['row_h'] / agg['row_n']:.2f}"
-          f"|k_for_bar|{k_need}|deficit_spans|{max(0, k_need - agg['span_u'])}|bar|{BAR}")
+    # #100: вердикт + маржа (запас к бару со знаком) = gate виден в логе;
+    # поле `bar|` (порог) было и осталось рядом.
+    # #100: вердикт = из печатной функции _verdict_line (тот же текст, что
+    # контролирует print-control селфтеста; мёртвый токен/маржа = ловятся
+    # контролем на том же тексте).
+    print(_verdict_line(agg["span_u"], agg["span_n"], BAR, thr, wilson)
+          + f"|strict|{100.0 * agg['span_s'] / agg['span_n']:.2f}|strict_wilson_lo|{lo_s:.2f}"
+          + f"|row|{100.0 * agg['row_h'] / agg['row_n']:.2f}"
+          + f"|k_for_bar|{k_need}|deficit_spans|{max(0, k_need - agg['span_u'])}"
+          + f"|bar|{BAR}")
     print(f"TIME|total|s|{time.time() - t_start:.2f}|threads|{args.threads}"
           f"|daemon|{'on' if proc else 'off'}")
     if proc:
