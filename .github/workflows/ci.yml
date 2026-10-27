@@ -695,5 +695,18 @@ jobs:
         run: uv python install 3.12
       - name: "Зубы file-контура (uv single-file, PEP-723 deps)"
         env:
+          # mac = 3.12: pikepdf-колесо (cp315 macos = НЕТ, первичка PyPI
+          # 27.10); ubuntu = 3.15 = manylinux-колесо, канон .python-version.
+          # Первичка precedence: UV_PYTHON=3.12 + .python-version=3.15 =
+          # ПИН побеждает .python-version (промер живым uv на mac 27.10: picked 3.12) =
+          # шаг «mac: uv python 3.12» обязан предшествовать (managed-скачка).
           UV_PYTHON: '${{ matrix.os == ''macos-14'' && ''3.12'' || ''3.15'' }}'
-        run: FASAD_BIN=target/debug/fasad uv run scripts/test-fasad-file.py
+        run: |
+          set -euo pipefail
+          # Дискриминатор пина (реестр ложно-зелёных: env без потребления =
+          # мёртвый код; промен run 40485498986: step-env UV_PYTHON был,
+          # интерпретатор = 3.15 = sdist-красный).
+          PYWANT="${UV_PYTHON}"
+          PYSITE=$(uv run python -c 'import sys;print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
+          test "$PYSITE" = "$PYWANT" || { echo "::error::UV_PYTHON=$PYWANT не потреблён: uv run = $PYSITE"; exit 1; }
+          FASAD_BIN=target/debug/fasad uv run scripts/test-fasad-file.py
