@@ -225,7 +225,7 @@ deny:
 python-lint:
     uv run --locked ruff check data/golden scripts tools/verify tools/metrics
     # #100: маржа гейта (#14B) = selftest'ы чистых функций (stdlib-путь, без
-    # ort-весов: rюлинг #81) смонтированы в CI = пороговая клетка bar±ε живая.
+    # ort-весов: рюлинг #81) смонтированы в CI = пороговая клетка bar±ε живая.
     uv run --locked python tools/metrics/union_recall.py --selftest-bar
 
 # Побайтовая воспроизводимость golden-датасета: реген + сверка с B2-константой
