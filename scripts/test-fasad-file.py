@@ -1,9 +1,15 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = ["python-docx", "openpyxl", "python-pptx", "striprtf",
-#   "pikepdf", "pdfplumber", "pypdf", "reportlab", "fpdf2",
-#   "pypdfium2", "pillow", "img2pdf"]
+#   "pdfplumber", "pypdf", "reportlab", "fpdf2",
+#   "pypdfium2", "pillow", "img2pdf", "pikepdf"]
 # ///
+# Пин pikepdf = волна колёс CI-ноги (SDK14-раннер = macosx_14_0 ряд =
+# 10.8.0; macos-26 = 10.17; первичка PyPI+otool 27.10, промены runs
+# 40484144100…40490026576). Слот = ПОСЛЕДНИЙ в списке спеки: sed-шаблон
+# ci.yml (`"pikepdf"]`) = якорь конца; сдвиг слота = grep-зуб шага
+# «sed-pin не лёг» краснит (мёртвый пин = запрещён).
+# CI = шаг file-shelf sed'ом подставляет пин в спеку (см. ci.yml).
 """Зубы обёртки fasad-file.py (#297 этап-1 + #302 pdf CI-полка; НЕ golden).
 
 Контур: живой демон (FASAD_TEST_CASCADE0=1 харнес, как R&D f620296e) +

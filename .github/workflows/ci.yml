@@ -704,10 +704,23 @@ jobs:
           PEP723_DEPS: "${{ matrix.os == 'macos-14' && '--with pikepdf==10.8.0' || '' }}"
         run: |
           set -euo pipefail
-          # mac: PEP-723-дефолт (без пина = 10.17 = sdist на SDK14) >
-          # UV_PYTHON > .python-version (первичка precedence живым uv);
-          # env-пин deps = uv run --with (оверрайд дефолта) = волна колеса.
-          # shellcheck disable=SC2086
-          uv run $PEP723_DEPS scripts/test-fasad-file.py --probe-only
-          # shellcheck disable=SC2086
-          FASAD_BIN=target/debug/fasad uv run $PEP723_DEPS scripts/test-fasad-file.py
+          # mac-волна колёс: PEP-723-спека = ceiling, `--with` = union =
+          # НЕ понижает (провен run 40490026576: --with 10.8.0 + 10.17 в
+          # спеке = 10.17 = sdist = qpdf-красное). Канон = sed-подстановка
+          # пина В inline-спеку (uv читает её с диска = менять надо до
+          # запуска). Пин-зуб = версия из env (WHEELCHECK меряет Tag: =
+          # колесо, не версию).
+          PIKPIN="${{ matrix.os == 'macos-14' && '10.8.0' || '' }}"
+          if [ -n "$PIKPIN" ]; then
+            # Spec-shape replacement: a bare "name" = dependency slot
+            # (line start, BSD/GNU-sed portable \r-stripped; the WHEELCHECK
+            # tuple and code references carry leading spaces = untouched).
+            sed -i.bak "s/\"pikepdf\"]/\"pikepdf==$PIKPIN\"]/" scripts/test-fasad-file.py
+            sed -i.bak "s/\r$//" scripts/test-fasad-file.py
+            grep -q "pikepdf==$PIKPIN" scripts/test-fasad-file.py || { echo "::error::sed-pin не лёг (шаблон разошёлся) = мёртвый пин"; exit 1; }
+          fi
+          uv run scripts/test-fasad-file.py --probe-only
+          if [ -n "$PIKPIN" ]; then
+            uv run python -c "import importlib.metadata as m; v=m.version('pikepdf'); assert v=='10.8.0', v; print('PIN|pikepdf|10.8.0|ok')"
+          fi
+          FASAD_BIN=target/debug/fasad uv run scripts/test-fasad-file.py
