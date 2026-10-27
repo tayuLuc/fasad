@@ -31,7 +31,7 @@
     clippy::manual_contains,
     clippy::iter_cloned_collect,
     clippy::doc_markdown,
-    reason = "measurement-харнес: счётчики ≤ 2^53 (n=297), один прогонный main; список = ровно сработавшие классы clippy 1.99 (ревью PR#49 нит №5 — мёртвые позиции срезаны); prod-кодом не является (example)"
+    reason = "measurement-харнес: счётчики ≤ 2^53 (n=299), один прогонный main; список = ровно сработавшие классы clippy 1.99 (ревью PR#49 нит №5 — мёртвые позиции срезаны); prod-кодом не является (example)"
 )]
 
 #[cfg(feature = "ort-inference")]
