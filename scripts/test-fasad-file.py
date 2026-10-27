@@ -685,6 +685,21 @@ def test_scan(td: Path) -> int:
         and not (td / "never.pdf").exists()
     print(f"SCAN|failclosed-no-ocr|rc={r2.returncode}|{'ok' if ok2 else 'PROBLEM'}")
     fails += 0 if ok2 else 1
+    # die-контра #326 NIT-2 (ZeroizeOnDrop-этика): mid-page die (тест-крюк
+    # FASAD_TEST_OCR0 = OCR 0 строк ПОСЛЕ сохранения tmp-растра ПДн) =
+    # уборка tmp *.ocr.png finally-ходом. Мута-контра: «вырез finally» в
+    # fasad-file.py = tmp остаётся = зуб КРАСНЫЙ (anti-false-green).
+    e2 = dict(os.environ)
+    e2["FASAD_TEST_OCR0"] = "1"
+    r3 = subprocess.run(
+        [sys.executable, str(HERE / "fasad-file.py"), "--url", URL,
+         "mask", str(src), "t326die", "--out", str(td / "die.pdf")],
+        capture_output=True, text=True, env=e2)
+    tmps = list(td.glob("die.pdf.p*"))
+    ok3 = r3.returncode != 0 and "OCR = 0 строк" in r3.stderr and not tmps
+    print(f"SCAN|die-cleanup|rc={r3.returncode}|tmp={len(tmps)}|"
+          f"{'ok' if ok3 else 'ПРОТЕЧКА: tmp-растр ПДн на диске'}")
+    fails += 0 if ok3 else 1
     return fails
 
 

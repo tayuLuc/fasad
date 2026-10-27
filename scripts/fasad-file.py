@@ -1010,9 +1010,31 @@ def _ocr_lines(png: str) -> list:
 
 def _mask_pdf_scan(args, src):
     import pypdfium2 as pdfium
-    SCALE = 2.0  # 144 dpi: 1 pt = 2 px (Vision-вход #294-промера ~150 dpi)
     doc = pdfium.PdfDocument(src)
     pages_out = []
+    try:
+        return _mask_pdf_scan_body(args, src, doc, pages_out)
+    finally:
+        # #326 NIT-2 (ZeroizeOnDrop-этика AGENTS: временные файлы с ПДн =
+        # success-путь unlink'ит, die на mid-page = растр-оригинал С ПДн
+        # остаётся на диске): уборка ВСЕХ tmp-PNG на любом выходе (die =
+        # SystemExit = finally срабатывает).
+        for p in list(pages_out):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+        for pi in range(len(doc)):
+            for suffix in (".ocr.png", ".mask.png"):
+                try:
+                    os.unlink(args.out + f".p{pi}" + suffix)
+                except OSError:
+                    pass
+        doc.close()
+
+
+def _mask_pdf_scan_body(args, src, doc, pages_out):
+    SCALE = 2.0  # 144 dpi: 1 pt = 2 px (Vision-вход #294-промера ~150 dpi)
     ledger = []
     n = 0
     for pi in range(len(doc)):
@@ -1020,6 +1042,13 @@ def _mask_pdf_scan(args, src):
         W, H = img.size
         png = args.out + f".p{pi}.ocr.png"
         img.save(png)
+        if os.environ.get("FASAD_TEST_OCR0"):
+            # ТЕСТ-КРЮК #326 die-контра (полка test_scan, mac-only): растр
+            # ЭТОЙ страницы сохранён на диске, OCR = 0 строк = mid-page die
+            # (первый tmp live). Зуб: die-выход = *.ocr.png НЕ на диске
+            # (finally-уборка); мута «вырез finally» = зуб красный.
+            die(f"{src}: страница {pi}: OCR = 0 строк (fail-closed: тихая "
+                "пустота = ложь о чистоте файла; движок/качество скана?)")
         rows = _ocr_lines(png)
         os.unlink(png)
         if not rows:
@@ -1079,9 +1108,6 @@ def _mask_pdf_scan(args, src):
         w.add_page(rp)
     with open(args.out, "wb") as f:
         w.write(f)
-    for png in pages_out:
-        os.unlink(png)
-    doc.close()
     return n, ledger
 
 
