@@ -30,55 +30,92 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: "Supply-chain: uses: = полный sha + аннотация-версия (#99)"
+      - name: "Supply-chain: uses: = полный sha + аннотация-версия (#99/#344)"
         # Зуб: каждый `uses:` на 40-символьный sha обязан нести аннотацию,
         # СОВПАДАЮЩУЮ с объектом рефа (провен #99: rust-cache-пин с меткой
-        # v2.8.7 = ложная: тега v2.8.7 в репо action нет (gh api refs/tags),
-        # sha = peeled commit тега v2.9.2 = аудит проверяет не тот объект).
-        # Канон сверки = ПОЛНОГО тега (annotated/annotated-peel/plain,
-        # gh api git/ref/tags + git/tags): major-теги (v2) = дрейфующие
-        # указатели релизов (промер #99: Swatinem v2 = d1527c8f ≠ пин;
-        # taiki-e v2 = 5488ac5a ≠ пин) = major-аннотация sha-пину не
-        # канон = живая сверка peel'а: `v*`-аннотация (любой глубины) =
-        # refs/tags peel == sha (major-теги GitHub = указатели: checkout/v4,
-        # upload/v4, megalinter/v9 = совпадают живьём; дрейф.major = RED),
-        # «latest» = latest-release tag_name, прочее (stable) =
-        # commit-message-контра (dtolnay-паттерн).
+        # v2.8.7 = ложная: тега v2.8.7 в репо action нет, sha = peel тега
+        # v2.9.2 = аудит проверяет не тот объект).
+        # Канон (первичка ревью #343, нитка 2): SHA-пин обязан совпадать с
+        # КАНОНИЧЕСКИМ релизным тегом (полная версия); major-аннотация
+        # (`# v4`) легализуется ЗУБОМ ТОЛЬКО ПОКА major-указатель свеж
+        # (checkout v4 = 11d5960a == canonical v4.1.1, промер 27.10) и
+        # КРАСНЕЕТ при первом major-дрейфе — это intended, не легализация:
+        # canonical-tag = canonical-ветка ниже, major-дрейф = красная
+        # строка с именем canonical-тега. `latest` = tag_name релиза;
+        # именованный ref (stable) = слово в commit message.
+        # Fail-closed (блокер ревью #343, класс «ложно-зелёная»):
+        # цикл = process substitution (while в хвосте конвейера = subshell,
+        # bad=1 умирал в нём, exit "$bad" = 0 всегда: промер ревьюера
+        # sha-подмена RED×3 + rc=0), gh api = БЕЗ `|| true` (rc!=0 =
+        # print «gh api fail» + bad=1: сеть мертва = шаг краснен, «тега
+        # нет» печатается ТОЛЬКО на честном 404 = «Ложь о причине»-класс).
+        # SKIP = явная строка с причиной (тихого пропуска нет, #232).
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           bad=0
-          find .github/workflows -name '*.yml' -print0 | xargs -0 grep -hE '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*[A-Za-z0-9._-]+/[A-Za-z0-9._-]+@' |
+          skipped=0
+          gh() {
+            local out rc=0
+            out=$(command gh api "$@") || rc=$?
+            if [ "$rc" -eq 0 ]; then printf '%s\n' "$out"; return 0; fi
+            if [ "$rc" = 1 ] && printf '%s' "$out" | grep -Eq '"status": *"404"|Not Found'; then
+              echo "RED: тега/объекта нет (404) $*" >&2
+              return 1
+            fi
+            echo "RED: gh api fail (rc=$rc) $* = сеть/токен/лимит, НЕ absent" >&2
+            return 2
+          }
+          peel_of() {
+            local obj typ sha
+            obj=$(gh "repos/$1/git/ref/tags/$2" --jq '.object | .type + " " + .sha') || return 1
+            typ=${obj% *}; sha=${obj#* }
+            if [ "$typ" = tag ]; then
+              sha=$(gh "repos/$1/git/tags/$sha" --jq .object.sha) || return 1
+            fi
+            printf '%s' "$sha"
+          }
           while IFS= read -r line; do
             ref=$(printf '%s' "$line" | sed -E 's|.*@([^[:space:]]+).*|\1|')
             case "$ref" in
               *[0-9a-f][0-9a-f]*) ;;
-              *) echo "SKIP (не sha-реф): $line"; continue ;;
+              *) echo "SKIP (не sha-реф = tags/moves-канон, live-сверка не нужна): $line"; skipped=$((skipped+1)); continue ;;
             esac
-            printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$' || { echo "RED: не полный 40-sym sha: $line"; bad=1; continue; }
+            if ! printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "RED: не полный 40-sym sha: $line"; bad=1; continue
+            fi
             repo=$(printf '%s' "$line" | sed -E 's|.*uses:[[:space:]]*([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)@.*|\1|')
-            ann=$(printf '%s' "$line" | sed -E 's|[^#]*#[[:space:]]*([A-Za-z0-9._-]+).*|\1|')  # ПЕРВЫЙ токен после '#' = аннотация (канон: сразу за @sha; пояснения = в скобках)
+            ann=$(printf '%s' "$line" | sed -E 's|[^#]*#[[:space:]]*([A-Za-z0-9._-]+).*|\1|')
             case "$ann" in
               latest)
-                t=$(gh api "repos/${repo}/releases/latest" --jq .tag_name 2>/dev/null || true)
-                [ "$t" = "$ann" ] || { echo "RED: latest-аннотация, latest-release = ${t:-∅}: $line"; bad=1; continue; } ;;
+                t=$(gh "repos/${repo}/releases/latest" --jq .tag_name) || { bad=1; continue; }
+                if [ "$t" != "$ann" ]; then echo "RED: latest-аннотация, latest-release = $t: $line"; bad=1; continue; fi ;;
               v*)
-                obj=$(gh api "repos/${repo}/git/ref/tags/${ann}" --jq '.object | .type + " " + .sha' 2>/dev/null || true)
-                [ -n "$obj" ] || { echo "RED: тега ${ann} нет в ${repo}: $line"; bad=1; continue; }
-                typ=${obj% *}; sha=${obj#* }
-                [ "$typ" = tag ] && sha=$(gh api "repos/${repo}/git/tags/${sha}" --jq .object.sha 2>/dev/null || true)
-                [ "$sha" = "$ref" ] || { echo "RED: ${ann} peel=${sha:-∅} != sha пина (major-тег = дрейфующий указатель): $line"; bad=1; continue; } ;;
+                sha=$(peel_of "$repo" "$ann") || { bad=1; continue; }
+                if [ "$sha" != "$ref" ]; then
+                  canon=""
+                  case "$ann" in
+                    v[0-9]*) canon=$(gh "repos/${repo}/git/matching-refs/tags/${ann}." --jq '.[].ref' | sed -E "s|refs/tags/(${ann}\.[0-9]+(\.[0-9]+)?)|\1|" | sort -V | tail -1) ;;
+                  esac
+                  csha=""
+                  if [ -n "$canon" ]; then csha=$(peel_of "$repo" "$canon") || true; fi
+                  if [ -n "$csha" ] && [ "$csha" = "$ref" ]; then
+                    echo "ok: ${repo}@${ref:0:8} == canonical ${canon} (аннотация major ${ann})"
+                  else
+                    echo "RED: ${ann} peel=${sha} != sha пина; canonical=${canon:-∅} != пин (major-дрейф): $line"
+                    bad=1; continue
+                  fi
+                fi ;;
               *)
-                # Именованный ref вне v-семейки (dtolnay `stable` = коммит
-                # «toolchain: stable», тега нет = gh api refs ∅): аннотация
-                # обязана быть названа в commit message (словами, на любой
-                # позиции: «toolchain: stable» = канон-формат крейта).
-                msg=$(gh api "repos/${repo}/git/commits/${ref}" --jq '.message' 2>/dev/null || true)
-                printf '%s' "$msg" | grep -Eq "(^|[^A-Za-z0-9._-])${ann}([^A-Za-z0-9._-]|$)" || { echo "RED: аннотация ${ann} не названа в commit message: $line"; bad=1; continue; } ;;
+                msg=$(gh "repos/${repo}/git/commits/${ref}" --jq .message) || { bad=1; continue; }
+                if ! printf '%s' "$msg" | grep -Eq "(^|[^A-Za-z0-9._-])${ann}([^A-Za-z0-9._-]|$)"; then
+                  echo "RED: аннотация ${ann} не названа в commit message: $line"; bad=1; continue
+                fi ;;
             esac
             echo "ok: ${repo}@${ref:0:8} == ${ann}"
-          done
+          done < <(find .github/workflows -name '*.yml' -print0 | xargs -0 grep -hE '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*[A-Za-z0-9._-]+/[A-Za-z0-9._-]+@')
+          echo "SUMMARY: bad=$bad skipped=$skipped"
           exit "$bad"
       - name: MegaLinter
         uses: oxsecurity/megalinter@ef3e84b8b836d76db562d0f3ed7da61e8fd538bc # v9
