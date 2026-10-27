@@ -228,9 +228,12 @@ python-lint:
 # Побайтовая воспроизводимость golden-датасета: реген + сверка с B2-константой
 # (тот же инвариант, что tests/golden_v1.rs::golden_file_sha256_matches_embedded_const).
 
-# Побайтовая воспроизводимость golden-датасета (реген + сверка с B2).
+# Побайтовая воспроизводимость golden-датасета (реген + сверка с B2) +
+# «якорь»-контра (#85-реестр #313): README-числа/секции и тест-пины N =
+# артефакт golden-v1.jsonl (scripts/golden_anchor_check.py, stdlib-only).
 golden-verify:
     uv run --locked python scripts/golden_regen_verify.py
+    uv run --locked python scripts/golden_anchor_check.py
 
 # Dev-нога #134 (НЕ канон гейта — канон python-метрика #139 в `check`):
 # целостность разворота продуктового пути in-process, оба режима хранилища.
