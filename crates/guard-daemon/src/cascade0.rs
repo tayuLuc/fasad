@@ -1410,6 +1410,53 @@ fn inn_key_near(bytes: &[u8], start: usize, end: usize) -> bool {
     has_key_left(bytes, start, INN_KEYS) || has_key_right(bytes, end, INN_KEYS)
 }
 
+/// #299 (same-number-контра): «ИНН»-доминанта (правило 4) гасит паспортную
+/// гипотезу только когда под ИНН-ключом стоит ЧУЖОЕ число. Первичка
+/// геометрии (живой демон 18805 + unit-свип, `docs/daemon-scope.md` §#299):
+/// доминантный контур = дистанция канона `inn` до паспорта (левое плечо:
+/// d<=74 гасит, d=75 живёт (байты канон→ключ); правое: ключ «ИНН» на 1..=78 от канона), а НЕ
+/// «одна последовательность = один класс»: «`ИНН 7715195831, серия 4509
+/// номер 987654`» (ЧУЖОЕ число, две сущности = обе = красятся обе).
+/// «`ИНН 4509987654, паспорт 4509 987654`» (тот же номер под двумя
+/// подписями = 1 сущность = 1 класс) = обе.
+///
+/// Same-number = цифровой канон (то же определение, что канон окна:
+/// [`canon_all_digits`]) 10-значного word-break-прогона под ИНН-ключом
+/// (плечи/бюджет = как `inn_key_near`) == паспортному канону. 12-значный
+/// ИНН ≠ 10 (свои коллизии, не #299). Вызывается ТОЛЬКО при доказанном
+/// `inn_key_near`: ключевое плечо = 10-прогон = ИНН-форма; дистанционное
+/// плечо без КЛЮЧА рядом = same-number не коллизия подписей = доминанты нет
+/// = паспорт живёт сам (промер: d-таблица §#299: rep=53 = обе).
+fn inn_key_near_number(bytes: &[u8], start: usize, end: usize, canon: &[u8]) -> bool {
+    // Плечи как у `inn_key_near`: ключ слева в бюджете / справа в бюджете.
+    let left = start.saturating_sub(CONTEXT_BUDGET);
+    let right = (end + CONTEXT_BUDGET).min(bytes.len());
+    for (off, hay) in [(left, &bytes[left..start]), (end, &bytes[end..right])] {
+        let mut i = 0;
+        while i < hay.len() {
+            if !hay[i].is_ascii_digit() {
+                i += 1;
+                continue;
+            }
+            let mut j = i;
+            while j < hay.len() && hay[j].is_ascii_digit() {
+                j += 1;
+            }
+            // word-break кандидата глобальными индексами: левый край
+            // левого плеча = не начало строки автоматически.
+            let gi = off + i;
+            let gj = off + j;
+            let lb = gi == 0 || !is_word_byte(bytes[gi - 1]);
+            let rb = gj == bytes.len() || !is_word_byte(bytes[gj]);
+            if lb && rb && j - i == 10 && canon_all_digits(hay, i, j) == canon {
+                return true;
+            }
+            i = j;
+        }
+    }
+    false
+}
+
 /// Ключи ОГРНИП-доминанты коллизии #223 (левый контекст, бюджет
 /// [`CONTEXT_BUDGET`], word-break [`has_key_left`]). «ИП» в перечень НЕ
 /// вошло (промер golden g0127 «ИП Сидоров… карта…» = карта, ключ «ИП»
@@ -2429,7 +2476,10 @@ fn passport_window_verdict(
     if !has_key_left(bytes, start, PASSPORT_KEYS) {
         return None;
     }
-    if inn_key_near(bytes, start, end) {
+    // #299: доминанта гасит только ЧУЖОЕ число; под ИНН-ключом то же самое
+    // 10-значное число = одна сущность = 1 класс (helper-док + таблица
+    // геометрии в `docs/daemon-scope.md` §#299).
+    if inn_key_near(bytes, start, end) && !inn_key_near_number(bytes, start, end, canon) {
         return None;
     }
     Some(CLASS_PASSPORT)
@@ -2671,7 +2721,8 @@ fn classify_structured_window(
         && canon.len() == PASSPORT_SPEC.max
         && call_validator(PASSPORT_SPEC.name, &canon) == Some(true)
         && has_key_left(bytes, digit_edge, PASSPORT_KEYS)
-        && !inn_key_near(bytes, digit_edge, end)
+        && (!inn_key_near(bytes, digit_edge, end)
+            || inn_key_near_number(bytes, digit_edge, end, &canon))
     {
         return Some(CLASS_PASSPORT);
     }
@@ -3540,6 +3591,13 @@ mod tests {
 
     fn classes(hits: &[Hit]) -> Vec<&str> {
         hits.iter().map(|h| h.class.as_str()).collect()
+    }
+
+    /// Классы по алфавиту (scan-порядок = позиционный, сетке безразличен).
+    fn sorted_classes(hits: &[Hit]) -> Vec<&str> {
+        let mut v: Vec<&str> = hits.iter().map(|h| h.class.as_str()).collect();
+        v.sort_unstable();
+        v
     }
 
     #[test]
@@ -6312,6 +6370,69 @@ mod tests {
         assert_eq!(classes(&hits), ["inn"], "ИНН-ключ проиграл паспорту");
         let hits = scan("паспорт контрагента: ИНН 4508455566", &schema());
         assert_eq!(classes(&hits), ["inn"], "ИНН-ключ рядом = inn-доминанта");
+    }
+
+    /// #299-зуб (решётка дистанций/порядков): «ИНН»-доминанта гасит
+    /// паспортное чтение ТОЛЬКО чужого числа; same-number = две подписи
+    /// одной сущности = паспорт живёт (инн-хит при этом стоит: `inn` = 1.0
+    /// канон-валид или 0.95 keyed-form). ПЕРВИЧКА геометрии (таблица
+    /// `docs/daemon-scope.md` §#299, живой демон 18805 + unit-свип):
+    /// левое плечо гасит на d(конец `inn`-канона -> паспорт-канон) = 51..=60,
+    /// d=61+ паспорт живёт (ключ выпал из 84-бюджета); правое ключ-плечо
+    /// 1..=78.
+    #[test]
+    fn c0_inn_key_dominance_same_number_keeps_passport() {
+        // Регресс-защита доминанты ЧУЖОГО числа (формулировка правила 4).
+        let hits = scan("ИНН 7715195831, паспорт 4509 987654", &schema());
+        assert_eq!(
+            sorted_classes(&hits),
+            ["inn"],
+            "доминанта чужого числа осиротела"
+        );
+        let hits = scan("ИНН 7743880975, серия 4509 номер 987654", &schema());
+        assert_eq!(
+            sorted_classes(&hits),
+            ["inn"],
+            "доминанта чужого числа осиротела (frame-контур)"
+        );
+        // Same-number (тот же 10-значный канон под двумя подписями): обе.
+        let hits = scan("ИНН 4509987654, паспорт 4509 987654", &schema());
+        assert_eq!(
+            sorted_classes(&hits),
+            ["inn", "passport"],
+            "same-number = коллизия подписей, паспорт обязан жить (#299)"
+        );
+        // Симметрия порядка (правое ключ-плечо):
+        let hits = scan("паспорт 4509 987654, ИНН 4509987654", &schema());
+        assert_eq!(
+            sorted_classes(&hits),
+            ["inn", "passport"],
+            "same-number правое плечо = обе"
+        );
+        // Frame-контур (каркасная форма «серия/номер») = то же:
+        let hits = scan("ИНН 4509987654, серия 4509 номер 987654", &schema());
+        assert_eq!(
+            sorted_classes(&hits),
+            ["inn", "passport"],
+            "frame same-number"
+        );
+        // Дистанция = геометрия первички (левый бюджет ключа 84 Б):
+        // inn-канон -> паспорт-канон d = 20 + rep + 8 + 4: rep=51 (ключ
+        // в 84) = вето intact; rep=53 (ключ вне 84) = паспорт живёт сам.
+        let inbudget = format!("ИНН 7715195831{}паспорт 4509 987654", " ".repeat(51));
+        assert_eq!(sorted_classes(&scan(&inbudget, &schema())), ["inn"]);
+        let outbudget = format!("ИНН 7715195831{}паспорт 4509 987654", " ".repeat(53));
+        assert_eq!(
+            sorted_classes(&scan(&outbudget, &schema())),
+            ["inn", "passport"]
+        );
+        // 12-значный ИНН ≠ same-number 10 (свои коллизии): вето intact.
+        let hits = scan("ИНН 500100732259, паспорт 4509 987654", &schema());
+        assert_eq!(
+            sorted_classes(&hits),
+            ["inn"],
+            "12-значный = не same-number"
+        );
     }
 
     /// Взаимное вето не ломает соседство: телефон и настоящий ИНН в одном

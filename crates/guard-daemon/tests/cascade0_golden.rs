@@ -54,7 +54,7 @@ const CLASSES: [&str; 7] = [
 // #78 (PR #289, golden-v1.11-контур): перевод negative→recall +4 card_pan
 // +1 iban (doc-valid g0289–g0293; телефоны ∉ CLASSES) = 237→242 — ПЕРЕСНЯТО
 // живым прогоном C0GOLDEN на этом дереве (урок #240), не арифметика.
-const GOLD_CHECKSUM_SPANS: usize = 242;
+const GOLD_CHECKSUM_SPANS: usize = 245; // #299 g0298 +1 inn (4509100005); inn 42→43
 
 /// Сколько из них email (#222): base64-обход email не закрывает (prefilter
 /// `scan_base64` требует ASCII-цифру в декоде, addr-spec = не цифры;
@@ -257,7 +257,10 @@ fn c0_covers_structural_classes_of_recall_split() {
     // #78 (PR #289): +3 phone (перевод g0220–g0222 → g0294–g0296,
     // value_source 8-формой канона g0205) = промер 43→46; passport цел
     // (паспортный перевод g0286 = #258, на main уже в счётчике).
-    assert_eq!(per[0].2, 41, "паспортных gold-спанов в recall уехало");
+    // #299 (golden-v1.14): +1 passport (g0297 same-number = обе ПДн),
+    // +1 phone (g0294–g0296 = уже в #78-контуре; v1.14 phone не тронут:
+    // промер RECALL_CAT phone 46 цел) = passport 41→42.
+    assert_eq!(per[0].2, 42, "паспортных gold-спанов в recall уехало");
     assert_eq!(per[1].2, 46, "телефонных gold-спанов в recall уехало");
     assert!(
         miss.is_empty(),
@@ -416,6 +419,7 @@ fn c0_covers_every_checksum_value_wrapped_in_base64() {
             if r.is_frame_234() && r.split == "recall" {
                 continue;
             }
+
             let token = base64::engine::general_purpose::STANDARD.encode(wrapped(gold));
             let text = format!("приложение {token} конец");
             let hits = scan(&text, &schema);
@@ -445,6 +449,11 @@ fn c0_covers_every_checksum_value_wrapped_in_base64() {
     assert_eq!(
         total,
         // -5: каркасные recall-строки #234 (g0263–g0267), см. continue выше.
+        // #299 (g0297/g0298): валидные значения (7743880975 = mod11 ✓,
+        // 4509 100005 = паспорт-format ✓) = B64-покрытие = inn-спан g0297
+        // закрыт; паспортные спаны = вне CLASSES (structural-слой, страж
+        // c0_covers_structural_classes_of_recall_split) = в знаменателе
+        // B64 не участвуют.
         GOLD_CHECKSUM_SPANS - GOLD_EMAIL_SPANS - 5,
         "знаменатель base64-прогона = текстовый минус email (prefilter scan_base64 = цифры, email-декод их не содержит)"
     );
