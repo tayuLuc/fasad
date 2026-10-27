@@ -1,7 +1,8 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = ["python-docx", "openpyxl", "python-pptx", "striprtf",
-#   "pikepdf", "pdfplumber", "pypdf", "reportlab"]
+#   "pikepdf", "pdfplumber", "pypdf", "reportlab",
+#   "pypdfium2", "pillow", "img2pdf"]
 # ///
 """fasad-file: маска ПДн В ФАЙЛЕ через живой демон (#297, этап 1 R&D-полка).
 
@@ -82,7 +83,18 @@ Type0 CIDToGIDMap Identity + ToUnicode = та же 1-байтная форма =
 контур; (4) Hex-строки <CIPF..> = reportlab/fpdf2/hetvfdf НЕ эмитируют
 (промер потоков = octal-escape в () = не Hex) = путь не встретился,
 побайтовый needle не канон = не чиним (этап 3 по факту появления).
-скан-PDF (растр) = OCR = этап 3, НЕ здесь.
+Скан-PDF (растр, все страницы chars=0 = промер #294) = OCR-контур этапа 3
+(#304 питание): движок = mac Vision CLI (swift, `ocr`; env FASAD_OCR_BIN,
+отсутствие = fail-closed-отказ, НЕ no-op; air-gap-первичка #294: 0.44 с/стр
+ru+en, bbox normalized origin bottom-left) → per-line analyze/anonymize →
+paint-over чёрным по line-bbox (ГРАНУЛЯРНОСТЬ = СТРОКА: PII внутри строки
+мажется вся строка = caveat #304, per-word bbox у Vision API = НЕТ) →
+сборка img2pdf+pypdf (pypdfium2 insert_image = первичка 5.14.0 = НЕТ).
+Обратимость = НЕТ (пиксели утрачены): black = ledger без orig (#302-
+контра), placeholder = ledger-ЖУРНАЛ (orig/ph = аудит, restore = честный
+отказ «растр необратим»); OCR = 0 строк = fail-closed-отказ (ложь о
+чистоте = AGENTS-контра), смешанный PDF (chars>0 хоть на странице) =
+НЕ скан = #302-контур.
 
 Известные FN-классы ДЕТЕКТОРА (не обёртки, чин = каскад-0 issue, не здесь):
 1) паспорт в соседстве «ИНН <10 цифр>» = inn-доминанта гасит паспортную
@@ -114,6 +126,8 @@ cascade-0-only, ort-inference вне debug-сборки = AGENTS п.3: build = C
   uv run scripts/fasad-file.py mask  ФАЙЛ СЕССИЯ --out ФАЙЛ [--mode black|placeholder]
   uv run scripts/fasad-file.py restore ФАЙЛ СЕССИЯ --ledger ФАЙЛ --out ФАЙЛ
   (--url http://127.0.0.1:PORT, дефолт 8765)
+  скан-PDF: FASAD_OCR_BIN=/path/to/ocr (swiftc -O scripts/ocr.swift -o ocr;
+  mac-only: Vision API = air-gap-движок; linux/windows = скан-зубы skip)
 """
 
 from __future__ import annotations
@@ -391,8 +405,14 @@ def cmd_mask(args):
     elif fmt == "rtf":
         n, ledger = _mask_rtf(args, obj)
     elif fmt == "pdf":
+        scan = _pdf_is_scan(obj)  # промер до close: pdfplumber-ручка load-этапа
         obj.close()  # pdfplumber-ручка load-проверки; _mask_pdf = путь
-        n, ledger = _mask_pdf(args, args.file)
+        if scan:
+            # Скан-PDF (растр без text-layer) = OCR-контур этапа 3 (#304
+            # питание живыми сканами; R&D #294 scan_lib/ocr.swift).
+            n, ledger = _mask_pdf_scan(args, args.file)
+        else:
+            n, ledger = _mask_pdf(args, args.file)
     elif fmt == "docx":
         segs = extract_docx(obj)
         n, ledger = _mask_runs(
@@ -939,9 +959,141 @@ def _mask_pdf(args, src):
     return len(boxes), ledger
 
 
+# ── скан-PDF (растр) = OCR-контур этапа 3 (#304; R&D #294 scan_lib) ─────────
+# Движок = mac Vision (VNRecognizeTextRequest, ru+en), оффлайн (air-gap),
+# CLI swift (`ocr`, первичка #294: 0.44 с/стр, bbox normalized, origin
+# bottom-left). Путь бинаря = FASAD_OCR_BIN; отсутствие = честный отказ
+# (fail-closed: НЕ тихий no-op и НЕ «чистый» файл).
+# Контур: pdf → pypdfium2 render (растр) → Vision OCR per line → analyze
+# (line-чанк: PII внутри строки, line-bbox = гранулярность маски = caveat
+# #304) → anonymize (vault-токен = ledger) → paint-over чёрным по line-bbox
+# → per-page PDF (img2pdf: 1 растр = 1 PDF = pypdf merge_page = pypdfium2-
+# 2-API-микс запрещён: PdfPage.insert_image = первичка 5.14.0 = НЕТ
+# (промер dir()), pypdfium2 write = import_pages+save = первичка) → ledger.
+# Обратимость = НЕТ (растр = контракт black: black-mode ledger без orig =
+# restore die, placeholder-mode ledger с orig/ph = аудит-контур: пиксели
+# не возвращаются).
+
+def _pdf_is_scan(pl) -> bool:
+    """Скан = ВСЕ страницы без char-текста (primary #294: scan.pdf chars=0).
+    Смешанный (текст+картинки) = НЕ скан = #302-контур (char-bbox мост
+    живёт на chars). Пустой PDF (0 стр.) = НЕ скан (поздний die #302).
+    Фикстура-зуб test_scan chars0=0 = дискриминатор этого предиката."""
+    pages = pl.pages
+    return bool(pages) and all(len(p.chars) == 0 for p in pages)
+
+
+def _ocr_bin() -> str:
+    b = os.environ.get("FASAD_OCR_BIN", "ocr")
+    import shutil
+    if not shutil.which(b):
+        die(f"OCR-движок не найден (FASAD_OCR_BIN={b!r}): скан-PDF требует "
+            "Vision CLI (scripts/ocr.swift: swiftc -O ocr.swift -o ocr) = "
+            "fail-closed, файл НЕ маскируется")
+    return b
+
+
+def _ocr_lines(png: str) -> list:
+    """[(text, bbox)] по строкам; bbox = normalized (x,y,w,h), origin
+    bottom-left (первичка Vision #294)."""
+    import subprocess
+    r = subprocess.run([_ocr_bin(), png], capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"OCR: {png}: rc={r.returncode}: {r.stderr[:200]}")
+    rows = []
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[2].strip():
+            rows.append((parts[2], parts[0]))
+    return rows
+
+
+def _mask_pdf_scan(args, src):
+    import pypdfium2 as pdfium
+    SCALE = 2.0  # 144 dpi: 1 pt = 2 px (Vision-вход #294-промера ~150 dpi)
+    doc = pdfium.PdfDocument(src)
+    pages_out = []
+    ledger = []
+    n = 0
+    for pi in range(len(doc)):
+        img = doc[pi].render(scale=SCALE).to_pil().convert("RGB")
+        W, H = img.size
+        png = args.out + f".p{pi}.ocr.png"
+        img.save(png)
+        rows = _ocr_lines(png)
+        os.unlink(png)
+        if not rows:
+            die(f"{src}: страница {pi}: OCR = 0 строк (fail-closed: тихая "
+                "пустота = ложь о чистоте файла; движок/качество скана?)")
+        import PIL.ImageDraw
+        dr = PIL.ImageDraw.Draw(img)
+        for text, bb in rows:
+            _guard_body({"text": text, "spans": [{}] * 32})
+            spans = api(args.url, "/v1/analyze", {"text": text})
+            if not spans:
+                continue
+            anon = api(
+                args.url, "/v1/anonymize",
+                {"text": text, "spans": [
+                    {"entity_type": s["entity_type"],
+                     "byte_start": s["byte_start"],
+                     "byte_end": s["byte_end"]} for s in spans]},
+                sess=args.session)
+            x, y, w, h = (float(v) for v in bb.split(";"))
+            # normalized (bottom-left origin) → px (top-left): R&D #294
+            x0, y0 = x * W, (1 - y - h) * H
+            x1, y1 = (x + w) * W, (1 - y) * H
+            dr.rectangle([x0 - 3, y0 - 3, x1 + 3, y1 + 3], fill="black")
+            tb = text.encode("utf-8")
+            for it in anon["items"]:
+                frag = tb[it["byte_start"]:it["byte_end"]].decode(
+                    "utf-8", "replace")
+                n += 1
+                e = {"class": it["entity_type"], "page": pi,
+                     "bbox_px": [round(x0 - 3), round(y0 - 3),
+                                 round(x1 + 3), round(y1 + 3)],
+                     "segs": 1, "scan": True}
+                if args.mode != "black":
+                    # black = disk-изъятие orig/ph = контракт необратимости
+                    # (#302-контра, ниже в cmd_mask); placeholder = аудит-
+                    # поля (растр возврат НЕ даёт, ledger = журнал находок).
+                    e["orig"] = frag
+                    e["ph"] = it["replacement"]
+                ledger.append(e)
+        out_png = args.out + f".p{pi}.mask.png"
+        img.save(out_png)
+        pages_out.append(out_png)
+    # сборка: img2pdf (1 растр = 1 PDF) → pypdf merge (первичка #294;
+    # pypdfium2 insert_image = НЕТ, 5.14.0 dir()-промер = pypdfium2-API-
+    # микс запрещён).
+    import img2pdf
+    from pypdf import PdfReader, PdfWriter
+    w = PdfWriter()
+    # сборка = add_page(img2pdf-страница) — первичка pypdf: add_blank_page
+    # = позиционный width/height, merge_page на пустую страницу = лишний
+    # слой; img2pdf-страница = готовый носитель растра (px→pt конверт
+    # = его геометрия, R&D-первичка 1395 px @72dpi = 1395 pt = визуал
+    # идентичен исходным 930 pt при 1.5× масштабе растра).
+    for png in pages_out:
+        rp = PdfReader(__import__("io").BytesIO(img2pdf.convert(png))).pages[0]
+        w.add_page(rp)
+    with open(args.out, "wb") as f:
+        w.write(f)
+    for png in pages_out:
+        os.unlink(png)
+    doc.close()
+    return n, ledger
+
+
 def cmd_restore(args):
     ledger = json.load(open(args.ledger, encoding="utf-8"))
     ext = args.file.rsplit(".", 1)[-1].lower() if "." in args.file else ""
+    if ext == "pdf" and any(e.get("scan") for e in ledger):
+        # Растр = необратим ФИЗИЧЕСКИ (пиксели под краской нет; ledger-
+        # orig placeholder-режима = журнал находок, не источник возврата).
+        # Честный отказ ДО машинерии (#302 black-паттерн).
+        die("pdf: скан-контур необратим (растр: paint-over = пиксели "
+            "утрачены; ledger = журнал находок, возврат = исходный файл)")
     if ext == "pdf" and all("orig" not in e for e in ledger):
         # Black-return ДО любой ph-машинерии (первичка #302: black-
         # ledger = без ph/orig = KeyError в ph_map = некрасивый краш;

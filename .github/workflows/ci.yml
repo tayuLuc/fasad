@@ -649,3 +649,39 @@ jobs:
       # managed-сборку, setup-python не нужен.
       - run: just python-lint
       - run: just golden-verify
+  file-shelf:
+    # Полка file-контура (#297/#302/#304): test-fasad-file.py = живой демон
+    # каскад-0-харнеса (FASAD_TEST_CASCADE0) + uv-зубы (полка раньше жила
+    # только локально = enforce-контра #180 «проверено = смонтировано»).
+    # debug-бинарь = build CI (local-запрет AGENTS §3 не трогается: там
+    # про ноут оператора). mac-нога = Vision OCR CLI (скан-зуб #304:
+    # swiftc scripts/ocr.swift = Apple Vision = оффлайн, mac-only;
+    # linux = SCAN|SKIP-строка = #316-паттерн legs, не зелёный пропуск).
+    permissions: {}
+    needs: build-test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: '${{ matrix.os }}'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.8.7 (тот же plain-пин, что :45)
+        with:
+          key: file-shelf-${{ matrix.os }}
+      - name: Build debug fasad (полка = FASAD_BIN, харнес каскад-0)
+        run: cargo build -p guard-daemon --bin fasad
+      - name: Install uv
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: uv
+      - name: "mac: Vision OCR CLI (скан-зуб #304)"
+        if: matrix.os == 'macos-14'
+        run: |
+          set -euo pipefail
+          swiftc -O scripts/ocr.swift -o "$RUNNER_TEMP/ocr"
+          echo "FASAD_OCR_BIN=$RUNNER_TEMP/ocr" >> "$GITHUB_ENV"
+      - name: "Зубы file-контура (uv single-file, PEP-723 deps)"
+        run: FASAD_BIN=target/debug/fasad uv run scripts/test-fasad-file.py
