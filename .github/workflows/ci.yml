@@ -683,5 +683,17 @@ jobs:
           set -euo pipefail
           swiftc -O scripts/ocr.swift -o "$RUNNER_TEMP/ocr"
           echo "FASAD_OCR_BIN=$RUNNER_TEMP/ocr" >> "$GITHUB_ENV"
+      - name: "mac: uv python 3.12 (pikepdf wheel-первичка PyPI: 10.17.0
+          несёт macosx_15_0_arm64 колёса cp311–cp313, cp315 = НЕТ НИ
+          ОДНОГО (промер /pypi/pikepdf/json 27.10) → на .python-version
+          3.15 mac-нога собирает sdist и краснеет «qpdf/Constants.h»
+          (провен file-shelf mac run 40484144100); 3.12 = колесо = pip
+          нет, brew нет. linux-нога = manylinux-колесо на 3.15, не
+          трогается. PEP-723-скрипты = own env, UV_PYTHON-пин локален
+          ноге (python-golden с uv.lock не затронут)."
+        if: matrix.os == 'macos-14'
+        run: uv python install 3.12
       - name: "Зубы file-контура (uv single-file, PEP-723 deps)"
+        env:
+          UV_PYTHON: '${{ matrix.os == ''macos-14'' && ''3.12'' || ''3.15'' }}'
         run: FASAD_BIN=target/debug/fasad uv run scripts/test-fasad-file.py
