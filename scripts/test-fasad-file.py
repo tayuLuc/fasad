@@ -1,8 +1,15 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = ["python-docx", "openpyxl", "python-pptx", "striprtf",
-#   "pikepdf", "pdfplumber", "pypdf", "reportlab", "fpdf2"]
+#   "pdfplumber", "pypdf", "reportlab", "fpdf2",
+#   "pypdfium2", "pillow", "img2pdf", "pikepdf"]
 # ///
+# Пин pikepdf = волна колёс CI-ноги (SDK14-раннер = macosx_14_0 ряд =
+# 10.8.0; macos-26 = 10.17; первичка PyPI+otool 27.10, промены runs
+# 40484144100…40490026576). Слот = ПОСЛЕДНИЙ в списке спеки: sed-шаблон
+# ci.yml (`"pikepdf"]`) = якорь конца; сдвиг слота = grep-зуб шага
+# «sed-pin не лёг» краснит (мёртвый пин = запрещён).
+# CI = шаг file-shelf sed'ом подставляет пин в спеку (см. ci.yml).
 """Зубы обёртки fasad-file.py (#297 этап-1 + #302 pdf CI-полка; НЕ golden).
 
 Контур: живой демон (FASAD_TEST_CASCADE0=1 харнес, как R&D f620296e) +
@@ -23,7 +30,13 @@ uv-окружение. Запуск (из корня репозитория):
     (reportlab базовый, Tj-перемычки = PII на границе скобок) = маска
     чистая + restore = честный rc2 «перекрываются» (контракт #305
     п.1в: обратимость не доказана = fail-closed, НЕ ослабление);
-  3 fail-closed: битый/шифрованный docx (PackageNotFoundError) = rc!=0.
+  3 fail-closed: битый/шифрованный docx (PackageNotFoundError) = rc!=0;
+  4 SCAN (#304 этап-3, mac-only = Vision-движок, skip-контра = #316-
+    паттерн legs: linux/windows = SKIP-строка, не зелёный пропуск):
+    синтетический скан (растр в PDF, PIL+img2pdf = R&D-фикстура
+    FINAL-scan) = маска; leak-scan = повторный OCR masked = PII-строк 0;
+    restore = честный отказ (растр необратим = контракт black);
+    FASAD_OCR_BIN без бинаря = fail-closed-отказ (не no-op).
 Известный FN-класс (документирован в README fasad-file.py, НЕ зуб-проверка):
 паспорт рядом с ИНН-ключом = inn-доминанта каскада-0 (зуб реестра
 c0_inn_key_dominates_passport) = обёртка не чинит.
@@ -31,6 +44,7 @@ c0_inn_key_dominates_passport) = обёртка не чинит.
 
 from __future__ import annotations
 
+import io as _io
 import json
 import os
 import shutil
@@ -297,9 +311,19 @@ def test_pdf_cyrillic(td: Path) -> int:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.pdfgen import canvas
-    pdfmetrics.registerFont(
-        TTFont("CyrTtf", "/System/Library/Fonts/Supplemental/"
-                          "Arial Unicode.ttf"))
+    # переносимость CI-ног (провен file-shelf ubuntu run 40483157221:
+    # mac-path = OSError ДО skip-гейтов = красная нога): кириллический TTF
+    # ищем по списку платформ, нет = SKIP-строка (#316-паттерн legs).
+    cyr_ttf = next((p for p in (
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "C:/Windows/Fonts/arialuni.ttf",
+        "C:/Windows/Fonts/DejaVuSans.ttf") if Path(p).exists()), None)
+    if cyr_ttf is None:
+        print("PDF_CYRILIC|SKIP (кириллический TTF не найден на ноге)")
+        return 0
+    pdfmetrics.registerFont(TTFont("CyrTtf", cyr_ttf))
     c0 = canvas.Canvas(str(td / "cyrtype0.pdf"), pagesize=(595, 842))
     c0.setFont("CyrTtf", 11)
     c0.drawString(60, 790, cyr)
@@ -526,7 +550,189 @@ def test_xlsx_mode_filter() -> int:
     return 1 if bad else 0
 
 
+def make_scan_fixture(td: Path):
+    """Синтетический скан = R&D-фикстура FINAL-scan (#294): PIL-растр
+    (Arial Unicode, 1240×1754 ~ A4@150dpi) с PII-строками → img2pdf →
+    PDF-скан (chars=0 = промер #294)."""
+    import img2pdf
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.new("RGB", (1240, 1754), "white")
+    dr = ImageDraw.Draw(img)
+    font = next((p for p in (
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf") if Path(p).exists()), None)
+    if font is None:
+        return None  # SKIP-решение принимает вызывающий (единая строка)
+    f = ImageFont.truetype(font, 34)
+    lines = [
+        ("Sluzhebnaya zapiska", 220),
+        ("Proshu soglasovat postavku. Telefon 89161234567,", 340),
+        ("INN 7707083893, SNILS 112-233-445 95.", 410),
+        ("28.09.2026", 520),
+    ]
+    for t, y in lines:
+        dr.text((90, y), t, fill="black", font=f)
+    png = td / "scan.png"
+    img.save(png)
+    out = td / "scan.pdf"
+    out.write_bytes(img2pdf.convert(str(png)))
+    return out
+
+
+def _scan_ocr_rows(png: Path) -> str:
+    import subprocess
+    r = subprocess.run([os.environ["FASAD_OCR_BIN"], str(png)],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit(f"OCR-фикстура: rc={r.returncode}")
+    return "\n".join(row.split("\t")[-1] for row in r.stdout.splitlines())
+
+
+def test_scan(td: Path) -> int:
+    """#304 этап-3 (mac-only): скан-PDF → Vision-OCR → paint-over.
+    Зубы: leak-scan = повторный OCR masked = PII 0; ledger = классы
+    находок (black = disk-контра без orig); restore = честный отказ
+    (растр необратим); OCR-бинарь отсутствующий = fail-closed-отказ."""
+    if sys.platform != "darwin" or not shutil.which(
+            os.environ.get("FASAD_OCR_BIN", "ocr")):
+        print("SCAN|SKIP (mac-only: Vision-движок; #316-паттерн legs)")
+        return 0
+    # mac-раннер-первичка: фикстура ходит по списку шрифтов (CI macos-14
+    # может не иметь Arial Unicode.ttf = промер run 40483157221 ubuntu-
+    # краснеет на path-иголке ДО skip-гейта; список = переносимая фикстура,
+    # первый найденный = канон).
+    fails = 0
+    src = make_scan_fixture(td)
+    if src is None:  # кириллического TTF нет на хосте = SKIP (не провал)
+        print("SCAN|SKIP (нет кириллического TTF на хосте)")
+        return 0
+    # дискриминатор фикстуры: PDF = скан (chars=0) + OCR читает PII
+    import pdfplumber
+    with pdfplumber.open(src) as pl:
+        chars0 = sum(len(p.chars) for p in pl.pages)
+    rows0 = _scan_ocr_rows(td / "scan.png")
+    fixture_ok = chars0 == 0 and "89161234567" in rows0 \
+        and "7707083893" in rows0
+    print(f"SCAN|fixture|chars0={chars0}|ocr-pii={'yes' if fixture_ok else 'NO'}")
+    fails += 0 if fixture_ok else 1
+    # дискриминатор предиката _pdf_is_scan: смешанный PDF (стр.1 растр +
+    # стр.2 text-layer) = НЕ скан (all, не any: мутация any = mixed=True).
+    ff = load_module_test("fasad_file_scan")
+    import img2pdf as _i2p
+    import pdfplumber as _pl
+    from pypdf import PdfReader as _PR
+    from pypdf import PdfWriter as _PW
+    _w = _PW()
+    _w.add_page(_PR(_io.BytesIO(_i2p.convert(str(td / "scan.png")))).pages[0])
+    _w.append(str(td / "s.pdf"))  # текстовый PDF make_samples = стр.2 chars>0
+    with open(td / "mix.pdf", "wb") as _f:
+        _w.write(_f)
+    with _pl.open(td / "mix.pdf") as _pdf:
+        mixed_scan = ff._pdf_is_scan(_pdf)
+    with _pl.open(td / "scan.pdf") as _pdf:
+        pure_scan = ff._pdf_is_scan(_pdf)
+    ok_pred = (not mixed_scan) and pure_scan
+    print(f"SCAN|predicate|pure={pure_scan}|mixed={not mixed_scan}|"
+          f"{'ok' if ok_pred else 'ПРОТЕЧКА: смешанный = скан'}")
+    fails += 0 if ok_pred else 1
+    out = td / "m-scan.pdf"
+    led = td / "l-scan.json"
+    # env маски = наследуется дочерним процессом run() (os.environ)
+    run("mask", str(src), "t304scan", "--out", str(out), "--ledger", str(led),
+        "--mode", "black")
+    ledger = json.loads(led.read_text(encoding="utf-8"))
+    cls = sorted(e["class"] for e in ledger)
+    ok_led = cls == ["inn", "phone", "snils"] and all(
+        e.get("scan") and "bbox_px" in e for e in ledger)
+    print(f"SCAN|ledger|{cls}|{'ok' if ok_led else 'PROBLEM'}")
+    fails += 0 if ok_led else 1
+    # leak-scan = повторный OCR masked-PDF (render → ocr) = PII-строк нет
+    import pypdfium2 as pdfium
+    mpng = td / "m-scan.png"
+    pdfium.PdfDocument(str(out))[0].render(scale=2).to_pil().save(str(mpng))
+    rows1 = _scan_ocr_rows(mpng)
+    leaks = [p for p in ("89161234567", "7707083893", "112-233-445 95")
+             if p in rows1]
+    # мута-промер меры: PII из строки ДО маски обязана была читаться
+    # (fixture_ok выше = discriminator; здесь = повтор-страховка)
+    print(f"SCAN|leak-scan|{leaks if leaks else 'NONE'}")
+    fails += 1 if leaks else 0
+    # black-disk-контра: ledger БЕЗ orig (PII на диск не легла)
+    disk_ok = all("orig" not in e and "ph" not in e for e in ledger)
+    print(f"SCAN|black-ledger-clean={disk_ok}")
+    fails += 0 if disk_ok else 1
+    # restore = честный отказ (скан-контра необратима, ДО ph-машинерии)
+    r = subprocess.run(
+        [sys.executable, str(HERE / "fasad-file.py"), "--url", URL,
+         "restore", str(out), "t304scan", "--ledger", str(led),
+         "--out", str(td / "back-scan.pdf")],
+        capture_output=True, text=True)
+    ok_r = r.returncode != 0 and "необратим" in r.stderr \
+        and not (td / "back-scan.pdf").exists()
+    print(f"SCAN|restore-refuse|rc={r.returncode}|{'ok' if ok_r else 'PROBLEM'}")
+    fails += 0 if ok_r else 1
+    # fail-closed: OCR-движок отсутствует = отказ, файл НЕ маскируется
+    old = os.environ["FASAD_OCR_BIN"]
+    os.environ["FASAD_OCR_BIN"] = "fasad-no-such-ocr-bin"
+    try:
+        r2 = subprocess.run(
+            [sys.executable, str(HERE / "fasad-file.py"), "--url", URL,
+             "mask", str(src), "t304x", "--out", str(td / "never.pdf")],
+            capture_output=True, text=True)
+    finally:
+        os.environ["FASAD_OCR_BIN"] = old
+    ok2 = r2.returncode != 0 and "OCR-движок не найден" in r2.stderr \
+        and not (td / "never.pdf").exists()
+    print(f"SCAN|failclosed-no-ocr|rc={r2.returncode}|{'ok' if ok2 else 'PROBLEM'}")
+    fails += 0 if ok2 else 1
+    return fails
+
+
+def probe_only() -> int:
+    """Wheel/pin-дискриминатор CI-шага file-shelf (мера ДО env-создания
+    краснеет на ModuleNotFoundError = промен-яд runs 40487913050; здесь мы
+    УЖЕ в env зубов: скрипт запущен uv run = зависимости PEP-723 импортированы,
+    значит проверка = интерпретатор + колёсные теги)."""
+    fails = 0
+    want = os.environ.get("UV_PYTHON", "")
+    site = f"{sys.version_info[0]}.{sys.version_info[1]}"
+    if want and site != want:
+        print(f"PYNONE|ожидался {want}|uv run = {site}")
+        fails += 1
+    else:
+        print(f"PY|{site}|ok")
+    pinv = os.environ.get("PEP723_PIN_VERSION", "")
+    if pinv:
+        import importlib.metadata as im0
+        v0 = im0.version("pikepdf")
+        if v0 != pinv:
+            print(f"PIN|pikepdf|ожидался {pinv}|факт {v0}")
+            fails += 1
+        else:
+            print(f"PIN|pikepdf|{v0}|ok")
+    import importlib.metadata as im
+    for name in ("pypdfium2", "pikepdf", "Pillow", "lxml"):
+        try:
+            d = im.distribution(name)
+        except im.PackageNotFoundError:
+            print(f"WHEELCHECK|{name}|НЕ УСТАНОВЛЕН")
+            fails += 1
+            continue
+        tag = (d.read_text("WHEEL") or "").strip()
+        line = next((x for x in tag.splitlines() if x.startswith("Tag:")), "")
+        # sdist-сборка = Tag пуст (uv пишет "" = промер env); wheel = cp/py-тег.
+        ok = bool(line) and "none-any" not in line
+        print(f"WHEELCHECK|{name}|{im.version(name)}|{line or 'sdist-сборка'}"
+              f"|{'ok' if ok else 'НЕ WHEEL'}")
+        fails += 0 if ok else 1
+    print("PROBE|" + ("ok" if fails == 0 else f"FAILS {fails}"))
+    return 1 if fails else 0
+
+
 def main():
+    if "--probe-only" in sys.argv:
+        sys.argv.remove("--probe-only")
+        sys.exit(probe_only())
     proc = daemon()
     td = Path(tempfile.mkdtemp(prefix="fasad297-"))
     try:
@@ -537,6 +743,7 @@ def main():
         fails += test_failclosed(td)
         fails += test_cyrillic_teeth(td)
         fails += test_xlsx_mode_filter()
+        fails += test_scan(td)
         print("TEST-FASAD-FILE|" + ("ok" if fails == 0 else f"FAILS {fails}"))
         sys.exit(0 if fails == 0 else 1)
     finally:
