@@ -30,6 +30,56 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: "Supply-chain: uses: = полный sha + аннотация-версия (#99)"
+        # Зуб: каждый `uses:` на 40-символьный sha обязан нести аннотацию,
+        # СОВПАДАЮЩУЮ с объектом рефа (провен #99: rust-cache-пин с меткой
+        # v2.8.7 = ложная: тега v2.8.7 в репо action нет (gh api refs/tags),
+        # sha = peeled commit тега v2.9.2 = аудит проверяет не тот объект).
+        # Канон сверки = ПОЛНОГО тега (annotated/annotated-peel/plain,
+        # gh api git/ref/tags + git/tags): major-теги (v2) = дрейфующие
+        # указатели релизов (промер #99: Swatinem v2 = d1527c8f ≠ пин;
+        # taiki-e v2 = 5488ac5a ≠ пин) = major-аннотация sha-пину не
+        # канон = живая сверка peel'а: `v*`-аннотация (любой глубины) =
+        # refs/tags peel == sha (major-теги GitHub = указатели: checkout/v4,
+        # upload/v4, megalinter/v9 = совпадают живьём; дрейф.major = RED),
+        # «latest» = latest-release tag_name, прочее (stable) =
+        # commit-message-контра (dtolnay-паттерн).
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bad=0
+          find .github/workflows -name '*.yml' -print0 | xargs -0 grep -hE '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*[A-Za-z0-9._-]+/[A-Za-z0-9._-]+@' |
+          while IFS= read -r line; do
+            ref=$(printf '%s' "$line" | sed -E 's|.*@([^[:space:]]+).*|\1|')
+            case "$ref" in
+              *[0-9a-f][0-9a-f]*) ;;
+              *) echo "SKIP (не sha-реф): $line"; continue ;;
+            esac
+            printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$' || { echo "RED: не полный 40-sym sha: $line"; bad=1; continue; }
+            repo=$(printf '%s' "$line" | sed -E 's|.*uses:[[:space:]]*([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)@.*|\1|')
+            ann=$(printf '%s' "$line" | sed -E 's|[^#]*#[[:space:]]*([A-Za-z0-9._-]+).*|\1|')  # ПЕРВЫЙ токен после '#' = аннотация (канон: сразу за @sha; пояснения = в скобках)
+            case "$ann" in
+              latest)
+                t=$(gh api "repos/${repo}/releases/latest" --jq .tag_name 2>/dev/null || true)
+                [ "$t" = "$ann" ] || { echo "RED: latest-аннотация, latest-release = ${t:-∅}: $line"; bad=1; continue; } ;;
+              v*)
+                obj=$(gh api "repos/${repo}/git/ref/tags/${ann}" --jq '.object | .type + " " + .sha' 2>/dev/null || true)
+                [ -n "$obj" ] || { echo "RED: тега ${ann} нет в ${repo}: $line"; bad=1; continue; }
+                typ=${obj% *}; sha=${obj#* }
+                [ "$typ" = tag ] && sha=$(gh api "repos/${repo}/git/tags/${sha}" --jq .object.sha 2>/dev/null || true)
+                [ "$sha" = "$ref" ] || { echo "RED: ${ann} peel=${sha:-∅} != sha пина (major-тег = дрейфующий указатель): $line"; bad=1; continue; } ;;
+              *)
+                # Именованный ref вне v-семейки (dtolnay `stable` = коммит
+                # «toolchain: stable», тега нет = gh api refs ∅): аннотация
+                # обязана быть названа в commit message (словами, на любой
+                # позиции: «toolchain: stable» = канон-формат крейта).
+                msg=$(gh api "repos/${repo}/git/commits/${ref}" --jq '.message' 2>/dev/null || true)
+                printf '%s' "$msg" | grep -Eq "(^|[^A-Za-z0-9._-])${ann}([^A-Za-z0-9._-]|$)" || { echo "RED: аннотация ${ann} не названа в commit message: $line"; bad=1; continue; } ;;
+            esac
+            echo "ok: ${repo}@${ref:0:8} == ${ann}"
+          done
+          exit "$bad"
       - name: MegaLinter
         uses: oxsecurity/megalinter@ef3e84b8b836d76db562d0f3ed7da61e8fd538bc # v9
         env:
