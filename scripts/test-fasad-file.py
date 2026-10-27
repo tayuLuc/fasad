@@ -305,9 +305,19 @@ def test_pdf_cyrillic(td: Path) -> int:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.pdfgen import canvas
-    pdfmetrics.registerFont(
-        TTFont("CyrTtf", "/System/Library/Fonts/Supplemental/"
-                          "Arial Unicode.ttf"))
+    # переносимость CI-ног (провен file-shelf ubuntu run 40483157221:
+    # mac-path = OSError ДО skip-гейтов = красная нога): кириллический TTF
+    # ищем по списку платформ, нет = SKIP-строка (#316-паттерн legs).
+    cyr_ttf = next((p for p in (
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "C:/Windows/Fonts/arialuni.ttf",
+        "C:/Windows/Fonts/DejaVuSans.ttf") if Path(p).exists()), None)
+    if cyr_ttf is None:
+        print("PDF_CYRILIC|SKIP (кириллический TTF не найден на ноге)")
+        return 0
+    pdfmetrics.registerFont(TTFont("CyrTtf", cyr_ttf))
     c0 = canvas.Canvas(str(td / "cyrtype0.pdf"), pagesize=(595, 842))
     c0.setFont("CyrTtf", 11)
     c0.drawString(60, 790, cyr)
@@ -534,7 +544,7 @@ def test_xlsx_mode_filter() -> int:
     return 1 if bad else 0
 
 
-def make_scan_fixture(td: Path) -> Path:
+def make_scan_fixture(td: Path):
     """Синтетический скан = R&D-фикстура FINAL-scan (#294): PIL-растр
     (Arial Unicode, 1240×1754 ~ A4@150dpi) с PII-строками → img2pdf →
     PDF-скан (chars=0 = промер #294)."""
@@ -542,8 +552,12 @@ def make_scan_fixture(td: Path) -> Path:
     from PIL import Image, ImageDraw, ImageFont
     img = Image.new("RGB", (1240, 1754), "white")
     dr = ImageDraw.Draw(img)
-    f = ImageFont.truetype(
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 34)
+    font = next((p for p in (
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf") if Path(p).exists()), None)
+    if font is None:
+        return None  # SKIP-решение принимает вызывающий (единая строка)
+    f = ImageFont.truetype(font, 34)
     lines = [
         ("Sluzhebnaya zapiska", 220),
         ("Proshu soglasovat postavku. Telefon 89161234567,", 340),
@@ -577,8 +591,15 @@ def test_scan(td: Path) -> int:
             os.environ.get("FASAD_OCR_BIN", "ocr")):
         print("SCAN|SKIP (mac-only: Vision-движок; #316-паттерн legs)")
         return 0
+    # mac-раннер-первичка: фикстура ходит по списку шрифтов (CI macos-14
+    # может не иметь Arial Unicode.ttf = промер run 40483157221 ubuntu-
+    # красne на path-иголке ДО skip-гейта; список = переносимая фикстура,
+    # первый найденный = канон).
     fails = 0
     src = make_scan_fixture(td)
+    if src is None:  # кириллического TTF нет на хосте = SKIP (не провал)
+        print("SCAN|SKIP (нет кириллического TTF на хосте)")
+        return 0
     # дискриминатор фикстуры: PDF = скан (chars=0) + OCR читает PII
     import pdfplumber
     with pdfplumber.open(src) as pl:
