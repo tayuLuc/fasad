@@ -578,6 +578,23 @@ struct Window {
 /// «1000 2000 3000 4000» / «1991 1992 1993 1994» = true; повтор
 /// («4242 4242 4242 4242», d=0), неровная ширина (Amex 4+4+4+3), 2
 /// группы = false (рамок нет; рамка включается от 3 групп).
+///
+/// #102 (первичка, живой демон 18805 на базе 73b3cac): issue винил
+/// [`MAX_WINDOW_GROUPS`] = 5, промер ОПРОВЕРГАЕТ — FP живёт при 4 группах
+/// = 16 цифр = ВНУТРИ рамки; 20 цифр («2023 2024 2025 2026 2027») = [] и
+/// на базе. Root-cause: Луна (ISO/IEC 7812-1 §5b, 12..=19) принимает
+/// канон перечисления с вероятностью 1/10, а «окно = прогон ЦЕЛИКОМ»
+/// превращает перечисление в канон: «1000 2000 3000 4000» (d=1000),
+/// «1991 1992 1993 1994» (d=1), «2023 2024 2025 2026», «1500 2500 3500
+/// 4500», «1111 2222 3333 4444» = `card_pan` 1.0. Дискриминант = ПРОГРЕССИЯ
+/// групп: BIN-рамка («ведение 1 = авиабилеты ISO 7812-1») отвергнута
+/// промером (FP ведёт и 2; §5a «BIN = не фильтр»), ширина-4+ведение-1 =
+/// тот же провал. Повтор d=0 (Visa-тест 4242…) = не прогрессия = живёт;
+/// Amex (неровная ширина) = живёт. Contract-FP принят: прогрессивный
+/// PAN-тест «4111 2222 3333 4444» (d=1111) = отшив (тестовые BIN не `ПДн`;
+/// промер golden v1.14: recall-luhn 4x4-прогрессий = 0). Зеркало `num_runs`-прогона
+/// (`digit_runs`, «2023202420252026» слитная таблица = 16/4) = тот же
+/// класс (промер базы: `card_pan` 1.0).
 fn arithmetic_progression(run: &Run, bytes: &[u8]) -> bool {
     let w = run.groups[0].end - run.groups[0].start;
     if w == 0 || w > MAX_GROUP_DIGITS || !run.groups.iter().all(|g| g.end - g.start == w) {
@@ -591,22 +608,40 @@ fn arithmetic_progression(run: &Run, bytes: &[u8]) -> bool {
 /// Нарезка `slice` (только цифры) на блоки ширины `w`; арифметическая
 /// прогрессия блоков (шаг > 0)?
 fn is_grouped_progression(slice: &[u8], w: usize) -> bool {
-    if w == 0 || w > MAX_GROUP_DIGITS || slice.is_empty() || slice.len() % w != 0 {
+    if w == 0 || w > MAX_GROUP_DIGITS || slice.is_empty() || !slice.len().is_multiple_of(w) {
         return false;
     }
     // ASCII-цифры канона (гарантия вызывающих: slice = канон/window цифр).
-    let value = |g: &[u8]| -> u32 {
-        g.iter()
-            .fold(0u32, |acc, b| acc * 10 + u32::from(b - b'0'))
-    };
+    let value = |g: &[u8]| -> u32 { g.iter().fold(0u32, |acc, b| acc * 10 + u32::from(b - b'0')) };
     let first = value(&slice[..w]);
-    let Some(step) = value(&slice[w..2 * w]).checked_sub(first).filter(|&d| d > 0) else {
+    let Some(step) = value(&slice[w..2 * w])
+        .checked_sub(first)
+        .filter(|&d| d > 0)
+    else {
         return false;
     };
     slice
         .chunks(w)
         .enumerate()
-        .all(|(i, g)| first.saturating_add(step * i as u32) == value(g))
+        .all(|(i, g)| first.saturating_add(step * u32::try_from(i).unwrap_or(u32::MAX)) == value(g))
+}
+
+/// #102 (num-run-проход): окно прогона = перечисление-прогрессия
+/// (≥3 равных групп, шаг > 0)? Док класса = [`arithmetic_progression`].
+fn enumeration_window(run: &Run, bytes: &[u8]) -> bool {
+    run.groups.len() >= 3 && arithmetic_progression(run, bytes)
+}
+
+/// #102 (`digit_runs`-проход, зеркало): голый прогон = склейка таблицы
+/// «2023202420252026» (промер базы 18805 = `card_pan` 1.0). Равная
+/// ширина блоков = len/4 (4/8/16 = канонические разбивки 4-значных
+/// ячеек: 4+4+4+4, 8+8, слитная 16 = таблица без разделителей); 15 цифр
+/// не делится на 4 = интактна. Шаг > 0 (повтор «4242424242424242» =
+/// не отшивается).
+fn enumeration_flat_window(canon: &[u8]) -> bool {
+    canon.len() >= 12
+        && canon.len().is_multiple_of(4)
+        && is_grouped_progression(canon, canon.len() / 4)
 }
 
 fn validated_windows(bytes: &[u8], wanted: &[(&'static str, ClassId)]) -> Vec<Window> {
@@ -627,20 +662,9 @@ fn validated_windows(bytes: &[u8], wanted: &[(&'static str, ClassId)]) -> Vec<Wi
             if !isolated(bytes, start, end) {
                 continue;
             }
-            if call_validator(spec.name, &bytes[start..end]) == Some(true) {
-                // #102 (зеркало num-run-прохода): голый 16-значный прогон =
-                // склейка таблицы «2023202420252026» (промер базы 18805 =
-                // card_pan 1.0). Равная ширина групп = 16//4 (4/8/16 —
-                // канонические разбивки 4-значных ячеек: 4+4+4+4, 8+8,
-                // слитная 16-группа = таблица без разделителей); 12//3,
-                // 15 НЕ равные (15 не делится на 4) = интактны. Шаг > 0
-                // (повтор-прогон «4242424242424242» = не отшивается).
-                if end - start >= 12
-                    && (end - start) % 4 == 0
-                    && is_grouped_progression(&bytes[start..end], (end - start) / 4)
-                {
-                    continue;
-                }
+            if call_validator(spec.name, &bytes[start..end]) == Some(true)
+                && !enumeration_flat_window(&bytes[start..end])
+            {
                 out.push(Window {
                     range: start..end,
                     spec,
@@ -696,32 +720,7 @@ fn validated_windows(bytes: &[u8], wanted: &[(&'static str, ClassId)]) -> Vec<Wi
             if !wanted.iter().any(|(v, _)| *v == spec.name) {
                 continue;
             }
-            if call_validator(spec.name, &canon) == Some(true) {
-                // #102 (первичка этого PR, живой демон 18805 на 73b3cac):
-                // issue винил [`MAX_WINDOW_GROUPS`] = 5, промер ОПРОВЕРГАЕТ —
-                // FP живёт при 4 группах = 16 цифр = ВНУТРИ рамки; 20 цифр
-                // («2023 2024 2025 2026 2027», 5 групп) = [] и на базе.
-                // Root-cause: Луна (ISO/IEC 7812-1 §5b, 12..=19) принимает
-                // канон перечисления с вероятностью 1/10, а «окно = прогон
-                // ЦЕЛИКОМ» (док слоя) превращает перечисление чисел в канон:
-                // «1000 2000 3000 4000» (d=1000), годы «1991 1992 1993 1994»
-                // (d=1), «2023 2024 2025 2026», «1500 2500 3500 4500»,
-                // «1111 2222 3333 4444» = card_pan 1.0 (промер PR-таблицы).
-                // Дискриминант = АРИФМЕТИЧЕСКАЯ ПРОГРЕССИЯ групп (`arithmetic_
-                // progression`: равная ширина, шаг > 0, ≥3 группы). BIN-рамка
-                // («ведение 1 = авиабилеты ISO 7812-1») ОТВЕРГНУТА промером:
-                // FP ведёт и 2 («2023 2024…»), §5a «BIN = не фильтр»;
-                // ширина-4+ведение-1 = тот же провал. Повтор «4242 4242…»
-                // (d=0, Visa-тест) НЕ прогрессия = живёт; неровная ширина
-                // (Amex 4+4+4+3) = живёт; 2 группы = вне рамки. Риск FN =
-                // прогрессивный PAN-тест (4111 2222 3333 4444, d=1111) =
-                // contract-принят (тестовые BIN не ПДн); промер golden
-                // v1.14: recall-luhn 4x4-прогрессий = 0 строк (контра в
-                // зубе). Карты-эталоны 4575 5035 9035 2993 / 2204-9947-…
-                // = не прогрессии, интактны.
-                if run.groups.len() >= 3 && arithmetic_progression(&run, bytes) {
-                    continue;
-                }
+            if call_validator(spec.name, &canon) == Some(true) && !enumeration_window(&run, bytes) {
                 out.push(Window {
                     range: start..end,
                     spec,
@@ -5996,9 +5995,9 @@ mod tests {
     /// PAN-формы живут. Первичка PR (живой демон 18805, база 73b3cac):
     /// base-FP = «1000 2000 3000 4000», «1991 1992 1993 1994»,
     /// «2023 2024 2025 2026», «1500 2500 3500 4500», «1111 2222 3333 4444»
-    /// = card_pan 1.0 (Лунно-валидные перечисления ОДИНАКОВОЙ 4-значной
+    /// = `card_pan` 1.0 (Лунно-валидные перечисления ОДИНАКОВОЙ 4-значной
     /// ширины групп, ведение 1 = НЕ PAN-BIN, recall-промер golden: 0
-    /// card_pan с ведением 1, 10/10 = ОГРН). 5-группные перечисления = []
+    /// `card_pan` с ведением 1, 10/10 = ОГРН). 5-группные перечисления = []
     /// и на базе (20 цифр вне Луны 12..19) = MAX_WINDOW_GROUPS-рамка
     /// исправна, issue-гипотеза опровергнута промером.
     #[test]
@@ -6064,7 +6063,7 @@ mod tests {
         );
         // Неровная ширина 4+3+4+4: канон 15 цифр = Луна ✗ (промер) = []
         // base=fix (контра инертна к рамке, фиксирует ноль-эффект).
-        assert!(cards(&sc, "1999 200 2024 2025").is_empty());
+        assert_eq!(cards(&sc, "1999 200 2024 2025"), Vec::<&str>::new());
         assert!(
             cards(&sc, "1000 1100 1200").is_empty(),
             "3-группная прогрессия d=100 (12 цифр) = вне рамки"
