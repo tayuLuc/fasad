@@ -42,18 +42,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (composite, без токена)
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.8.7 (F3 known-red: annotated-tag-object форма → plain commit)
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 (plain commit == тег v2.9.2: refs/tags/v2.9.2 =
+          # annotated tag → peel 6323deb, gh api промер; метка v2.8.7 =
+          # ложная (тега v2.8.7 в репо нет: v2.8.2→v2.9.0), F3 known-red
+          # = закрыт #99)
       # Единый контракт локально и в CI: just-цели из justfile; cargo-deny —
       # гейт advisories/bans/licenses (SPEC §9).
       # Пинованы SHA тега v2 (2.87.29, 2026-10-16) — zizmor unpinned-uses, внесённый
       # этим дифом, чинится здесь (review B4). bootstrap-пины (checkout/toolchain/
       # rust-cache/megalinter) — отдельный PR, см. known-red-on-main.md.
       - name: Install just
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: just
       - name: Install cargo-deny
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-deny
       - run: just lint
@@ -209,7 +212,8 @@ jobs:
           # known-red F1 (artipacked): токен в .git/config не нужен — job не пушит.
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (composite, без токена)
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (plain commit, тот же пин, что build-test:45)
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 (тот же plain-пин, что build-test:45; major v2 = дрейфующий:
+      # refs/tags/v2 peel = d1527c8f = v2.9.3, промер #99)
       - name: "mac: официальный dylib ORT 1.31.0 + сверка sha256 (пин = release.yml)"
         if: matrix.os == 'macos-14'
         run: |
@@ -638,7 +642,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install uv + just
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           # `just` обязателен: шаги зовут just-рецепты (контракт §5.5.5 — CI
           # гонят те же команды, что локально). PR#34: python-golden краснел
@@ -668,13 +672,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.8.7 (тот же plain-пин, что :45)
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 (тот же plain-пин, что :45)
         with:
           key: file-shelf-${{ matrix.os }}
       - name: Build debug fasad (полка = FASAD_BIN, харнес каскад-0)
         run: cargo build -p guard-daemon --bin fasad
       - name: Install uv
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: uv
       - name: "mac: Vision OCR CLI (скан-зуб #304)"
