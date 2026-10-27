@@ -2266,7 +2266,11 @@ fn ui_span_table_grouping_wiring() {
 /// соответствующий кейс краснеет.
 #[test]
 fn shelf_tray_icon_diagnosis() {
-    let src = include_str!("../../../scripts/make-bundle.sh");
+    // CRLF-нормализация входа (#225 CI-провен: win git checkout = \r\n,
+    // маркеры с \n-якорем красны на windows-2022; промер на LF-копии =
+    // идентичен): генератор читается канонно, независимо от EOL checkout.
+    let src_raw = include_str!("../../../scripts/make-bundle.sh");
+    let src = &src_raw.replace("\r\n", "\n");
     // 1) win-секция (§2 Запуск ветки is_win): строка-диагноз = иконка в
     //    трее у трей-бинаря + консольный fasad.exe = «иконки нет = не дефект».
     let win = section(src, "2. Запуск: \\`bin\\fasad-tray.exe\\`");
