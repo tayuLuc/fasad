@@ -699,9 +699,8 @@ jobs:
           # manylinux-ряд pikepdf = cp314t/cp315t free-threaded = не волна;
           # 3.13 = колёса обе ОС; mac-нога = первичка .venv ниже).
           UV_PYTHON: "3.13"
-          # TODO(macos-26): mac-нога = 3.15 + пин снять (SDK15 = колёса
+          # TODO(macos-26): mac-нога = 3.15 + sed-пин снять (SDK15 = колёса
           # 10.17.0; первичка pikepdf 10.17.0 = macosx_15_0_arm64).
-          PEP723_DEPS: "${{ matrix.os == 'macos-14' && '--with pikepdf==10.8.0' || '' }}"
         run: |
           set -euo pipefail
           # mac-волна колёс: PEP-723-спека = ceiling, `--with` = union =
@@ -719,8 +718,9 @@ jobs:
             sed -i.bak "s/\r$//" scripts/test-fasad-file.py
             grep -q "pikepdf==$PIKPIN" scripts/test-fasad-file.py || { echo "::error::sed-pin не лёг (шаблон разошёлся) = мёртвый пин"; exit 1; }
           fi
+          # Пин-зуб = версия: PEP723_PIN_VERSION env (probe-only читает:
+          # голый `python -c` = env проекта (ruff), не env зубов = промен
+          # run d78dede: PackageNotFoundError на верном env).
+          export PEP723_PIN_VERSION="${PIKPIN}"
           uv run scripts/test-fasad-file.py --probe-only
-          if [ -n "$PIKPIN" ]; then
-            uv run python -c "import importlib.metadata as m; v=m.version('pikepdf'); assert v=='10.8.0', v; print('PIN|pikepdf|10.8.0|ok')"
-          fi
           FASAD_BIN=target/debug/fasad uv run scripts/test-fasad-file.py

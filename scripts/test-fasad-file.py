@@ -701,6 +701,15 @@ def probe_only() -> int:
         fails += 1
     else:
         print(f"PY|{site}|ok")
+    pinv = os.environ.get("PEP723_PIN_VERSION", "")
+    if pinv:
+        import importlib.metadata as im0
+        v0 = im0.version("pikepdf")
+        if v0 != pinv:
+            print(f"PIN|pikepdf|ожидался {pinv}|факт {v0}")
+            fails += 1
+        else:
+            print(f"PIN|pikepdf|{v0}|ok")
     import importlib.metadata as im
     for name in ("pypdfium2", "pikepdf", "Pillow", "lxml"):
         try:
