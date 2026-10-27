@@ -593,7 +593,7 @@ def test_scan(td: Path) -> int:
         return 0
     # mac-раннер-первичка: фикстура ходит по списку шрифтов (CI macos-14
     # может не иметь Arial Unicode.ttf = промер run 40483157221 ubuntu-
-    # красne на path-иголке ДО skip-гейта; список = переносимая фикстура,
+    # краснеет на path-иголке ДО skip-гейта; список = переносимая фикстура,
     # первый найденный = канон).
     fails = 0
     src = make_scan_fixture(td)
@@ -682,7 +682,42 @@ def test_scan(td: Path) -> int:
     return fails
 
 
+def probe_only() -> int:
+    """Wheel/pin-дискриминатор CI-шага file-shelf (мера ДО env-создания
+    краснеет на ModuleNotFoundError = промен-яд runs 40487913050; здесь мы
+    УЖЕ в env зубов: скрипт запущен uv run = зависимости PEP-723 импортированы,
+    значит проверка = интерпретатор + колёсные теги)."""
+    fails = 0
+    want = os.environ.get("UV_PYTHON", "")
+    site = f"{sys.version_info[0]}.{sys.version_info[1]}"
+    if want and site != want:
+        print(f"PYNONE|ожидался {want}|uv run = {site}")
+        fails += 1
+    else:
+        print(f"PY|{site}|ok")
+    import importlib.metadata as im
+    for name in ("pypdfium2", "pikepdf", "Pillow", "lxml"):
+        try:
+            d = im.distribution(name)
+        except im.PackageNotFoundError:
+            print(f"WHEELCHECK|{name}|НЕ УСТАНОВЛЕН")
+            fails += 1
+            continue
+        tag = (d.read_text("WHEEL") or "").strip()
+        line = next((x for x in tag.splitlines() if x.startswith("Tag:")), "")
+        # sdist-сборка = Tag пуст (uv пишет "" = промер env); wheel = cp/py-тег.
+        ok = bool(line) and "none-any" not in line
+        print(f"WHEELCHECK|{name}|{im.version(name)}|{line or 'sdist-сборка'}"
+              f"|{'ok' if ok else 'НЕ WHEEL'}")
+        fails += 0 if ok else 1
+    print("PROBE|" + ("ok" if fails == 0 else f"FAILS {fails}"))
+    return 1 if fails else 0
+
+
 def main():
+    if "--probe-only" in sys.argv:
+        sys.argv.remove("--probe-only")
+        sys.exit(probe_only())
     proc = daemon()
     td = Path(tempfile.mkdtemp(prefix="fasad297-"))
     try:

@@ -694,29 +694,5 @@ jobs:
           UV_PYTHON: "3.13"
         run: |
           set -euo pipefail
-          # Дискриминатор пина (реестр ложно-зелёных: env без потребления =
-          # мёртвый код; промен run 40485498986: step-env висел, интерпретатор
-          # = 3.15 = sdist-красный).
-          PYSITE=$(uv run python -c 'import sys;print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
-          test "$PYSITE" = "$UV_PYTHON" || { echo "::error::UV_PYTHON=$UV_PYTHON не потреблён: uv run = $PYSITE"; exit 1; }
-          # wheel-контра (позитив): бинарные пакеты импортируются = env собран.
-          uv run python -c "import pypdfium2, pikepdf, pdfplumber, docx, openpyxl, pptx, PIL, img2pdf, reportlab, striprtf, fpdf"
-          # wheel-дискриминатор (мута-контра qpdf-класса, реестр ложно-
-          # зелёных): импорт зелёный = не доказательство колеса (провен
-          # 40484144100 = компиляция красная; а сдвиг UV_PYTHON/раннера на
-          # много-поточный ABI дал бы компилируемое cpNNNt-колесо = зелёная
-          # медленная сборка). Мера = dist-info wheel-tag: у sdist-сборки
-          # он пуст (uv записывает "", промер env 3.12), у колеса =
-          # cp/py-тег; пустой =::error:: красный шаг.
-          uv run python - <<'PYW'
-          import importlib.metadata as im
-          for name in ("pypdfium2", "pikepdf", "pdfplumber"):
-              d = im.distribution(name)
-              tag = (d.read_text("WHEEL") or "").strip()
-              line = next((x for x in tag.splitlines() if x.startswith("Tag:")), "")
-              ok = bool(line) and "none-any" not in line
-              print("WHEELCHECK|" + name + "|" + im.version(name) + "|" + (line or "sdists-сборка"))
-              if not ok:
-                  raise SystemExit(f"::error::{name} = не wheel (tag {line!r}) = C-компиляция на ноге")
-          PYW
+          uv run scripts/test-fasad-file.py --probe-only
           FASAD_BIN=target/debug/fasad uv run scripts/test-fasad-file.py
