@@ -678,35 +678,45 @@ jobs:
         with:
           tool: uv
       - name: "mac: Vision OCR CLI (скан-зуб #304)"
-        if: matrix.os == 'macos-14'
+        if: runner.os == 'macOS'
         run: |
           set -euo pipefail
           swiftc -O scripts/ocr.swift -o "$RUNNER_TEMP/ocr"
           echo "FASAD_OCR_BIN=$RUNNER_TEMP/ocr" >> "$GITHUB_ENV"
-      - name: "mac: uv python 3.12 (pikepdf wheel-первичка PyPI: 10.17.0
-          несёт macosx_15_0_arm64 колёса cp311–cp313, cp315 = НЕТ НИ
-          ОДНОГО (промер /pypi/pikepdf/json 27.10) → на .python-version
-          3.15 mac-нога собирает sdist и краснеет «qpdf/Constants.h»
-          (провен file-shelf mac run 40484144100); 3.12 = колесо = pip
-          нет, brew нет. linux-нога = manylinux-колесо на 3.15, не
-          трогается. PEP-723-скрипты = own env, UV_PYTHON-пин локален
-          ноге (python-golden с uv.lock не затронут)."
-        if: matrix.os == 'macos-14'
-        run: uv python install 3.12
       - name: "Зубы file-контура (uv single-file, PEP-723 deps)"
+        # Первичка PyPI-колёс pikepdf (27.10): macosx_14_0_arm64 ряд =
+        # 10.8.0 cp310–cp314 (+abi3); macosx_15_0 = 10.17.0 cp311–cp315t.
+        # 3.13 = колесо в ОБА ряда → одна волна раннеров для всех трёх
+        # ног; macos-14 = SDK14 (провены file-shelf runs 40484144100…
+        # 40486796458: cp312/cp315 = sdist-компиляция qpdf = красное;
+        # cp313 = колесо). linux = manylinux cp313.
         env:
-          # mac = 3.12: pikepdf-колесо (cp315 macos = НЕТ, первичка PyPI
-          # 27.10); ubuntu = 3.15 = manylinux-колесо, канон .python-version.
-          # Первичка precedence: UV_PYTHON=3.12 + .python-version=3.15 =
-          # ПИН побеждает .python-version (промер живым uv на mac 27.10: picked 3.12) =
-          # шаг «mac: uv python 3.12» обязан предшествовать (managed-скачка).
-          UV_PYTHON: '${{ matrix.os == ''macos-14'' && ''3.12'' || ''3.15'' }}'
+          UV_PYTHON: "3.13"
         run: |
           set -euo pipefail
           # Дискриминатор пина (реестр ложно-зелёных: env без потребления =
-          # мёртвый код; промен run 40485498986: step-env UV_PYTHON был,
-          # интерпретатор = 3.15 = sdist-красный).
-          PYWANT="${UV_PYTHON}"
+          # мёртвый код; промен run 40485498986: step-env висел, интерпретатор
+          # = 3.15 = sdist-красный).
           PYSITE=$(uv run python -c 'import sys;print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
-          test "$PYSITE" = "$PYWANT" || { echo "::error::UV_PYTHON=$PYWANT не потреблён: uv run = $PYSITE"; exit 1; }
+          test "$PYSITE" = "$UV_PYTHON" || { echo "::error::UV_PYTHON=$UV_PYTHON не потреблён: uv run = $PYSITE"; exit 1; }
+          # wheel-контра (позитив): бинарные пакеты импортируются = env собран.
+          uv run python -c "import pypdfium2, pikepdf, pdfplumber, docx, openpyxl, pptx, PIL, img2pdf, reportlab, striprtf, fpdf"
+          # wheel-дискриминатор (мута-контра qpdf-класса, реестр ложно-
+          # зелёных): импорт зелёный = не доказательство колеса (провен
+          # 40484144100 = компиляция красная; а сдвиг UV_PYTHON/раннера на
+          # много-поточный ABI дал бы компилируемое cpNNNt-колесо = зелёная
+          # медленная сборка). Мера = dist-info wheel-tag: у sdist-сборки
+          # он пуст (uv записывает "", промер env 3.12), у колеса =
+          # cp/py-тег; пустой =::error:: красный шаг.
+          uv run python - <<'PYW'
+          import importlib.metadata as im
+          for name in ("pypdfium2", "pikepdf", "pdfplumber"):
+              d = im.distribution(name)
+              tag = (d.read_text("WHEEL") or "").strip()
+              line = next((x for x in tag.splitlines() if x.startswith("Tag:")), "")
+              ok = bool(line) and "none-any" not in line
+              print("WHEELCHECK|" + name + "|" + im.version(name) + "|" + (line or "sdists-сборка"))
+              if not ok:
+                  raise SystemExit(f"::error::{name} = не wheel (tag {line!r}) = C-компиляция на ноге")
+          PYW
           FASAD_BIN=target/debug/fasad uv run scripts/test-fasad-file.py
