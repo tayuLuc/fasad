@@ -12,11 +12,14 @@
 2. TEST-PINS: пин N в чанкер-контуре (chunker.rs / chunker_regression.rs) =
    len(jsonl) — константа обязана равняться артефакту (устаревшая = красный,
    а не «тихо не сходится на N+1»).
-3. ORPHAN-N: «сирой» якорь-число в README — любое число ≥ 100 вне реестра и
-   вне строки/секции с маркером эпохи (v1.NN / PR #NNN / gNNNN / sha-16+ /
-   год / τ / § / «промер» / «планка ≥N» / «N ≥» / «CI» / NFKC / «=»-строка
-   таблицы). Исторические записи = проза с адресом; адресованная строка
-   (заголовок секции выше) = легальна.
+3. ORPHAN-N: «сирой» якорь-число в README — полное число-токен ≥ 100 вне
+   реестра и вне строки с АДРЕСОМ ЭПОХИ (v1.NN / PR #NNN / gNNNN / sha /
+   год / §N / Wilson-формула / TOTAL stderr / статистическое n<100).
+   #329-чин: адрес = ТОЛЬКО в самой строке (sec_has_era = секция-контра
+   удалена: заголовок с «промер» освобождал 52 % файла); лексика темы
+   («span/класс/%») из адресов вырезана; latch реестра = машиночитаемые
+   HTML-маркеры START/END (prose-слово GOLDEN-REGISTRY latch не включает);
+   таблица-отображение = все её числа ∈ реестру (дрейф таблицы = красный).
 4. MISSING-SECTIONS: README содержит разделы-контракты («## Счётчики v1»,
    «## Формат JSONL», «## Гейт-права», «## Метрика recall») — урок #324:
    squash #324 сжёг 247 строк README (эти секции + всю историю счётчиков)
@@ -28,6 +31,7 @@
 """
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -38,7 +42,7 @@ CHUNKER_SRC = ROOT / "crates" / "guard-onnx" / "src" / "chunker.rs"
 CHUNKER_TEST = ROOT / "crates" / "guard-onnx" / "tests" / "chunker_regression.rs"
 
 REGEX_ROW = re.compile(r"^GOLDEN-REGISTRY:\s*(.+)$", re.M)
-NEEDLE = re.compile(r"\d{3,}")
+NEEDLE = re.compile(r"\d+")
 # Данные (литералы ПДн/номерков) — НЕ счётчики: квотированный фрагмент
 # («…»), backtick-код, длинный (<4>) цифровой токен = вырезается до поиска
 # якорей. Никто не контрит паспортную серию как число датасета.
@@ -46,29 +50,51 @@ NEEDLE = re.compile(r"\d{3,}")
 # «…§5 «Метрика recall»…») на многострочном классе сжирала «§»-адреса
 # последующих строк = ложные сироты (калибровка 417-стр. README, 28.10).
 QUOTED = re.compile("[«\u0022][^\n«»\u0022]*[»\u0022]|`[^`\n]*`")
-DATA_DIGITS = re.compile(r"\d{4,}")
+DATA_DIGITS = re.compile(r"\d{7,}")
 # Слитные группы цифр через дефис = номерные данные (СНИЛС «111-111-111 11»),
 # не счётчики: ≥3 групп по 3 цифры подряд через «-» без пробела.
 HYPHEN_GROUP = re.compile(r"\d{2,3}(?:-\d{2,3}){2,}")
 # Именованные величины, не счётчики набора: SHA-256, E.164, RFC 5322, B1–B5.
-NAMED = re.compile(r"(?i)sha-?256|sha\s*256|e\.?164|rfc\s*5322|b[1-5]\b|utf-?8|iso\s*\d|mod\s*\d+")
+NAMED = re.compile(r"(?i)sha[- ]?256|-a\s*256|sha\s*256|e\.?164|rfc\s*5322|b[1-5]\b|utf-?8|iso\s*\d|mod\s*\d+")
 # Маркер эпохи/адреса в самой строке = строка НЕ сирота (история с адресом).
 ERA = re.compile(
+    # АДРЕС ЭПОХИ (первичка #329): ссылка на СОБЫТИЕ/версию/id, не лексика.
+    # слова «span/класс/%/N/эталон/форм/PR» = тема строки, НЕ адрес эпохи:
+    # они легитимировали целые секции (слепая зона ревью #328).
     r"v1\.\d+|PR\s*#\d|pull/|golden-v1|issue\s*#|#[0-9]{2,3}\b"
-    r"|g0\d{3}"  # адрес id-диапазона = локальный, см. id_local ниже
+    r"|g0\d{3}"
     r"|sha256|shasum|`[0-9a-f]{8,}`|[0-9a-f]{16}"
     r"|\b(19|20)\d\d\b|\b\d\d\.\d\d\b"
-    r"|τ|Wilson|CI\b|NFKC|§|промер|планка|≥|≤"
-    r"|N\s*[≥>]|n=\d|\bN\b|модул|mod\d"
-    r"|TOTAL\s*\d|RECALL\s*\d|NEG\s*\d|RECALL_CAT|NEG_CAT|DIRTY"
-    r"|k_for_bar|знаменатель|Wilson|нижняя граница|планка|98\s*%"
-    r"|байт|токен|BPE|MiB|МБ|мс\b|ms\b|%|процент|порт|http"
-    r"|span|спан|эталон|бейт|бэйт|вектор|класс|форм|PR|\bREADME\b"
+    r"|Wilson|NFKC|§\d|§«|k_for_bar|\bB[1-5]\b"
+    r"|N\s*[≥>]|n=\d\d+|N=\d\d+|историч|больше не|span-уровн"
+    r"|TOTAL\s*\d|RECALL\s*\d|NEG\s*\d|RECALL_CAT|NEG_CAT|DIRTY_SPANS"
+    r"|веса|mod\s*1[13]|\bmod1[13]\b|→\d\d|запрет"
+    r"|промер [^ ]|промер=|= промер|live-промер|unit-промер|C0NEG|C0GOLDEN"
+    # Маркеры СТАТИСТИЧЕСКОЙ формулы (первичка §Метрика: Wilson-арифметика
+    # lo(k,n) = promer-числа, не счётчик датасета; канон #77 rюлинг: эти
+    # числа живут в этой секции как формулы). Строка-контра: маркер в СВОЕЙ
+    # строке, не секция (урок #329 sec_has_era).
+    r"|\blo\(|k_for_bar|\bk ?≥ ?\d|n = \d|n=\d|\bN ?[≥>=]|\bk ?\+|= \d+ ?%|\d+%|98 ?%"
+    r"|≥ ?\d+|знаменатель|проверяем"
 )
 # id-адрес локальный (gNNNN в самой строке) = строка адресована.
 ID_LOCAL = re.compile(r"g0\d{3}")
+# Табличная строка (| label | ddd | ddd |) = таблица-отображение реестра:
+# её числа = счётчики НЕ по-строково (зуб §Счётчики = таблица = registry
+# отображение, сверяется整 строкой реестра выше).
+TABLE_ROW = re.compile(r"^\|[^|\n]*\|\s*(?:\d+\s*\|\s*){2,}")
+# Число с хвостовым знаком класса/адреса («строки 171+») = адрес, не якорь.
+TRAIL = re.compile(r"\d[+*](?![0-9])|\d[−+–]\d")
 # Строки с «число = величина» (таблица/подпись) = не счётчик датасета.
-ASSIGN = re.compile(r"\d+\s*=\s*\d|\d+\s*(?:байт|мс|ms|токен|%|MiB|МБ)")
+ASSIGN = re.compile(r"\d+\s*=\s*\d|(?<!\d)\d+\s*(?:байт|мс|ms\b|токен|%|MiB|МБ)")
+# Кванторы размера (247 строк/247-стр.) = проза-объём, не счётчик датасета.
+# Квантор объёма носителя (не счётчик датасета): «247 строк», «247-стр.».
+# НЕ «строок recall»/«строк с» = счётчики сплита (mut5-контра).
+SIZE_QUANT = re.compile(
+    r"(?<!\d)\d+[- ]?(?:строк|стр\.?|lines)(?!\s*\w*-строк)\b"
+    r"|(?<!\d)\d+[- ]?(?:байт|мс|ms\b|токен|PR)\b",
+    re.I,
+)
 # Минимальный размер «якоря-числа» (счётчики датасета — трёхзначные и выше).
 MIN_ANCHOR = 100
 REQUIRED_SECTIONS = (
@@ -196,6 +222,31 @@ def main() -> int:
                   % (label, m.group(1), val))
             check(reg.get(key) == int(m.group(1)), "PIN",
                   "cascade0: %s=%s ≠ registry %s" % (label, m.group(1), reg.get(key)))
+    # GOLD_BASE64_DENOM (урок #329 п.6: реестр обещал — проверяем): константа
+    # base64-прогона = формула `GOLD_CHECKSUM_SPANS − GOLD_EMAIL_SPANS − 5`
+    # (email decode-контра + 5 = комментарий каскада) И живая stdout-строка
+    # теста `C0B64|covered|<cov>/<denom>` (denom = константа формулы).
+    m = re.search(r"GOLD_CHECKSUM_SPANS\s*-\s*GOLD_EMAIL_SPANS\s*-\s*(\d+)", c0)
+    check(m is not None, "PIN", "cascade0: base64-формула не найдена")
+    if m is not None:
+        formula = gs - em - int(m.group(1))
+        check(reg.get("GOLD_BASE64_DENOM") == formula, "PIN",
+              "registry: GOLD_BASE64_DENOM=%s ≠ формула %d (245−49−%s)"
+              % (reg.get("GOLD_BASE64_DENOM"), formula, m.group(1)))
+    import os
+    if os.environ.get("ANCHOR_LIVE_C0") == "1":
+        r = subprocess.run(
+            ["cargo", "test", "-q", "-p", "guard-daemon", "--test", "cascade0_golden",
+             "--", "--nocapture", "--test-threads=2"],
+            capture_output=True, text=True, cwd=str(ROOT))
+        for key, rx in (("GOLD_CHECKSUM_SPANS", r"C0GOLDEN\|covered\|\d+/(\d+)"),
+                        ("GOLD_BASE64_DENOM", r"C0B64\|covered\|\d+/(\d+)")):
+            m = re.search(rx, r.stdout)
+            check(m is not None, "LIVE", "живой C0: строка %s не найдена (rc=%d)" % (key, r.returncode))
+            if m is not None:
+                check(reg.get(key) == int(m.group(1)), "PIN",
+                      "живой промер: %s stdout=%s ≠ registry %s"
+                      % (key, m.group(1), reg.get(key)))
     hx = (ROOT / "crates" / "guard-onnx" / "examples" / "recall_golden.rs").read_text(encoding="utf-8")
     m = re.search(r"\(n=(\d+)\)", hx)
     check(m is not None, "PIN", "recall_golden.rs: аннотация (n=NNN) не найдена")
@@ -213,25 +264,72 @@ def main() -> int:
               "README: раздел «%s» отсутствует (урок #324: усечение без жалобы)" % sec)
     in_registry = False
     in_code = False
-    sec_has_era = False
     reg_tokens = set(str(v) for v in art.values())
+    prev_tail = ""
     for idx, line in enumerate(lines, 1):
-        if "GOLDEN-REGISTRY" in line:
-            in_registry = "END" not in line
+        # Слип переноса «…shasum -a» / «256…»: leading-число + prev-хвост «-a»
+        # = аргумент утилиты, не счётчик (иначе NAMED не видит wrap-разрыв).
+        if line.lstrip().startswith("256") and prev_tail.endswith("-a"):
+            line = "shasum " + line
+        prev_tail = line.rstrip()[-8:]
+        # Латч ТОЛЬКО машиночитаемых маркеров (урок #329: prose-строки с
+        # word «GOLDEN-REGISTRY» включали latch навсегда = 52 % файла вне
+        # скана: README:190/313/407). START = строка «GOLDEN-REGISTRY: …»
+        # (= строка данных), END = HTML-комментарий маркер.
+        stripped = line.strip()
+        if stripped.startswith("<!--") and "GOLDEN-REGISTRY:END" in line:
+            in_registry = False
+            continue
+        if stripped.startswith("<!--") and "GOLDEN-REGISTRY" in line:
+            in_registry = True  # открыт блок, ждём строку данных
+            continue
+        if in_registry:
+            # Внутри блока сканируем ТОЛЬКО строку данных (она сама =
+            # якорь, проверена registry-сверкой выше); остальное = комментарий.
+            if REGEX_ROW.match(stripped):
+                continue
+            if stripped.startswith("<!--") or stripped.startswith("-->"):
+                if stripped.endswith("-->"):
+                    in_registry = False
+                continue
             continue
         if line.lstrip().startswith("```"):
             in_code = not in_code
             continue
         if in_code:
             continue
-        if line.startswith("#"):
-            sec_has_era = bool(ERA.search(line))
+        tm = TABLE_ROW.match(line.strip())
+        if tm:
+            # Таблица счётчиков = человекочитаемое отображение реестра:
+            # ЛЮБОЕ число строки вне reg_tokens = дрейф (mut2-контра:
+            # «298» в таблице = красный). Формат-строки |---| пропускаем.
+            for tok in re.findall(r"\d+", line):
+                if int(tok) < MIN_ANCHOR:
+                    continue
+                if tok not in reg_tokens:
+                    fails += 1
+                    fail("REGISTRY", "README:%d таблица-отображение: %s ∉ реестр %s"
+                         % (idx, tok, sorted(reg_tokens, key=int)))
             continue
-        if in_registry:
-            continue
-        scannable = HYPHEN_GROUP.sub(" ", DATA_DIGITS.sub("", QUOTED.sub(" ", line)))
+        # (wrap-перенос обрабатывается в caller: prev_tail «-a» + leading «256».)
+        # Данные: квотированный фрагмент (ПДн-литералы) и длинные токены
+        # ВНЕ квот (≥7 цифр: ИНН/ОГРН вперемешку с прозой); 4–6-значные
+        # ГОЛЫЕ числа = счётчики/ссылки = сканируются (урок #329: DATA_DIGITS
+        # ≥4 сжирал «293» — bare-число как раз и есть якорь-кандидат).
+        scannable = HYPHEN_GROUP.sub(" ", QUOTED.sub(" ", line))
+        # цифра, примыкающая к «%» = статистика (9862 в «97.9862 %»), не счётчик
+        scannable = re.sub(r"(?<!\d)\d+(?=\s*%)", " ", scannable)
+        scannable = re.sub(r"%\s*[.,(]\s*(\d+)", "% \1", scannable)  # «98 %, lo(356…»
+        scannable = DATA_DIGITS.sub(" ", scannable)
         scannable = NAMED.sub(" ", scannable)
-        era = ERA.search(line) or ID_LOCAL.search(line) or ASSIGN.search(line) or sec_has_era
+        scannable = TRAIL.sub(" ", scannable)
+        scannable = SIZE_QUANT.sub(" ", scannable)
+        era = (ERA.search(line) or ID_LOCAL.search(line)
+               or TRAIL.search(line)
+               # «30 строк с НЕвалидными» = счётчик сплита с квантором
+               # «строк с…» (не объём носителя «247 строк») = НЕ era-маркер
+               # (mut5-контра #329: SIZE_QUANT не легитимирует строку).
+               )
         if era:
             # «N = **299**» = реестр в прозе: значение реестра в адресованной
             # строке легально ТОЛЬКО в явной форме «N =»/«= N» (урок #281:
@@ -242,7 +340,15 @@ def main() -> int:
                 # «N = <история>» легально только с адресом эпохи в СВОЕЙ
                 # строке (v1.NN / PR# / «историч» / «больше не» / span-уровень);
                 # «планка ≥ 98 % при N=146+» без адреса = дрейфующий якорь.
-                if not re.search(r"v1\.\d|PR\s*#\d|историч|больше не|span-уровн|N=146\+", line):
+                # адрес эпохи в СВОЕЙ строке (легальный «N =»-историк) +
+                # статистическая форма «N=50»/«n=67» (подпись, пробел опц.)
+                if not re.search(
+                        r"v1\.\d|PR\s*#\d|историч|больше не|span-уровн"
+                        # «статистическая n=» = малые n (<100 = не счётчик
+                        # датасета); \b-граница НЕ работает после кириллицы
+                        # (unicode word char) = lookbehind по ASCII.
+                        r"|N=146\+|(?<![A-Za-z0-9_])[nN] ?= ?\d{1,2}\b",
+                        line):
                     fails += 1
                     fail("REGISTRY", "README:%d «N = %s» без адреса эпохи ≠ артефакт %s"
                          % (idx, mmN.group(1), art["N"]))
