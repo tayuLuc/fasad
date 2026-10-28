@@ -227,6 +227,14 @@ python-lint:
     # #100: маржа гейта (#14B) = selftest'ы чистых функций (stdlib-путь, без
     # ort-весов: рюлинг #81) смонтированы в CI = пороговая клетка bar±ε живая.
     uv run --locked python tools/metrics/union_recall.py --selftest-bar
+    # #104: хардкод-страж render_report — аналитические числа (медианы смещения
+    # координат, фикстуры-номера, bait-доли) обязаны приходить из артефакта
+    # прогона (`COORD|`/`UNION|`) или из data/golden (выборка), а не из
+    # строкового литерала генератора; без источника — только с датой промера.
+    uv run --locked python tools/metrics/render_report.py --selftest-hardcode
+    # #104: фикстуры §6 п.9 = выборка из data/golden, а не список номеров в
+    # прозе: окно промерено, воспроизводима, контроль жив (пустое окно = пусто).
+    uv run --locked python tools/metrics/render_report.py --selftest-fixtures
 
 # Побайтовая воспроизводимость golden-датасета: реген + сверка с B2-константой
 # (тот же инвариант, что tests/golden_v1.rs::golden_file_sha256_matches_embedded_const).

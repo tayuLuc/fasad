@@ -20,6 +20,7 @@ re-count by machine). Прогон меняешь — документ пере�
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -88,8 +89,167 @@ def num(x: str) -> float:
         return -1.0
 
 
+GOLDEN_JSONL = Path(__file__).resolve().parents[2] / "data" / "golden" / "golden-v1.jsonl"
+# Классы с детерминированной чексуммой = те, чью валидность харнес подтверждает
+# без моделей (SPEC §4: приоритет валидатора 1.0): пример «детектор прав, метки
+# молчат» (§6 п.9) имеет смысл только про такие номера.
+FIXTURE_CLASSES = ("card_pan", "iban")
+# Окно id = промер датасета 28.10 (первичка = selftest `--selftest-fixtures`,
+# не комментарий): в нём ровно `FIXTURE_EXPECT` gold-спанов обоих классов с
+# проходящей чексуммой. Ровно они = выборка, на которой пункт §6 п.9 был
+# написан руками (g0289–g0293).
+FIXTURE_ID_LO, FIXTURE_ID_HI = "g0285", "g0293"
+FIXTURE_EXPECT = 5
+# Дата промера датасета для прозы фикстур (#104: строка без артефакта прогона
+# живёт только с явной датой). Снимается с `data/golden/golden-v1.jsonl`:
+# `uv run python tools/metrics/render_report.py --selftest-fixtures` печатает
+# выборку; правка датасета = правка этой даты (иначе строка врёт о срезе).
+FIXTURE_PROSE_DATE = "28.10"
+
+
+def _luhn_ok(compact: str) -> bool:
+    digits = [int(c) for c in compact][::-1]
+    total = 0
+    for i, x in enumerate(digits):
+        if i % 2:
+            x *= 2
+            x -= 9 if x > 9 else 0
+        total += x
+    return total % 10 == 0
+
+
+def _iban_ok(compact: str) -> bool:
+    """ISO 13616 / ISO 7064 mod 97-100: BBAN+CC, letters = A→10, остаток 1.
+
+    Наивный вариант («CC+BBAN как есть») на первичке даёт обратный результат:
+    `DE89370400440532013000` (эталон реестра) по нему невалиден, валиден
+    `DE17370400445254208551` — промер датасета, 6 из 7 DE-номеров эталонного
+    банка живут по ISO-формуле (то же вето, что в Rust-валидаторе каскада 0).
+    """
+    rearr = compact[4:] + compact[:4]
+    digits = "".join(str(ord(c) - 55) if c.isalpha() else c for c in rearr)
+    return digits.isdigit() and int(digits) % 97 == 1
+
+
+def checksum_valid(category: str, value: str) -> bool | None:
+    """True/False = промер чексуммы по значению; None = класс без чексуммы."""
+    compact = re.sub(r"[^0-9A-Za-z]", "", value).upper()
+    if category == "card_pan":
+        return compact.isdigit() and len(compact) >= 12 and _luhn_ok(compact)
+    if category == "iban":
+        return len(compact) >= 15 and compact[:2].isalpha() and _iban_ok(compact)
+    return None
+
+
+def golden_fixtures(path: Path | None = None,
+                    classes: tuple[str, ...] = FIXTURE_CLASSES,
+                    id_lo: str = FIXTURE_ID_LO, id_hi: str = FIXTURE_ID_HI) -> list[dict]:
+    """#104: фикстура-пример = **выборка из `data/golden`**, не список в прозе.
+
+    Отбор детерминирован: gold-спаны классов `classes` из id-окна
+    `id_lo..id_hi`, чьё `value_source` проходит чексумму класса, по id вверх.
+    Окно = промер датасета (константы выше), его содержимое проверяет selftest
+    `--selftest-fixtures` (число, воспроизводимость, состав по классам).
+
+    Почему окно, а не «N последних валидных в файле»: ad-hoc-промер
+    (`tools/metrics/fixture_window_probe.py`, 28.10) — последних валидных
+    card_pan/iban в датасете ровно 5 (g0289–g0293) и ниже окна идёт плато из
+    57 валидных спанов (g0004–g0169); «N последних» без N неотличим от
+    хардкода. Окно с промеренным содержимым и живым контролем = та же
+    выборка + доказательство, что датасет её даёт.
+
+    Краснеть обязано и на дрейфе датасета: если окно опустеет/разрастётся,
+    selftest FAIL — значит проза «все N — валидные ПДн» больше не о чём, и
+    пункт надо писать заново по новому составу, а не по старому списку.
+    """
+    src = path or GOLDEN_JSONL
+    out: list[dict] = []
+    for row in src.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(row)
+        rid = rec.get("id", "")
+        if not (id_lo <= rid <= id_hi):
+            continue
+        for sp in rec.get("spans", []):
+            cls, val = sp.get("category"), sp.get("value_source")
+            if cls not in classes or not val:
+                continue
+            ok = checksum_valid(cls, val)
+            if ok:
+                out.append({"id": rid, "split": rec.get("split", "?"),
+                            "category": cls, "value": val, "checksum": True})
+    return sorted(out, key=lambda x: x["id"], reverse=True)
+
+
+def golden_row(category: str, token: str,
+               path: Path | None = None) -> dict | None:
+    """Доказательство существования значения в датасете: строка + класс, в
+    разметке которого `token` = `value_source`. Чин по §6 п.2/п.3 обязан быть
+    привязан к конкретным строкам датасета, а не к номеру, набранному в прозе
+    генератора (#104): промер чексуммы и id строки = из `data/golden`."""
+    src = path or GOLDEN_JSONL
+    for row in src.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(row)
+        for sp in rec.get("spans", []):
+            if sp.get("category") == category and sp.get("value_source") == token:
+                return {"id": rec.get("id"), "split": rec.get("split"),
+                        "category": category, "value": token,
+                        "checksum": checksum_valid(category, token)}
+    return None
+
+
+def golden_inventory(classes: tuple[str, ...] = FIXTURE_CLASSES,
+                     path: Path | None = None) -> dict:
+    """Инвентарь датасета по классам с чексуммой: состав compact-значений
+    (длины, префиксы стран) и счётчик проходящих/непроходящих. Источник
+    оцифровки §6 п.3 (состав IBAN-набора) — датасет, а не список в прозе."""
+    src = path or GOLDEN_JSONL
+    inv: dict[str, dict] = {c: {"n": 0, "valid": 0, "lens": set(), "cc": set()}
+                            for c in classes}
+    for row in src.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(row)
+        for sp in rec.get("spans", []):
+            cls, val = sp.get("category"), sp.get("value_source")
+            if cls not in inv or not val:
+                continue
+            compact = re.sub(r"[^0-9A-Za-z]", "", val).upper()
+            e = inv[cls]
+            e["n"] += 1
+            e["valid"] += int(bool(checksum_valid(cls, val)))
+            e["lens"].add(len(compact))
+            if cls == "iban":
+                e["cc"].add(compact[:2])
+    return inv
+
+
+def fixture_prose(items: list[dict], measured: str) -> str:
+    """Строка примеров: номера + класс + verdict чексуммы, **вычисленные** из
+    датасета. `measured` = дата промера (требование #104: строка без
+    артефакта прогона живёт только с явной датой)."""
+    parts = []
+    for x in items:
+        mark = "чексумма проходит" if x["checksum"] else "чексумма НЕ проходит"
+        parts.append(f"`{x['value']}` ({x['category']}, {mark}; промер {measured})")
+    return "; ".join(parts)
+
+
 def g(fields: list[str], key: str, default: str = "?") -> str:
     return fields[fields.index(key) + 1] if key in fields else default
+
+
+def sgp(d: dict, key: str, field: str = "") -> str:
+    """#104: число из COORD|-промера **со знаком** («+5», «−8»).
+
+    Артефакт несёт медиану целым без знаковой рамки (`median|5`, `median|-8`);
+    прозе отчёта нужен явный знак — направление смещения и есть суть пункта.
+    Форматирование (знак) = генератора, величина = артефакта: литерал числа в
+    прозе запрещён законом «форматированное число не факт». Нет промера = «?»
+    (тот же контракт, что у `gp`: плейсхолдер честнее выдуманного числа).
+    """
+    try:
+        val = float(gp(d, key, field))
+    except ValueError:
+        return "?"
+    return f"{'+' if val >= 0 else '−'}{abs(val):g}"
 
 
 def gp(d: dict, key: str, field: str = "", default: str = "?") -> str:
@@ -268,9 +428,166 @@ def consistency(d: dict) -> list[str]:
     return bad
 
 
+# #104: хардкод-страж. Числа АНАЛИТИЧЕСКИХ секций = промер, он живёт в артефакте
+# прогона (`COORD|d_end|median|…` из probe_coords.py, `UNION|…`) и читается через
+# gp()/g(); в строковом литерале генератора такое число = запёкшаяся медиана
+# прошлого прогона. Класс дефекта пойман ревью #80 (направление смещения было
+# перевёрнуто в тексте) и #100 (вердикт о планке литералом); #104 — тот же класс
+# в §6 п.9 и §7 п.2.
+#
+# ТРИ ПРАВИЛА = три формы, в которых промерное число маскируется под прозу:
+#   coordinate-shift — медиана смещения координат (§6 п.4 / §7 п.2);
+#   fixture-number   — ПДн-номер из выборки golden (13+ цифр подряд, §6 п.9);
+#   bait-share       — доля/счётчик bait-счётчиков «N/M» (§6 п.9).
+#
+# «Константа сравнения» = поле, не число: строка с маркером промера и датой
+# («промер 20.10», «§W2.7 C» — см. §5.5, §7) легальна по рюлингу «строки без
+# источника = с явной датой промера». Дата в той же строке снимает подозрение.
+HARDCODE_RULES: tuple[tuple[str, str], ...] = (
+    ("coordinate-shift", r"(?:d_start|d_end)[^\n]{0,24}?[−+-]\s?\d+(?:\.\d+)?"),
+    ("fixture-number", r"(?<![\d.])\d{13,}(?![\d.])"),
+    ("bait-share", r"(?:каскад 0|lockR|bait)[^\n]{0,12}?\b\d{1,3}/\d{1,3}\b"),
+)
+_MEASURED_MARK = re.compile(r"промер|первичк|§\s*W2\.7|артефакт")
+_MEASURED_DATE = re.compile(r"\b\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\b")
+# Данные positive control'а хардкод-стража живут ВНЕ сканируемого файла
+# (`tools/metrics/hardcode_control_src.py`): литералы подсаженных чисел внутри
+# `render_report.py` заставили бы исключать целое правило из само-скана, и мута
+# «вернуть запечённую медиану в прозу» прошла бы зелёной (промер на #104).
+HARDCODE_CONTROL_SRC = Path(__file__).resolve().parent / "hardcode_control_src.py"
+
+
+def scan_hardcoded_source(src: str, name: str = "<generated>") -> list[str]:
+    """Ядро скана на исходнике в памяти: нужен positive control'ю (#104), чтобы
+    доказать живость контроля — страж обязан ловить подсаженный литерал, а не
+    только свой собственный файл. Правил не глохнет ни одно: само-скан
+    `render_report.py` идёт полным набором (данные контроля — в отдельном
+    файле), иначе страж слепнет ровно там, где его проверяют.
+
+    Область = **только печатаемое**: строковые литералы, доходящие до
+    пользователя в `docs/golden-report.md` (аргументы вызовов, в т.ч. части
+    f-строк). Docstring'ы скан не трогает: закон #104 про то, что видит читатель
+    отчёта, а число в объяснении формулы чексуммы документ не печатает и
+    расхождению с прогоном не подвержено.
+    """
+    import ast
+
+    lines = src.splitlines()
+    out: list[str] = []
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Call):
+            continue
+        for arg in list(node.args) + [kw.value for kw in node.keywords]:
+            parts = ([arg] if not isinstance(arg, ast.JoinedStr)
+                     else [v for v in arg.values if isinstance(v, ast.Constant)])
+            for part in parts:
+                if not isinstance(part, ast.Constant) or not isinstance(part.value, str):
+                    continue
+                for rule_name, pat in HARDCODE_RULES:
+                    if not re.search(pat, part.value):
+                        continue
+                    window = "\n".join(lines[max(0, part.lineno - 4): part.lineno + 3])
+                    if _MEASURED_MARK.search(window) and _MEASURED_DATE.search(window):
+                        continue
+                    out.append(f"{name}:{part.lineno}: [{rule_name}] :: "
+                               f"{part.value.strip().replace(chr(10), ' ')[:72]}")
+    return sorted(set(out))
+
+
+def scan_hardcoded_literals(path: str | Path) -> list[str]:
+    """#104: grep-запрет запечённых чисел промера в строковых литералах.
+
+    АСТ, не regex по файлу: литерал + номер строки + то, что он печатается
+    напрямую (узлы f-строки вне интерполяции) — мута «`{gp(...)}` → литерал»
+    обязана краснеть, а комментарий с примером числа — нет.
+    """
+    return scan_hardcoded_source(Path(path).read_text(encoding="utf-8"),
+                                 Path(path).name)
+
+
+def run_fixture_selftest() -> int:
+    """Positive control выборки фикстур (#104): датасет обязан давать её сам.
+
+    Три клетки: (1) воспроизводимость — два прогона сэмплера совпадают;
+    (2) содержимое окна = `FIXTURE_EXPECT` спанов и >=2 класса (иначе проза
+    «все N» врёт про состав); (3) ЖИВОСТЬ — на синтетическом датасете с
+    вырезанным окном сэмплер обязан вернуть пусто: контроль, который на пустом
+    входе молчит, зелёный без причины (реестр ложно-зелёных).
+    """
+    a = golden_fixtures()
+    b = golden_fixtures()
+    if [x["value"] for x in a] != [x["value"] for x in b]:
+        print("FAIL: выборка фикстур невоспроизводима (дрейф порядка обхода?)")
+        return 2
+    cls = sorted({x["category"] for x in a})
+    bad: list[str] = []
+    if len(a) != FIXTURE_EXPECT:
+        bad.append(f"окно {FIXTURE_ID_LO}–{FIXTURE_ID_HI} даёт {len(a)} спанов, "
+                   f"ожидание {FIXTURE_EXPECT}")
+    if len(cls) < 2:
+        bad.append(f"в выборке классов {cls} < 2 — проза «все N» про состав врёт")
+    if any(not x["checksum"] for x in a):
+        bad.append("в выборке есть номер с непроходящей чексуммой")
+    # Мёртвый-контроль клетка: окно, в котором ничего нет, обязано дать пусто.
+    empty = golden_fixtures(id_lo="g9000", id_hi="g9999")
+    if empty:
+        bad.append(f"порожнее окно вернуло {len(empty)} — контроль мёртв")
+    print(f"CONTROL|fixtures|n|{len(a)}|classes|{'+'.join(cls)}"
+          f"|ids|{'-'.join(sorted({x['id'] for x in a}))}"
+          f"|repro|{'ok' if a == b else 'DRIFT'}|empty-window|{'ok' if not empty else 'DEAD'}")
+    for x in a:
+        print(f"  fixture: {x['id']} {x['category']} {x['value']}")
+    if bad:
+        for x in bad:
+            print(f"FAIL: {x}")
+        return 1
+    print("OK: фикстуры = выборка из data/golden (окно промерено, контроль жив)")
+    return 0
+
+
+def run_hardcode_selftest() -> int:
+    """Positive control хардкод-стража (#104): живой контроль = ловит подсаженное.
+
+    Контрольные литералы = файл `hardcode_control_src.py` (данные, не код
+    генератора): страж обязан найти в нём ровно `PLANTED` хитов, иначе контроль
+    мёртв. Параллельно сканируется собственный файл полным набором правил:
+    хиты = RED (#104 на HEAD), чисто = GREEN. rc=1 = найдены запечённые числа
+    (страж сработал), rc=2 = контроль мёртв (не ловит подсаженное).
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_hardcode_control", HARDCODE_CONTROL_SRC)
+    ctl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ctl)
+    planted_src = "def main():\n" + "".join(f"    A({x!r})\n" for x in ctl.PLANTED)
+    planted = scan_hardcoded_source(planted_src, HARDCODE_CONTROL_SRC.name)
+    n_planted = len(ctl.PLANTED)
+    if len(planted) != n_planted:
+        print(f"CONTROL|hardcode|planted|{n_planted}|caught|{len(planted)}|verdict|DEAD")
+        print("FAIL: контроль мёртв — страж ловит не все подсаженные запечённые числа")
+        return 2
+    print(f"CONTROL|hardcode|planted|{n_planted}|caught|{len(planted)}|verdict|live")
+    hits = scan_hardcoded_literals(Path(__file__).resolve())
+    print(f"CONTROL|hardcode|rules|{len(HARDCODE_RULES)}|hits|{len(hits)}"
+          f"|verdict|{'GREEN' if not hits else 'RED'}")
+    for x in hits:
+        print(f"  baked: {x}")
+    if not hits:
+        print("OK: хардкод-страж зелёный (запечённых чисел промера в литералах нет)")
+        return 0
+    print(f"FAIL (#104): {len(hits)} запечённых чисел промера в литералах генератора — "
+          "тяни их из артефакта (`COORD|`/`UNION|` через gp()/g()) либо из "
+          "data/golden (выборка), либо ставь явную дату промера в строку")
+    return 1
+
+
 def main() -> int:  # noqa: C901, PLR0912, PLR0913 — линейная сборка markdown, ветвлений ради читаемости много
     if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
         return run_self_test()
+    if len(sys.argv) == 2 and sys.argv[1] == "--selftest-hardcode":
+        return run_hardcode_selftest()
+    if len(sys.argv) == 2 and sys.argv[1] == "--selftest-fixtures":
+        return run_fixture_selftest()
     if len(sys.argv) not in (3, 4):
         sys.exit(__doc__)
     raw = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
@@ -387,7 +704,12 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0913 — линейная сбор
     A("`strict_span` (только координатные каскады), `union_row` (доля рядов с хотя бы одним")
     A("пойманным span'ом). В отчётах наружу мера называется полным именем.")
     A("")
-    A("Отрицательный split (54 ряда, 24 bait-спанов) меряется отдельно (§5.3): union-метрика")
+    # #104: знаменатель отрицательного сплита = из артефакта (`UNION|dataset|`).
+    # Литерал «54 ряда, 24 bait-спанов» был срезом более старого прогона и уже
+    # расходился с первичкой этого документа (64/25) — ровно тот риск, из-за
+    # которого заведена строка.
+    A(f"Отрицательный split ({g(ds, 'negative_rows')} ряда,"
+      f" {g(ds, 'negative_spans')} bait-спанов) меряется отдельно (§5.3): union-метрика")
     A("FN-ориентирована (SPEC: FN фатален, FP дёшев), без FP-контроля она бессмысленна.")
     A("")
     A("## 4. Воспроизведение")
@@ -548,18 +870,32 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0913 — линейная сбор
     A("   а не путь продукта. Гейт #14 закрывается только монтажом каскадов 1/2 в рантайм.")
     A("2. **Корень почти всего дефицита — нормализация формата номера (issue #51), а не")
     A("   качество моделей.** Промер промахов каскада 0 по составу значения (разведочный")
-    A("   скрипт на том же демоне через `/v1/analyze`, координаты байтовые):")
-    A("   - `snils`: 28 промахов из 29, **все 28 форматированные** (`378-312-074 87`),")
-    A("     обычных промахов — 0 (`c0` = 1/29, и этот один именно обычный вид);")
-    A("   - `card_pan`: 15 промахов, **все форматированные** (`2204-9947-4132-9761`);")
-    A("   - `iban`: 21 промах = 18 форматированных (`RU19 0445… ` через пробел) + 3")
-    A("     обычных валидных (24-символьные ES-семейства, `ES6987181615681144316009`).")
+    A("   скрипт на том же демоне через `/v1/analyze`, координаты байтовые; базлайн #80,")
+    A("   20.10 — состав промахов в артефакте прогона не несётся, счётчики ниже это")
+    A("   промер того среза, форма примеров — иллюстрация, сверяемая с датасетом:")
+    A("   - `snils`: большинство промахов — форматированный вид (`XXX-XXX-XXX XX`),")
+    A("     обычного вида почти нет;")
+    A("   - `card_pan`: промахи — форматированный вид (`NNNN-NNNN-NNNN-NNNN`);")
+    A("   - `iban`: промах = форматированный вид (`RUXX 0445… ` через пробел) плюс")
+    A("     несколько обычных валидных длинников (24-символьные ES-семейства; в")
+    A("     датасете ES-номера ровно такой длины — промер `golden_inventory`).")
     A("   Чексуммный валидатор требует compact-вид; детектор не нормализует разделители")
     A("   перед проверкой ⇒ вето не срабатывает, score 1.0 не выставляется, span теряется")
     A("   на каскаде, который по определению не промахивается.")
-    A("3. **Состав IBAN-набора** (промер по датасету): 27 span'ов, длины compact 16–33,")
-    A("   префиксы BE, DE, ES, FR, NL, RU; mod-97 — валидны все 27 (разведочная")
-    A("   перепроверка, не оракул ожидаемого значения). Каскад 0 накрывает 6, хвост")
+    # #104: оцифровка состава IBAN-набора = промер по ДАТАСЕТУ, а не список
+    # чисел в прозе. Влитая версия («27 span'ов … валидны все 27 … накрывает 6»)
+    # расходилась с первичкой в обе стороны: span'ов 31, валидны по ISO 7064
+    # mod 97-100 не все, префиксов 7 (GB в списке не было). Накрывка каскада 0 =
+    # из артефакта прогона (per-class exact), а не из разведочного промера.
+    ib = golden_inventory(("iban",))["iban"]
+    iban_pc = pc.get("iban")
+    A("3. **Состав IBAN-набора** (промер по датасету, `tools/metrics/render_report.py`")
+    A(f"   `golden_inventory()`, {FIXTURE_PROSE_DATE}): {ib['n']} span'ов, длины compact")
+    A(f"   {min(ib['lens'])}–{max(ib['lens'])}, префиксы {', '.join(sorted(ib['cc']))};")
+    A(f"   mod-97 (ISO 7064) — валидны {ib['valid']} из {ib['n']} (разведочная")
+    A("   перепроверка, не оракул ожидаемого значения: непроходящие = разметка")
+    A("   bait-блока, не дефект харнеса). Каскад 0 на этом артефакте накрывает")
+    A(f"   {iban_pc[4]}/{iban_pc[3]} (per-class exact, τ = {thr0}), хвост")
     A("   закрывается не моделью: нормализация (#51) + покрытие длин/стран в валидаторе")
     A("   (таблица счетов первичкой не закрыта: SPEC §11 п.6, AGENTS §Дисциплина п.3).")
     A("4. **Расхождение оракулов и направление смещения координат** — метрика чувствительна")
@@ -605,14 +941,28 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0913 — линейная сбор
     A("   Rust-харнес и этот промер (сравнивают с планкой **нижнюю границу**, т.е. самый")
     A("   жёсткий вариант). Пока владельцем не выбран один, «гейт закрыт» — слово с тремя")
     A("   значениями. Прогон печатает и точку, и границу, не выбирая за SPEC. **#77**.")
+    # #104: три числа этого пункта были литералами прошлого прогона —
+    # `5 span'ов` / `bait_c0 = 0` / «0/24, 9/24». Артефакт этого артефакта
+    # говорит другое (bait_c0 = 11, bait_lockr = 11, negative_rows = 64):
+    # запечённая проза уже расходилась с первичкой под ней, что и есть риск
+    # #104. Числа берутся из `UNION|negative|` / `UNION|dataset|`, номера —
+    # выборкой из `data/golden` (selftest `--selftest-fixtures`).
+    ng0 = next((f for f in d["negative"] if f[3] == thr0), d["negative"][0] if d["negative"] else [])
+    fx = golden_fixtures()
     A("9. **Отрицательный сплит недо-размечен, «FP» по нему неизмерим.** Каскад 0 на")
-    A("   `split=negative` выпускает 5 span'ов, ни один не на приманке (`bait_c0 = 0`), и")
-    A("   все 5 — валидные ПДн: `2200000000000004`, `5555555555554444`, `378282246310005`,")
-    A("   `30569309025904` (Luhn), `DE89370400440532013000` (IBAN из эталона реестра),")
-    A("   score 1.0. То есть детектор прав, а метки не покрывают реальную ПДн в строке.")
+    A(f"   `split=negative` ({g(ds, 'negative_rows')} ряда,"
+      f" {g(ds, 'negative_spans')} bait-спанов в знаменателе)")
+    A(f"   выпускает спаны вне разметки: каскад 0 — {g(ng0, 'spans_c0')} спанов, lockR —")
+    A(f"   {g(ng0, 'spans_lockr')}, union — {g(ng0, 'spans_union')} (артефакт")
+    A(f"   `UNION|negative|`, τ = {g(ng0, 'thr')}, где bait-счётчики"
+      f" {g(ng0, 'bait_c0')} и {g(ng0, 'bait_lockr')}). Это")
+    A("   не выдумка: в датасете есть gold-номера, которые каскад 0 накрывает корректно —")
+    A("   " + fixture_prose(fx, FIXTURE_PROSE_DATE) + ".")
+    A("   То есть детектор прав, а метки не покрывают реальную ПДн в строке.")
     A("   По определению README («FP = пойманный спан на месте **не-PII**») это не FP.")
-    A("   Следствие: FP-контроль читается только по bait-счётчикам (каскад 0: 0/24 —")
-    A("   декорации отброшены чексуммами; lockR: 9/24 — model-bait проходит). Правка")
+    A(f"   Следствие: FP-контроль читается только по bait-счётчикам (τ = {g(ng0, 'thr')}:"
+      f" каскад 0 {g(ng0, 'bait_c0')}/{g(ds, 'negative_spans')}, lockR"
+      f" {g(ng0, 'bait_lockr')}/{g(ds, 'negative_spans')}). Правка")
     A("   датасета: размечать реальные номера в negative-строках, иначе FP-гейт")
     A("   ложно-красный на правильном поведении. Заведено как **#78**.")
     A("10. **Самопроверка координатной шкалы** (класс инцидента «координатное смещение»).")
@@ -640,8 +990,14 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0913 — линейная сбор
     A("   продукт (#14 часть A, `pipeline.rs`).")
     A("2. Поднять `strict_span` до уровня `union_span`: чинить **усечение** границ (оракул")
     A("   exact), а не полагаться на row-level кредит. Направление правки задаёт промер §6 п.4:")
-    A("   предсказание никогда не выходит за gold (superset 0), весь разрыв exact-vs-overlap")
-    A("   = обрезанные хвосты (медиана d_end −8 байт) и сдвинутые начала (d_start +5).")
+    A(f"   предсказание никогда не выходит за gold (superset {gp(d, 'relations', 'superset')}),")
+    A("   весь разрыв exact-vs-overlap")
+    # #104: медианы смещения = из артефакта промера (`COORD|`-строки
+    # probe_coords.py), тот же источник, что у §6 п.4. В первой версии строка
+    # печатала литерал прошлого прогона: при следующем промере медианы
+    # сдвинулись бы и план правки «восстанавливать границы» повис бы в воздухе.
+    A(f"   = обрезанные хвосты (медиана d_end {sgp(d, 'd_end', 'median')} байт) и сдвинутые")
+    A(f"   начала (d_start {sgp(d, 'd_start', 'median')}).")
     A("   Значит задача — **восстанавливать** границы (отменять `##`-трим хвостов, добирать")
     A("   токены в начале до границы слова), а не обрезать: план ревью остаётся валидным,")
     A("   меняется только направление правки.")
