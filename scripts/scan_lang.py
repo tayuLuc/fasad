@@ -446,7 +446,22 @@ def _noinput(reason: str) -> int:
     return 2
 
 
+
+
+
 def main() -> int:
+    # cp1252-guard (CI windows-2022, python-golden): stdout раннера = cp1252,
+    # кириллические print'ы (PRECHECK/METASENV/CONTROL/ANCHOR-тексты) падают
+    # UnicodeEncodeError ДО вердикта = ложно-красный зуб (промер CI: red
+    # python-golden windows на print("OK: хардкод-страж зелёный") #104-контура).
+    # reconfigure utf-8 = стандарт CPython для класса; errors="replace" — запас
+    # для узких кодовых страниц. В начале main(): закрывает print-пути всех
+    # селфтест-веток; сканер #104 (литералы main) остаётся вне зоны (id 19-значн.).
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass  # stdout заменён (redirect_stdout в селфтестах) — не трогать
     ap = argparse.ArgumentParser(
         description="Язык-гейт текста репозитория: CJK/арабица/иврит/деванагари и "
                     "склейка кириллицы с латиницей.",

@@ -7,11 +7,31 @@
 name = "fasad-tools"
 version = "0"
 description = "dev tooling: only what scripts/ and data/golden need"
-requires-python = ">=3.10"
+# #81: окно = wave-контра metrics-стека (см. [dependency-groups] metrics).
+# Пины = версиям артефакта промера (docs/golden-report.md: python 3.13.13,
+# ort 1.31.0, numpy 2.5.4 — первичка PyPI 28.10). Верх <3.15: onnxruntime
+# 1.31.0 = cp311–cp314, на 3.15 группа metrics не резолвится (промер HEAD:
+# «No solution found»); низ >=3.12: numpy 2.5.4 = cp312+. Интерпретатор
+# промера фиксируется .python-version = 3.13 (артефакт + ~/.local + волна
+# колёс cp313 всех трёх метрик на linux/win/mac-arm64, промер PyPI 28.10).
+# Зуб scripts/metrics_env_check.py (just python-lint) сверяет .python-version
+# с диапазоном + wheel-контрой трёх ОС CI-матрицы (python-golden).
+requires-python = ">=3.12, <3.15"
 dependencies = []
 
 [dependency-groups]
 dev = ["ruff==0.17.0"]  # пин = промер локали этим дифом, не из головы
+# #81: python-окружение ПРОМЕРА union-recall/probe_coords — часть воспроизводимости
+# метрики. Дрифт onnxruntime = другой инференс = другие recall-числа; sha-префлайт
+# харнеса меряет веса/датасет/схему, но НЕ библиотеку. Пины = версиям артефакта
+# промера docs/golden-report.md (python 3.13.13, ort 1.31.0, numpy 2.5.4) —
+# промер PyPI 28.10; зуб scripts/metrics_env_check.py (just python-lint) сверяет
+# pyproject ∩ uv.lock ∩ .python-version ∩ wheel-контру.
+metrics = [
+    "numpy==2.5.4",
+    "onnxruntime==1.31.0",
+    "tokenizers==0.23.3",
+]
 
 [tool.ruff]
 line-length = 120

@@ -43,11 +43,15 @@ inn-коллизий; строки v1.1 g0001–g0204 побайтово те ж
 Запуск (веса: scripts/fetch-models.sh; каскад 0 — собранный бинарь демона):
   cargo build --bin fasad
   nice -n 10 env OMP_NUM_THREADS=2 \\
-  uv run --isolated --python ~/.local/bin/python3.13 \\
-      --with numpy --with onnxruntime --with tokenizers \\
+  uv run --locked --group metrics \\
       python tools/metrics/union_recall.py --threads 2
-(= `just union-recall`; рюлинг оператора 21.10 «не нагружать CPU ноутбука»:
-nice, 2 треда, один прогон за раз, сетка τ — последовательно в одном процессе.)
+(= `just union-recall` — ЕДИНСТВЕННЫЙ легальный путь промера, #81: окружение
+numpy/onnxruntime/tokenizers запинено в [dependency-groups] metrics (uv.lock),
+интерпретатор — в .python-version; прямой `uv run --isolated --with …` без пина =
+дрейф ORT = другие recall-числа; зуб scripts/metrics_env_check.py (just
+python-lint) краснит возврат recipe к unpinned-форме. Рюлинг оператора 21.10
+«не нагружать CPU ноутбука»: nice, 2 треда, один прогон за раз, сетка τ —
+последовательно в одном процессе.)
 Опции: `--limit N`, `--thr 0.20,0.25`, `--sweep 0.10,0.15,…` (поиск оптимума),
 `--daemon PATH`, `--no-daemon` (каскад 0 пустой = меряем только модели).
 
@@ -439,12 +443,99 @@ def verify_inputs() -> dict[str, str]:
     return shas
 
 
-def daemon_start(binary: str) -> tuple[subprocess.Popen, str, str]:
+def env_selftest() -> None:
+    """Positive control #81 (stdlib-путь, без весов): идентичность окружения и
+    бинаря печатается РЕАЛЬНЫМИ значениями, мусор логов не остаётся.
+
+    Живёт на пути --selftest-bar (CI `just python-lint`): env-строка обязана
+    быть самопроверяемой (доктрина ложно-зелёного: контроль на том же коде,
+    что печатает). Проверяет:
+      (а) env-печать main() содержит токен `tok|` и `ort_lib_sha256|` и берёт
+          значения из переменных (не мёртвая константа — контракт по подстроке
+          f-строки: `\'{tok_version}\'`/`{ort_lib_sha256()}`);
+      (б) идентичность каскада 0: `binary_sha256|<64 hex>` = sha256 файла
+          (эталон — hashlib, тот же источник, что у префлайта весов);
+      (в) _daemon_log_cleanup: keep=True сохраняет файл, keep=False unlink'ит,
+          unlink отсутствующего = не бросает (fail-soft, контракт «мусор не
+          валит промер»).
+    """
+    import inspect
+    src = inspect.getsource(main)
+
+    def _env_seg(seg: str, needle: str) -> None:
+        if needle not in seg:
+            sys.exit(f"FAIL env selftest: {needle!r} вне env-печати (токен выпал из строки)")
+
+    i = src.find('"UNION|env|')
+    if i < 0:
+        sys.exit("FAIL env selftest: UNION|env не найден в main")
+    seg = src[i: src.find("f\"UNION|bar|", i) if "f\"UNION|bar|" in src[i:] else i + 1200]
+    _env_seg(seg, "|tok|{tok_version}")
+    _env_seg(seg, "|ort_lib_sha256|{ort_lib_sha256()}")
+    j = src.find('"UNION|cascade0|binary|')
+    if j < 0:
+        sys.exit("FAIL env selftest: UNION|cascade0 не найден в main")
+    seg0 = src[j: j + 320]
+    _env_seg(seg0, "binary_sha256|{bin_sha}")
+    # печать берёт bin_sha из sha256(binary-байтов) = тот же канал, что префлайт
+    # весов (hashlib.sha256(...read_bytes()).hexdigest()); вычисляющее присваивание
+    # лежит ВНИЗУ main (после selftest-ветки) — ищем от её конца.
+    tail = src[src.rfind("if args.selftest_bar"):]
+    _env_seg(tail, "bin_sha = hashlib.sha256(Path(args.daemon).read_bytes()).hexdigest()")
+    # (б) sha256 = первичка hashlib на том же байтовом канале (эталон, не «тот же код»)
+    import tempfile as _tf
+    with _tf.NamedTemporaryFile(delete=False, suffix=".bin") as f:
+        f.write(b"fasad-identity-probe")
+        tmp = f.name
+    try:
+        want = hashlib.sha256(b"fasad-identity-probe").hexdigest()
+        got = hashlib.sha256(Path(tmp).read_bytes()).hexdigest()
+        if got != want:
+            sys.exit("FAIL env selftest: sha256-канал не детерминирован")
+    finally:
+        os.unlink(tmp)
+    # (в) cleanup-контра: keep сохраняет, unlink убирает, двойной unlink тихий
+    with _tf.NamedTemporaryFile(delete=False, suffix=".log") as f:
+        tmp2 = f.name
+    # Шум keep/unlink-печатей глушим: selftest = PRECHECK-контракт, не прогон.
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()) as _noise:
+        _daemon_log_cleanup(tmp2, keep=True)
+    if not Path(tmp2).is_file():
+        sys.exit("FAIL env selftest: keep=True удалил лог")
+    with contextlib.redirect_stdout(io.StringIO()):
+        _daemon_log_cleanup(tmp2, keep=False)
+    if Path(tmp2).is_file():
+        sys.exit("FAIL env selftest: keep=False оставил лог (мусор в TMPDIR)")
+    with contextlib.redirect_stdout(io.StringIO()) as _noise:
+        _daemon_log_cleanup(tmp2, keep=False)  # уже удалён: OSError = fail-soft, не exit
+    if "unlink-failed" not in _noise.getvalue():
+        sys.exit("FAIL env selftest: двойной unlink не прошёл fail-soft-ветку")
+    print("PRECHECK|env|tok+ort_lib_sha256|binary_sha256|daemon-log-unlink|ok")
+
+
+def _daemon_log_cleanup(path: str, keep: bool) -> None:
+    """#81: лог демона удаляется при reap (unlink), иначе каждый прогон оставляет
+    union-recall-daemon-*.log в $TMPDIR (промер issue: 9 файлов на машине).
+    --keep-daemon-log = диагностика упавшего прогона: путь печатан в
+    UNION|cascade0|log, файл остаётся на диске."""
+    if keep:
+        print(f"UNION|daemon_log|kept|{path}")
+        return
+    try:
+        os.unlink(path)
+    except OSError as exc:  # уже удалён/права — не имеет права валить промер
+        print(f"UNION|daemon_log|unlink-failed|{path}|{type(exc).__name__}")
+
+
+def daemon_start(binary: str, keep_log: bool = False) -> tuple[subprocess.Popen, str, str]:
     """Продуктовый демон на loopback: FASAD_PORT=0 → порт из баннера.
 
     Свой process group + reap на atexit/SIGTERM/SIGINT: SIGTERM харнесу не должен
     оставлять сироту-демона, слушающего loopback (промер 21.10: после убийства
-    харнеса демон выживал — убирается здесь, а не руками оператора).
+    харнеса демон выживал — убирается здесь, а не руками оператора). reap так же
+    unlink'ит лог (#81), кроме --keep-daemon-log.
     """
     if not Path(binary).is_file():
         sys.exit(f"FAIL бинарь каскада 0 отсутствует: {binary} (cargo build --bin fasad)")
@@ -455,14 +546,17 @@ def daemon_start(binary: str) -> tuple[subprocess.Popen, str, str]:
                 "FASAD_THREADS": "2"})
     proc = subprocess.Popen([binary], stdout=log, stderr=subprocess.STDOUT, env=env, cwd=ROOT,
                             start_new_session=True)
+    log.close()  # fd демону передан; родительский handle закрываем (окно unlink'а)
+
+    keep = {"log": keep_log}  # мута при падении демона (см. «не поднялся» ниже)
 
     def reap() -> None:
-        if proc.poll() is not None:
-            return
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
+        if proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        _daemon_log_cleanup(log.name, keep["log"])
 
     atexit.register(reap)
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -475,7 +569,9 @@ def daemon_start(binary: str) -> tuple[subprocess.Popen, str, str]:
         time.sleep(0.05)
     m = re.search(r"listening on http://([\d.]+):(\d+)/health", banner)
     if not m:
-        reap()
+        # Лог падения НЕ unlink'им (#81: keep = диагностика падений): мута
+        # замыкания — atexit-вызов reap после sys.exit увидит keep["log"]=True.
+        keep["log"] = True
         sys.exit(f"FAIL демон не поднялся: {banner!r} ({log.name})")
     return proc, f"http://{m.group(1)}:{m.group(2)}", log.name
 
@@ -747,7 +843,39 @@ def _niceness() -> str:
         return "forbidden-in-sandbox"
 
 
+def ort_lib_sha256() -> str:
+    """sha256 ИСПОЛНЯЕМОЙ shared-библиотеки onnxruntime (#81: версия пакета —
+    ещё не идентичность бинаря; окружение промера восстанавливается из артефакта).
+
+    Кандидаты по ОС: `capi/libonnxruntime*{.dylib,.so,so.*}` (wheel-макет, mac/linux)
+    и onnxruntime.dll (win). sha считаем по ФАЙЛУ, а не по `__file__` пакета.
+    """
+    base = Path(rt.__file__).resolve().parent
+    cands = sorted(base.glob("capi/libonnxruntime*")) + sorted(base.glob("capi/onnxruntime.dll"))
+    for p in cands:
+        # libonnxruntime.1.31.0.dylib (mac) / libonnxruntime.so.1.31.0 (linux) /
+        # onnxruntime.dll (win). py-модуль onnxruntime_pybind11_state.so — НЕ она.
+        if p.is_file() and re.search(r"\.(dylib|so(\.\d+)*|dll)$", p.name):
+            return hashlib.sha256(p.read_bytes()).hexdigest()
+    return "absent"  # fail-visible: поле обязано печататься, «нет файла» ≠ «нет поля»
+
+
+
+
+
 def main() -> None:
+    # cp1252-guard (CI windows-2022, python-golden): stdout раннера = cp1252,
+    # кириллические print'ы (PRECHECK/METASENV/CONTROL/ANCHOR-тексты) падают
+    # UnicodeEncodeError ДО вердикта = ложно-красный зуб (промер CI: red
+    # python-golden windows на print("OK: хардкод-страж зелёный") #104-контура).
+    # reconfigure utf-8 = стандарт CPython для класса; errors="replace" — запас
+    # для узких кодовых страниц. В начале main(): закрывает print-пути всех
+    # селфтест-веток; сканер #104 (литералы main) остаётся вне зоны (id 19-значн.).
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass  # stdout заменён (redirect_stdout в селфтестах) — не трогать
     ap = argparse.ArgumentParser()
     ap.add_argument("--threads", type=int, default=2,
                     help="intra/inter_op потоков ORT (рюлинг 21.10: 2; часть воспроизводимости)")
@@ -764,16 +892,21 @@ def main() -> None:
     ap.add_argument("--out", default="")
     ap.add_argument("--selftest-bar", action="store_true",
                     help="#100: stdlib-контра маржи вердикта и exit (uv-полка CI, без весов)")
+    ap.add_argument("--keep-daemon-log", action="store_true",
+                    help="#81: не удалять union-recall-daemon-*.log при reap (диагностика падений)")
     args = ap.parse_args()
     if args.selftest_bar:
         bar_selftest()
+        env_selftest()  # #81: env-строка + идентичность бинаря + мусор логов
         return
     global np, rt, pg, Tokenizer  # #100: тяжёлые = ленивые (после stdlib-селфтестов)
     import numpy  # noqa: PLC0415
     import onnxruntime  # noqa: PLC0415
     import parity_golden  # noqa: PLC0415
+    import tokenizers  # noqa: PLC0415 — версия пакета в UNION|env (#81)
     from tokenizers import Tokenizer as Tk  # noqa: PLC0415
     np, rt, pg, Tokenizer = numpy, onnxruntime, parity_golden, Tk
+    tok_version = tokenizers.__version__
 
     out_fh = open(args.out, "w", encoding="utf-8") if args.out else None  # noqa: SIM115
     if out_fh:
@@ -802,6 +935,8 @@ def main() -> None:
     for n in sorted({len(rec), n_spans, min(n_cls.values())}):
         print(f"UNION|ci_probe|n|{n}|k_for_bar_98|{k_for_bar(n)}|deficit_at_full|{n - k_for_bar(n)}")
     print(f"UNION|env|python|{platform.python_version()}|ort|{rt.__version__}|numpy|{np.__version__}"
+          f"|tok|{tok_version}"
+          f"|ort_lib_sha256|{ort_lib_sha256()}"
           f"|platform|{platform.system()}-{platform.machine()}|threads|{args.threads}"
           f"|omp_num_threads|{os.environ.get('OMP_NUM_THREADS', 'unset')}"
           f"|niceness|{_niceness()}|seed|n/a-no-RNG")
@@ -815,8 +950,11 @@ def main() -> None:
     proc = None
     base = ""
     if not args.no_daemon:
-        proc, base, dlog = daemon_start(args.daemon)
-        print(f"UNION|cascade0|binary|{args.daemon}|url|{base}|log|{dlog}")
+        proc, base, dlog = daemon_start(args.daemon, keep_log=args.keep_daemon_log)
+        # #81: ПУТЬ бинаря не идентичность (пересобранный демон = тот же путь,
+        # другой каскад 0). sha256 = префлайт, аналогичный весовому (verify_inputs).
+        bin_sha = hashlib.sha256(Path(args.daemon).read_bytes()).hexdigest()
+        print(f"UNION|cascade0|binary|{args.daemon}|binary_sha256|{bin_sha}|url|{base}|log|{dlog}")
     empty = {r["id"]: [] for r in rec + neg}
     c0 = run_cascade0(rec, base, 0.20) if proc else empty
     c0_neg = run_cascade0(neg, base, 0.20) if proc else empty
