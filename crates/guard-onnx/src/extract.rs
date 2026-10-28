@@ -190,6 +190,70 @@ pub fn encode_plus(
     e
 }
 
+/// Канон дефисного склеивания для входа каскада 1 (#160 PR-B): ASCII-дефис
+/// `-` (U+002D) → пробел, байт-сохраняющая 1Б→1Б замена.
+///
+/// Паттерн = [`crate::decide::canonicalize_decide_input`] (#88), контур —
+/// каскад 1. Мотив (гипотеза issue #160, промер токенизации 27.10):
+/// rubert-WordPiece режет `Иванов-Иванов` на куски с границей после дефиса;
+/// B-begin-кусок `ван` после дефиса не обязан получить начало скобки = FN
+/// `person_name` на дефисных ФИО (golden g0284/g0285, v1.12). Раздельное
+/// написание «Иванов Иван» для rubert-модели = родная форма.
+///
+/// # VERDICT живого промера PR-B (paired raw-vs-canon, lockR fp16
+/// @ea7610b2, threads=2, thr=0.20, CI-полка `hyphen_fio_live` = носитель
+/// чисел): FN-гипотеза НЕ подтвердилась КАК ROW-LEVEL FN: обе recall-фикстуры
+/// дают person_name-хит и на raw, и на каноне. Скобка первой дефисной фамилии
+/// РЕЗАНА НА ОБОИХ входах (`50..62` + `63..75`, дыра на байте дефиса):
+/// wordpiece-хвост `##иванов` получает I-тег и через дефис — канон его не
+/// склеивает и не обязан. Что канон даёт (и это его контракт): канон
+/// координатно НЕВИДИМ модели (спаны raw = спаны канона на фикстурах,
+/// parity-зуб полки), т.е. безопасен как входной слой, и нормализует
+/// дефис-склейку входа для span-контура PR-C (дефис-хвост окна `Петрова-`
+/// из промера #160 — эвристика, не lockR). Row-level recall чинить нечем =
+/// fine-тюнинг (запрещённый канал) не истребова́н промером.
+///
+/// # Координатная безопасность (свойство замены, не потребителя)
+///
+/// `-` и пробел — по 1 байту, ASCII ⇒ байтовая длина инвариантна и каждый
+/// байт канона совпадает с оригиналом по позиции. пары смещений `WordPiece`
+/// (`get_offsets`), посчитанные на каноне, валидны в оригинале БЕЗ обратного
+/// маппинга: golden-спаны каскада 1 (и всё, что их consumes — мерж,
+/// маскирование, vault) не сдвигаются НИКОГДА (промер: g0286-гео `36..65`
+/// канон против `36..46` raw — адресная скобка канона шире на склеенном
+/// гео, `person_name` не появляется; FP-контра v1.12 = 0 хитов, промер PR-B).
+///
+/// # Область применения = окно lockR, не продукт
+///
+/// Канон живёт строго внутри [`LockrExtractor::extract`] (токенизация канона,
+/// инференция канона, спаны возвращаются в координатах оригинала — оригинал
+/// запроса не мутируется). Decide/Unigram (#222/#88-контур) НЕ трогается:
+/// BPE/Unigram side Decide — другой токенизатор, первичка issue #160
+/// (промер 1) закрыла BPE-механику #222 как непереносимую; hyphen = отдельный
+/// токен, UNK = 0.
+///
+/// Scope-ограничение канона (why-not-везде): дефис = разделитель и в
+/// не-ФИО-формах, и канонизация их на входе каскада 1 меняет то, что видит
+/// rubert. Гео-бейты (g0286–g0288) после склейки = `Санкт Петербург` и т.п.:
+/// FP-контра v1.12 закрыта CI-полкой `hyphen_fio_live` (гео-бейты = 0
+/// person_name-хитов на живом графе, промер PR-B). Телефонные маски
+/// (`8-800-555-35-35`, g0296) = цифровой контур каскада 0, детерминированное
+/// вето которого (AGENTS: приоритет 1.0) канон lockR не понижает; канон и не
+/// трогает каскад 0 (область = окно lockR). Расширение канона за ASCII U+002D
+/// (en/em-dash #101-класс, soft hyphen) НЕ делалось: U+2013/U+2014
+/// многобайтовые, 1Б→1Б-инвариант на них не держится — отдельный атом с
+/// отдельным промером.
+///
+/// Идемпотентность: `-` в каноне не остаётся ⇒ `f(f(x)) = f(x)`.
+#[must_use]
+pub fn canonicalize_lockr_input(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('-') {
+        std::borrow::Cow::Owned(text.replace('-', " "))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
 /// argmax + softmax по 43 головам на позицию + спец-фильтр (пункты 3 дока
 /// модуля). Чистая функция: тест гоняет её на синтетических логитах, без
 /// модели и без ORT (гейт `cargo test -p guard-onnx` на обеих ОС).
@@ -343,9 +407,37 @@ impl LockrExtractor {
     /// [`ExtractError::Tokenizer`] (encode), [`ExtractError::Ort`] (ран),
     /// [`ExtractError::Shape`] (выход не `(1, PAD, N_TAGS)` f32).
     pub fn extract(&mut self, text: &str) -> Result<Extract, ExtractError> {
+        self.extract_with(text, true)
+    }
+
+    /// [`extract`](Self::extract) с явным выбором канона дефисного склеивания
+    /// (#160 PR-B). `hyphen_canon = false` = сырой вход (прежнее поведение):
+    /// рычаг paired-промера «до/после» для CI-полки `hyphen_fio_live`
+    /// (raw-половка = дискриминатор канона). Продуктовый путь (`cascades`) и
+    /// харнес (`recall_golden`) зовут [`extract`](Self::extract) = канон ON;
+    /// env-рычаг НЕ вводится (промер = явный аргумент, молчаливой prod-
+    /// подмены через окружение нет).
+    ///
+    /// # Errors
+    ///
+    /// См. [`extract`](Self::extract).
+    pub fn extract_with(
+        &mut self,
+        text: &str,
+        hyphen_canon: bool,
+    ) -> Result<Extract, ExtractError> {
+        // #160 PR-B: канон дефисного склеивания на входе lockR (док
+        // `canonicalize_lockr_input`: 1Б→1Б, координаты оригинала инвариантны,
+        // offsets канона = offsets оригинала). Дефисов нет = Borrowed = ноль
+        // аллокаций на горячем пути (тот же контракт, что #88 у Decide).
+        let canon = if hyphen_canon {
+            canonicalize_lockr_input(text)
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        };
         let base = self
             .tokenizer
-            .encode(text, false)
+            .encode(canon.as_ref(), false)
             .map_err(|e| ExtractError::Tokenizer(e.to_string()))?;
         let enc = encode_plus(&base, self.cl_id, self.sep_id, "[CLS]", "[SEP]");
         let ids_u: Vec<u32> = enc.get_ids().to_vec();
@@ -483,5 +575,67 @@ mod tests {
         assert_eq!(ID2LABEL.len(), N_TAGS);
         assert_eq!(PAD, 256);
         assert_eq!(LOCKR_SPECIALS.len(), 5);
+    }
+
+    /// Решётка канонизатора #160 PR-B (первичка промера — CI-полка
+    /// `hyphen_fio_live`; док = `canonicalize_lockr_input`).
+    #[test]
+    fn canonicalize_lockr_hyphen_is_byte_preserving_and_idempotent() {
+        // Вектор = golden g0284 (фикстура #160 v1.12).
+        let raw = "Кредитный договор: заёмщик Иванов-Иванов Иван Петрович.";
+        let canon = canonicalize_lockr_input(raw);
+        // 1) байтовая длина инвариантна — спаны оригинала не сдвигаются;
+        assert_eq!(canon.len(), raw.len(), "байтовая длина поехала");
+        // 2) ASCII-дефис убит в каноне;
+        assert!(!canon.contains('-'), "дефис выжил: {canon:?}");
+        // 3) замена ровно на месте, соседи целы (byte-побайтовая сверка:
+        //    различия — ТОЛЬКО на позициях дефисов, везде пробел);
+        for (i, (a, b)) in raw.as_bytes().iter().zip(canon.as_bytes()).enumerate() {
+            if *a == b'-' {
+                assert_eq!(*b, b' ', "дефис @ {i} не стал пробелом");
+            } else {
+                assert_eq!(a, b, "байт @{i} уехал: {a:#x} → {b:#x}");
+            }
+        }
+        // 4) идемпотентность;
+        let twice = canonicalize_lockr_input(&canon);
+        assert_eq!(twice.as_ref(), canon.as_ref(), "f(f(x)) != f(x)");
+        // 5) чистый вход = заимствованный (нулевое выделение на горячем пути);
+        assert!(matches!(
+            canonicalize_lockr_input("Ушакова Кира Саввична"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        // 6) UTF-8-безопасность: замена char-границы не рвёт (дефис ASCII,
+        //    соседние кириллические 2Б-последовательности целы);
+        assert!(canon.is_char_boundary(canon.len()));
+        assert!(std::str::from_utf8(canon.as_bytes()).is_ok());
+    }
+
+    /// Канон lockR = контур каскада 1; канон Decide #88 («№» → канонный
+    /// двухбуквенник) = контур каскада 2. Ортогональность: ни один не трогает
+    /// литеру другого (#88-тест `canonicalize_orthogonal_to_specials_clinining`
+    /// — тот же инвариант в зеркальном контуре).
+    #[test]
+    fn canonicalize_lockr_orthogonal_to_decide_canon() {
+        let raw = "\u{2116} 782 Иванов-Иванов";
+        let lockr = canonicalize_lockr_input(raw);
+        assert!(
+            lockr.contains('\u{2116}'),
+            "канон lockR не трогает литеру Decide-контра: {lockr:?}"
+        );
+        assert!(
+            !lockr.contains('-'),
+            "дефис — зона lockR, обязан канонизиться"
+        );
+    }
+
+    /// Мультибайтовый дефис (en/em-dash, U+2013/U+2014) каноном НЕ является:
+    /// 1Б→1Б-инвариант на них не держится (док функции, расширение = отдельный
+    /// атом). Зуб против «случайно расширили replace на unicode-дефисы».
+    #[test]
+    fn canonicalize_lockr_leaves_unicode_dashes_untouched() {
+        let raw = "Иванов\u{2013}Иванов, Иванов\u{2014}Иванов";
+        let canon = canonicalize_lockr_input(raw);
+        assert_eq!(canon.as_ref(), raw, "en/em-dash трогать нельзя: {canon:?}");
     }
 }
