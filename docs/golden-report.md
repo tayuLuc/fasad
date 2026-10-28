@@ -112,8 +112,7 @@ just union-recall --thr 0.20,0.25 \
     --sweep 0.10,0.15,0.20,0.25,0.30,0.40,0.50 --out /tmp/union_r1.jsonl
 just union-report /tmp/union_r1.jsonl docs/golden-report.md /tmp/probe_coords.out
 # §6 п.4 (направление смещения) — отдельный промер, артефакт для генератора:
-nice -n 10 env OMP_NUM_THREADS=2 uv run --isolated --python ~/.local/bin/python3.13 \
-    --with numpy --with onnxruntime --with tokenizers \
+nice -n 10 env OMP_NUM_THREADS=2 uv run --locked --group metrics \
     python tools/metrics/probe_coords.py > /tmp/probe_coords.out
 ```
 

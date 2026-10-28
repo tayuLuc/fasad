@@ -149,7 +149,7 @@ def req_includes(req: str, version: str) -> bool:
 
 def py_minor_in_range(req: str, minor: tuple[int, int]) -> bool:
     """Есть ли в диапазоне допустимая версия вида X.minor (калибровка по 3 точкам:
-    нижняя граница / она же +.0 / +.99)."""
+    X.minor.0 / X.minor.50 / X.minor.99)."""
     return any(req_includes(req, f"{minor[0]}.{minor[1]}.{p}") for p in (0, 50, 99))
 
 
@@ -273,20 +273,30 @@ def main() -> None:
         fail("PYVER-REQ", f".python-version {pyver} вне requires-python {pp_req!r}")
     print(f"METASENV|pyver|{pyver}|in|requires-python|lock==pyproject|ok")
 
-    # 5. WHEELS pinned версий на трёх ОС CI-матрицы по тегу интерпретатора.
-    # wheel-тег = cp{XY} (3.14 → cp314): минор двумя цифрами, не 14.
+    # 5. WHEELS pinned версий на трёх ОС CI-матрицы по тегу интерпретатора
+    # (первичка PyPI, кэш .local; сеть мертва = SKIP). Верх onnxruntime
+    # (cp311–cp314) из requires-python пакета проверяется здесь же (#81.3:
+    # .python-version вне волны = группа metrics не резолвится).
     missing = 0
-    tag = int(f"{minor[0]}{minor[1]:02d}")
+    tag = int(f"{minor[0]}{minor[1]:02d}")  # wheel-тег: 3.13 → cp313
+    ort_req_pkg = ""
     for pkg in METRICS:
         data = pypi_json(pkg, pins[pkg])
         if data is None:
             continue  # SKIP напечатан: сеть мертва ≠ зелёный
         files = [f["filename"] for f in data.get("urls", []) if f["filename"].endswith(".whl")]
+        if pkg == "onnxruntime":
+            ort_req_pkg = (data.get("info", {}) or {}).get("requires_python", "")
         for osname, mark, a0, a1 in OS_MARKS:
             arch = tuple(x for x in (a0, a1) if x)
             w = wheel_present(files, tag, mark, arch)
             print(f"METASENV|wheel|{pkg}=={pins[pkg]}|{osname}|cp{tag}|{w or 'MISSING'}")
             missing += not w
+    if ort_req_pkg:
+        if not py_minor_in_range(ort_req_pkg, minor):
+            fail("PYVER-ORT", f".python-version {pyver} вне onnxruntime requires-python "
+                 f"{ort_req_pkg!r} (первичка PyPI: группа metrics не резолвится)")
+        print(f"METASENV|pyver|{pyver}|in|onnxruntime-requires-python|{ort_req_pkg}|ok")
     if missing:
         fail("WHEEL-MISSING", f"{missing} колёс(ОС) нет для {pins} на cp{tag} (строки MISSING выше)")
     print("METASENV|verdict|ok|recipe+groups+lock+pyver+wheels")

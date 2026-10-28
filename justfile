@@ -298,10 +298,13 @@ restore-integrity-probe:
 # промер живёт в docs/golden-report.md с sha входов.
 
 # Union-recall полного каскада (0∨1∨2) на golden-наборе — гейт #14-B.
+# Окружение промера = [dependency-groups] metrics (uv.lock, единственный источник
+# пинов; #81): `--locked` краснит расхождение pyproject↔uv.lock; интерпретатор —
+# из .python-version (uv сам его ставит в CI). Зуб python-lint
+# (scripts/metrics_env_check.py) не даёт recipe вернуться к --isolated/--with.
 union-recall *ARGS:
     cargo build --bin fasad
-    nice -n 10 env OMP_NUM_THREADS=2 uv run --isolated --python ~/.local/bin/python3.13 \
-        --with numpy --with onnxruntime --with tokenizers \
+    nice -n 10 env OMP_NUM_THREADS=2 uv run --locked --group metrics \
         python tools/metrics/union_recall.py --threads 2 {{ ARGS }}
 
 # Гейт #60 п.3: restoration-integrity — доля побайтовых возвратов исходнику на

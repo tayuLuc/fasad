@@ -17,9 +17,9 @@
 Сопоставление и карта классов — функции харнеса (union_recall.overlap,
 union_recall.BIO_TO_GOLDEN): второй реализации оракула нет.
 
-Запуск (артефакт нужен генератору отчёта):
-  nice -n 10 env OMP_NUM_THREADS=2 uv run --isolated --python ~/.local/bin/python3.13 \\
-      --with numpy --with onnxruntime --with tokenizers \\
+Запуск (артефакт нужен генератору отчёта; то же запиненное окружение промера,
+что у union_recall — [dependency-groups] metrics / uv.lock, #81):
+  nice -n 10 env OMP_NUM_THREADS=2 uv run --locked --group metrics \\
       python tools/metrics/probe_coords.py > /tmp/probe_coords.out
 """
 

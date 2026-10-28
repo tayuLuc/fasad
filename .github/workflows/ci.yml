@@ -649,8 +649,9 @@ jobs:
           # `just: command not found` (exit 127) — uv устанавливался, just нет.
           tool: uv, just
       # --locked: краснит расхождение uv.lock с pyproject.toml (дрейф пинов).
-      # Интерпретатор берётся из .python-version (3.15) — uv сам ставит
-      # managed-сборку, setup-python не нужен.
+      # Интерпретатор берётся из .python-version (#81: 3.13 — волна колёс
+      # metrics-группы: onnxruntime 1.31.0 = ≤cp314, на 3.15 группа не
+      # резолвится) — uv сам ставит managed-сборку, setup-python не нужен.
       - run: just python-lint
       - run: just golden-verify
   file-shelf:
