@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![warn(missing_docs, missing_debug_implementations, clippy::unwrap_used)]
 //! Каскады 1–2: нейросетевая разметка и арбитраж (ONNX).
 //!
 //! Скелет шага 1 (SPEC §10 п.1); реализация шага 4 идёт атомами: **4b-1** —

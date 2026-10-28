@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![warn(missing_docs, missing_debug_implementations, clippy::unwrap_used)]
 //! Vault — обратимость маскирования (SPEC §3–§4); шаг 5 реализован.
 //!
 //! Три режима жизни данных (§3), все в этом крейте:
@@ -83,6 +84,17 @@ pub struct StreamOutcome {
 pub struct VaultStream<'a> {
     rw: rewriter::DynStreamRewriter<'a>,
     unresolved: std::rc::Rc<Cell<usize>>,
+}
+
+impl core::fmt::Debug for VaultStream<'_> {
+    /// Проксировать метаданные автомата; резолвер с оригиналами не печатается
+    /// (`Debug` `StreamRewriter` это уже гарантирует).
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("VaultStream")
+            .field("rewriter", &self.rw)
+            .field("unresolved", &self.unresolved.get())
+            .finish()
+    }
 }
 
 impl VaultStream<'_> {

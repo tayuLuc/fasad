@@ -268,6 +268,22 @@ pub struct LockrExtractor {
     special: Vec<u32>,
 }
 
+impl core::fmt::Debug for LockrExtractor {
+    /// Только метаданные: `ort::Session` в `Debug` печатает complete
+    /// `model_metadata` (у rubert-это десятки ключей), а токенизатор — весь
+    /// vocab. Наружу идут id спец-токенов и размер модели — их достаточно для
+    /// отладки загрузки (#14A).
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LockrExtractor")
+            .field("cl_id", &self.cl_id)
+            .field("sep_id", &self.sep_id)
+            .field("special", &self.special)
+            .field("vocab_len", &self.tokenizer.get_vocab_size(true))
+            .field("session", &"[ORT SESSION]")
+            .finish_non_exhaustive()
+    }
+}
+
 impl LockrExtractor {
     /// Поднимает сессию и токенизатор. Путь fail-closed: отсутствие файла,
     /// кривой vocab (`[CLS]`/`[SEP]` нет) и падение `commit_from_file` —

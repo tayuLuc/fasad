@@ -11,14 +11,12 @@ members = [
     "crates/guard-vault",
     "crates/guard-daemon",
 ]
-# Корень-виртуал: бинарь один (guard-daemon), поэтому default-members = весь workspace.
-default-members = [
-    "crates/guard-types",
-    "crates/guard-detectors",
-    "crates/guard-onnx",
-    "crates/guard-vault",
-    "crates/guard-daemon",
-]
+# `default-members` НЕ задан (issue #3 п.8): он был дословно равен `members`
+# (промер tomllib: списки идентичны; промер `cargo metadata --no-deps`:
+# workspace_members = те же 5), а cargo по умолчанию и так берёт весь workspace,
+# когда `default-members` отсутствует и корень — виртуал (своих таргетов нет).
+# Дублирующий список = вторая копия `members`, расходящаяся при каждом добавлении
+# крейта.
 
 # Линты всего workspace: `-D clippy::unwrap_used` из CI (§9 / AGENTS п.4) держим и
 # здесь, чтобы нарушение ловилось локальной сборкой, а не только красным CI.
@@ -106,6 +104,19 @@ base64            = { version = "0.23.1", default-features = false, features = [
 # п.6, bans native-tls в deny.toml), а не дефолтный `tls-native`.
 # `half`/`api-31` из rc.14-дефолта перечислены явно: контракт §7.1 п.2
 # («дельта rc.13→rc.14 = api-31») должен читаться из пина, а не из дефолтов.
+#
+# Issue #3 п.10 («сократить до дельты») — ЗАКРЫТ ОТКАЗОМ, промер 5c8db56.
+# Дефолт ort rc.14 = `std, ndarray, tracing, download-binaries, tls-native,
+# copy-dylibs, api-31` (первичка: `ort-2.0.0-rc.14/Cargo.toml`), т. е. 4
+# перечисленных фичи действительно в нём есть. Но `default-features = false`
+# отключает их ВСЕ разом, а строка ниже добавляет обратно не всю семёрку:
+# `tracing` отсутствует намеренно (её нет в `Cargo.lock`-блоке ort). Сокращение
+# до дельты (`half, tls-rustls, api-31`) меняет эффективный граф, промер
+# `cargo tree -p guard-daemon --features ort-inference -e features -i ort-sys`:
+# у орт-sys пропадают `std`, `copy-dylibs`, `download-binaries` (было 20 фич,
+# стало 17) — т. е. доставка бинарника onnxruntime на CI (`ci.yml` job
+# `ort-build`) и std-путь орт-sys. Линковка ORT = контур #184, менять в
+# NIT-атоме нельзя.
 ort         = { version = "2.0.0-rc.14", default-features = false, features = ["std", "ndarray", "half", "download-binaries", "copy-dylibs", "tls-rustls", "api-31"] }
 ndarray     = { version = "0.17.2" }
 # tokenizers: default-features=false, но REGEX-фича обязательна — build-time

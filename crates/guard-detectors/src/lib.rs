@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![warn(missing_docs, missing_debug_implementations, clippy::unwrap_used)]
 //! Каскад 0 — детерминированный (<1 мс по SPEC §2).
 //!
 //! Скелет шага 1 (SPEC §10 п.1); модули по SPEC §6, реализация — шаг 3.

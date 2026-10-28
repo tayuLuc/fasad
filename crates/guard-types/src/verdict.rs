@@ -318,6 +318,99 @@ mod tests {
         );
     }
 
+    /// Все варианты enum — ровно один раз (защита от протухания таблицы ниже при
+    /// добавлении источника: новый вариант сюда попадёт только руками).
+    const ALL_SOURCES: [DetectionSource; 7] = [
+        DetectionSource::ChecksumRf,
+        DetectionSource::ChecksumEu,
+        DetectionSource::Base64Decode,
+        DetectionSource::SecretEntropy,
+        DetectionSource::AhoCorasickRule,
+        DetectionSource::GlinerExtractor,
+        DetectionSource::GlinerDecideArbitrator,
+    ];
+    /// Публичный предикат `is_deterministic` (issue #3 п.7) — полный контракт по
+    /// всем 7 источникам. Формула (`deterministic_weight().is_some() ||
+    /// AhoCorasickRule`) даёт два **разных** множества, и их надо держать
+    /// раздельно: чексуммы — детерминированы И вето-весовые; автомат Ахо–Корасика
+    /// — детерминирован, но веса 1.0 НЕ несёт; сеть — ни то ни другое.
+    #[test]
+    fn is_deterministic_covers_all_sources() {
+        // Детерминированные: 3 вето-источника + автомат.
+        for src in [
+            DetectionSource::ChecksumRf,
+            DetectionSource::ChecksumEu,
+            DetectionSource::Base64Decode,
+            DetectionSource::AhoCorasickRule,
+        ] {
+            assert!(src.is_deterministic(), "{src:?} должен быть детерминирован");
+        }
+        // Вероятностные: каскад 1, каскад 2 и энтропия.
+        for src in [
+            DetectionSource::SecretEntropy,
+            DetectionSource::GlinerExtractor,
+            DetectionSource::GlinerDecideArbitrator,
+        ] {
+            assert!(!src.is_deterministic(), "{src:?} не детерминирован");
+        }
+        // Контра с каскадом 0: `FrameInvalidChecksum` — каркас без сошедшейся
+        // чексуммы, 0.95, НЕ вето (зуб `frame_invalid_source_is_not_veto` в
+        // guard-daemon/src/cascade0.rs ассертит то же на границе крейтов).
+        assert!(
+            !DetectionSource::FrameInvalidChecksum.is_deterministic(),
+            "каркас без чексуммы не детерминированный источник"
+        );
+    }
+
+    /// Ветви `deterministic_weight` (issue #3 п.7): `Some(1.0)` ровно у тройки
+    /// чексумм, `None` у остальных. Отдельно от `is_deterministic` — иначе
+    /// `AhoCorasickRule` (det-без-веса) проваливается молча.
+    #[test]
+    fn deterministic_weight_branches_are_the_checksum_triple() {
+        let mut veto = Vec::new();
+        let mut det = Vec::new();
+        for src in ALL_SOURCES {
+            if let Some(w) = src.deterministic_weight() {
+                assert_eq!(
+                    w,
+                    DetectionSource::DeterministicW,
+                    "{src:?}: вето = ровно 1.0"
+                );
+                veto.push(src);
+            }
+            if src.is_deterministic() {
+                det.push(src);
+            }
+        }
+        assert_eq!(
+            veto,
+            vec![
+                DetectionSource::ChecksumRf,
+                DetectionSource::ChecksumEu,
+                DetectionSource::Base64Decode,
+            ],
+            "вето-тройка расширилась — это правка SPEC §2 (см. док метода)"
+        );
+        assert_eq!(
+            det,
+            vec![
+                DetectionSource::ChecksumRf,
+                DetectionSource::ChecksumEu,
+                DetectionSource::Base64Decode,
+                DetectionSource::AhoCorasickRule,
+            ],
+            "множество детерминированных источников изменилось"
+        );
+        // Неравенство множеств — суть `AhoCorasickRule`: детерминирован, не вето.
+        assert!(
+            DetectionSource::AhoCorasickRule.is_deterministic()
+                && DetectionSource::AhoCorasickRule
+                    .deterministic_weight()
+                    .is_none(),
+            "автомат не должен получать вето-вес"
+        );
+    }
+
     #[test]
     // Ровность 1.0 здесь — часть контракта (точное значение, не измерение);
     // float_cmp — про допуск, тут допуска нет намеренно.
