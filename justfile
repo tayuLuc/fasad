@@ -232,6 +232,9 @@ python-lint:
     # прогона (`COORD|`/`UNION|`) или из data/golden (выборка), а не из
     # строкового литерала генератора; без источника — только с датой промера.
     uv run --locked python tools/metrics/render_report.py --selftest-hardcode
+    # #104: фикстуры §6 п.9 = выборка из data/golden, а не список номеров в
+    # прозе: окно промерено, воспроизводима, контроль жив (пустое окно = пусто).
+    uv run --locked python tools/metrics/render_report.py --selftest-fixtures
 
 # Побайтовая воспроизводимость golden-датасета: реген + сверка с B2-константой
 # (тот же инвариант, что tests/golden_v1.rs::golden_file_sha256_matches_embedded_const).
