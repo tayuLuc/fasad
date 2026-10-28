@@ -2059,6 +2059,104 @@ mod tests {
         assert_eq!(back.text.as_str(), text, "byte-exact");
     }
 
+    /// #65: пред-проверка батча и движок обязаны опознавать владельца **одинаково**.
+    ///
+    /// Промер первички на `5c8db56`: `PendingForms::push` ключует владельца
+    /// сравнением `prev != owner` по **поверхности** токена, движок
+    /// (`is_same_owner_word`) — по **лемме**, и леммы таблицы верхнего регистра
+    /// (`morph::norm` = `to_uppercase` + `Ё→Е`), т.е. движок к регистру уже
+    /// нейтрален. Расхождение однобокое: «Ушакова Кира Саввична» + «ушакова кира
+    /// саввична» — движок выдаёт обеим один и тот же суррогат (`pool_probe --
+    /// forms`: `Гудзовская | Гельфия | Хассановна` в обоих регистрах), а пред-
+    /// проверка видит «кира» ≠ «Кира» и роняет ВЕСЬ второй спан на метку.
+    ///
+    /// Канон после #65/#72: ключ пред-проверки нормализован (`morph::norm`) —
+    /// движок и батч согласны, ложной коллизии на регистре нет, оба спана уходят
+    /// суррогатами, отказов ноль, разворот byte-exact.
+    #[test]
+    fn batch_precheck_and_engine_agree_on_owner_across_cases() {
+        let v = vault(VaultMode::Session);
+        let one = "Ушакова Кира Саввична";
+        let two = "ушакова кира саввична";
+        let text = format!("{one} и {two}");
+        let a = v
+            .anonymize(
+                Some("r65"),
+                &text,
+                &[
+                    span("person_name", &text, one),
+                    span("person_name", &text, two),
+                ],
+                &schema(),
+            )
+            .expect("запрос обязан пройти без отказа");
+        assert_eq!(
+            a.items.iter().filter(|i| i.operator == "replace").count(),
+            2,
+            "оба регистра одного владельца — суррогаты, не метки: {:?}",
+            a.items
+                .iter()
+                .map(|i| (i.operator, i.replacement.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(v.surrogate_fallbacks(), 0, "ложная коллизия на регистре");
+        assert_eq!(
+            v.forms_len(Some("r65")),
+            3,
+            "форма одна на оба спана: дедупликация внутри запроса"
+        );
+        let back = v
+            .deanonymize(Some("r65"), &a.text)
+            .expect("разворот обязан вернуть оба оригинала");
+        assert_eq!(back.text.as_str(), text, "byte-exact");
+        assert_eq!(v.unrestored_mismatch(), 0, "ложных расхождений нет");
+    }
+
+    /// #65, граница ослабления: нормализация ключа пред-проверки не имеет права
+    /// склеить РАЗНЫХ людей. Тот же слот, разные фамилии в разных регистрах —
+    /// пред-проверка обязана отказаться так же строго, как до нормализации
+    /// (B2/P8: ложный отказ лучше тихой подмены).
+    #[test]
+    fn normalized_precheck_still_refuses_two_owners_in_one_slot() {
+        let v = vault(VaultMode::Session);
+        let one = "Ушакова Люнгина Саввична";
+        let two = "ветрова марселина афанасьевна";
+        let text = format!("{one} и {two}");
+        let a = v
+            .anonymize(
+                Some("r65b"),
+                &text,
+                &[
+                    span("person_name", &text, one),
+                    span("person_name", &text, two),
+                ],
+                &schema(),
+            )
+            .expect("отказ пред-проверки — метка, не ошибка запроса");
+        let labels = a
+            .items
+            .iter()
+            .filter(|i| i.operator == "mask")
+            .count();
+        let srgs = a
+            .items
+            .iter()
+            .filter(|i| i.operator == "replace")
+            .count();
+        assert!(
+            labels == 1 && srgs == 1,
+            "один суррогат + одна метка (истинная коллизия выживает после \
+             нормализации): {:?}",
+            a.items
+                .iter()
+                .map(|i| (i.operator, i.replacement.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(v.surrogate_fallbacks(), 1, "деградация посчитана");
+        let back = v.deanonymize(Some("r65b"), &a.text).expect("разворот");
+        assert_eq!(back.text.as_str(), text, "byte-exact");
+    }
+
     /// P4: атомарность отказа держится для **реестра форм**, но не для счётчика
     /// меток. Отказ берём из переполнения реестра (`too_many_forms`): с шага 7а
     /// коллизия слота отказом не является, и это единственный оставшийся путь
