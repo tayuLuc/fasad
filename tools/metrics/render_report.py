@@ -268,9 +268,108 @@ def consistency(d: dict) -> list[str]:
     return bad
 
 
+# #104: хардкод-страж. Числа АНАЛИТИЧЕСКИХ секций = промер, он живёт в артефакте
+# прогона (`COORD|d_end|median|…` из probe_coords.py, `UNION|…`) и читается через
+# gp()/g(); в строковом литерале генератора такое число = запёкшаяся медиана
+# прошлого прогона. Класс дефекта пойман ревью #80 (направление смещения было
+# перевёрнуто в тексте) и #100 (вердикт о планке литералом); #104 — тот же класс
+# в §6 п.9 и §7 п.2.
+#
+# ТРИ ПРАВИЛА = три формы, в которых промерное число маскируется под прозу:
+#   coordinate-shift — медиана смещения координат (§6 п.4 / §7 п.2);
+#   fixture-number   — ПДн-номер из выборки golden (13+ цифр подряд, §6 п.9);
+#   bait-share       — доля/счётчик bait-счётчиков «N/M» (§6 п.9).
+#
+# «Константа сравнения» = поле, не число: строка с маркером промера и датой
+# («промер 20.10», «§W2.7 C» — см. §5.5, §7) легальна по рюлингу «строки без
+# источника = с явной датой промера». Дата в той же строке снимает подозрение.
+HARDCODE_RULES: tuple[tuple[str, str], ...] = (
+    ("coordinate-shift", r"(?:d_start|d_end)[^\n]{0,24}?[−+-]\s?\d+(?:\.\d+)?"),
+    ("fixture-number", r"(?<![\d.])\d{13,}(?![\d.])"),
+    ("bait-share", r"(?:каскад 0|lockR|bait)[^\n]{0,12}?\b\d{1,3}/\d{1,3}\b"),
+)
+_MEASURED_MARK = re.compile(r"промер|первичк|§\s*W2\.7|артефакт")
+_MEASURED_DATE = re.compile(r"\b\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\b")
+
+
+def scan_hardcoded_source(src: str, name: str = "<generated>",
+                          skip_rule: str = "") -> list[str]:
+    """Ядро скана на исходнике в памяти: нужен positive control'ю (#104), чтобы
+    доказать живость контроля — страж обязан ловить подсаженный литерал, а не
+    только свой собственный файл. `skip_rule` исключает одно правило из скана
+    (нужно самотесту, сканирующему себя: собственный подсаженный литерал
+    control'а — не дефект генератора, а данные контроля)."""
+    import ast
+
+    lines = src.splitlines()
+    out: list[str] = []
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        if isinstance(node, ast.JoinedStr):
+            continue
+        for rule_name, pat in HARDCODE_RULES:
+            if rule_name == skip_rule or not re.search(pat, node.value):
+                continue
+            window = "\n".join(lines[max(0, node.lineno - 4): node.lineno + 3])
+            if _MEASURED_MARK.search(window) and _MEASURED_DATE.search(window):
+                continue
+            out.append(f"{name}:{node.lineno}: [{rule_name}] :: "
+                       f"{node.value.strip().replace(chr(10), ' ')[:72]}")
+    return sorted(set(out))
+
+
+def scan_hardcoded_literals(path: str | Path, skip_rule: str = "") -> list[str]:
+    """#104: grep-запрет запечённых чисел промера в строковых литералах.
+
+    АСТ, не regex по файлу: литерал + номер строки + то, что он печатается
+    напрямую (узлы f-строки вне интерполяции) — мута «`{gp(...)}` → литерал»
+    обязана краснеть, а комментарий с примером числа — нет.
+    """
+    return scan_hardcoded_source(Path(path).read_text(encoding="utf-8"),
+                                 Path(path).name, skip_rule)
+
+
+def run_hardcode_selftest() -> int:
+    """Positive control хардкод-стража (#104): живой контроль = ловит подсаженное.
+
+    Подсаживаем в памяти исходник с заведомо запечённой медианой — страж обязан
+    дать ровно один хит (иначе контроль мёртв и краснеет только на себе);
+    параллельно сканируем собственный файл: хиты = RED (#104 на HEAD), чисто =
+    GREEN. rc=1 = найдены запечённые числа (страж сработал), rc=2 = контроль мёртв.
+    """
+    planted_src = (
+        "def main():\n"
+        "    A('медиана d_end −8 байт и сдвинутые начала (d_start +5).')\n"
+        "    A('все — валидные ПДн: 2200000000000004')\n"
+    )
+    planted = scan_hardcoded_source(planted_src)
+    if len(planted) != 2:
+        print(f"CONTROL|hardcode|planted|2|caught|{len(planted)}|verdict|DEAD")
+        print("FAIL: контроль мёртв — страж не ловит подсаженную запечённую медиану")
+        return 2
+    print(f"CONTROL|hardcode|planted|2|caught|{len(planted)}|verdict|live")
+    # Само-скан: литерал `planted_src` выше = данные контроля, не проза генератора
+    # (правило coordinate-shift для него отключено); прочие правила к себе применяем.
+    hits = scan_hardcoded_literals(Path(__file__).resolve(), skip_rule="coordinate-shift")
+    print(f"CONTROL|hardcode|rules|{len(HARDCODE_RULES)}|hits|{len(hits)}"
+          f"|verdict|{'GREEN' if not hits else 'RED'}")
+    for x in hits:
+        print(f"  baked: {x}")
+    if not hits:
+        print("OK: хардкод-страж зелёный (запечённых чисел промера в литералах нет)")
+        return 0
+    print(f"FAIL (#104): {len(hits)} запечённых чисел промера в литералах генератора — "
+          "тяни их из артефакта (`COORD|`/`UNION|` через gp()/g()) либо из "
+          "data/golden (выборка), либо ставь явную дату промера в строку")
+    return 1
+
+
 def main() -> int:  # noqa: C901, PLR0912, PLR0913 — линейная сборка markdown, ветвлений ради читаемости много
     if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
         return run_self_test()
+    if len(sys.argv) == 2 and sys.argv[1] == "--selftest-hardcode":
+        return run_hardcode_selftest()
     if len(sys.argv) not in (3, 4):
         sys.exit(__doc__)
     raw = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
