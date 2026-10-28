@@ -1111,9 +1111,9 @@ mod tests {
         let second = match second {
             Ok(Some(second)) => second,
             Ok(None) => panic!("строчная форма обязана разбираться в фамилию"),
-            Err(SurrogatError::Collision { form }) => panic!(
-                "ложная коллизия на регистре: форма {form} занята тем же человеком"
-            ),
+            Err(SurrogatError::Collision { form }) => {
+                panic!("ложная коллизия на регистре: форма {form} занята тем же человеком")
+            }
             Err(other) => panic!("неожиданный отказ: {other:?}"),
         };
         assert_eq!(
@@ -1207,15 +1207,27 @@ mod tests {
             "отказ обязан назвать занятую форму"
         );
         assert_eq!(
-            ask("жукова")
-                .expect_err("нормализация регистра не склеивает разных людей"),
+            ask("жукова").expect_err("нормализация регистра не склеивает разных людей"),
             SurrogatError::Collision { form: first.form },
             "отказ по нормализованной поверхности того же второго человека"
         );
         assert_eq!(
-            e.original_of_surrogat(sess, &e.surrogat_for_gender_in(sess, "Ушакова", Case::Nom, Gender::Fem, NameType::Surname, &one).unwrap().unwrap().form)
-                .expect("первый жив")
-                .as_str(),
+            e.original_of_surrogat(
+                sess,
+                &e.surrogat_for_gender_in(
+                    sess,
+                    "Ушакова",
+                    Case::Nom,
+                    Gender::Fem,
+                    NameType::Surname,
+                    &one
+                )
+                .unwrap()
+                .unwrap()
+                .form
+            )
+            .expect("первый жив")
+            .as_str(),
             "Ушакова",
             "отказ не имел права сместить владельца слота"
         );

@@ -2110,16 +2110,8 @@ mod tests {
                 &schema(),
             )
             .expect("отказ пред-проверки — метка, не ошибка запроса");
-        let labels = a
-            .items
-            .iter()
-            .filter(|i| i.operator == "mask")
-            .count();
-        let srgs = a
-            .items
-            .iter()
-            .filter(|i| i.operator == "replace")
-            .count();
+        let labels = a.items.iter().filter(|i| i.operator == "mask").count();
+        let srgs = a.items.iter().filter(|i| i.operator == "replace").count();
         assert!(
             labels == 1 && srgs == 1,
             "один суррогат + одна метка (истинная коллизия выживает после нормализации): {:?}",
@@ -2601,5 +2593,4 @@ mod tests {
             "{err:?}"
         );
     }
-
 }
