@@ -10,6 +10,11 @@
 //! вне модели — не в знаменателе, см. golden-инвентарь audit §W2.7).
 //! Wilson lower 95% — формула dep-verify-algorithms §8 (z = 1.959963984540054),
 //! НЕ вторая (тот же контракт, что гейт #14 в `golden_v1.rs`).
+//! Контракт планки (#77, рюлинг владельца 21.10): ГЕЙТ = lo(Wilson 95 %) ≥ 98 %
+//! на span-уровне с оракулом byte-exact (владелец определения —
+//! `data/golden/README.md` §«Метрика recall»); overlap-оракул этого харнеса =
+//! вторичная диагностика, не гейт (exact/overlap печатает раздельно
+//! `tools/metrics/union_recall.py`, канон-строка `UNION|bar|…gate|lo-wilson-span-level`).
 //!
 //! Запуск (веса по манифесту, dylib 1.31 по §8 audit):
 //!   `ORT_PREFER_DYNAMIC_LINK=1 ORT_LIB_PATH=$HOME/onnxruntime-dylib/\`
