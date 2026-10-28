@@ -283,6 +283,26 @@ jobs:
           set -euo pipefail
           bash scripts/fetch-models.sh --no-rewrite
           echo "FASAD_MODEL_DIR=$HOME/.cache/fasad-models" >> "$GITHUB_ENV"
+      - name: "Живая полка #160: hyphen_fio_live (lockR на дефисных ФИО, mac/linux)"
+        # #160 PR-B: FN дефисного ФИО (g0284/g0285) + FP-контра гео-бейтов
+        # (g0286–g0288) на живом lockR fp16 с каноном дефисного склеивания
+        # (extract::canonicalize_lockr_input, 1Б→1Б). ЗУБ = перекрытие
+        # золотого диапазона person_name-спаном + 0 FP на бейтах; абсолютные
+        # скоры = артефакт промера, строки HYPHENLIVE|… (lesson #232: число в
+        # PR-комменте, не пин). #255-прецедент: тот же fetch-models-кеш,
+        # FASAD_REQUIRE_MODELS = провен монтирования (#87-паттерн).
+        if: matrix.os != 'windows-2022'
+        env:
+          FASAD_REQUIRE_MODELS: "1"
+        run: |
+          set -euo pipefail
+          if [ -n "${ORT_DIR:-}" ] && [ -d "$ORT_DIR/lib" ]; then
+            export ORT_PREFER_DYNAMIC_LINK=1
+            export ORT_LIB_PATH="$ORT_DIR/lib"
+            echo "hyphen_fio_live: mac-контур dylib ($ORT_DIR/lib)"
+          fi
+          cargo test -p guard-daemon --features ort-inference \
+            --test hyphen_fio_live -- --test-threads=1 --nocapture
       - name: "Живая полка #238: translit_live (p2 арбитра на весах, mac/linux)"
         # Дисциплина #232: зуб = СРАВНЕНИЕ (ushakov-person > gazprom-бейт),
         # абсолютные p2 = артефакт промера, печатается строкой

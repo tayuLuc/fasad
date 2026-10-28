@@ -91,6 +91,12 @@ fn main() {
     let threads = arg(&argv, "--threads")
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(4);
+    // #160 PR-B: `--fixture g0284,g0285` / `--fixture 284..288` — точечный
+    // промер по id golden-строк (мера по 5 фикстурам, не весь golden; CPU-
+    // дисциплина 21.10/22.10: один короткий targeted-промер). Фильтр applies
+    // к обоим сплитам; пустое пересечение = красный отказ, не молчаливый
+    // ноль-знаменатель (law «a rejection must name its true reason»).
+    let fixture = arg(&argv, "--fixture").map(str::to_owned);
     // Порог валидируется, а не подменяется дефолтом: `--thr 0,25` (запятая) или
     // `--thr 3` раньше молча считались 0.25/3.0, и отчёт рисовал порог, который
     // никто не просил. Отказ с объяснением — единственная честная реакция на
@@ -109,13 +115,63 @@ fn main() {
             }
         },
     };
+    let want = match fixture.as_deref().map(parse_fixtures) {
+        None => None,
+        Some(Ok(w)) => Some(w),
+        Some(Err(msg)) => {
+            eprintln!("--fixture: {msg}");
+            std::process::exit(2);
+        }
+    };
     // Отказ обязан назвать причину (law «a rejection must name its true
     // reason»): раньше `is_err()` глотал сообщение, и rc=1 не отличал
     // отсутствующий вес от кривого тензора.
-    if let Err(e) = run(limit, threads, thr) {
+    if let Err(e) = run(limit, threads, thr, want.as_ref()) {
         eprintln!("RECALL|error|{e}");
         std::process::exit(1);
     }
+}
+
+/// Разбор `--fixture`: список `g0284,g0285` и/или диапазоны `284..288`
+/// (число = суффикс id, диапазон включителен с обеих сторон). Возвращает
+/// множество полных id.
+fn parse_fixtures(spec: &str) -> Result<std::collections::BTreeSet<String>, String> {
+    let mut out = std::collections::BTreeSet::new();
+    for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let (a, b) = match part.split_once("..") {
+            Some((a, b)) => (a.trim(), Some(b.trim())),
+            None => (part, None),
+        };
+        let pid = |s: &str| -> Result<String, String> {
+            s.trim_start_matches('g')
+                .trim_start_matches('0')
+                .parse::<u64>()
+                .map(|n| format!("g{n:04}"))
+                .map_err(|e| format!("`{s}`: не число id ({e})"))
+        };
+        match b {
+            None => {
+                out.insert(pid(a)?);
+            }
+            Some(b) => {
+                let (na, nb) = (pid(a)?, pid(b)?);
+                let (na, nb) = (
+                    na[1..].parse::<u64>().map_err(|e| format!("{b}: {e}"))?,
+                    nb[1..].parse::<u64>().map_err(|e| format!("{b}: {e}"))?,
+                );
+                if nb < na {
+                    return Err(format!("пустой диапазон {part} (конец < начала)"));
+                }
+                for n in na..=nb {
+                    out.insert(format!("g{n:04}"));
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err("пустой список (ожидалось `gNNNN[,gNNNN]` или `NNNN..NNNN`)".to_owned());
+    }
+    Ok(out)
 }
 
 /// Строка вердикта гейта #14.
@@ -192,7 +248,12 @@ fn wilson_lower(k: usize, n: usize) -> f64 {
 }
 
 #[cfg(feature = "ort-inference")]
-fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std::error::Error>> {
+fn run(
+    limit: Option<usize>,
+    threads: usize,
+    thr: f64,
+    fixture: Option<&std::collections::BTreeSet<String>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     use guard_onnx::arbitrate::{DecideArbiter, QuestionSchema};
     use guard_onnx::extract::LockrExtractor;
     use guard_onnx::routing::RoutingCfg;
@@ -218,7 +279,14 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
     let mut rows: Vec<Row> = Vec::new();
     for line in raw.lines() {
         let v: serde_json::Value = serde_json::from_str(line)?;
-        if v["split"].as_str() != Some("recall") {
+        let id = v["id"].as_str().unwrap_or_default().to_string();
+        // #160 PR-B: targeted-промер = фильтр по id (per-row печать ниже даёт
+        // spans/k/класс per-фикстура); без флага — прежний контур recall-сплита.
+        if let Some(want) = &fixture {
+            if !want.contains(&id) {
+                continue;
+            }
+        } else if v["split"].as_str() != Some("recall") {
             continue;
         }
         let mut spans: Vec<(&'static str, usize, usize)> = Vec::new();
@@ -233,12 +301,21 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
             }
         }
         rows.push(Row {
-            id: v["id"].as_str().unwrap_or_default().to_string(),
+            id,
             text: v["text"].as_str().unwrap_or_default().to_string(),
             spans,
         });
         if limit.is_some_and(|l| rows.len() >= l) {
             break;
+        }
+    }
+    if let Some(want) = &fixture {
+        let have: std::collections::BTreeSet<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        let missing: Vec<&String> = want.iter().filter(|id| !have.contains(&id[..])).collect();
+        if !missing.is_empty() {
+            // Молчаливый пустой знаменатель = ложно-зелёный промер; отказ
+            // обязан назвать несмонтированные id.
+            return Err(format!("--fixture: нет строк {missing:?} в golden").into());
         }
     }
     let n = rows.len();
@@ -295,6 +372,18 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
             if !lockr_cfg.route(sp.score).extracted() {
                 continue;
             }
+            // #160 PR-B: per-row печать спанов над порогом — точечный промер
+            // (`--fixture`) обязан давать spans/k/класс per-фикстура, а не
+            // только агрегат; класс = golden-класс головы, head-тег дописан
+            // для строк вне онтологии (class = None).
+            println!(
+                "RECALL|lockr_span|{}|{}|{}..{}|{:.4}",
+                r.id,
+                sp.class.map_or_else(|| sp.tag.as_str(), |c| c),
+                sp.byte_start,
+                sp.byte_end,
+                sp.score
+            );
             let Some(mapped) = sp.class else {
                 continue;
             };
@@ -304,12 +393,17 @@ fn run(limit: Option<usize>, threads: usize, thr: f64) -> Result<(), Box<dyn std
                 }
             }
         }
-        for (si, (cat, _, _)) in r.spans.iter().enumerate() {
-            if hitmask & (1u64 << si) != 0
-                && let Some(ci) = CLASSES.iter().position(|c| *c == *cat)
-            {
+        for (si, (cat, gs, ge)) in r.spans.iter().enumerate() {
+            let hit = hitmask & (1u64 << si) != 0;
+            if hit && let Some(ci) = CLASSES.iter().position(|c| *c == *cat) {
                 lockr_hits[ci] += 1;
             }
+            // Per-gold вердикт (#160 PR-B: FN подтверждён/опровергнут числами).
+            println!(
+                "RECALL|gold|{}|{cat}|{gs}..{ge}|lockr|{}",
+                r.id,
+                if hit { "HIT" } else { "MISS" }
+            );
         }
     }
 
@@ -503,9 +597,38 @@ fn run(
     _limit: Option<usize>,
     _threads: usize,
     _thr: f64,
+    _fixture: Option<&std::collections::BTreeSet<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("RECALL|skipped|no-ort-inference|промер гоняется --features ort-inference");
     Ok(())
+}
+
+#[cfg(test)]
+mod fixture_filter_tests {
+    use super::parse_fixtures;
+
+    #[test]
+    fn parses_lists_ranges_and_mixed() {
+        let s = parse_fixtures("g0284,g0285").expect("список");
+        assert_eq!(s.iter().cloned().collect::<Vec<_>>(), ["g0284", "g0285"]);
+        let r = parse_fixtures("286..288").expect("диапазон включителен");
+        assert_eq!(
+            r.iter().cloned().collect::<Vec<_>>(),
+            ["g0286", "g0287", "g0288"]
+        );
+        let m = parse_fixtures("g0284,287..288").expect("смешанный");
+        assert_eq!(
+            m.iter().cloned().collect::<Vec<_>>(),
+            ["g0284", "g0287", "g0288"]
+        );
+    }
+
+    #[test]
+    fn rejects_empty_and_inverted_and_garbage() {
+        assert!(parse_fixtures("").is_err(), "пустой список = красный отказ");
+        assert!(parse_fixtures("288..284").is_err(), "перевёрнутый диапазон");
+        assert!(parse_fixtures("abc").is_err(), "не число");
+    }
 }
 
 #[cfg(test)]
