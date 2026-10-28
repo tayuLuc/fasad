@@ -14,7 +14,7 @@
 //! именем не создаётся никогда (промер этой сессии: зуб на ложном имени = ok
 //! при живом мусоре на диске) = урок ложно-зелёной проверки.
 //!
-//! ДИСКРИМИНАТОР (E_TOO_LARGE, а не E_SIZE): кап срабатывает ДО финальной
+//! ДИСКРИМИНАТОР (`E_TOO_LARGE`, а не `E_SIZE`): кап срабатывает ДО финальной
 //! сверки размера, т.е. ветка `E_SIZE`-уборки на этом входе не исполняется
 //! вовсе. Тот же вход на `E_SIZE`-пути = зелёный и без чина = мёртвый зуб.
 //!
@@ -87,7 +87,7 @@ fn loopback_cfg(authority: &str) -> fetch::FetchConfig {
 
 /// Содержимое каталога `onnx/` — свидетель для отказа (не «файла нет»,
 /// а «что именно осталось»: ложь о причине отказа = AGENTS).
-fn listing(dir: &PathBuf) -> Vec<String> {
+fn listing(dir: &std::path::Path) -> Vec<String> {
     std::fs::read_dir(dir.join("onnx"))
         .map(|d| {
             d.filter_map(Result::ok)
@@ -120,7 +120,10 @@ fn too_large_refusal_leaves_no_part_file() {
     let part_left = dir.join("onnx/model.part").exists();
     let seen = listing(&dir);
     std::fs::remove_dir_all(&dir).ok();
-    assert!(text.starts_with(E_TOO_LARGE), "ожидался E_TOO_LARGE: {text}");
+    assert!(
+        text.starts_with(E_TOO_LARGE),
+        "ожидался E_TOO_LARGE: {text}"
+    );
     assert!(
         !part_left,
         "{E_TOO_LARGE}: .part обязан быть убран с диска (die-cleanup #327-канон), \
@@ -154,7 +157,9 @@ fn sha_mismatch_path_stays_clean() {
     std::fs::remove_dir_all(&dir).ok();
     assert!(code_ok, "ожидался E_SHA, каталог onnx/: {seen:?}: {err}");
     assert!(
-        !seen.iter().any(|n| n.ends_with(".part")),
+        !seen.iter().any(|n| std::path::Path::new(n)
+            .extension()
+            .is_some_and(|e| e == "part")),
         "E_SHA: .part обязан быть убран (существующая ветка), onnx/: {seen:?}"
     );
 }
@@ -165,7 +170,11 @@ fn success_path_publishes_file_and_no_part() {
     // (дизарм guard-а обязан стоять ДО rename, иначе фикс сожрёт скачанный файл).
     let body: &'static [u8] = b"weight-bytes-for-the-mock";
     let digest = sha2::Sha256::digest(body);
-    let good_sha: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    let good_sha: String = digest.iter().fold(String::new(), |mut acc, b| {
+        use std::fmt::Write as _;
+        let _ = write!(acc, "{b:02x}");
+        acc
+    });
     let dir = sandbox("success");
     let authority = loopback_source(body);
     let fc = loopback_cfg(&authority);
@@ -186,7 +195,9 @@ fn success_path_publishes_file_and_no_part() {
     assert!(!downloaded, "файла в кеше не было = скачан");
     assert!(published, "файл обязан лежать на месте, onnx/: {seen:?}");
     assert!(
-        !seen.iter().any(|n| n.ends_with(".part")),
+        !seen.iter().any(|n| std::path::Path::new(n)
+            .extension()
+            .is_some_and(|e| e == "part")),
         ".part не должен переживать rename, onnx/: {seen:?}"
     );
 }
