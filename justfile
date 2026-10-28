@@ -235,6 +235,12 @@ python-lint:
     # #104: фикстуры §6 п.9 = выборка из data/golden, а не список номеров в
     # прозе: окно промерено, воспроизводима, контроль жив (пустое окно = пусто).
     uv run --locked python tools/metrics/render_report.py --selftest-fixtures
+    # #351: живой контроль контра #351 (selfcheck+идемпотентность shipped-документа):
+    # 3 порчи (словарь-утечка / ручная правка числа / файл без §8) обязаны давать
+    # rc 1/1/2; мёртвый контроль = rc=2. ПРОВОЕН контроль (не проверка shipped-файла:
+    # она красна на HEAD из-за эпох-вставок #77, монтаж красной ноги = отдельное
+    # решение оператора) — зелёная нога, монтируется в CI python-golden сейчас.
+    uv run --locked python tools/metrics/report_selfcheck.py --self-test
     # #81: python-окружение промера union-recall запинено: recipe = --locked
     # --group metrics; pyproject ∩ uv.lock ∩ .python-version; wheel-контра
     # трёх ОС CI-матрицы. Дрифт onnxruntime = другой инференс = другие
@@ -361,6 +367,28 @@ union-report RAW OUT PROBE="":
 # Positive control генератора отчёта: подсаженные утечки обязаны ловиться.
 report-selftest:
     uv run --locked python tools/metrics/render_report.py --self-test
+
+# Selfcheck + контра идемпотентности SHIPPED-документа (#351). `report-selftest`
+# мерил генератор на СИНТЕТИКЕ (--self-test), а shipped docs/golden-report.md в CI
+# не перегенерировывался НИ РАЗУ — первичка #349: файл на HEAD до #349 не проходил
+# selfcheck() собственного генератора (2 leak). Класс: документ = артефакт прогона,
+# уезжает от генератора руками. Шаг перегоняет документ из вложенного §8-артефакта
+# (extract_report_artifact.py, stdlib) и требует doc == f(артефакт) + selfcheck чист.
+#
+# ЧЕСТНЫЙ СТАТУС НА HEAD (#77 «строки эпохи v1.x»): на shipped-документе шаг КРАСЕН
+# rc=1 — 69 строк дрифта: 61 ручная вставка эпох #200/#289/#217, которых генератор
+# не эмитирует ни в одной версии (промер `git log -S` на a464cf4 = самый старый
+# автор документа); 8 строк генератора сверх (из них 1 реальный #81-дрейф: §4-команда
+# --isolated→--locked --group metrics заведён #350 ПОСЛЕ снимка документа). Сужение
+# области до разделов мертво: вставки живут ВНУТРИ §2/§5/§6 (### 5.3b/5.3c), section-
+# scope = 8/8 разделов = тот же полный diff ⇒ ложная зелёность. Молча подгонять
+# генератор = перенести в него спорную прозу (#77 вне объёма). Поэтому CI-монтаж
+# (красный на HEAD) ОТЛОЖЕН за #77-конвертом: смонтировать одной строкой в
+# python-golden, когда #77 вольёт doc := f(artifact). Positive control --self-test
+# (3 порчи → rc 1/1/2) смонтирован ниже в python-lint (живой контроль, GREEN rc 0).
+# rc: 0 = doc==f(artifact)+selfcheck; 1 = дрифт/утечки (RED); 2 = не выполнено.
+golden-report-selfcheck:
+    uv run --locked python tools/metrics/report_selfcheck.py docs/golden-report.md
 
 # Язык-гейт текста: CJK-утечки и склейка кириллицы с латиницей. Positive control
 # (--self-test) обязателен: зелёный сканер без контроля = ложно-зелёная проверка
