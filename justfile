@@ -224,6 +224,9 @@ deny:
 # Линт Python-скриптов проекта (генератор датасета + verify/metrics-харнесы).
 python-lint:
     uv run --locked ruff check data/golden scripts tools/verify tools/metrics
+    # #100: маржа гейта (#14B) = selftest'ы чистых функций (stdlib-путь, без
+    # ort-весов: рюлинг #81) смонтированы в CI = пороговая клетка bar±ε живая.
+    uv run --locked python tools/metrics/union_recall.py --selftest-bar
 
 # Побайтовая воспроизводимость golden-датасета: реген + сверка с B2-константой
 # (тот же инвариант, что tests/golden_v1.rs::golden_file_sha256_matches_embedded_const).
