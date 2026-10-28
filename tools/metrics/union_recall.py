@@ -24,9 +24,13 @@ docs/SPEC.md:142-147): «recall ≥ 98 % … **при N=50 планка ≥98 % 
 
 Оракул спана = пересечение байтовых диапазонов + равенство класса — контракт
 `recall_golden.rs`/`parity_golden.py` (после фикса off-by-one, ревью PR#49 блокер №1).
-data/golden/README.md §«Метрика recall» требует совпадения байт-в-байт — это СТРОЖЕ
-харнеса; оба определения считаются и печатаются (`oracle=overlap|exact`), молча не
-выбираем: расхождение двух владельцев одной метрики = находка, а не деталь.
+data/golden/README.md §«Метрика recall» требует совпадения байт-в-байт.
+#77 (рюлинг владельца 21.10) закрыл расхождение двух владельцев: ВЛАДИТЕЛЬ
+определения попадания = README (byte-exact), гейт = lo(Wilson 95 %) ≥ 98 % на
+span-уровне; overlap = вторичная диагностика, не гейт. Оба определения
+считаются и печатаются (`oracle=overlap|exact`), молча не выбираем — но
+вердикт-строка `UNION|verdict` и канон README/строк = byte-exact; строка
+`UNION|bar` называет гейт словом (`gate|lo-wilson-span-level|oracle|byte-exact`).
 
 Классы: все 11 категорий recall-сплита golden-v1.2 (#200-A2: +9 passport/+6 phone/+3
 inn-коллизий; строки v1.1 g0001–g0204 побайтово те же). У iban/ogrn/ogrnip нет голов у
@@ -291,7 +295,15 @@ def _verdict_line(k: int, n: int, bar: float, thr: float, wilson_fn) -> str:
     по имени) и README-примера: verdict|thr|union|union_k|union_n|
     union_wilson_lo|margin|strict|strict_wilson_lo|row|k_for_bar|
     deficit_spans|bar (union_k/n перед wilson_lo = исторический контракт,
-    new поля = в хвосте, перед bar)."""
+    new поля = в хвосте, перед bar).
+
+    #77 (рюлинг владельца 21.10, канон SPEC §5 п.6): ГЕЙТ = нижняя граница
+    Wilson 95 % ≥ планки на SPAN-уровне; оракул гейт-метрики = byte-exact
+    (владелец определения — data/golden/README.md §«Метрика recall»),
+    overlap = вторичная диагностика, не гейт. Слово `verdict|meets-bar`
+    относится к spans-паре (union_k/union_n/union_wilson_lo); `row` =
+    row-level диагностика. `k_for_bar` = ответ харнеса: минимум k при данном
+    n, при котором lo(Wilson 95 %) ≥ планки."""
     v, m = _verdict_at(k, n, bar, wilson_fn)
     lo = 100 * wilson_fn(k, n)[0]
     return (f"UNION|verdict|{v}|thr|{thr:.2f}|union|{100.0 * k / n:.2f}"
@@ -795,7 +807,10 @@ def main() -> None:
           f"|niceness|{_niceness()}|seed|n/a-no-RNG")
     for k, v in shas.items():
         print(f"UNION|sha|{k}|{v}")
-    print(f"UNION|bar|recall|{BAR}|ci|wilson95-lower|formula|docs/dep-verify-algorithms.md §8")
+    print(f"UNION|bar|recall|{BAR}|ci|wilson95-lower|point|span-level"
+          f"|gate|lo-wilson-span-level|oracle|byte-exact"
+          f"|diagnostic|overlap-not-gate|owner|data/golden/README.md #77"
+          f"|formula|docs/dep-verify-algorithms.md §8")
 
     proc = None
     base = ""

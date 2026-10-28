@@ -24,6 +24,16 @@
    «## Формат JSONL», «## Гейт-права», «## Метрика recall») — урок #324:
    squash #324 сжёг 247 строк README (эти секции + всю историю счётчиков)
    без единого красного гейта; зуб делает молчаливое усечение красным.
+5. STALE-BAR (рюлинг владельца #77 п.4): устаревшее CI-число «94.5»
+   (нижняя граница Wilson, приписанная 146/146; промер §8: lo(146,146) =
+   97.436 %, 94.577 % ↔ n=67) запрещено в ПЕРВИЧНОМ абзаце §«Метрика recall»
+   = проза от заголовка до первого вхождения `**Аддендум` (аддендумы
+   #77-контура цитируют его ЛЕГАЛЬНО, разбирая расхождение — whitelist по
+   секции, как EPOCHS легитимирует снимки эпох). Формулировка гейта по
+   рюлингу #77 п.3 = lo(Wilson 95 %) ≥ 98 % на span-уровне, харнес печатает
+   k_for_bar. Адрес эпохи в самой строке первичного абзаца НЕ легитимирует
+   число-гейта (урок #77: «94.5» жил в первичном абзаце с адресом
+   «Wilson CI» и зуб его не видел = ложно-зелёная контра).
 
 Выход: rc=0 зелёный; rc=1 красный (строки `ANCHOR|FAIL|<код>|…`).
 Использование: uv run --locked python scripts/golden_anchor_check.py
@@ -74,7 +84,7 @@ ERA = re.compile(
     # lo(k,n) = promer-числа, не счётчик датасета; канон #77 rюлинг: эти
     # числа живут в этой секции как формулы). Строка-контра: маркер в СВОЕЙ
     # строке, не секция (урок #329 sec_has_era).
-    r"|\blo\(|k_for_bar|\bk ?≥ ?\d|n = \d|n=\d|\bN ?[≥>=]|\bk ?\+|= \d+ ?%|\d+%|98 ?%"
+    r"|\blo\(|lo_full\(|k_for_bar\(|\bk ?≥ ?\d|n = \d|n=\d|\bN ?[≥>=]|\bk ?\+|= \d+ ?%|\d+%|98 ?%"
     r"|≥ ?\d+|знаменатель|проверяем"
 )
 # id-адрес локальный (gNNNN в самой строке) = строка адресована.
@@ -128,6 +138,33 @@ REQUIRED_SECTIONS = (
     "## Гейт-права",
     "## Метрика recall",
 )
+# STALE-BAR (#77 п.4): первичный абзац §«Метрика recall» = проза от заголовка
+# до первого `**Аддендум`; устаревшее якорное число гейта живёт только там
+# (аддендумы whitelisted: они его РАЗБИРАЮТ, а не утверждают).
+METRIC_HEAD = "## Метрика recall"
+ADENDUM_MARK = "**Аддендум"
+STALE_PAT = re.compile(r"94[.,]5")
+
+
+def primary_metric_zone(lines: list[str]) -> list[tuple[int, str]]:
+    """Строки первичного абзаца §«Метрика recall» (до первого `**Аддендум`).
+
+    Пустой список = секция/маркер не найдены: контра молчит (зуб не знает,
+    где искать), а НЕ выдаёт ложный GREEN за отсутствием прозы — живость
+    контра-зоны контролирует selftest ниже (#100-дисциплина: проверка обязана
+    умирать вместе с проверяемым).
+    """
+    out: list[tuple[int, str]] = []
+    started = False
+    for idx, ln in enumerate(lines, 1):
+        if not started:
+            if ln.startswith(METRIC_HEAD):
+                started = True
+            continue
+        if ln.startswith("## ") or ln.startswith("**Аддендум") or ADENDUM_MARK in ln:
+            break
+        out.append((idx, ln))
+    return out if started else []
 
 
 def artifact_counts() -> dict:
@@ -170,8 +207,35 @@ def fail(code: str, msg: str) -> None:
     sys.stdout.write("ANCHOR|FAIL|%s|%s\n" % (code, msg))
 
 
+def selftest_stale_zone() -> int:
+    """Живость контра-зоны STALE-BAR: синтетический README, где «94.5» стоит
+    (а) в первичном абзаце и (б) в аддендуме. (а) обязан дать хит, (б) — нет.
+    Мёртвая зона (regex не смотрит в секцию) = красный selftest, а не
+    ложно-зелёный зуб (#100-дисциплина)."""
+    sample = [
+        "## Метрика recall (как считать)",
+        "",
+        "планка ≥ 98 % (нижняя граница ≥ 94.5 % при 146/146)",
+        "",
+        "**Аддендум 21.10: граница 94.5 % устарела (97.436 %).",
+        "",
+        "## Отклонения",
+        "94.5",
+    ]
+    zone = primary_metric_zone(sample)
+    hits = [i for i, ln in zone if STALE_PAT.search(ln)]
+    if hits != [3]:
+        sys.stderr.write("ANCHOR: FAIL selftest STALE-ZONE: хиты %s ≠ [3] "
+                         "(зона мертва или шире секции)\n" % hits)
+        return 1
+    if not zone or zone[-1][0] >= 5:
+        sys.stderr.write("ANCHOR: FAIL selftest STALE-ZONE: whitelist аддендума не работает\n")
+        return 1
+    return 0
+
+
 def main() -> int:
-    fails = 0
+    fails = selftest_stale_zone()
 
     def check(cond: bool, code: str, msg: str) -> None:
         nonlocal fails
@@ -512,6 +576,22 @@ def main() -> int:
             fails += 1
             fail("ORPHAN-N", "README:%d сирой якорь %d в строке: %s"
                  % (idx, v, line.strip()[:90]))
+    # 5. STALE-BAR (#77 п.4): устаревшее число гейта в первичном абзаце.
+    zone = primary_metric_zone(lines)
+    checked = 0
+    for idx, ln in zone:
+        if STALE_PAT.search(ln):
+            fails += 1
+            fail("STALE-BAR",
+                 "README:%d устаревшее CI-число гейта «94.5» в первичном "
+                 "абзаце §«Метрика recall» (рюлинг #77 п.4: пересчёт §8 "
+                 "lo(146,146) = 97.436 %%): %s" % (idx, ln.strip()[:90]))
+        checked += 1
+    check(checked > 0, "STALE-ZONE",
+          "зона первичного абзаца §«Метрика recall» пуста/не найдена — "
+          "контра STALE-BAR мертва (урок #324: молча не проверяем)")
+    sys.stdout.write("ANCHOR|stale-bar-checked|zone_lines|%d\n" % checked)
+
     sys.stdout.write("ANCHOR|orphans-checked|lines|%d\n" % len(lines))
     if fails:
         sys.stderr.write("ANCHOR: FAIL (%d)\n" % fails)
