@@ -235,6 +235,11 @@ python-lint:
     # #104: фикстуры §6 п.9 = выборка из data/golden, а не список номеров в
     # прозе: окно промерено, воспроизводима, контроль жив (пустое окно = пусто).
     uv run --locked python tools/metrics/render_report.py --selftest-fixtures
+    # #81: python-окружение промера union-recall запинено: recipe = --locked
+    # --group metrics; pyproject ∩ uv.lock ∩ .python-version; wheel-контра
+    # трёх ОС CI-матрицы. Дрифт onnxruntime = другой инференс = другие
+    # recall-числа, sha-префлайт харнеса библиотеку не меряет ⇒ зуб обязателен.
+    uv run --locked python scripts/metrics_env_check.py
 
 # Побайтовая воспроизводимость golden-датасета: реген + сверка с B2-константой
 # (тот же инвариант, что tests/golden_v1.rs::golden_file_sha256_matches_embedded_const).
