@@ -21,7 +21,7 @@
 
 use super::chunker::{
     BYTES_PER_TOKEN_U, Batch, ChunkCfg, WindowTokens, approx_tokens, bucket_len, chunk,
-    plan_batches,
+    overlap_floor_bytes, plan_batches,
 };
 use super::merger::{Category, SpanHit, merge};
 use guard_types::ByteSpan;
@@ -90,8 +90,27 @@ fn rand_text(rng: &mut XorShift64, max_len: usize) -> String {
     s
 }
 
-/// Случайная легальная конфигурация: окно 256..=384, overlap 1..window.
+/// Случайная легальная конфигурация: окно 256..=384, overlap 1..window;
+/// каждое 8-е предложение — конфигурация B (`ChunkCfg::rubert()`, 448/128).
+///
+/// Ветка rubert в генераторе обязательна, а не опциональна: полная грань
+/// перекрытия `(overlap − 1) · BYTES_PER_TOKEN` достижима только при
+/// `shrink = 0` (см. док [`ChunkCfg::overlap_floor`]), т. е. когда предыдущий
+/// чанк дорезан ровно по краю окна. На окне 256..=384 — всех прежних 10k кейсов
+/// генератора — такого дорезания не случалось ни разу (`prev_span ==
+/// window_bytes` не выполнялся), и [`overlap_floor_bytes`] не проверялся НИ ОДНИМ
+/// случайным кейсом. Промер после добавления ветки (сид `0x0C0F_FEE7`, 10k):
+/// 14 429 пар из 72 010 (20.04 %) попадают в полную-гранную ветку; живость
+/// ветки доказана возмущением порога на +4096 — проп краснеет на кейсе 2
+/// (`full 196 Б, got 200 Б`).
 fn rand_cfg(rng: &mut XorShift64) -> ChunkCfg {
+    if rng.chance(13) {
+        // 448/128 + случайный режим реза: та же геометрия, что у рантайма демона.
+        return ChunkCfg {
+            sentence_boundaries: rng.chance(80),
+            ..ChunkCfg::rubert()
+        };
+    }
     let window = u32::try_from(256 + rng.below(129)).unwrap_or(256);
     let overlap =
         u32::try_from(1 + rng.below(usize::try_from(window - 1).unwrap_or(1))).unwrap_or(1);
@@ -232,6 +251,23 @@ fn prop_chunker_keeps_overlap_floor_and_window_ceiling() {
                 "case {case}: перекрытие {ov} Б < {floor} Б (overlap {}), cfg {cfg:?}",
                 cfg.overlap_tokens
             );
+            // Формальный инвариант `overlap_at_least` (ревью PR#21 N6, issue #3
+            // дозагрузка п.3): там, где рез ушёл ровно по краю окна
+            // (`prev_span == window_bytes`, т. е. `shrink = 0`), грань обязана
+            // быть ПОЛНОЙ — `(overlap − 1) · BYTES_PER_TOKEN`, без UTF-8-скидки.
+            // Условие детектируется из выхода (округление к UTF-8-границе
+            // даёт < window_bytes на любом не-ASCII-крае), поэтому ветка
+            // срабатывает только на реально полнооконных парах.
+            if prev_span == win_bytes {
+                let full =
+                    i64::try_from(overlap_floor_bytes(cfg.overlap_tokens)).unwrap_or(i64::MAX);
+                assert!(
+                    ov >= full,
+                    "case {case}: рез по краю окна обязан давать полную грань {full} Б, \
+                     got {ov} Б (overlap {}), cfg {cfg:?}",
+                    cfg.overlap_tokens
+                );
+            }
         }
     }
 }

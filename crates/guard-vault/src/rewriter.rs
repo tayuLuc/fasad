@@ -160,6 +160,15 @@ impl<F: FnMut(&[u8]) -> Resolution> MarkerResolver for FnResolver<F> {
     }
 }
 
+impl<F> core::fmt::Debug for FnResolver<F> {
+    /// Резолвер — замыкание, замкнутое на кэш оригиналов: содержимое
+    /// непечатаемо по контракту секретов (AGENTS §Инженерные инварианты:
+    /// Debug-вывод только `[REDACTED]`), печатается только факт наличия.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("FnResolver([REDACTED])")
+    }
+}
+
 /// Машина подмены с резолвером «коробочное замыкание».
 pub type DynStreamRewriter<'a> =
     StreamRewriter<FnResolver<Box<dyn FnMut(&[u8]) -> Resolution + 'a>>>;
@@ -188,7 +197,7 @@ pub struct Finish {
 }
 
 /// Состояние автомата.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     /// Копируем в выдачу, высматриваем первый байт префикса.
     Scanning,
@@ -216,6 +225,25 @@ pub struct StreamRewriter<R: MarkerResolver> {
     total_substituted: usize,
     /// Хвост выдачи, зарезервированный из-за оборванного символа (≤ 3 байта).
     held: Vec<u8>,
+}
+
+impl<R: MarkerResolver> core::fmt::Debug for StreamRewriter<R> {
+    /// Только метаданные машины: буферы `cand`/`replay`/`held` содержат байты
+    /// оригинала `ПДн`, в выводе `Debug` они не попадают — наружу идут только
+    /// длины (AGENTS §Инженерные инварианты: Debug-вывод только `[REDACTED]`).
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StreamRewriter")
+            .field("grammar", &self.grammar)
+            .field("resolver", &"[REDACTED]")
+            .field("phase", &self.phase)
+            .field("incomplete", &self.incomplete)
+            .field("total_substituted", &self.total_substituted)
+            .field("cand_len", &self.cand.len())
+            .field("suffix_hit", &self.suffix_hit)
+            .field("replay_len", &self.replay.len())
+            .field("held_len", &self.held.len())
+            .finish()
+    }
 }
 
 impl<R: MarkerResolver> StreamRewriter<R> {
@@ -495,6 +523,50 @@ mod tests {
                 misses: 0,
             }
         }
+    }
+
+    /// Секрет-контракт `Debug` (AGENTS §Инженерные инварианты: Debug-вывод
+    /// только `[REDACTED]`): отладочный вывод машины не содержит оригиналов,
+    /// даже когда оригинал уже лежит в её буферах.
+    ///
+    /// Две посылки, пойманные возмущением (обе были ложно-зелёными до правки):
+    ///
+    /// 1. секрет обязан ОКАЗАТЬСЯ в буфере — `.field("cand", &self.cand)` при
+    ///    пустом `cand` не красил ничего; здесь буферы наполняются руками, а
+    ///    не упованием на то, что FSM их заполнит;
+    /// 2. `Debug` над `Vec<u8>` = СПИСОК ЧИСЕЛ, поэтому подстрока секрета в
+    ///    нём не ищется ни при какой утечке; реальная форма утечки — дамп
+    ///    буфера как строки (`String::from_utf8_lossy`), на ней зуб и краснеет.
+    #[test]
+    fn debug_output_never_leaks_original_bytes() {
+        let secret = "IVANOV PETR SERGEEVICH";
+        let mut r = StreamRewriter::new(Grammar::LABEL, MapResolver::new(&[]));
+        r.cand.extend_from_slice(secret.as_bytes());
+        r.replay.extend(secret.as_bytes().iter().copied());
+        r.held.extend_from_slice(secret.as_bytes());
+        assert_eq!(r.cand.len(), secret.len(), "флагушка: секрет не в `cand`");
+        let leaked = String::from_utf8_lossy(&r.cand);
+        assert_eq!(
+            leaked.as_ref(),
+            secret,
+            "флагушка: буфер не читается как строка"
+        );
+        let dbg = format!("{r:?}");
+        assert!(
+            !dbg.contains(leaked.as_ref()),
+            "Debug сливает буфер кандидата как строку: {dbg}"
+        );
+        assert!(
+            dbg.contains("[REDACTED]"),
+            "Debug без маркера REDACTED: {dbg}"
+        );
+        assert!(
+            dbg.contains("StreamRewriter"),
+            "Debug потерял имя типа: {dbg}"
+        );
+        // Резолвер-замыкание — тоже секретный контур: печатается заглушка.
+        let f = FnResolver(|_: &[u8]| Resolution::Unknown);
+        assert_eq!(format!("{f:?}"), "FnResolver([REDACTED])");
     }
 
     impl MarkerResolver for MapResolver {

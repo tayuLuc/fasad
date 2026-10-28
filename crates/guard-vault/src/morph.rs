@@ -302,6 +302,7 @@ pub struct Candidate<'a> {
 }
 
 /// Разобранное правило.
+#[derive(Debug)]
 struct Rule<'a> {
     ty: NameType,
     case: Case,
@@ -314,6 +315,7 @@ struct Rule<'a> {
 }
 
 /// Разобранное исключение.
+#[derive(Debug)]
 struct Exc<'a> {
     form: &'a str,
     ty: NameType,
@@ -357,6 +359,7 @@ pub enum SpanParse {
 }
 
 /// Суффиксальная таблица + исключения.
+#[derive(Debug)]
 pub struct MorphTable<'a> {
     rules: Vec<Rule<'a>>,
     exc: Vec<Exc<'a>>,

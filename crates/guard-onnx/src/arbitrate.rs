@@ -259,6 +259,19 @@ pub struct DecideArbiter {
     ids: [u32; SPECIALS.len()],
 }
 
+impl core::fmt::Debug for DecideArbiter {
+    /// Только метаданные: `ort::Session` в `Debug` печатает complete
+    /// `model_metadata`, а токенизатор — весь vocab; ни то, ни другое не нужно
+    /// для отладки загрузки арбитра (контраст — `LockrExtractor::fmt`).
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DecideArbiter")
+            .field("ids", &self.ids)
+            .field("vocab_len", &self.tokenizer.get_vocab_size(true))
+            .field("session", &"[ORT SESSION]")
+            .finish_non_exhaustive()
+    }
+}
+
 impl DecideArbiter {
     /// Загрузка. Сессия — паттерн `open_session` из spike (промер 19.10):
     /// `with_intra_threads` + `GraphOptimizationLevel::All` +
