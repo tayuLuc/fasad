@@ -203,7 +203,36 @@ def wheel_present(files: list[str], tag_minor: int, os_mark: str, arch_needles: 
 # ── main ──────────────────────────────────────────────────────────────────────
 
 
+
+
+
+def section_of(src: str, def_marker: str) -> str:
+    """Тело функции от ОБЪЯВЛЕНИЯ `def main(` (начало строки!) до следующего
+    top-level def (или EOF). Якорь с начала строки: `def main():\n` внутри
+    многострочного литерала (planted_src зубa #104) объявлением не является."""
+    m0 = re.search(r"(?m)^" + re.escape(def_marker), src)
+    if m0 is None:
+        return ""
+    i = m0.start()
+    tail = src[i:]
+    m = re.search(r"(?m)\n(?=(?:def |class ))", tail)
+    return tail[: m.start()] if m else tail
+
+
+
 def main() -> None:
+    # cp1252-guard (CI windows-2022, python-golden): stdout раннера = cp1252,
+    # кириллические print'ы (PRECHECK/METASENV/CONTROL/ANCHOR-тексты) падают
+    # UnicodeEncodeError ДО вердикта = ложно-красный зуб (промер CI: red
+    # python-golden windows на print("OK: хардкод-страж зелёный") #104-контура).
+    # reconfigure utf-8 = стандарт CPython для класса; errors="replace" — запас
+    # для узких кодовых страниц. В начале main(): закрывает print-пути всех
+    # селфтест-веток; сканер #104 (литералы main) остаётся вне зоны (id 19-значн.).
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass  # stdout заменён (redirect_stdout в селфтестах) — не трогать
     just = JUSTFILE.read_text(encoding="utf-8")
     pp = PYPROJECT.read_text(encoding="utf-8")
     lock = LOCK.read_text(encoding="utf-8")
@@ -272,6 +301,27 @@ def main() -> None:
     if not py_minor_in_range(pp_req, minor):
         fail("PYVER-REQ", f".python-version {pyver} вне requires-python {pp_req!r}")
     print(f"METASENV|pyver|{pyver}|in|requires-python|lock==pyproject|ok")
+
+    # 4b. CP1252: stdout windows-раннера python-golden = cp1252; кириллические
+    # print'ы зубов падают UnicodeEncodeError ДО вердикта (промер CI run
+    # 40666552999: print("OK: хардкод-страж зелёный") #104-контура краснил
+    # python-golden windows). Контра: скрипт, который python-lint/golden-verify
+    # гоняет на трёх ОС и в чьих print-каналах есть не-ASCII, обязан иметь
+    # sys.stdout.reconfigure в main() (чин-канон = вариант reconfigure).
+    ci_scripts = []
+    for ln in recipe_body(just, "python-lint").splitlines() + recipe_body(just, "golden-verify").splitlines():
+        m2 = re.search(r"python ([^\s]+\.py)", ln)
+        if m2 and m2.group(1) not in ci_scripts:
+            ci_scripts.append(m2.group(1))
+    for rel in ci_scripts:
+        src = (ROOT / rel).read_text(encoding="utf-8")
+        body = section_of(src, "def main(")
+        has_cyr = bool(re.search(r"print\([^)]*[\u0400-\u04FF]", src))
+        has_guard = "sys.stdout.reconfigure" in body
+        if has_cyr and not has_guard:
+            fail("CP1252-GUARD", f"{rel}: не-ASCII print'ы без sys.stdout.reconfigure "
+                 "в main() = UnicodeEncodeError на windows-ноге python-golden")
+        print(f"METASENV|cp1252|{rel}|cyr-print={'y' if has_cyr else 'n'}|guard={'y' if has_guard else 'n'}|ok")
 
     # 5. WHEELS pinned версий на трёх ОС CI-матрицы по тегу интерпретатора
     # (первичка PyPI, кэш .local; сеть мертва = SKIP). Верх onnxruntime
