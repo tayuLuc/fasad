@@ -420,6 +420,45 @@ fn loopback_authority(authority: &str) -> bool {
         })
 }
 
+/// Страж tmp-носителя загрузки (#199, канон die-cleanup #327: try/finally на
+/// русском языке = `Drop`).
+///
+/// Уборка `.part` обязана исполняться на ЛЮБОМ выходе из `fetch_file`, а не на
+/// перечисленных: промер первички — `remove_file` стоял только на трёх ветках
+/// (`Err`-чтения, `E_SIZE`, `E_SHA`), а на `E_TOO_LARGE`/`E_IO`-записи выход
+/// происходит раньше (`sink.write` → `?`), и осиротевший `.part` оставался в
+/// каталоге весов навсегда. Две истины (файл на диске + путь в guard'е) =
+/// рассинхрон, поэтому ручные удаления сняты в пользу этой единственной.
+///
+/// `remove_file` = `NotFound` → `ok()`: идемпотентен и к уже убранному, и к
+/// несозданному (guard ставится до `File::create`).
+struct PartGuard {
+    path: std::path::PathBuf,
+    armed: bool,
+}
+
+impl PartGuard {
+    /// Вооружён сразу: файл ещё не создан, но отказ до `File::create` не
+    /// должен оставить мусор, если он всё-таки появился.
+    #[must_use]
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    /// Штатный исход: tmp переименован в `dest`, удалять нечего.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PartGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            std::fs::remove_file(&self.path).ok();
+        }
+    }
+}
+
 /// Скачать один файл манифеста в каталог `dir` (layout-путь) с проверкой
 /// размера+sha256. Синхронный: вызывается из `spawn_blocking`.
 ///
@@ -429,6 +468,8 @@ fn loopback_authority(authority: &str) -> bool {
 /// # Errors
 ///
 /// [`FetchError`] transport/http/io/size/sha-класса (константы `E_*`).
+/// На любом отказе после создания `.part` временный файл убран
+/// ([`PartGuard`], #199): каталог весов не собирает мусор.
 pub fn fetch_file(
     agent: &ureq::Agent,
     fc: &FetchConfig,
@@ -440,6 +481,8 @@ pub fn fetch_file(
 ) -> Result<bool, FetchError> {
     let dest = weights::layout_path(dir, rel);
     let tmp = dest.with_extension("part");
+    // #199: до всех ранних выходов после создания файла; дизарм = перед rename.
+    let mut part_guard = PartGuard::new(tmp.clone());
 
     let publish = |phase: Phase, done: u64, total_bytes: u64| {
         weights::set_fetch_state(FetchState::Running {
@@ -489,6 +532,7 @@ pub fn fetch_file(
         match body.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                // #199: отсюда выход по `?` вёл на E_TOO_LARGE/E_IO без уборки.
                 sink.write(&buf[..n]).map_err(|err| FetchError {
                     code: if err.code == E_TOO_LARGE {
                         E_TOO_LARGE
@@ -505,8 +549,9 @@ pub fn fetch_file(
                 }
             }
             Err(err) => {
+                // tmp-файл закрыт `drop`, убран в `Drop` (branch-exit =
+                // `return`, guard живёт до него).
                 drop(sink);
-                std::fs::remove_file(&tmp).ok();
                 return Err(FetchError {
                     code: E_TRANSPORT,
                     detail: format!("чтение потока: {}", io_class(&err)),
@@ -524,14 +569,12 @@ pub fn fetch_file(
         })?
         .len();
     if e.size_bytes != 0 && got_size != e.size_bytes {
-        std::fs::remove_file(&tmp).ok();
         return Err(FetchError {
             code: E_SIZE,
             detail: format!("размер {got_size} ≠ манифест {}", e.size_bytes),
         });
     }
     if !eq_hex(&e.sha256, &got_sha) {
-        std::fs::remove_file(&tmp).ok();
         return Err(FetchError {
             code: E_SHA,
             detail: "sha256 не совпал с манифестом (fail-closed)".to_owned(),
@@ -541,6 +584,8 @@ pub fn fetch_file(
         code: E_IO,
         detail: format!("rename: {}", io_class(&err)),
     })?;
+    // Штатный исход ДИЗАРМ: tmp уже `dest`, удалять его = съесть скачанный файл.
+    part_guard.disarm();
     Ok(false)
 }
 
